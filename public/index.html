@@ -1007,7 +1007,7 @@ function updateDashboard() {
   });
 
   document.getElementById('kpi-facturacion').textContent = formatMoney(totalFac);
-  document.getElementById('kpi-fac-delta').textContent = 'Últimos ' + state.rangeDays + ' días';
+  document.getElementById('kpi-fac-delta').textContent = 'Últimos ' + (state.rangeDays || 30) + ' días';
   document.getElementById('kpi-ventas').textContent = totalVentas.toLocaleString('es-AR');
   document.getElementById('kpi-ven-delta').textContent = 'Órdenes pagadas';
   document.getElementById('kpi-pubs').textContent = totalPubs;
@@ -1160,6 +1160,15 @@ function showToast(msg) {
 }
 
 // ─── INIT ─────────────────────────────────────────────────────────────────────
+function setRange(el, days) {
+  document.querySelectorAll('.range-btn').forEach(b => b.classList.remove('active'));
+  if (el) el.classList.add('active');
+  state.rangeDays = days;
+  const lbl = document.getElementById('rangeLabel');
+  if (lbl) lbl.textContent = 'Últimos ' + days + ' días';
+  loadAllData();
+}
+
 function saveAccounts() {
   try { localStorage.setItem('ml_accounts', JSON.stringify(state.accounts)); } catch(e) {}
 }
@@ -1283,4 +1292,3 @@ setInterval(() => {
 </script>
 </body>
 </html>
-
