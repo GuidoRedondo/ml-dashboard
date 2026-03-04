@@ -55,18 +55,20 @@ app.get('/api/dashboard', async (req, res) => {
     const fromStr = from.toISOString().slice(0, 19) + '.000-00:00';
     const toStr = now.toISOString().slice(0, 19) + '.000-00:00';
 
-    const [ordersRes, itemsRes] = await Promise.all([
+    // First request to get total count
+    const [firstOrdersRes, itemsRes] = await Promise.all([
       fetch(`${ML_API}/orders/search?seller=${uid}&order.status=paid&sort=date_desc&limit=50&order.date_created.from=${encodeURIComponent(fromStr)}&order.date_created.to=${encodeURIComponent(toStr)}`, { headers }),
       fetch(`${ML_API}/users/${uid}/items/search?limit=1`, { headers })
     ]);
 
-    const ordersData = await ordersRes.json();
+    const ordersData = await firstOrdersRes.json();
     const itemsData = await itemsRes.json();
     const totalOrders = (ordersData.paging && ordersData.paging.total) || 0;
     let allOrders = ordersData.results || [];
 
+    // Paginate - up to 100 pages (5000 orders) for accuracy
     if (totalOrders > 50) {
-      const pages = Math.min(Math.ceil(totalOrders / 50), 20);
+      const pages = Math.min(Math.ceil(totalOrders / 50), 100);
       const promises = [];
       for (let i = 1; i < pages; i++) {
         promises.push(
@@ -74,8 +76,13 @@ app.get('/api/dashboard', async (req, res) => {
             .then(r => r.json()).catch(() => ({ results: [] }))
         );
       }
-      const more = await Promise.all(promises);
-      more.forEach(p => { if (p.results) allOrders = allOrders.concat(p.results); });
+      // Run in batches of 10 to avoid rate limiting
+      const batchSize = 10;
+      for (let b = 0; b < promises.length; b += batchSize) {
+        const batch = promises.slice(b, b + batchSize);
+        const results = await Promise.all(batch);
+        results.forEach(p => { if (p.results) allOrders = allOrders.concat(p.results); });
+      }
     }
 
     let totalAmount = 0;
@@ -96,5 +103,7 @@ app.get('/api/dashboard', async (req, res) => {
     res.status(500).json({ error: e.message });
   }
 });
+
+app.listen(PORT, () => console.log(`Puerto ${PORT}`));
 
 app.listen(PORT, () => console.log(`Puerto ${PORT}`));
