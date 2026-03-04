@@ -11,21 +11,24 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static('public'));
 
-// ── OAUTH TOKEN EXCHANGE ──────────────────────────────────────────────────────
 app.post('/api/token', async (req, res) => {
   try {
-    const { code, client_id, client_secret, redirect_uri, grant_type, refresh_token } = req.body;
-    const params = { grant_type: grant_type || 'authorization_code', client_id, client_secret };
-    if (grant_type === 'refresh_token') {
-      params.refresh_token = refresh_token;
+    const body = req.body;
+    const params = {
+      grant_type: body.grant_type || 'authorization_code',
+      client_id: body.client_id,
+      client_secret: body.client_secret
+    };
+    if (body.grant_type === 'refresh_token') {
+      params.refresh_token = body.refresh_token;
     } else {
-      params.code = code;
-      params.redirect_uri = redirect_uri;
+      params.code = body.code;
+      params.redirect_uri = body.redirect_uri;
     }
     const response = await fetch(`${ML_API}/oauth/token`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json' },
-      body: new URLSearchParams(params)
+      body: new URLSearchParams(params).toString()
     });
     const data = await response.json();
     res.json(data);
@@ -34,75 +37,47 @@ app.post('/api/token', async (req, res) => {
   }
 });
 
-// ── ML API PROXY ──────────────────────────────────────────────────────────────
-app.get('/api/ml/*', async (req, res) => {
-  try {
-    const token = req.headers['authorization'] || req.query.access_token;
-    const path = req.params[0];
-    const query = new URLSearchParams(req.query);
-    query.delete('access_token');
-    const queryStr = query.toString() ? '?' + query.toString() : '';
-    const url = `${ML_API}/${path}${queryStr}`;
-    const response = await fetch(url, {
-      headers: { Authorization: token.startsWith('Bearer') ? token : `Bearer ${token}` }
-    });
-    const data = await response.json();
-    res.json(data);
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-// ── DASHBOARD DATA (all-in-one endpoint) ─────────────────────────────────────
 app.get('/api/dashboard', async (req, res) => {
   try {
-    const { token, days = 30 } = req.query;
-    if (!token) return res.status(400).json({ error: 'token required' });
+    const token = req.query.token;
+    const days = parseInt(req.query.days) || 30;
+    if (!token) return res.status(400).json({ error: 'token requerido' });
 
-    const now = new Date();
-    const from = new Date(now - days * 24 * 60 * 60 * 1000);
-    const fromStr = from.toISOString().split('.')[0] + '.000-00:00';
-    const toStr = now.toISOString().split('.')[0] + '.000-00:00';
+    const headers = { 'Authorization': `Bearer ${token}` };
 
-    const headers = { Authorization: `Bearer ${token}` };
-
-    // Parallel requests
-    const [userRes, itemsRes] = await Promise.all([
-      fetch(`${ML_API}/users/me`, { headers }),
-      fetch(`${ML_API}/users/me`, { headers }) // placeholder, overwrite below
-    ]);
-
+    const userRes = await fetch(`${ML_API}/users/me`, { headers });
     const user = await userRes.json();
-    const uid = user.id;
+    if (user.error) return res.status(401).json({ error: 'token invalido' });
 
-    // Now get orders and items in parallel
-    const [ordersRes, itemsCountRes] = await Promise.all([
+    const uid = user.id;
+    const now = new Date();
+    const from = new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
+    const fromStr = from.toISOString().slice(0, 19) + '.000-00:00';
+    const toStr = now.toISOString().slice(0, 19) + '.000-00:00';
+
+    const [ordersRes, itemsRes] = await Promise.all([
       fetch(`${ML_API}/orders/search?seller=${uid}&order.status=paid&sort=date_desc&limit=50&order.date_created.from=${encodeURIComponent(fromStr)}&order.date_created.to=${encodeURIComponent(toStr)}`, { headers }),
       fetch(`${ML_API}/users/${uid}/items/search?limit=1`, { headers })
     ]);
 
     const ordersData = await ordersRes.json();
-    const itemsData = await itemsCountRes.json();
-
-    // Get all orders with pagination
-    const totalOrders = ordersData.paging ? ordersData.paging.total : 0;
+    const itemsData = await itemsRes.json();
+    const totalOrders = (ordersData.paging && ordersData.paging.total) || 0;
     let allOrders = ordersData.results || [];
 
     if (totalOrders > 50) {
       const pages = Math.min(Math.ceil(totalOrders / 50), 20);
-      const pagePromises = [];
+      const promises = [];
       for (let i = 1; i < pages; i++) {
-        pagePromises.push(
+        promises.push(
           fetch(`${ML_API}/orders/search?seller=${uid}&order.status=paid&sort=date_desc&limit=50&offset=${i*50}&order.date_created.from=${encodeURIComponent(fromStr)}&order.date_created.to=${encodeURIComponent(toStr)}`, { headers })
-            .then(r => r.json())
-            .catch(() => ({ results: [] }))
+            .then(r => r.json()).catch(() => ({ results: [] }))
         );
       }
-      const morePages = await Promise.all(pagePromises);
-      morePages.forEach(p => { if (p.results) allOrders = allOrders.concat(p.results); });
+      const more = await Promise.all(promises);
+      more.forEach(p => { if (p.results) allOrders = allOrders.concat(p.results); });
     }
 
-    // Calculate totals
     let totalAmount = 0;
     allOrders.forEach(o => { totalAmount += parseFloat(o.total_amount) || 0; });
 
@@ -111,15 +86,15 @@ app.get('/api/dashboard', async (req, res) => {
       stats: {
         total_orders: allOrders.length,
         total_amount: totalAmount,
-        total_items: itemsData.paging ? itemsData.paging.total : 0,
+        total_items: (itemsData.paging && itemsData.paging.total) || 0
       },
       recent_orders: allOrders.slice(0, 20),
       reputation: user.seller_reputation
     });
-
   } catch (e) {
+    console.error('Error:', e);
     res.status(500).json({ error: e.message });
   }
 });
 
-app.listen(PORT, () => console.log(`ML Server corriendo en puerto ${PORT}`));
+app.listen(PORT, () => console.log(`Puerto ${PORT}`));
