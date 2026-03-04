@@ -98,7 +98,7 @@
   .card-title { font-family:var(--font-d);font-size:14px;font-weight:700;margin-bottom:16px; }
 
   /* KPI GRID */
-  .kpi-grid { display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:20px; }
+  .kpi-grid { display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-bottom:20px; }
   .kpi { background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:20px;position:relative;overflow:hidden;transition:border-color .2s;animation:fadeUp .35s ease both; }
   .kpi:hover { border-color:var(--yellow); }
   .kpi-label { font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--muted);margin-bottom:10px; }
@@ -381,6 +381,18 @@
         <div class="kpi-bg">📣</div>
       </div>
       <div class="kpi" style="animation-delay:.2s">
+        <div class="kpi-label">👁️ Visitas totales</div>
+        <div class="kpi-val" id="kpi-visitas">—</div>
+        <div class="kpi-delta" id="kpi-visitas-delta">Conectá una cuenta</div>
+        <div class="kpi-bg">👁️</div>
+      </div>
+      <div class="kpi" style="animation-delay:.25s">
+        <div class="kpi-label">🔄 Conversión</div>
+        <div class="kpi-val" id="kpi-conversion">—</div>
+        <div class="kpi-delta" id="kpi-conversion-delta">Conectá una cuenta</div>
+        <div class="kpi-bg">🔄</div>
+      </div>
+      <div class="kpi" style="animation-delay:.3s">
         <div class="kpi-label">📦 Publicaciones activas</div>
         <div class="kpi-val" id="kpi-pubs">—</div>
         <div class="kpi-delta" id="kpi-pubs-delta">Conectá una cuenta</div>
@@ -1294,4 +1306,3 @@ setInterval(() => {
 </script>
 </body>
 </html>
-
