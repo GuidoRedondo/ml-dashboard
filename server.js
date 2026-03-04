@@ -105,5 +105,3 @@ app.get('/api/dashboard', async (req, res) => {
 });
 
 app.listen(PORT, () => console.log(`Puerto ${PORT}`));
-
-app.listen(PORT, () => console.log(`Puerto ${PORT}`));
