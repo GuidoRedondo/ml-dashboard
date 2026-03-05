@@ -766,7 +766,10 @@ function renderOAuthList() {
       ${!a.accessToken ? `
         <button class="oauth-btn" onclick="startOAuth(${a.id})">Autorizar →</button>
       ` : `
-        <button class="oauth-btn done">✓ OK</button>
+        <div style="display:flex;gap:8px">
+          <button class="oauth-btn done" style="font-size:11px">✓ OK</button>
+          <button class="oauth-btn" style="background:rgba(255,255,255,.08);color:var(--text);font-size:11px" onclick="startOAuth(${a.id})">🔄 Renovar</button>
+        </div>
       `}
     </div>
   `).join('');
