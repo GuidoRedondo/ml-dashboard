@@ -275,6 +275,7 @@
     .grid2,.grid2b{grid-template-columns:1fr}
   }
 </style>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 </head>
 <body>
 <div class="app">
@@ -295,6 +296,9 @@
     <div class="nav-section">Principal</div>
     <div class="nav-item active" onclick="showPage('dashboard',this)">
       <span class="nav-icon">📊</span> Dashboard
+    </div>
+    <div class="nav-item" onclick="showPage('performance',this)">
+      <span class="nav-icon">🚀</span> Performance
     </div>
     <div class="nav-item" onclick="showPage('publicaciones',this)">
       <span class="nav-icon">📦</span> Publicaciones
@@ -420,6 +424,25 @@
   </div>
 
   <!-- PUBLICACIONES -->
+  <!-- PERFORMANCE -->
+  <div class="page" id="page-performance">
+    <div class="page-header">
+      <div>
+        <div class="page-title">Performance por publicación</div>
+        <div class="page-sub">Ventas, visitas y conversión por item</div>
+      </div>
+      <div style="display:flex;gap:10px;align-items:center">
+        <button class="sync-btn" onclick="exportPerformanceExcel()" style="background:rgba(0,200,100,.1);border-color:rgba(0,200,100,.3);color:#00c864">⬇ Exportar Excel</button>
+        <button class="sync-btn" onclick="loadPerformance()">↻ Actualizar</button>
+      </div>
+    </div>
+    <div class="card">
+      <div id="performanceContent" style="color:var(--muted);font-size:13px;padding:20px;text-align:center">
+        Sincronizá para ver performance por publicación
+      </div>
+    </div>
+  </div>
+
   <div class="page" id="page-publicaciones">
     <div class="page-header">
       <div>
@@ -633,6 +656,7 @@ document.getElementById('currentDate').textContent = new Date().toLocaleDateStri
 
 // ─── NAVIGATION ──────────────────────────────────────────────────────────────
 function showPage(id, el) {
+  if (id === 'performance') setTimeout(loadPerformance, 100);
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   document.getElementById('page-' + id).classList.add('active');
   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
@@ -1211,6 +1235,130 @@ function loadSavedData() {
   return false;
 }
 // Start on setup if no accounts
+
+function loadPerformance() {
+  const el = document.getElementById('performanceContent');
+  if (!el) return;
+  const connected = state.accounts.filter(a => a.accessToken && a.data && a.data.top_items && a.data.top_items.length);
+  if (!connected.length) {
+    el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:20px;text-align:center">Sincronizá primero para ver los datos</div>';
+    return;
+  }
+
+  let allItems = [];
+  connected.forEach(acc => {
+    (acc.data.top_items || []).forEach(item => {
+      const conv = item.visits > 0 ? ((item.sold / item.visits) * 100).toFixed(1) : '0.0';
+      allItems.push({
+        cuenta: acc.name,
+        id: item.id,
+        titulo: item.title || '—',
+        ventas: item.sold || 0,
+        visitas: item.visits || 0,
+        conversion: parseFloat(conv),
+        precio: item.price || 0,
+        stock: item.stock || 0,
+        estado: item.status === 'active' ? 'Activa' : 'Pausada'
+      });
+    });
+  });
+
+  // Sort by ventas desc
+  allItems.sort((a, b) => b.ventas - a.ventas);
+
+  if (!allItems.length) {
+    el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:20px;text-align:center">No hay datos de publicaciones</div>';
+    return;
+  }
+
+  // Search filter
+  const rows = allItems.map((item, i) => `
+    <tr class="perf-row" data-search="${(item.titulo + item.id + item.cuenta).toLowerCase()}">
+      <td style="color:var(--muted);font-size:11px">${item.id}</td>
+      <td style="max-width:250px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${item.titulo}">${item.titulo}</td>
+      <td style="color:var(--muted);font-size:11px">${item.cuenta}</td>
+      <td style="text-align:right;font-weight:600">$${item.precio.toLocaleString('es-AR')}</td>
+      <td style="text-align:right;color:#00e676;font-weight:700">${item.ventas.toLocaleString('es-AR')}</td>
+      <td style="text-align:right">${item.visitas.toLocaleString('es-AR')}</td>
+      <td style="text-align:right">
+        <span style="background:${item.conversion >= 3 ? 'rgba(0,230,118,.15)' : item.conversion >= 1 ? 'rgba(255,145,0,.15)' : 'rgba(255,77,77,.15)'};color:${item.conversion >= 3 ? '#00e676' : item.conversion >= 1 ? '#ff9100' : '#ff4d4d'};padding:2px 8px;border-radius:4px;font-size:12px;font-weight:600">
+          ${item.conversion}%
+        </span>
+      </td>
+      <td style="text-align:right">${item.stock}</td>
+      <td><span class="status ${item.estado === 'Activa' ? 's-ok' : 's-off'}">● ${item.estado}</span></td>
+    </tr>
+  `).join('');
+
+  el.innerHTML = `
+    <div style="display:flex;gap:10px;align-items:center;margin-bottom:16px;flex-wrap:wrap">
+      <input id="perfSearch" type="text" placeholder="Buscar por título o MLA..." onInput="filterPerformance(this.value)"
+        style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:8px 12px;color:var(--text);font-family:var(--font-b);font-size:13px;outline:none;flex:1;min-width:200px">
+      <div style="font-size:12px;color:var(--muted)">${allItems.length} publicaciones</div>
+    </div>
+    <div style="overflow-x:auto">
+      <table id="perfTable">
+        <thead>
+          <tr>
+            <th onclick="sortPerformance('id')" style="cursor:pointer">MLA ↕</th>
+            <th onclick="sortPerformance('titulo')" style="cursor:pointer">Título ↕</th>
+            <th>Cuenta</th>
+            <th style="text-align:right;cursor:pointer" onclick="sortPerformance('precio')">Precio ↕</th>
+            <th style="text-align:right;cursor:pointer" onclick="sortPerformance('ventas')">Ventas ↕</th>
+            <th style="text-align:right;cursor:pointer" onclick="sortPerformance('visitas')">Visitas ↕</th>
+            <th style="text-align:right;cursor:pointer" onclick="sortPerformance('conversion')">Conv. ↕</th>
+            <th style="text-align:right">Stock</th>
+            <th>Estado</th>
+          </tr>
+        </thead>
+        <tbody id="perfBody">${rows}</tbody>
+      </table>
+    </div>
+  `;
+  // Store for sorting
+  window._perfData = allItems;
+  window._perfSort = { col: 'ventas', asc: false };
+}
+
+function filterPerformance(val) {
+  const q = val.toLowerCase();
+  document.querySelectorAll('.perf-row').forEach(row => {
+    row.style.display = row.dataset.search.includes(q) ? '' : 'none';
+  });
+}
+
+function sortPerformance(col) {
+  if (!window._perfData) return;
+  if (window._perfSort.col === col) { window._perfSort.asc = !window._perfSort.asc; }
+  else { window._perfSort = { col, asc: col === 'titulo' || col === 'id' }; }
+  window._perfData.sort((a, b) => {
+    const va = a[col], vb = b[col];
+    if (typeof va === 'string') return window._perfSort.asc ? va.localeCompare(vb) : vb.localeCompare(va);
+    return window._perfSort.asc ? va - vb : vb - va;
+  });
+  loadPerformance();
+}
+
+function exportPerformanceExcel() {
+  if (!window._perfData || !window._perfData.length) { showToast('No hay datos para exportar'); return; }
+  const rows = window._perfData.map(i => ({
+    'MLA': i.id,
+    'Título': i.titulo,
+    'Cuenta': i.cuenta,
+    'Precio': i.precio,
+    'Ventas': i.ventas,
+    'Visitas': i.visitas,
+    'Conversión %': i.conversion,
+    'Stock': i.stock,
+    'Estado': i.estado
+  }));
+  const ws = XLSX.utils.json_to_sheet(rows);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Performance');
+  XLSX.writeFile(wb, 'performance_ml_' + new Date().toISOString().slice(0,10) + '.xlsx');
+  showToast('✅ Excel descargado');
+}
+
 function initApp() {
   // STEP 1: Read OAuth code from URL FIRST before anything else
   const urlParams = new URLSearchParams(window.location.search);
