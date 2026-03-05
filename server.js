@@ -44,21 +44,16 @@ app.get('/api/dashboard', async (req, res) => {
     const from = new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
     const fromStr = from.toISOString().slice(0, 19) + '.000-00:00';
     const toStr = now.toISOString().slice(0, 19) + '.000-00:00';
-    const fromDate = from.toISOString().slice(0, 10);
-    const toDate = now.toISOString().slice(0, 10);
     const baseOrderUrl = `${ML_API}/orders/search?seller=${uid}&order.status=paid&sort=date_desc&limit=50&order.date_created.from=${encodeURIComponent(fromStr)}&order.date_created.to=${encodeURIComponent(toStr)}`;
 
-    // Parallel: first orders page + items + visits stats
-    const [firstRes, itemsRes, visitsRes] = await Promise.all([
+    // Parallel: first orders page + items
+    const [firstRes, itemsRes] = await Promise.all([
       fetch(baseOrderUrl, { headers }),
-      fetch(`${ML_API}/users/${uid}/items/search?limit=50`, { headers }),
-      fetch(`${ML_API}/users/${uid}/items/visits/time_window?last=${days}&unit=day&ending=now`, { headers })
+      fetch(`${ML_API}/users/${uid}/items/search?limit=50`, { headers })
     ]);
 
     const firstData = await firstRes.json();
     const itemsData = await itemsRes.json();
-    const visitsData = await visitsRes.json();
-
     const totalOrders = (firstData.paging && firstData.paging.total) || 0;
     let allOrders = firstData.results || [];
     let totalAmount = 0;
@@ -80,42 +75,50 @@ app.get('/api/dashboard', async (req, res) => {
       }
     }
 
-    // Total visits
-    let totalVisits = 0;
-    if (visitsData && visitsData.total_visits) totalVisits = visitsData.total_visits;
-    else if (visitsData && Array.isArray(visitsData.results)) {
-      visitsData.results.forEach(r => { totalVisits += r.total || 0; });
-    }
-
-    // Conversion rate
-    const conversionRate = totalVisits > 0 ? ((allOrders.length / totalVisits) * 100).toFixed(1) : 0;
-
-    // Get item details for top publications
+    // Get item IDs for details and visits
     const itemIds = (itemsData.results || []).slice(0, 20);
     let topItems = [];
+    let totalVisits = 0;
+
     if (itemIds.length > 0) {
       try {
-        const itemsDetailRes = await fetch(`${ML_API}/items?ids=${itemIds.join(',')}&attributes=id,title,price,available_quantity,status,sold_quantity`, { headers });
+        // Get item details + visits in parallel
+        const [itemsDetailRes, visitsRes] = await Promise.all([
+          fetch(`${ML_API}/items?ids=${itemIds.join(',')}&attributes=id,title,price,available_quantity,status,sold_quantity`, { headers }),
+          fetch(`${ML_API}/users/${uid}/items/visits?ids=${itemIds.join(',')}&last=${days}&unit=day`, { headers })
+        ]);
+
         const itemsDetail = await itemsDetailRes.json();
-        // Get visits per item
-        const visitsPerItemRes = await fetch(`${ML_API}/visits/items?ids=${itemIds.join(',')}&last=${days}&unit=day`, { headers });
-        const visitsPerItem = await visitsPerItemRes.json();
+        const visitsData = await visitsRes.json();
+
+        // Sum total visits
+        if (Array.isArray(visitsData)) {
+          visitsData.forEach(v => { totalVisits += v.total_visits || 0; });
+        } else if (visitsData && typeof visitsData === 'object') {
+          Object.values(visitsData).forEach(v => {
+            if (typeof v === 'number') totalVisits += v;
+            else if (v && v.total_visits) totalVisits += v.total_visits;
+          });
+        }
 
         topItems = (Array.isArray(itemsDetail) ? itemsDetail : []).map(item => {
           const body = item.body || item;
-          const itemVisits = visitsPerItem && visitsPerItem[body.id] ? visitsPerItem[body.id] : 0;
-          return {
-            id: body.id,
-            title: body.title,
-            price: body.price,
-            stock: body.available_quantity,
-            status: body.status,
-            sold: body.sold_quantity,
-            visits: itemVisits
-          };
+          let itemVisits = 0;
+          if (Array.isArray(visitsData)) {
+            const found = visitsData.find(v => v.item_id === body.id);
+            if (found) itemVisits = found.total_visits || 0;
+          } else if (visitsData && visitsData[body.id]) {
+            itemVisits = visitsData[body.id];
+          }
+          return { id: body.id, title: body.title, price: body.price, stock: body.available_quantity, status: body.status, sold: body.sold_quantity, visits: itemVisits };
         }).filter(i => i.id);
-      } catch(e) { topItems = []; }
+      } catch(e) {
+        console.error('Items/visits error:', e.message);
+        topItems = [];
+      }
     }
+
+    const conversionRate = totalVisits > 0 ? ((allOrders.length / totalVisits) * 100).toFixed(1) : 0;
 
     res.json({
       user,
