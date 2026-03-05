@@ -1267,17 +1267,15 @@ function loadPerformance() {
   let allItems = [];
   connected.forEach(acc => {
     (acc.data.top_items || []).forEach(item => {
-      const conv = item.visits > 0 ? ((item.sold / item.visits) * 100).toFixed(1) : '0.0';
+      const conv = item.visits > 0 ? ((item.units / item.visits) * 100).toFixed(1) : (item.conversion || '0.0');
       allItems.push({
         cuenta: acc.name,
         id: item.id,
         titulo: item.title || '—',
-        ventas: item.sold || 0,
+        ventas: item.units || item.sold || 0,
+        facturacion: item.revenue || 0,
         visitas: item.visits || 0,
         conversion: parseFloat(conv),
-        precio: item.price || 0,
-        stock: item.stock || 0,
-        estado: item.status === 'active' ? 'Activa' : 'Pausada'
       });
     });
   });
@@ -1322,12 +1320,10 @@ function loadPerformance() {
             <th onclick="sortPerformance('id')" style="cursor:pointer">MLA ↕</th>
             <th onclick="sortPerformance('titulo')" style="cursor:pointer">Título ↕</th>
             <th>Cuenta</th>
-            <th style="text-align:right;cursor:pointer" onclick="sortPerformance('precio')">Precio ↕</th>
-            <th style="text-align:right;cursor:pointer" onclick="sortPerformance('ventas')">Ventas ↕</th>
+            <th style="text-align:right;cursor:pointer" onclick="sortPerformance('facturacion')">Facturación ↕</th>
+            <th style="text-align:right;cursor:pointer" onclick="sortPerformance('ventas')">Unidades ↕</th>
             <th style="text-align:right;cursor:pointer" onclick="sortPerformance('visitas')">Visitas ↕</th>
             <th style="text-align:right;cursor:pointer" onclick="sortPerformance('conversion')">Conv. ↕</th>
-            <th style="text-align:right">Stock</th>
-            <th>Estado</th>
           </tr>
         </thead>
         <tbody id="perfBody">${rows}</tbody>
@@ -1364,12 +1360,10 @@ function exportPerformanceExcel() {
     'MLA': i.id,
     'Título': i.titulo,
     'Cuenta': i.cuenta,
-    'Precio': i.precio,
-    'Ventas': i.ventas,
+    'Facturación': Math.round(i.facturacion),
+    'Unidades vendidas': i.ventas,
     'Visitas': i.visitas,
-    'Conversión %': i.conversion,
-    'Stock': i.stock,
-    'Estado': i.estado
+    'Conversión %': i.conversion
   }));
   const ws = XLSX.utils.json_to_sheet(rows);
   const wb = XLSX.utils.book_new();
