@@ -27,44 +27,48 @@ app.post('/api/token', async (req, res) => {
 });
 
 async function fetchAllOrders(uid, headers, fromStr, toStr) {
-  const base = `${ML_API}/orders/search?seller=${uid}&order.status=paid&sort=date_desc&limit=50&order.date_created.from=${encodeURIComponent(fromStr)}&order.date_created.to=${encodeURIComponent(toStr)}`;
-  const first = await fetch(base, { headers }).then(r => r.json());
-  const total = (first.paging && first.paging.total) || 0;
-  let all = first.results || [];
-  let amount = 0;
-  all.forEach(o => { amount += parseFloat(o.total_amount) || 0; });
-  if (total > 50) {
-    const maxPages = Math.min(Math.ceil(total / 50), 40);
-    for (let b = 1; b < maxPages; b += 5) {
-      const end = Math.min(b + 5, maxPages);
-      const batch = await Promise.all(
-        Array.from({length: end - b}, (_, i) =>
-          fetch(`${base}&offset=${(b+i)*50}`, { headers }).then(r => r.json()).catch(() => ({results:[]}))
-        )
-      );
-      batch.forEach(p => { if (p.results) { p.results.forEach(o => { amount += parseFloat(o.total_amount)||0; }); all = all.concat(p.results); } });
+  try {
+    const base = `${ML_API}/orders/search?seller=${uid}&order.status=paid&sort=date_desc&limit=50&order.date_created.from=${encodeURIComponent(fromStr)}&order.date_created.to=${encodeURIComponent(toStr)}`;
+    const first = await fetch(base, { headers }).then(r => r.json());
+    const total = (first.paging && first.paging.total) || 0;
+    let all = first.results || [];
+    let amount = 0;
+    all.forEach(o => { amount += parseFloat(o.total_amount) || 0; });
+    if (total > 50) {
+      const maxPages = Math.min(Math.ceil(total / 50), 40);
+      for (let b = 1; b < maxPages; b += 5) {
+        const end = Math.min(b + 5, maxPages);
+        const batch = await Promise.all(
+          Array.from({length: end - b}, (_, i) =>
+            fetch(`${base}&offset=${(b+i)*50}`, { headers }).then(r => r.json()).catch(() => ({results:[]}))
+          )
+        );
+        batch.forEach(p => { if (p.results) { p.results.forEach(o => { amount += parseFloat(o.total_amount)||0; }); all = all.concat(p.results); } });
+      }
     }
-  }
-  return { orders: all, amount };
+    return { orders: all, amount };
+  } catch(e) { return { orders: [], amount: 0 }; }
 }
 
 async function fetchVisits(itemIds, days, headers) {
-  const results = await Promise.all(
-    itemIds.map(id =>
-      fetch(`${ML_API}/items/${id}/visits/time_window?last=${days}&unit=day`, { headers })
-        .then(r => r.json()).catch(() => null)
-    )
-  );
-  const map = {};
-  results.forEach((v, i) => {
-    if (!v) return;
-    const id = itemIds[i];
-    if (typeof v.total_visits === 'number') map[id] = v.total_visits;
-    else if (Array.isArray(v)) map[id] = v.reduce((s, r) => s + (r.visits || r.total || 0), 0);
-    else if (v.results) map[id] = v.results.reduce((s, r) => s + (r.total || 0), 0);
-    else map[id] = 0;
-  });
-  return map;
+  try {
+    const results = await Promise.all(
+      itemIds.map(id =>
+        fetch(`${ML_API}/items/${id}/visits/time_window?last=${days}&unit=day`, { headers })
+          .then(r => r.json()).catch(() => null)
+      )
+    );
+    const map = {};
+    results.forEach((v, i) => {
+      if (!v) return;
+      const id = itemIds[i];
+      if (typeof v.total_visits === 'number') map[id] = v.total_visits;
+      else if (Array.isArray(v)) map[id] = v.reduce((s, r) => s + (r.visits || r.total || 0), 0);
+      else if (v.results) map[id] = v.results.reduce((s, r) => s + (r.total || 0), 0);
+      else map[id] = 0;
+    });
+    return map;
+  } catch(e) { return {}; }
 }
 
 app.get('/api/dashboard', async (req, res) => {
@@ -83,22 +87,21 @@ app.get('/api/dashboard', async (req, res) => {
     const prevFrom = new Date(curFrom.getTime() - days * 24 * 60 * 60 * 1000);
     const fmt = d => d.toISOString().slice(0,19) + '.000-00:00';
 
-    // Fetch current period orders, previous period orders, and items in parallel
+    // Current + previous orders + items in parallel
     const [curData, prevData, itemsData] = await Promise.all([
       fetchAllOrders(uid, headers, fmt(curFrom), fmt(now)),
       fetchAllOrders(uid, headers, fmt(prevFrom), fmt(curFrom)),
-      fetch(`${ML_API}/users/${uid}/items/search?limit=50`, { headers }).then(r => r.json())
+      fetch(`${ML_API}/users/${uid}/items/search?limit=50`, { headers }).then(r => r.json()).catch(() => ({results:[], paging:{total:0}}))
     ]);
 
-    // Build sales-per-item map from current period orders
+    // Sales per item from current orders
     const salesByItem = {};
     curData.orders.forEach(order => {
       (order.order_items || []).forEach(oi => {
         const id = oi.item && oi.item.id;
         if (!id) return;
-        if (!salesByItem[id]) salesByItem[id] = { units: 0, amount: 0 };
-        salesByItem[id].units += oi.quantity || 0;
-        salesByItem[id].amount += parseFloat(oi.unit_price || 0) * (oi.quantity || 0);
+        if (!salesByItem[id]) salesByItem[id] = 0;
+        salesByItem[id] += oi.quantity || 0;
       });
     });
 
@@ -107,33 +110,24 @@ app.get('/api/dashboard', async (req, res) => {
 
     if (itemIds.length > 0) {
       const [itemsDetail, visitsMap, prevVisitsMap] = await Promise.all([
-        fetch(`${ML_API}/items?ids=${itemIds.join(',')}&attributes=id,title,price,available_quantity,status,sold_quantity`, { headers }).then(r => r.json()),
+        fetch(`${ML_API}/items?ids=${itemIds.join(',')}&attributes=id,title,price,available_quantity,status,sold_quantity`, { headers }).then(r => r.json()).catch(() => []),
         fetchVisits(itemIds, days, headers),
         fetchVisits(itemIds, days * 2, headers)
       ]);
 
       totalVisits = Object.values(visitsMap).reduce((s, v) => s + v, 0);
-      // Previous visits = double period minus current period
       const allTimeVisits = Object.values(prevVisitsMap).reduce((s, v) => s + v, 0);
       prevTotalVisits = Math.max(0, allTimeVisits - totalVisits);
 
       topItems = (Array.isArray(itemsDetail) ? itemsDetail : []).map(item => {
         const body = item.body || item;
+        if (!body || !body.id) return null;
         const id = body.id;
         const curVisits = visitsMap[id] || 0;
-        const sold = salesByItem[id] ? salesByItem[id].units : 0;
+        const sold = salesByItem[id] || 0;
         const conv = curVisits > 0 ? ((sold / curVisits) * 100).toFixed(1) : '0.0';
-        return {
-          id,
-          title: body.title,
-          price: body.price,
-          stock: body.available_quantity,
-          status: body.status,
-          sold,
-          visits: curVisits,
-          conversion: parseFloat(conv)
-        };
-      }).filter(i => i.id);
+        return { id, title: body.title, price: body.price, stock: body.available_quantity, status: body.status, sold, visits: curVisits, conversion: parseFloat(conv) };
+      }).filter(Boolean);
     }
 
     const curConv = totalVisits > 0 ? ((curData.orders.length / totalVisits) * 100).toFixed(1) : 0;
@@ -161,8 +155,8 @@ app.get('/api/dashboard', async (req, res) => {
       top_items: topItems
     });
   } catch (e) {
-    console.error('Error:', e);
-    res.status(500).json({ error: e.message });
+    console.error('Dashboard error:', e);
+    res.status(500).json({ error: e.message, stack: e.stack });
   }
 });
 
