@@ -1,4 +1,4 @@
-const express = require('express');
+const express = require('express');const express = require('express');
 const cors = require('cors');
 const fetch = require('node-fetch');
 
@@ -87,47 +87,53 @@ app.get('/api/dashboard', async (req, res) => {
     const prevFrom = new Date(curFrom.getTime() - days * 24 * 60 * 60 * 1000);
     const fmt = d => d.toISOString().slice(0,19) + '.000-00:00';
 
-    // Current + previous orders + items in parallel
     const [curData, prevData, itemsData] = await Promise.all([
       fetchAllOrders(uid, headers, fmt(curFrom), fmt(now)),
       fetchAllOrders(uid, headers, fmt(prevFrom), fmt(curFrom)),
-      fetch(`${ML_API}/users/${uid}/items/search?limit=50`, { headers }).then(r => r.json()).catch(() => ({results:[], paging:{total:0}}))
+      fetch(`${ML_API}/users/${uid}/items/search?limit=1`, { headers }).then(r => r.json()).catch(() => ({paging:{total:0}}))
     ]);
 
-    // Sales per item from current orders
+    // Build sales+revenue per item from orders
     const salesByItem = {};
     curData.orders.forEach(order => {
       (order.order_items || []).forEach(oi => {
         const id = oi.item && oi.item.id;
+        const title = oi.item && oi.item.title;
         if (!id) return;
-        if (!salesByItem[id]) salesByItem[id] = 0;
-        salesByItem[id] += oi.quantity || 0;
+        if (!salesByItem[id]) salesByItem[id] = { id, title: title || id, units: 0, revenue: 0 };
+        salesByItem[id].units += oi.quantity || 0;
+        salesByItem[id].revenue += (parseFloat(oi.unit_price) || 0) * (oi.quantity || 0);
       });
     });
 
-    const itemIds = (itemsData.results || []).slice(0, 20);
-    let topItems = [], totalVisits = 0, prevTotalVisits = 0;
+    // Get visits for all sold items
+    const soldItemIds = Object.keys(salesByItem);
+    let totalVisits = 0, prevTotalVisits = 0;
+    let topItems = [];
 
-    if (itemIds.length > 0) {
-      const [itemsDetail, visitsMap, prevVisitsMap] = await Promise.all([
-        fetch(`${ML_API}/items?ids=${itemIds.join(',')}&attributes=id,title,price,available_quantity,status,sold_quantity`, { headers }).then(r => r.json()).catch(() => []),
-        fetchVisits(itemIds, days, headers),
-        fetchVisits(itemIds, days * 2, headers)
-      ]);
+    if (soldItemIds.length > 0) {
+      // Fetch visits in batches of 20
+      const allVisitsMap = {};
+      const allPrevVisitsMap = {};
+      for (let i = 0; i < soldItemIds.length; i += 20) {
+        const batch = soldItemIds.slice(i, i + 20);
+        const [vm, pvm] = await Promise.all([
+          fetchVisits(batch, days, headers),
+          fetchVisits(batch, days * 2, headers)
+        ]);
+        Object.assign(allVisitsMap, vm);
+        Object.assign(allPrevVisitsMap, pvm);
+      }
 
-      totalVisits = Object.values(visitsMap).reduce((s, v) => s + v, 0);
-      const allTimeVisits = Object.values(prevVisitsMap).reduce((s, v) => s + v, 0);
+      totalVisits = Object.values(allVisitsMap).reduce((s, v) => s + v, 0);
+      const allTimeVisits = Object.values(allPrevVisitsMap).reduce((s, v) => s + v, 0);
       prevTotalVisits = Math.max(0, allTimeVisits - totalVisits);
 
-      topItems = (Array.isArray(itemsDetail) ? itemsDetail : []).map(item => {
-        const body = item.body || item;
-        if (!body || !body.id) return null;
-        const id = body.id;
-        const curVisits = visitsMap[id] || 0;
-        const sold = salesByItem[id] || 0;
-        const conv = curVisits > 0 ? ((sold / curVisits) * 100).toFixed(1) : '0.0';
-        return { id, title: body.title, price: body.price, stock: body.available_quantity, status: body.status, sold, visits: curVisits, conversion: parseFloat(conv) };
-      }).filter(Boolean);
+      topItems = Object.values(salesByItem).map(item => {
+        const curVisits = allVisitsMap[item.id] || 0;
+        const conv = curVisits > 0 ? ((item.units / curVisits) * 100).toFixed(1) : '0.0';
+        return { ...item, visits: curVisits, conversion: parseFloat(conv) };
+      }).sort((a, b) => b.revenue - a.revenue);
     }
 
     const curConv = totalVisits > 0 ? ((curData.orders.length / totalVisits) * 100).toFixed(1) : 0;
@@ -156,7 +162,7 @@ app.get('/api/dashboard', async (req, res) => {
     });
   } catch (e) {
     console.error('Dashboard error:', e);
-    res.status(500).json({ error: e.message, stack: e.stack });
+    res.status(500).json({ error: e.message });
   }
 });
 
