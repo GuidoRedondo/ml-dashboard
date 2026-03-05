@@ -34,7 +34,6 @@ app.get('/api/dashboard', async (req, res) => {
 
     const headers = { 'Authorization': `Bearer ${token}` };
 
-    // User info
     const userRes = await fetch(`${ML_API}/users/me`, { headers });
     const user = await userRes.json();
     if (user.error) return res.status(401).json({ error: 'token invalido' });
@@ -46,7 +45,6 @@ app.get('/api/dashboard', async (req, res) => {
     const toStr = now.toISOString().slice(0, 19) + '.000-00:00';
     const baseOrderUrl = `${ML_API}/orders/search?seller=${uid}&order.status=paid&sort=date_desc&limit=50&order.date_created.from=${encodeURIComponent(fromStr)}&order.date_created.to=${encodeURIComponent(toStr)}`;
 
-    // Parallel: first orders page + items
     const [firstRes, itemsRes] = await Promise.all([
       fetch(baseOrderUrl, { headers }),
       fetch(`${ML_API}/users/${uid}/items/search?limit=50`, { headers })
@@ -59,7 +57,6 @@ app.get('/api/dashboard', async (req, res) => {
     let totalAmount = 0;
     allOrders.forEach(o => { totalAmount += parseFloat(o.total_amount) || 0; });
 
-    // Paginate orders
     if (totalOrders > 50) {
       const maxPages = Math.min(Math.ceil(totalOrders / 50), 40);
       for (let batch = 1; batch < maxPages; batch += 5) {
@@ -75,46 +72,52 @@ app.get('/api/dashboard', async (req, res) => {
       }
     }
 
-    // Get item IDs for details and visits
     const itemIds = (itemsData.results || []).slice(0, 20);
     let topItems = [];
     let totalVisits = 0;
 
     if (itemIds.length > 0) {
       try {
-        // Get item details + visits in parallel
-        const [itemsDetailRes, visitsRes] = await Promise.all([
-          fetch(`${ML_API}/items?ids=${itemIds.join(',')}&attributes=id,title,price,available_quantity,status,sold_quantity`, { headers }),
-          fetch(`${ML_API}/users/${uid}/items/visits?ids=${itemIds.join(',')}&last=${days}&unit=day`, { headers })
-        ]);
-
+        // Get item details
+        const itemsDetailRes = await fetch(`${ML_API}/items?ids=${itemIds.join(',')}&attributes=id,title,price,available_quantity,status,sold_quantity`, { headers });
         const itemsDetail = await itemsDetailRes.json();
-        const visitsData = await visitsRes.json();
 
-        // Sum total visits
-        if (Array.isArray(visitsData)) {
-          visitsData.forEach(v => { totalVisits += v.total_visits || 0; });
-        } else if (visitsData && typeof visitsData === 'object') {
-          Object.values(visitsData).forEach(v => {
-            if (typeof v === 'number') totalVisits += v;
-            else if (v && v.total_visits) totalVisits += v.total_visits;
-          });
-        }
+        // Get visits per item one by one (ML Argentina requires individual calls)
+        const visitsPromises = itemIds.map(id =>
+          fetch(`${ML_API}/items/${id}/visits/time_window?last=${days}&unit=day`, { headers })
+            .then(r => r.json())
+            .catch(() => null)
+        );
+        const visitsResults = await Promise.all(visitsPromises);
+
+        // Build visits map
+        const visitsMap = {};
+        visitsResults.forEach((v, i) => {
+          if (!v) return;
+          const id = itemIds[i];
+          // Try different response formats
+          if (typeof v.total_visits === 'number') visitsMap[id] = v.total_visits;
+          else if (Array.isArray(v) && v.length) visitsMap[id] = v.reduce((s, r) => s + (r.visits || r.total || 0), 0);
+          else if (v.results) visitsMap[id] = v.results.reduce((s, r) => s + (r.total || 0), 0);
+        });
+
+        totalVisits = Object.values(visitsMap).reduce((s, v) => s + v, 0);
 
         topItems = (Array.isArray(itemsDetail) ? itemsDetail : []).map(item => {
           const body = item.body || item;
-          let itemVisits = 0;
-          if (Array.isArray(visitsData)) {
-            const found = visitsData.find(v => v.item_id === body.id);
-            if (found) itemVisits = found.total_visits || 0;
-          } else if (visitsData && visitsData[body.id]) {
-            itemVisits = visitsData[body.id];
-          }
-          return { id: body.id, title: body.title, price: body.price, stock: body.available_quantity, status: body.status, sold: body.sold_quantity, visits: itemVisits };
+          return {
+            id: body.id,
+            title: body.title,
+            price: body.price,
+            stock: body.available_quantity,
+            status: body.status,
+            sold: body.sold_quantity,
+            visits: visitsMap[body.id] || 0
+          };
         }).filter(i => i.id);
+
       } catch(e) {
         console.error('Items/visits error:', e.message);
-        topItems = [];
       }
     }
 
@@ -140,3 +143,4 @@ app.get('/api/dashboard', async (req, res) => {
 });
 
 app.listen(PORT, () => console.log(`Puerto ${PORT}`));
+
