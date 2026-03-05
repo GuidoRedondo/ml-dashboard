@@ -1002,7 +1002,7 @@ async function loadAllData() {
 
   await Promise.all(connected.map(async acc => {
     try {
-      const res = await fetch(serverUrl + '/api/dashboard?token=' + encodeURIComponent(acc.accessToken) + '&days=' + state.rangeDays);
+      const res = await fetch(serverUrl + '/api/dashboard?token=' + encodeURIComponent(acc.accessToken) + '&days=' + (state.rangeDays || 30));
       const data = await res.json();
 
       if (data.error) {
