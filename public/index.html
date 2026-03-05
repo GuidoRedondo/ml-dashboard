@@ -1258,7 +1258,7 @@ function setPerfRange(el, days) {
 function loadPerformance() {
   const el = document.getElementById('performanceContent');
   if (!el) return;
-  const connected = state.accounts.filter(a => a.accessToken && a.data && a.data.top_items && a.data.top_items.length);
+  const connected = state.accounts.filter(a => a.accessToken && a.data);
   if (!connected.length) {
     el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:20px;text-align:center">Sincronizá primero para ver los datos</div>';
     return;
@@ -1281,7 +1281,7 @@ function loadPerformance() {
   });
 
   // Sort by ventas desc
-  allItems.sort((a, b) => b.ventas - a.ventas);
+  allItems.sort((a, b) => b.facturacion - a.facturacion);
 
   if (!allItems.length) {
     el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:20px;text-align:center">No hay datos de publicaciones</div>';
@@ -1294,7 +1294,7 @@ function loadPerformance() {
       <td style="color:var(--muted);font-size:11px">${item.id}</td>
       <td style="max-width:250px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${item.titulo}">${item.titulo}</td>
       <td style="color:var(--muted);font-size:11px">${item.cuenta}</td>
-      <td style="text-align:right;font-weight:600">$${item.precio.toLocaleString('es-AR')}</td>
+      <td style="text-align:right;font-weight:600">$${Math.round(item.facturacion).toLocaleString('es-AR')}</td>
       <td style="text-align:right;color:#00e676;font-weight:700">${item.ventas.toLocaleString('es-AR')}</td>
       <td style="text-align:right">${item.visitas.toLocaleString('es-AR')}</td>
       <td style="text-align:right">
