@@ -1034,7 +1034,8 @@ function updateDashboard() {
   if (!connected.length) return;
 
   // KPIs
-  let totalFac = 0, totalVentas = 0, totalPubs = 0;
+  let totalFac = 0, totalVentas = 0, totalPubs = 0, totalVisits = 0;
+  let convRates = [], changes = { amount: [], orders: [], visits: [], conversion: [] };
 
   function formatMoney(n) {
     if (n >= 1000000) return '$' + (n/1000000).toFixed(2) + 'M';
@@ -1042,21 +1043,41 @@ function updateDashboard() {
     return '$' + Math.round(n).toLocaleString('es-AR');
   }
 
+  function deltaHtml(val) {
+    if (val === null || val === undefined) return 'vs período anterior';
+    const n = parseFloat(val);
+    const cls = n >= 0 ? 'up' : 'down';
+    const sign = n >= 0 ? '▲' : '▼';
+    return '<span class="kpi-delta ' + cls + '">' + sign + ' ' + Math.abs(n) + '% vs período anterior</span>';
+  }
+
   connected.forEach(acc => {
-    if (!acc.data) return;
-    if (acc.data.stats) {
-      // New server-based data structure
-      totalFac += acc.data.stats.total_amount || 0;
-      totalVentas += acc.data.stats.total_orders || 0;
-      totalPubs += acc.data.stats.total_items || 0;
+    if (!acc.data || !acc.data.stats) return;
+    const s = acc.data.stats;
+    totalFac    += s.total_amount || 0;
+    totalVentas += s.total_orders || 0;
+    totalPubs   += s.total_items  || 0;
+    totalVisits += s.total_visits || 0;
+    if (s.conversion_rate) convRates.push(parseFloat(s.conversion_rate));
+    if (s.change) {
+      if (s.change.amount     != null) changes.amount.push(parseFloat(s.change.amount));
+      if (s.change.orders     != null) changes.orders.push(parseFloat(s.change.orders));
+      if (s.change.visits     != null) changes.visits.push(parseFloat(s.change.visits));
+      if (s.change.conversion != null) changes.conversion.push(parseFloat(s.change.conversion));
     }
   });
 
+  const avgConv = convRates.length ? (convRates.reduce((a,b) => a+b, 0) / convRates.length).toFixed(1) : 0;
+  const avgCh   = arr => arr.length ? (arr.reduce((a,b) => a+b, 0) / arr.length).toFixed(1) : null;
+
   document.getElementById('kpi-facturacion').textContent = formatMoney(totalFac);
-  document.getElementById('kpi-fac-delta').textContent = 'Últimos ' + (state.rangeDays || 30) + ' días';
-  document.getElementById('kpi-ven-delta').textContent = 'Últimos ' + (state.rangeDays || 30) + ' días';
+  document.getElementById('kpi-fac-delta').innerHTML = deltaHtml(avgCh(changes.amount));
   document.getElementById('kpi-ventas').textContent = totalVentas.toLocaleString('es-AR');
-  document.getElementById('kpi-ven-delta').textContent = 'Órdenes pagadas';
+  document.getElementById('kpi-ven-delta').innerHTML = deltaHtml(avgCh(changes.orders));
+  document.getElementById('kpi-visitas').textContent = totalVisits.toLocaleString('es-AR');
+  document.getElementById('kpi-visitas-delta').innerHTML = deltaHtml(avgCh(changes.visits));
+  document.getElementById('kpi-conversion').textContent = avgConv + '%';
+  document.getElementById('kpi-conversion-delta').innerHTML = deltaHtml(avgCh(changes.conversion));
   document.getElementById('kpi-pubs').textContent = totalPubs;
   document.getElementById('kpi-pubs-delta').className = 'kpi-delta up';
   document.getElementById('kpi-pubs-delta').textContent = 'Publicaciones totales';
@@ -1470,3 +1491,4 @@ setInterval(() => {
 </script>
 </body>
 </html>
+
