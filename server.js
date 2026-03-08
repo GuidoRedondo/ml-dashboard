@@ -175,11 +175,14 @@ app.get('/api/ads', async (req, res) => {
     const from = new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
     const fromDate = from.toISOString().slice(0, 10);
     const toDate = now.toISOString().slice(0, 10);
-    const metrics = 'clicks,prints,cost,cpc,acos,direct_amount,indirect_amount,total_amount,direct_units_quantity,units_quantity,cvr,roas';
+    const metrics = 'clicks,prints,cost,acos,total_amount,roas';
 
     const url = `${ML_API}/advertising/advertisers/${uid}/product_ads/campaigns?limit=50&offset=0&date_from=${fromDate}&date_to=${toDate}&metrics=${metrics}`;
     const campaignsRes = await fetch(url, { headers });
-    const campaignsData = await campaignsRes.json();
+    const text = await campaignsRes.text();
+    let campaignsData;
+    try { campaignsData = JSON.parse(text); }
+    catch(e) { console.error('Ads parse error, raw:', text.slice(0,500)); return res.status(500).json({ error: 'parse error', raw: text.slice(0,500) }); }
 
     console.log('Ads URL:', url);
     console.log('Ads response status keys:', Object.keys(campaignsData));
