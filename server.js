@@ -308,4 +308,121 @@ app.get('/api/ads-items', async (req, res) => {
   }
 });
 
+
+app.get('/api/items-full', async (req, res) => {
+  try {
+    const token = req.query.token;
+    const days = parseInt(req.query.days) || 30;
+    if (!token) return res.status(400).json({ error: 'token requerido' });
+
+    const h1 = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'Api-Version': '1' };
+    const h2 = { 'Authorization': `Bearer ${token}`, 'api-version': '2' };
+    const hb = { 'Authorization': `Bearer ${token}` };
+
+    const user = await fetch(`${ML_API}/users/me`, { headers: hb }).then(r => r.json());
+    if (user.error) return res.status(401).json({ error: 'token invalido' });
+    const uid = user.id;
+    const siteId = user.site_id || 'MLA';
+
+    const now = new Date();
+    const curFrom = new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
+    const fmt = d => d.toISOString().slice(0,19) + '.000-00:00';
+    const fromDate = curFrom.toISOString().slice(0,10);
+    const toDate = now.toISOString().slice(0,10);
+
+    // 1. Fetch all orders for the period
+    const { orders, amount: totalAmount } = await fetchAllOrders(uid, hb, fmt(curFrom), fmt(now));
+
+    // Build sales+revenue per item from orders
+    const salesByItem = {};
+    orders.forEach(order => {
+      (order.order_items || []).forEach(oi => {
+        const id = oi.item && oi.item.id;
+        const title = oi.item && oi.item.title;
+        if (!id) return;
+        if (!salesByItem[id]) salesByItem[id] = { id, title: title || id, units: 0, revenue: 0 };
+        salesByItem[id].units += oi.quantity || 0;
+        salesByItem[id].revenue += (parseFloat(oi.unit_price) || 0) * (oi.quantity || 0);
+      });
+    });
+
+    const soldItemIds = Object.keys(salesByItem);
+    const totalRevenue = Object.values(salesByItem).reduce((s, i) => s + i.revenue, 0);
+
+    // 2. Get advertiser for ads data
+    let advId = null;
+    try {
+      const advData = await fetch(`${ML_API}/advertising/advertisers?product_id=PADS`, { headers: h1 }).then(r => r.json());
+      const advertisers = advData.advertisers || [];
+      const adv = advertisers.find(a => a.site_id === siteId) || advertisers[0];
+      if (adv) advId = adv.advertiser_id;
+    } catch(e) { console.error('Advertiser fetch error:', e.message); }
+
+    // 3. Get ads metrics per item (batches of 100)
+    const adsByItem = {};
+    if (advId && soldItemIds.length > 0) {
+      const metrics = 'clicks,prints,cost,acos,direct_amount,total_amount,units_quantity';
+      for (let i = 0; i < Math.min(soldItemIds.length, 300); i += 100) {
+        const batch = soldItemIds.slice(i, i + 100);
+        const idsFilter = batch.map(id => `filters[item_id]=${id}`).join('&');
+        const url = `${ML_API}/advertising/${siteId}/advertisers/${advId}/product_ads/ads/search?limit=100&offset=0&date_from=${fromDate}&date_to=${toDate}&metrics=${metrics}&${idsFilter}`;
+        try {
+          const text = await fetch(url, { headers: h2 }).then(r => r.text());
+          const data = JSON.parse(text);
+          (data.results || []).forEach(item => {
+            if (!item.item_id) return;
+            adsByItem[item.item_id] = {
+              hasAds: item.status === 'active' || item.status === 'paused',
+              adsStatus: item.status,
+              clicks: (item.metrics && item.metrics.clicks) || 0,
+              impressions: (item.metrics && item.metrics.prints) || 0,
+              adsSales: (item.metrics && item.metrics.total_amount) || 0,
+              adsCost: (item.metrics && item.metrics.cost) || 0,
+              adsUnits: (item.metrics && item.metrics.units_quantity) || 0,
+            };
+          });
+        } catch(e) { console.error('Ads batch error:', e.message); }
+      }
+    }
+
+    // 4. Get visits for sold items (batches of 20)
+    const visitsMap = {};
+    for (let i = 0; i < Math.min(soldItemIds.length, 300); i += 20) {
+      const batch = soldItemIds.slice(i, i + 20);
+      const vm = await fetchVisits(batch, days, hb);
+      Object.assign(visitsMap, vm);
+    }
+
+    // 5. Build unified items list
+    const items = Object.values(salesByItem).map(item => {
+      const ads = adsByItem[item.id] || {};
+      const visits = visitsMap[item.id] || 0;
+      const conv = visits > 0 ? ((item.units / visits) * 100).toFixed(1) : 0;
+      const adsConv = ads.clicks > 0 ? ((ads.adsUnits / ads.clicks) * 100).toFixed(1) : 0;
+      const revenueShare = totalRevenue > 0 ? ((item.revenue / totalRevenue) * 100).toFixed(2) : 0;
+      return {
+        id: item.id,
+        title: item.title,
+        units: item.units,
+        revenue: item.revenue,
+        revenueShare: parseFloat(revenueShare),
+        visits,
+        conversion: parseFloat(conv),
+        hasAds: ads.hasAds || false,
+        adsStatus: ads.adsStatus || null,
+        adsClicks: ads.clicks || 0,
+        adsImpressions: ads.impressions || 0,
+        adsSales: ads.adsSales || 0,
+        adsCost: ads.adsCost || 0,
+        adsConversion: parseFloat(adsConv),
+      };
+    }).sort((a, b) => b.revenue - a.revenue);
+
+    res.json({ items, total_revenue: totalRevenue, days });
+  } catch(e) {
+    console.error('items-full error:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.listen(PORT, () => console.log(`Puerto ${PORT}`));
