@@ -664,6 +664,7 @@ document.getElementById('currentDate').textContent = new Date().toLocaleDateStri
 // ─── NAVIGATION ──────────────────────────────────────────────────────────────
 function showPage(id, el) {
   if (id === 'performance') setTimeout(loadPerformance, 100);
+  if (id === 'ads') setTimeout(loadAds, 100);
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   document.getElementById('page-' + id).classList.add('active');
   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
@@ -1491,4 +1492,3 @@ setInterval(() => {
 </script>
 </body>
 </html>
-
