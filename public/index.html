@@ -499,10 +499,12 @@
     <div class="kpi-grid" style="margin-bottom:20px">
       <div class="kpi"><div class="kpi-label">💸 Gasto en Ads</div><div class="kpi-val" id="ads-spend">—</div><div class="kpi-delta" id="ads-spend-d">Sincronizá para ver</div><div class="kpi-bg">💸</div></div>
       <div class="kpi"><div class="kpi-label">📦 Ventas por Ads</div><div class="kpi-val" id="ads-sales">—</div><div class="kpi-delta up" id="ads-sales-d">Ingresos atribuidos</div><div class="kpi-bg">📦</div></div>
-      <div class="kpi"><div class="kpi-label">📊 ACOS</div><div class="kpi-val" id="ads-acos">—</div><div class="kpi-delta" id="ads-acos-d">Gasto / Venta × 100</div><div class="kpi-bg">📊</div></div>
+      <div class="kpi"><div class="kpi-label">📊 ACOS</div><div class="kpi-val" id="ads-acos">—</div><div class="kpi-delta" id="ads-acos-d">Gasto / Venta Ads × 100</div><div class="kpi-bg">📊</div></div>
+      <div class="kpi"><div class="kpi-label">🎯 TACOS</div><div class="kpi-val" id="ads-tacos">—</div><div class="kpi-delta" id="ads-tacos-d">Gasto / Facturación total</div><div class="kpi-bg">🎯</div></div>
       <div class="kpi"><div class="kpi-label">💰 ROAS</div><div class="kpi-val" id="ads-roas">—</div><div class="kpi-delta" id="ads-roas-d">Retorno por peso gastado</div><div class="kpi-bg">💰</div></div>
       <div class="kpi"><div class="kpi-label">🖱️ Clicks</div><div class="kpi-val" id="ads-clicks">—</div><div class="kpi-delta" id="ads-clicks-d">Total de clicks</div><div class="kpi-bg">🖱️</div></div>
       <div class="kpi"><div class="kpi-label">👁️ Impresiones</div><div class="kpi-val" id="ads-impr">—</div><div class="kpi-delta" id="ads-impr-d">Veces mostrado</div><div class="kpi-bg">👁️</div></div>
+      <div class="kpi"><div class="kpi-label">📈 Venta por Ads</div><div class="kpi-val" id="ads-salesshare">—</div><div class="kpi-delta" id="ads-salesshare-d">Ventas Ads / Facturación total</div><div class="kpi-bg">📈</div></div>
     </div>
     <div class="card">
       <div id="adsContent" style="color:var(--muted);font-size:13px;padding:20px;text-align:center">
@@ -1551,16 +1553,31 @@ async function loadAds() {
   const roas = totalSpend && totalSales ? (totalSales / totalSpend).toFixed(2) + 'x' : '—';
   const acosNum = totalSpend && totalSales ? (totalSpend / totalSales) * 100 : null;
 
+  // Calculate TACOS using total revenue from dashboard data
+  let totalRevenue = 0;
+  state.accounts.forEach(acc => {
+    if (acc.data && acc.data.stats) totalRevenue += acc.data.stats.total_amount || 0;
+  });
+  const tacosNum = totalSpend && totalRevenue ? (totalSpend / totalRevenue) * 100 : null;
+  const tacos = tacosNum ? tacosNum.toFixed(1) + '%' : '—';
+
   document.getElementById('ads-spend').textContent  = fmt(totalSpend);
   document.getElementById('ads-spend-d').textContent = 'Últimos ' + days + ' días';
   document.getElementById('ads-sales').textContent  = fmt(totalSales);
   document.getElementById('ads-acos').textContent   = acos;
   document.getElementById('ads-acos-d').textContent = acosNum ? (acosNum <= 15 ? '✅ Excelente' : acosNum <= 25 ? '⚠️ Aceptable' : '🔴 Alto') : '';
+  document.getElementById('ads-tacos').textContent  = tacos;
+  document.getElementById('ads-tacos-d').textContent = tacosNum ? (tacosNum <= 8 ? '✅ Excelente' : tacosNum <= 15 ? '⚠️ Aceptable' : '🔴 Alto') : 'Gasto / Facturación total';
+
+  const salesShareNum = totalSales && totalRevenue ? (totalSales / totalRevenue) * 100 : null;
+  const salesShare = salesShareNum ? salesShareNum.toFixed(1) + '%' : '—';
+  document.getElementById('ads-salesshare').textContent = salesShare;
+  document.getElementById('ads-salesshare-d').textContent = salesShareNum ? (salesShareNum >= 50 ? '🔥 Muy dependiente de Ads' : salesShareNum >= 30 ? '⚠️ Moderado' : '✅ Saludable') : 'Ventas Ads / Facturación total';
   document.getElementById('ads-roas').textContent   = roas;
   document.getElementById('ads-clicks').textContent = totalClicks.toLocaleString('es-AR');
   document.getElementById('ads-impr').textContent   = totalImpr >= 1000000 ? (totalImpr/1000000).toFixed(2) + 'M' : totalImpr.toLocaleString('es-AR');
   document.getElementById('kpi-ads').textContent = fmt(totalSpend);
-  document.getElementById('kpi-ads-delta').textContent = 'ACOS: ' + acos;
+  document.getElementById('kpi-ads-delta').textContent = 'TACOS: ' + tacos;
 
   if (!allCampaigns.length) {
     el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:20px;text-align:center">No se encontraron campañas</div>';
