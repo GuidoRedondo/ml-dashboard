@@ -167,3 +167,86 @@ app.get('/api/dashboard', async (req, res) => {
 });
 
 app.listen(PORT, () => console.log(`Puerto ${PORT}`));
+
+// ── ADS DATA ─────────────────────────────────────────────────────────────────
+app.get('/api/ads', async (req, res) => {
+  try {
+    const token = req.query.token;
+    const days = parseInt(req.query.days) || 30;
+    if (!token) return res.status(400).json({ error: 'token requerido' });
+
+    const headers = { 'Authorization': `Bearer ${token}` };
+    const user = await fetch(`${ML_API}/users/me`, { headers }).then(r => r.json());
+    if (user.error) return res.status(401).json({ error: 'token invalido' });
+    const uid = user.id;
+
+    const now = new Date();
+    const from = new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
+    const fromDate = from.toISOString().slice(0, 10);
+    const toDate = now.toISOString().slice(0, 10);
+
+    // Get campaigns
+    const campaignsRes = await fetch(`${ML_API}/advertising/product_ads/advertisers/${uid}/campaigns?status=all&limit=50`, { headers });
+    const campaignsData = await campaignsRes.json();
+    const campaigns = campaignsData.results || campaignsData || [];
+
+    if (!Array.isArray(campaigns) || campaigns.length === 0) {
+      return res.json({ summary: null, campaigns: [], items: [] });
+    }
+
+    // Get summary stats
+    const summaryRes = await fetch(
+      `${ML_API}/advertising/product_ads/advertisers/${uid}/campaigns/summary?date_from=${fromDate}&date_to=${toDate}`,
+      { headers }
+    );
+    const summaryData = await summaryRes.json();
+
+    // Get per-campaign stats
+    const campaignIds = campaigns.map(c => c.id).slice(0, 20);
+    const campaignStats = await Promise.all(
+      campaignIds.map(id =>
+        fetch(`${ML_API}/advertising/product_ads/advertisers/${uid}/campaigns/${id}/summary?date_from=${fromDate}&date_to=${toDate}`, { headers })
+          .then(r => r.json()).catch(() => null)
+      )
+    );
+
+    const enrichedCampaigns = campaigns.slice(0, 20).map((c, i) => {
+      const stats = campaignStats[i] || {};
+      return {
+        id: c.id,
+        name: c.name,
+        status: c.status,
+        budget: c.daily_budget,
+        spend: stats.spend || 0,
+        clicks: stats.clicks || 0,
+        impressions: stats.impressions || 0,
+        sales: stats.direct_revenue || stats.revenue || 0,
+        acos: stats.spend && stats.direct_revenue ? ((stats.spend / stats.direct_revenue) * 100).toFixed(1) : null
+      };
+    });
+
+    // Summary totals
+    const totalSpend = enrichedCampaigns.reduce((s, c) => s + c.spend, 0);
+    const totalClicks = enrichedCampaigns.reduce((s, c) => s + c.clicks, 0);
+    const totalImpressions = enrichedCampaigns.reduce((s, c) => s + c.impressions, 0);
+    const totalSales = enrichedCampaigns.reduce((s, c) => s + c.sales, 0);
+    const totalAcos = totalSpend && totalSales ? ((totalSpend / totalSales) * 100).toFixed(1) : null;
+
+    res.json({
+      summary: {
+        spend: totalSpend,
+        clicks: totalClicks,
+        impressions: totalImpressions,
+        sales: totalSales,
+        acos: totalAcos,
+        roas: totalSpend ? (totalSales / totalSpend).toFixed(2) : null
+      },
+      campaigns: enrichedCampaigns
+    });
+  } catch (e) {
+    console.error('Ads error:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.listen(PORT, () => console.log(`Puerto ${PORT}`));
