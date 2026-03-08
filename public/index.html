@@ -3,9 +3,12 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>ML Centro · Conectar Cuentas</title>
-<link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet">
+<title>ML Centro — Argentina</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
 <style>
+
   :root {
     --bg: #0a0c10;
     --surface: #12151c;
@@ -277,407 +280,553 @@
     .kpi-grid{grid-template-columns:repeat(2,1fr)}
     .grid2,.grid2b{grid-template-columns:1fr}
   }
+
+
+/* ── LOGIN SCREEN ── */
+#loginScreen {
+  display: none;
+  position: fixed; inset: 0;
+  background: var(--bg);
+  align-items: center; justify-content: center;
+  z-index: 9999;
+  flex-direction: column;
+}
+.login-box {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 40px;
+  width: 360px;
+  max-width: 90vw;
+}
+.login-logo { text-align: center; margin-bottom: 32px; }
+.login-logo h1 { font-family: var(--font-b); font-size: 24px; color: var(--text); }
+.login-logo p { color: var(--muted); font-size: 13px; margin-top: 4px; }
+.login-field { margin-bottom: 16px; }
+.login-field label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px; font-family: var(--font-b); }
+.login-field input {
+  width: 100%; background: var(--surface2);
+  border: 1px solid var(--border); border-radius: 8px;
+  padding: 10px 14px; color: var(--text);
+  font-family: var(--font); font-size: 14px; outline: none; box-sizing: border-box;
+}
+.login-field input:focus { border-color: var(--accent); }
+.login-btn {
+  width: 100%; background: var(--accent); color: #000;
+  border: none; border-radius: 8px; padding: 12px;
+  font-family: var(--font-b); font-size: 14px; cursor: pointer;
+  font-weight: 700; margin-top: 8px;
+}
+.login-btn:disabled { opacity: .5; }
+.login-error { color: #ff4d4d; font-size: 12px; margin-top: 8px; min-height: 16px; text-align: center; }
+
+/* ── HEADER USER ── */
+.header-user {
+  display: flex; align-items: center; gap: 10px;
+}
+.header-user span { font-size: 13px; color: var(--muted); }
+.logout-btn {
+  background: rgba(255,255,255,.05); border: 1px solid var(--border);
+  color: var(--muted); border-radius: 6px; padding: 5px 10px;
+  font-size: 12px; cursor: pointer; font-family: var(--font);
+}
+.logout-btn:hover { color: var(--text); border-color: var(--text); }
+
+/* ── CLIENTS ADMIN ── */
+.add-client-form {
+  background: var(--surface2); border: 1px solid var(--border);
+  border-radius: 12px; padding: 20px; margin-bottom: 20px;
+  display: none;
+}
+.form-row { display: flex; gap: 12px; flex-wrap: wrap; }
+.form-field { flex: 1; min-width: 150px; }
+.form-field label { display: block; font-size: 11px; color: var(--muted); margin-bottom: 4px; }
+.form-field input {
+  width: 100%; background: var(--surface); border: 1px solid var(--border);
+  border-radius: 6px; padding: 8px 10px; color: var(--text);
+  font-family: var(--font); font-size: 13px; outline: none; box-sizing: border-box;
+}
+.form-field input:focus { border-color: var(--accent); }
+.status.s-ok { color: #00e676; font-size: 12px; }
+.status.s-off { color: #ff9100; font-size: 12px; }
+
+/* ── AUTH LINK MODAL ── */
+#authLinkModal {
+  display: none; position: fixed; inset: 0;
+  background: rgba(0,0,0,.7); align-items: center; justify-content: center; z-index: 999;
+}
+.auth-link-box {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 16px; padding: 32px; width: 560px; max-width: 90vw;
+}
+.auth-link-box h3 { margin: 0 0 8px; font-family: var(--font-b); }
+.auth-link-box p { color: var(--muted); font-size: 13px; margin: 0 0 16px; }
+.auth-link-box textarea {
+  width: 100%; background: var(--surface2); border: 1px solid var(--border);
+  border-radius: 8px; padding: 10px; color: var(--text); font-size: 12px;
+  font-family: monospace; resize: none; box-sizing: border-box; height: 80px;
+}
+.modal-btns { display: flex; gap: 10px; margin-top: 12px; }
+
 </style>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 </head>
 <body>
-<div class="app">
 
-<!-- SIDEBAR -->
-<aside class="sidebar">
-  <div class="logo">
-    <div class="logo-row">
-      <div class="logo-icon">🛒</div>
-      <div>
-        <div class="logo-title">ML Centro</div>
-        <div class="logo-sub">Argentina</div>
-      </div>
+<!-- LOGIN SCREEN -->
+<div id="loginScreen" style="display:flex">
+  <div class="login-box">
+    <div class="login-logo">
+      <div style="width:48px;height:48px;background:var(--accent);border-radius:12px;display:flex;align-items:center;justify-content:center;margin:0 auto 16px;font-size:24px">📊</div>
+      <h1>ML Centro</h1>
+      <p>Dashboard de Mercado Libre</p>
     </div>
+    <div class="login-field">
+      <label>USUARIO</label>
+      <input id="loginUser" type="text" placeholder="admin" autocomplete="username">
+    </div>
+    <div class="login-field">
+      <label>CONTRASEÑA</label>
+      <input id="loginPass" type="password" placeholder="••••••••" autocomplete="current-password"
+        onkeydown="if(event.key==='Enter') handleLogin()">
+    </div>
+    <button class="login-btn" id="loginBtn" onclick="handleLogin()">Ingresar</button>
+    <div class="login-error" id="loginError"></div>
   </div>
-
-  <nav class="nav">
-    <div class="nav-section">Principal</div>
-    <div class="nav-item active" onclick="showPage('dashboard',this)">
-      <span class="nav-icon">📊</span> Dashboard
-    </div>
-    <div class="nav-item" onclick="showPage('performance',this)">
-      <span class="nav-icon">🚀</span> Performance
-    </div>
-    <div class="nav-item" onclick="showPage('publicaciones',this)">
-      <span class="nav-icon">📦</span> Publicaciones
-    </div>
-    <div class="nav-item" onclick="showPage('ventas',this)">
-      <span class="nav-icon">🛍️</span> Ventas
-    </div>
-    <div class="nav-item" onclick="showPage('ads',this)">
-      <span class="nav-icon">📣</span> Publicidad
-    </div>
-    <div class="nav-section">Gestión</div>
-    <div class="nav-item" onclick="showPage('reputacion',this)">
-      <span class="nav-icon">⭐</span> Reputación
-    </div>
-    <div class="nav-item" onclick="showPage('setup',this)">
-      <span class="nav-icon">⚙️</span> Conectar cuentas
-    </div>
-  </nav>
-
-  <div class="accounts-panel">
-    <div class="accounts-label">Cuentas conectadas</div>
-    <div id="sidebarAccounts">
-      <div class="acc-chip sel" onclick="filterAccount('all',this)">
-        <div class="acc-dot" style="background:var(--yellow)"></div>
-        <div class="acc-name">Todas</div>
-      </div>
-    </div>
-    <div class="add-btn" onclick="showPage('setup', document.querySelector('.nav-item:last-child'))">
-      <span>＋</span> Conectar cuenta
-    </div>
-  </div>
-</aside>
-
-<!-- MAIN -->
-<main class="main">
-
-  <!-- DASHBOARD -->
-  <div class="page active" id="page-dashboard">
-    <div class="page-header">
-      <div>
-        <div class="page-title">Dashboard General</div>
-        <div class="page-sub">Resumen consolidado · Últimos 30 días</div>
-      </div>
-      <div style="display:flex;gap:10px;align-items:center">
-        <div style="background:var(--surface);border:1px solid var(--border);padding:8px 14px;border-radius:8px;font-size:12px;color:var(--muted)">📅 <span id="currentDate"></span></div>
-        <button class="sync-btn" onclick="syncAll()">↻ Sincronizar</button>
-      </div>
-    </div>
-
-    <div class="acc-tabs" id="dashTabs">
-      <div class="acc-tab active" onclick="setDashTab(this,'all')">
-        <div class="acc-tab-dot" style="background:var(--yellow)"></div>
-        Todas las cuentas
-      </div>
-    </div>
-
-    <!-- DATE RANGE SELECTOR -->
-    <div style="display:flex;gap:10px;align-items:center;margin-bottom:20px;flex-wrap:wrap">
-      <div style="font-size:12px;color:var(--muted);margin-right:4px">Período:</div>
-      <button class="range-btn" onclick="setRange(this,7)">7 días</button>
-      <button class="range-btn active" onclick="setRange(this,30)">30 días</button>
-      <button class="range-btn" onclick="setRange(this,60)">60 días</button>
-      <button class="range-btn" onclick="setRange(this,90)">90 días</button>
-      <div style="margin-left:auto;font-size:12px;color:var(--muted)" id="rangeLabel">Últimos 30 días</div>
-    </div>
-
-    <div class="kpi-grid" id="kpiGrid">
-      <div class="kpi" style="animation-delay:.05s">
-        <div class="kpi-label">💰 Facturación total</div>
-        <div class="kpi-val" id="kpi-facturacion">—</div>
-        <div class="kpi-delta up" id="kpi-fac-delta">Conectá una cuenta</div>
-        <div class="kpi-bg">💰</div>
-      </div>
-      <div class="kpi" style="animation-delay:.1s">
-        <div class="kpi-label">📦 Ventas totales</div>
-        <div class="kpi-val" id="kpi-ventas">—</div>
-        <div class="kpi-delta up" id="kpi-ven-delta">Conectá una cuenta</div>
-        <div class="kpi-bg">📦</div>
-      </div>
-      <div class="kpi" style="animation-delay:.15s">
-        <div class="kpi-label">📣 Gasto en ADS</div>
-        <div class="kpi-val" id="kpi-ads">—</div>
-        <div class="kpi-delta warn" id="kpi-ads-delta">Conectá una cuenta</div>
-        <div class="kpi-bg">📣</div>
-      </div>
-      <div class="kpi" style="animation-delay:.2s">
-        <div class="kpi-label">👁️ Visitas totales</div>
-        <div class="kpi-val" id="kpi-visitas">—</div>
-        <div class="kpi-delta" id="kpi-visitas-delta">Conectá una cuenta</div>
-        <div class="kpi-bg">👁️</div>
-      </div>
-      <div class="kpi" style="animation-delay:.25s">
-        <div class="kpi-label">🔄 Conversión</div>
-        <div class="kpi-val" id="kpi-conversion">—</div>
-        <div class="kpi-delta" id="kpi-conversion-delta">Conectá una cuenta</div>
-        <div class="kpi-bg">🔄</div>
-      </div>
-      <div class="kpi" style="animation-delay:.3s">
-        <div class="kpi-label">📦 Publicaciones activas</div>
-        <div class="kpi-val" id="kpi-pubs">—</div>
-        <div class="kpi-delta" id="kpi-pubs-delta">Conectá una cuenta</div>
-        <div class="kpi-bg">📦</div>
-      </div>
-    </div>
-
-    <div class="grid2">
-      <div class="card" style="animation-delay:.25s">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:18px">
-          <div class="card-title">Ventas por semana</div>
-          <div style="font-size:11px;color:var(--muted);background:var(--surface2);border:1px solid var(--border);padding:3px 10px;border-radius:6px">Últimas 8 semanas</div>
-        </div>
-        <div class="bar-chart" id="barChart"></div>
-        <div class="legend" id="chartLegend"></div>
-      </div>
-
-      <div class="card" style="animation-delay:.3s">
-        <div class="card-title">Reputación por cuenta</div>
-        <div class="rep-list" id="repList">
-          <div style="color:var(--muted);font-size:13px;text-align:center;padding:20px">Sin cuentas conectadas</div>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <!-- PUBLICACIONES -->
-  <!-- PERFORMANCE -->
-  <div class="page" id="page-performance">
-    <div class="page-header">
-      <div>
-        <div class="page-title">Performance por publicación</div>
-        <div class="page-sub">Ventas, visitas y conversión por item</div>
-      </div>
-      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-        <button class="range-btn" onclick="setPerfRange(this,7)">7 días</button>
-        <button class="range-btn active" onclick="setPerfRange(this,30)">30 días</button>
-        <button class="range-btn" onclick="setPerfRange(this,60)">60 días</button>
-        <button class="range-btn" onclick="setPerfRange(this,90)">90 días</button>
-        <button class="sync-btn" onclick="exportPerformanceExcel()" style="background:rgba(0,200,100,.1);border-color:rgba(0,200,100,.3);color:#00c864">⬇ Exportar Excel</button>
-        <button class="sync-btn" onclick="loadAllData().then(loadPerformance)">↻ Actualizar</button>
-      </div>
-    </div>
-    <div class="card">
-      <div id="performanceContent" style="color:var(--muted);font-size:13px;padding:20px;text-align:center">
-        Sincronizá para ver performance por publicación
-      </div>
-    </div>
-  </div>
-
-  <div class="page" id="page-publicaciones">
-    <div class="page-header">
-      <div>
-        <div class="page-title">Publicaciones</div>
-        <div class="page-sub">Vista unificada con ventas, ads y conversión</div>
-      </div>
-      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-        <button class="range-btn" onclick="setPubsRange(this,7)">7 días</button>
-        <button class="range-btn active" onclick="setPubsRange(this,30)">30 días</button>
-        <button class="range-btn" onclick="setPubsRange(this,60)">60 días</button>
-        <button class="range-btn" onclick="setPubsRange(this,90)">90 días</button>
-        <input id="pubsSearch" placeholder="🔍 Buscar..." oninput="filterPubs(this.value)" style="background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.12);border-radius:8px;padding:6px 12px;color:var(--text);font-size:13px;width:160px">
-        <button class="sync-btn" onclick="exportPubsExcel()" style="background:rgba(0,200,100,.1);border-color:rgba(0,200,100,.3);color:#00c864">⬇ Excel</button>
-        <button class="sync-btn" onclick="loadPublicaciones()">↻ Actualizar</button>
-      </div>
-    </div>
-    <div class="card" style="padding:0;overflow:hidden">
-      <div id="pubsContent" style="color:var(--muted);font-size:13px;padding:20px;text-align:center">
-        Hacé click en Actualizar para cargar
-      </div>
-    </div>
-  </div>
-
-  <!-- VENTAS -->
-  <div class="page" id="page-ventas">
-    <div class="page-header">
-      <div>
-        <div class="page-title">Ventas</div>
-        <div class="page-sub">Historial de órdenes</div>
-      </div>
-      <button class="sync-btn" onclick="loadVentas()">↻ Actualizar</button>
-    </div>
-    <div class="card">
-      <div id="ventasContent" style="color:var(--muted);font-size:13px;padding:20px;text-align:center">
-        Conectá una cuenta para ver ventas
-      </div>
-    </div>
-  </div>
-
-  <!-- ADS -->
-  <div class="page" id="page-ads">
-    <div class="page-header">
-      <div>
-        <div class="page-title">Publicidad</div>
-        <div class="page-sub">Métricas de Mercado Ads por campaña</div>
-      </div>
-      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-        <button class="range-btn" onclick="setAdsRange(this,7)">7 días</button>
-        <button class="range-btn active" onclick="setAdsRange(this,30)">30 días</button>
-        <button class="range-btn" onclick="setAdsRange(this,60)">60 días</button>
-        <button class="range-btn" onclick="setAdsRange(this,90)">90 días</button>
-        <button class="sync-btn" onclick="loadAds()">↻ Actualizar</button>
-      </div>
-    </div>
-    <div class="kpi-grid" style="margin-bottom:20px">
-      <div class="kpi"><div class="kpi-label">💸 Gasto en Ads</div><div class="kpi-val" id="ads-spend">—</div><div class="kpi-delta" id="ads-spend-d">Sincronizá para ver</div><div class="kpi-bg">💸</div></div>
-      <div class="kpi"><div class="kpi-label">📦 Ventas por Ads</div><div class="kpi-val" id="ads-sales">—</div><div class="kpi-delta up" id="ads-sales-d">Ingresos atribuidos</div><div class="kpi-bg">📦</div></div>
-      <div class="kpi"><div class="kpi-label">📊 ACOS</div><div class="kpi-val" id="ads-acos">—</div><div class="kpi-delta" id="ads-acos-d">Gasto / Venta Ads × 100</div><div class="kpi-bg">📊</div></div>
-      <div class="kpi"><div class="kpi-label">🎯 TACOS</div><div class="kpi-val" id="ads-tacos">—</div><div class="kpi-delta" id="ads-tacos-d">Gasto / Facturación total</div><div class="kpi-bg">🎯</div></div>
-      <div class="kpi"><div class="kpi-label">💰 ROAS</div><div class="kpi-val" id="ads-roas">—</div><div class="kpi-delta" id="ads-roas-d">Retorno por peso gastado</div><div class="kpi-bg">💰</div></div>
-      <div class="kpi"><div class="kpi-label">🖱️ Clicks</div><div class="kpi-val" id="ads-clicks">—</div><div class="kpi-delta" id="ads-clicks-d">Total de clicks</div><div class="kpi-bg">🖱️</div></div>
-      <div class="kpi"><div class="kpi-label">👁️ Impresiones</div><div class="kpi-val" id="ads-impr">—</div><div class="kpi-delta" id="ads-impr-d">Veces mostrado</div><div class="kpi-bg">👁️</div></div>
-      <div class="kpi"><div class="kpi-label">📈 Venta por Ads</div><div class="kpi-val" id="ads-salesshare">—</div><div class="kpi-delta" id="ads-salesshare-d">Ventas Ads / Facturación total</div><div class="kpi-bg">📈</div></div>
-      <div class="kpi"><div class="kpi-label">🎣 CTR</div><div class="kpi-val" id="ads-ctr">—</div><div class="kpi-delta" id="ads-ctr-d">Clicks / Impresiones</div><div class="kpi-bg">🎣</div></div>
-      <div class="kpi"><div class="kpi-label">💵 CPC</div><div class="kpi-val" id="ads-cpc">—</div><div class="kpi-delta" id="ads-cpc-d">Inversión / Clicks</div><div class="kpi-bg">💵</div></div>
-    </div>
-    <div class="card">
-      <div id="adsContent" style="color:var(--muted);font-size:13px;padding:20px;text-align:center">
-        Hacé click en Actualizar para cargar datos de Ads
-      </div>
-    </div>
-    <div class="card" style="margin-top:16px">
-      <div style="font-size:13px;font-weight:700;margin-bottom:16px;color:var(--text)">🔍 Análisis: Ventas con y sin Ads</div>
-      <div id="adsAnalysis" style="color:var(--muted);font-size:13px;padding:10px;text-align:center">
-        Cargá los datos de Ads para ver el análisis
-      </div>
-    </div>
-  </div>
-
-  <!-- REPUTACION -->
-  <div class="page" id="page-reputacion">
-    <div class="page-header">
-      <div>
-        <div class="page-title">Reputación</div>
-        <div class="page-sub">Estado y métricas de reputación</div>
-      </div>
-    </div>
-    <div class="card">
-      <div id="repContent" style="color:var(--muted);font-size:13px;padding:20px;text-align:center">
-        Conectá una cuenta para ver reputación
-      </div>
-    </div>
-  </div>
-
-  <!-- SETUP PAGE -->
-  <div class="page" id="page-setup">
-    <div class="page-header">
-      <div>
-        <div class="page-title">Conectar cuentas</div>
-        <div class="page-sub">Autenticá tus cuentas de Mercado Libre Argentina</div>
-      </div>
-    </div>
-
-    <div class="setup-wrap">
-      <!-- STEPS INDICATOR -->
-      <div class="setup-steps">
-        <div class="step-item">
-          <div class="step-circle done" id="sc1">1</div>
-          <div class="step-lbl">Credenciales<br>de tu App</div>
-        </div>
-        <div class="step-item">
-          <div class="step-circle todo" id="sc2">2</div>
-          <div class="step-lbl">Configurar<br>cuentas</div>
-        </div>
-        <div class="step-item">
-          <div class="step-circle todo" id="sc3">3</div>
-          <div class="step-lbl">Autorizar<br>OAuth</div>
-        </div>
-        <div class="step-item">
-          <div class="step-circle todo" id="sc4">✓</div>
-          <div class="step-lbl">¡Listo!</div>
-        </div>
-      </div>
-
-      <!-- STEP 1: APP CREDENTIALS -->
-      <div class="setup-card" id="step1card">
-        <h2>Credenciales de tu App</h2>
-        <p>Ingresá las credenciales de la app que creaste en el portal de desarrolladores de Mercado Libre.</p>
-
-        <div class="tip-box">
-          <div class="tip-title">📋 ¿Dónde las encuentro?</div>
-          <div class="tip-text">
-            Entrá a <a href="https://developers.mercadolibre.com.ar" target="_blank">developers.mercadolibre.com.ar</a>
-            → Mis Apps → tu aplicación.<br><br>
-            <strong style="color:var(--text)">Importante:</strong> en tu app, asegurate de tener activados los scopes
-            <strong style="color:var(--yellow)">read</strong> y <strong style="color:var(--yellow)">offline_access</strong>.
-          </div>
-        </div>
-
-        <div class="field">
-          <label>App ID (client_id)</label>
-          <input type="text" id="inputAppId" placeholder="Ej: 123456789" autocomplete="off">
-        </div>
-        <div class="field">
-          <label>Secret Key (client_secret)</label>
-          <input type="password" id="inputSecret" placeholder="••••••••••••••••••••" autocomplete="off">
-        </div>
-        <div class="field">
-          <label>Redirect URI (la que configuraste en tu app)</label>
-          <input type="text" id="inputRedirect" value="https://negocioredondo.netlify.app/" placeholder="https://negocioredondo.netlify.app/">
-        </div>
-        <div class="field">
-          <label>URL del servidor Railway</label>
-          <input type="text" id="inputServerUrl" placeholder="https://tu-app.railway.app" value="">
-          <div style="font-size:11px;color:var(--muted);margin-top:4px">Lo obtenés después de hacer el deploy en Railway</div>
-        </div>
-
-        <div class="btn-row">
-          <button class="btn-p" onclick="saveCredentials()">Continuar →</button>
-        </div>
-      </div>
-
-      <!-- STEP 2: ACCOUNTS CONFIG -->
-      <div class="setup-card" id="step2card" style="display:none">
-        <h2>Configurar cuentas</h2>
-        <p>Agregá las cuentas que querés conectar. Cada cuenta necesitará autorizar tu app una sola vez.</p>
-
-        <div id="accountsList" style="margin-bottom:16px"></div>
-
-        <div style="display:flex;gap:10px;margin-bottom:16px">
-          <div class="field" style="flex:1;margin:0">
-            <label>Nombre de la cuenta</label>
-            <input type="text" id="newAccName" placeholder="Ej: TiendaElectro">
-          </div>
-          <div style="display:flex;align-items:flex-end">
-            <button class="btn-p" style="flex:none;padding:10px 16px;white-space:nowrap" onclick="addAccount()">+ Agregar</button>
-          </div>
-        </div>
-
-        <div class="tip-box">
-          <div class="tip-title">💡 Para cuentas de clientes</div>
-          <div class="tip-text">En el paso siguiente vas a generar un link de autorización único para cada cuenta. Mandáselo a tu cliente y ellos autorizan con un click.</div>
-        </div>
-
-        <div class="btn-row">
-          <button class="btn-s" onclick="goStep(1)">← Atrás</button>
-          <button class="btn-p" onclick="goStep(3)" id="btnGoStep3">Continuar →</button>
-        </div>
-      </div>
-
-      <!-- STEP 3: OAUTH -->
-      <div class="setup-card" id="step3card" style="display:none">
-        <h2>Autorizar cada cuenta</h2>
-        <p>Cada cuenta debe autorizar tu app. Si es tu propia cuenta, hacé click en "Autorizar". Si es de un cliente, copiá el link y mandáselo.</p>
-
-        <div class="oauth-accounts" id="oauthList"></div>
-
-        <div class="tip-box">
-          <div class="tip-title">🔐 ¿Qué pasa cuando autorizan?</div>
-          <div class="tip-text">ML te va a redirigir a Google. No te asustes — mirá la barra de direcciones del navegador, vas a ver algo así:<br><br>
-          <code style="color:var(--yellow);font-size:11px">https://www.google.com/?code=TG-XXXXXXX...</code><br><br>
-          Copiá todo lo que dice después de <strong style="color:var(--yellow)">code=</strong> y pegalo en la app.</div>
-        </div>
-
-        <div class="btn-row">
-          <button class="btn-s" onclick="goStep(2)">← Atrás</button>
-          <button class="btn-p" onclick="goStep(4)">Ver dashboard →</button>
-        </div>
-      </div>
-
-      <!-- STEP 4: DONE -->
-      <div class="setup-card" id="step4card" style="display:none;text-align:center">
-        <div style="font-size:52px;margin-bottom:16px">🎉</div>
-        <h2 style="margin-bottom:8px">¡Todo listo!</h2>
-        <p style="margin-bottom:24px">Tus cuentas están conectadas. El dashboard se actualiza automáticamente cada hora.</p>
-        <button class="btn-p" onclick="showPage('dashboard', document.querySelector('.nav-item'))">Ir al Dashboard →</button>
-      </div>
-
-    </div>
-  </div>
-
-</main>
 </div>
 
-<!-- TOAST -->
-<div class="toast" id="toast"></div>
+<!-- AUTH LINK MODAL -->
+<div id="authLinkModal">
+  <div class="auth-link-box">
+    <h3>🔗 Link de autorización</h3>
+    <p>Enviá este link al cliente. Cuando haga click y autorice, su cuenta quedará conectada automáticamente.</p>
+    <textarea id="authLinkText" readonly></textarea>
+    <div class="modal-btns">
+      <button class="sync-btn" onclick="copyAuthLink()">📋 Copiar link</button>
+      <button class="sync-btn" onclick="openAuthLink()">🔗 Abrir</button>
+      <button class="sync-btn" style="margin-left:auto" onclick="document.getElementById('authLinkModal').style.display='none'">Cerrar</button>
+    </div>
+  </div>
+</div>
 
+<!-- MAIN APP -->
+<div class="app" id="app" style="display:none">
+
+  <!-- SIDEBAR -->
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-icon">📊</div>
+      <div>
+        <div class="brand-name">ML Centro</div>
+        <div class="brand-sub">ARGENTINA</div>
+      </div>
+    </div>
+
+    <nav class="nav">
+      <div class="nav-section-label">PRINCIPAL</div>
+      <div class="nav-item active" data-page="dashboard" onclick="showPage('dashboard',this)">
+        <span class="nav-icon">📊</span> Dashboard
+      </div>
+      <div class="nav-item" data-page="performance" onclick="showPage('performance',this)">
+        <span class="nav-icon">🚀</span> Performance
+      </div>
+      <div class="nav-item" data-page="publicaciones" onclick="showPage('publicaciones',this)">
+        <span class="nav-icon">📦</span> Publicaciones
+      </div>
+      <div class="nav-item" data-page="ventas" onclick="showPage('ventas',this)">
+        <span class="nav-icon">💰</span> Ventas
+      </div>
+      <div class="nav-item" data-page="ads" onclick="showPage('ads',this)">
+        <span class="nav-icon">📣</span> Publicidad
+      </div>
+
+      <div style="height:1px;background:var(--border);margin:12px 0"></div>
+
+      <div id="clientSelector">
+        <div class="nav-section-label">CUENTAS</div>
+        <div class="nav-item" style="color:var(--muted);font-size:12px;pointer-events:none">Cargando...</div>
+      </div>
+
+      <div style="height:1px;background:var(--border);margin:12px 0"></div>
+
+      <div class="nav-section-label">GESTIÓN</div>
+      <div class="nav-item" data-page="clientes" onclick="showPage('clientes',this);renderClientsList()">
+        <span class="nav-icon">👥</span> Clientes
+      </div>
+      <div class="nav-item" data-page="reputacion" onclick="showPage('reputacion',this)">
+        <span class="nav-icon">⭐</span> Reputación
+      </div>
+    </nav>
+  </aside>
+
+  <!-- MAIN CONTENT -->
+  <main class="main">
+
+    <!-- TOPBAR -->
+    <header class="topbar">
+      <div>
+        <div class="page-title" id="pageTitle">Dashboard General</div>
+        <div class="page-subtitle" id="pageSubtitle">Resumen consolidado · <span id="currentDate"></span></div>
+      </div>
+      <div class="header-user">
+        <span id="sessionUser">Usuario</span>
+        <button class="logout-btn" onclick="logout()">Salir</button>
+        <button class="sync-btn" onclick="syncAll()">⟳ Sincronizar</button>
+      </div>
+    </header>
+
+    <!-- DASHBOARD -->
+    <div class="page active" id="page-dashboard">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:20px;flex-wrap:wrap">
+        <div id="accountTabs" style="display:flex;gap:8px;flex-wrap:wrap;flex:1">
+          <button class="acc-tab active" onclick="filterAccount(null,this)">● Todas las cuentas</button>
+        </div>
+        <div style="display:flex;gap:6px;align-items:center">
+          <span style="font-size:12px;color:var(--muted)">Período:</span>
+          <button class="range-btn active" data-days="7" onclick="setRange(this,7)">7 días</button>
+          <button class="range-btn" data-days="30" onclick="setRange(this,30)">30 días</button>
+          <button class="range-btn" data-days="60" onclick="setRange(this,60)">60 días</button>
+          <button class="range-btn" data-days="90" onclick="setRange(this,90)">90 días</button>
+        </div>
+        <span style="font-size:12px;color:var(--muted)" id="rangeLabel">Últimos 30 días</span>
+      </div>
+
+      <div class="kpi-grid" id="kpiCards">
+        <div class="kpi-card"><div class="kpi-label">🧾 FACTURACIÓN TOTAL</div><div class="kpi-value" id="kpiAmount">—</div><div class="kpi-delta" id="kpiAmountDelta"></div><div class="kpi-sub" id="kpiAmountSub">Conectá una cuenta</div></div>
+        <div class="kpi-card"><div class="kpi-label">🛒 VENTAS TOTALES</div><div class="kpi-value" id="kpiOrders">—</div><div class="kpi-delta" id="kpiOrdersDelta"></div><div class="kpi-sub" id="kpiOrdersSub">Conectá una cuenta</div></div>
+        <div class="kpi-card"><div class="kpi-label">📣 GASTO EN ADS</div><div class="kpi-value" id="kpiAds">—</div><div class="kpi-delta" id="kpiAdsDelta"></div><div class="kpi-sub" id="kpiAdsSub">Conectá una cuenta</div></div>
+        <div class="kpi-card"><div class="kpi-label">👁 VISITAS TOTALES</div><div class="kpi-value" id="kpiVisits">—</div><div class="kpi-delta" id="kpiVisitsDelta"></div><div class="kpi-sub" id="kpiVisitsSub">Conectá una cuenta</div></div>
+        <div class="kpi-card"><div class="kpi-label">📊 CONVERSIÓN</div><div class="kpi-value" id="kpiConv">—</div><div class="kpi-delta" id="kpiConvDelta"></div><div class="kpi-sub" id="kpiConvSub">Conectá una cuenta</div></div>
+        <div class="kpi-card"><div class="kpi-label">📦 PUBLICACIONES ACTIVAS</div><div class="kpi-value" id="kpiItems">—</div><div class="kpi-delta" id="kpiItemsDelta"></div><div class="kpi-sub" id="kpiItemsSub">Conectá una cuenta</div></div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:20px">
+        <div class="kpi-card" style="padding:20px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+            <div class="kpi-label">Ventas por semana</div>
+            <span style="font-size:11px;color:var(--muted)" id="weeklyRangeLabel">Últimas 8 semanas</span>
+          </div>
+          <div id="weeklyChart" style="height:160px;display:flex;align-items:flex-end;gap:4px"></div>
+        </div>
+        <div class="kpi-card" style="padding:20px">
+          <div class="kpi-label" style="margin-bottom:16px">Reputación por cuenta</div>
+          <div id="reputationCards">
+            <div style="color:var(--muted);font-size:13px">Sin cuentas conectadas</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- PERFORMANCE -->
+    <div class="page" id="page-performance">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px;flex-wrap:wrap">
+        <h2 style="margin:0;font-family:var(--font-b);flex:1">Performance por publicación</h2>
+        <button class="range-btn active" onclick="setPerfRange(this,7)">7 días</button>
+        <button class="range-btn" onclick="setPerfRange(this,30)">30 días</button>
+        <button class="range-btn" onclick="setPerfRange(this,60)">60 días</button>
+        <button class="range-btn" onclick="setPerfRange(this,90)">90 días</button>
+        <button class="sync-btn" onclick="exportPerformanceExcel()">📥 Excel</button>
+      </div>
+      <div id="performanceContent"></div>
+    </div>
+
+    <!-- PUBLICACIONES -->
+    <div class="page" id="page-publicaciones">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px;flex-wrap:wrap">
+        <h2 style="margin:0;font-family:var(--font-b);flex:1">Publicaciones</h2>
+        <button class="range-btn active" onclick="setPubsRange(this,7)">7 días</button>
+        <button class="range-btn" onclick="setPubsRange(this,30)">30 días</button>
+        <button class="range-btn" onclick="setPubsRange(this,60)">60 días</button>
+        <button class="range-btn" onclick="setPubsRange(this,90)">90 días</button>
+        <button class="sync-btn" onclick="exportPubsExcel()">📥 Excel</button>
+      </div>
+      <div id="publicacionesContent"></div>
+    </div>
+
+    <!-- VENTAS -->
+    <div class="page" id="page-ventas">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px;flex-wrap:wrap">
+        <h2 style="margin:0;font-family:var(--font-b);flex:1">Ventas</h2>
+      </div>
+      <div id="ventasContent"><div style="color:var(--muted);font-size:13px">Próximamente</div></div>
+    </div>
+
+    <!-- ADS -->
+    <div class="page" id="page-ads">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px;flex-wrap:wrap">
+        <h2 style="margin:0;font-family:var(--font-b);flex:1">Publicidad</h2>
+        <button class="range-btn active" onclick="setAdsRange(this,7)">7 días</button>
+        <button class="range-btn" onclick="setAdsRange(this,30)">30 días</button>
+        <button class="range-btn" onclick="setAdsRange(this,60)">60 días</button>
+        <button class="range-btn" onclick="setAdsRange(this,90)">90 días</button>
+      </div>
+      <div id="adsContent"></div>
+    </div>
+
+    <!-- CLIENTES ADMIN -->
+    <div class="page" id="page-clientes">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px">
+        <h2 style="margin:0;font-family:var(--font-b);flex:1">Gestión de Clientes</h2>
+        <button class="sync-btn" onclick="document.getElementById('addClientForm').style.display=document.getElementById('addClientForm').style.display==='none'?'block':'none'">+ Agregar cliente</button>
+        <button class="sync-btn" onclick="loadClients();renderClientsList()">🔄 Actualizar</button>
+      </div>
+
+      <div class="add-client-form" id="addClientForm">
+        <div style="font-size:13px;color:var(--muted);margin-bottom:12px">Los datos de App ID y Secret son los de tu aplicación de ML Developers.</div>
+        <div class="form-row">
+          <div class="form-field">
+            <label>NOMBRE DEL CLIENTE</label>
+            <input id="newClientName" type="text" placeholder="Ej: Yakka Deportes">
+          </div>
+          <div class="form-field">
+            <label>APP ID</label>
+            <input id="newClientAppId" type="text" placeholder="Tu App ID de ML">
+          </div>
+          <div class="form-field">
+            <label>CLIENT SECRET</label>
+            <input id="newClientSecret" type="password" placeholder="Tu Secret">
+          </div>
+        </div>
+        <div style="margin-top:12px;display:flex;gap:8px">
+          <button class="sync-btn" onclick="addClient()">✅ Guardar cliente</button>
+          <button class="sync-btn" onclick="document.getElementById('addClientForm').style.display='none'">Cancelar</button>
+        </div>
+      </div>
+
+      <div id="clientsAdminContent"></div>
+    </div>
+
+    <!-- REPUTACION -->
+    <div class="page" id="page-reputacion">
+      <h2 style="margin:0 0 20px;font-family:var(--font-b)">Reputación</h2>
+      <div id="reputacionContent"><div style="color:var(--muted)">Sincronizá para ver datos</div></div>
+    </div>
+
+  </main>
+</div>
+
+<div id="toast" class="toast"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script>
+// ─── SESSION & LOGIN ──────────────────────────────────────────────────────────
+const SERVER_URL = window.location.origin;
+
+function getSession() { return localStorage.getItem('ml_session_id'); }
+function getSessionUser() { return localStorage.getItem('ml_session_user'); }
+function getSessionRole() { return localStorage.getItem('ml_session_role'); }
+
+async function apiCall(method, path, body) {
+  const opts = {
+    method,
+    headers: { 'Content-Type': 'application/json', 'x-session-id': getSession() || '' }
+  };
+  if (body) opts.body = JSON.stringify(body);
+  const r = await fetch(SERVER_URL + path, opts);
+  const data = await r.json();
+  if (r.status === 401) { logout(); return null; }
+  return data;
+}
+
+async function login(username, password) {
+  const r = await fetch(SERVER_URL + '/api/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password })
+  });
+  const data = await r.json();
+  if (data.error) throw new Error(data.error);
+  localStorage.setItem('ml_session_id', data.sessionId);
+  localStorage.setItem('ml_session_user', data.username);
+  localStorage.setItem('ml_session_role', data.role);
+  return data;
+}
+
+function logout() {
+  fetch(SERVER_URL + '/api/logout', { method: 'POST', headers: { 'x-session-id': getSession() || '' } }).catch(() => {});
+  localStorage.removeItem('ml_session_id');
+  localStorage.removeItem('ml_session_user');
+  localStorage.removeItem('ml_session_role');
+  showLoginScreen();
+}
+
+function showLoginScreen() {
+  document.getElementById('loginScreen').style.display = 'flex';
+  document.getElementById('app').style.display = 'none';
+}
+
+function showAppScreen() {
+  document.getElementById('loginScreen').style.display = 'none';
+  document.getElementById('app').style.display = 'flex';
+  document.getElementById('sessionUser').textContent = getSessionUser() || 'Usuario';
+}
+
+async function handleLogin() {
+  const username = document.getElementById('loginUser').value.trim();
+  const password = document.getElementById('loginPass').value;
+  const btn = document.getElementById('loginBtn');
+  const err = document.getElementById('loginError');
+  if (!username || !password) { err.textContent = 'Completá usuario y contraseña'; return; }
+  btn.textContent = 'Ingresando...'; btn.disabled = true; err.textContent = '';
+  try {
+    await login(username, password);
+    showAppScreen();
+    initApp();
+  } catch(e) {
+    err.textContent = e.message;
+    btn.textContent = 'Ingresar'; btn.disabled = false;
+  }
+}
+
+
+// ─── CLIENT MANAGEMENT ───────────────────────────────────────────────────────
+let allClients = [];
+let activeClientId = null;
+
+async function loadClients() {
+  const clients = await apiCall('GET', '/api/clients');
+  if (!clients) return;
+  allClients = clients;
+  renderClientSelector();
+  renderClientsList();
+}
+
+function renderClientSelector() {
+  const sidebar = document.getElementById('clientSelector');
+  if (!sidebar) return;
+  sidebar.innerHTML = `
+    <div class="nav-section-label">CUENTAS</div>
+    <div class="nav-item ${!activeClientId ? 'active' : ''}" onclick="selectClient(null, this)">
+      <span class="nav-icon">🌐</span> Todas las cuentas
+    </div>
+    ${allClients.filter(c => c.active).map(c => `
+      <div class="nav-item ${activeClientId === c.id ? 'active' : ''}" onclick="selectClient(${c.id}, this)">
+        <span class="nav-icon" style="font-size:10px;background:rgba(255,255,255,.1);padding:3px 5px;border-radius:4px">${c.name.substring(0,2).toUpperCase()}</span>
+        ${c.name}
+        ${!c.ml_user_id ? '<span style="color:#ff9100;font-size:10px">⚠</span>' : ''}
+      </div>`).join('')}
+  `;
+}
+
+async function selectClient(clientId, el) {
+  activeClientId = clientId;
+  document.querySelectorAll('#clientSelector .nav-item').forEach(n => n.classList.remove('active'));
+  if (el) el.classList.add('active');
+  await loadDashboardData();
+}
+
+async function loadDashboardData() {
+  if (!allClients.length) return;
+  const clientsToLoad = activeClientId
+    ? allClients.filter(c => c.id === activeClientId && c.ml_user_id)
+    : allClients.filter(c => c.ml_user_id && c.active);
+
+  if (!clientsToLoad.length) {
+    showToast('⚠️ No hay cuentas conectadas para mostrar');
+    return;
+  }
+
+  showToast('⏳ Sincronizando...');
+  const days = state.rangeDays || 30;
+
+  await Promise.all(clientsToLoad.map(async client => {
+    try {
+      const data = await apiCall('GET', `/api/dashboard?client_id=${client.id}&days=${days}`);
+      if (data) {
+        const acc = { id: client.id, name: client.name, color: clientColor(client.id), data, accessToken: null, clientId: client.id };
+        const existing = state.accounts.findIndex(a => a.id === client.id);
+        if (existing >= 0) state.accounts[existing] = acc;
+        else state.accounts.push(acc);
+      }
+    } catch(e) { console.error('Client load error:', e); }
+  }));
+
+  updateDashboard();
+  showToast('✅ Datos actualizados');
+}
+
+function clientColor(id) {
+  const colors = ['#FFD700','#00e676','#2196F3','#ff9100','#e91e63','#9c27b0','#00bcd4','#ff5722'];
+  return colors[id % colors.length];
+}
+
+// Override loadAllData to use new client system
+async function loadAllData() {
+  await loadDashboardData();
+}
+
+// ─── CLIENTS ADMIN PAGE ───────────────────────────────────────────────────────
+function renderClientsList() {
+  const el = document.getElementById('clientsAdminContent');
+  if (!el) return;
+
+  if (!allClients.length) {
+    el.innerHTML = '<div style="color:var(--muted);padding:20px;text-align:center">No hay clientes. Agregá uno con el botón +</div>';
+    return;
+  }
+
+  const rows = allClients.map(c => {
+    const connected = c.ml_user_id ? `<span class="status s-ok">● Conectado</span>` : `<span class="status s-off">● Sin conectar</span>`;
+    const expires = c.token_expires_at ? new Date(c.token_expires_at).toLocaleString('es-AR') : '—';
+    return `<tr>
+      <td style="font-weight:600">${c.name}</td>
+      <td>${connected}</td>
+      <td style="color:var(--muted);font-size:11px">${c.ml_user_id || '—'}</td>
+      <td style="color:var(--muted);font-size:11px">${expires}</td>
+      <td style="display:flex;gap:8px">
+        ${!c.ml_user_id ? `<button class="sync-btn" onclick="generateAuthLink(${c.id})">🔗 Generar Link</button>` : `<button class="sync-btn" onclick="generateAuthLink(${c.id})">🔄 Reconectar</button>`}
+        <button class="sync-btn" style="color:#ff4d4d;border-color:#ff4d4d" onclick="deleteClient(${c.id}, '${c.name}')">🗑</button>
+      </td>
+    </tr>`;
+  }).join('');
+
+  el.innerHTML = `<div style="overflow-x:auto"><table>
+    <thead><tr><th>Cliente</th><th>Estado</th><th>ML User ID</th><th>Token expira</th><th>Acciones</th></tr></thead>
+    <tbody>${rows}</tbody>
+  </table></div>`;
+}
+
+async function addClient() {
+  const name = document.getElementById('newClientName').value.trim();
+  const appId = document.getElementById('newClientAppId').value.trim();
+  const secret = document.getElementById('newClientSecret').value.trim();
+  if (!name || !appId || !secret) { showToast('❌ Completá todos los campos'); return; }
+  const result = await apiCall('POST', '/api/clients', { name, app_id: appId, client_secret: secret });
+  if (result) {
+    document.getElementById('newClientName').value = '';
+    document.getElementById('newClientAppId').value = '';
+    document.getElementById('newClientSecret').value = '';
+    document.getElementById('addClientForm').style.display = 'none';
+    showToast('✅ Cliente agregado');
+    await loadClients();
+  }
+}
+
+async function generateAuthLink(clientId) {
+  const data = await apiCall('GET', `/api/clients/${clientId}/auth-link`);
+  if (!data) return;
+  const link = data.link;
+  document.getElementById('authLinkText').value = link;
+  document.getElementById('authLinkModal').style.display = 'flex';
+}
+
+function copyAuthLink() {
+  const text = document.getElementById('authLinkText').value;
+  navigator.clipboard.writeText(text).then(() => showToast('✅ Link copiado'));
+}
+
+function openAuthLink() {
+  window.open(document.getElementById('authLinkText').value, '_blank');
+}
+
+async function deleteClient(id, name) {
+  if (!confirm(`¿Eliminar cliente "${name}"?`)) return;
+  await apiCall('DELETE', `/api/clients/${id}`);
+  showToast('✅ Cliente eliminado');
+  await loadClients();
+}
+
+
+
 // ─── STATE ───────────────────────────────────────────────────────────────────
 const state = {
   appId: '',
@@ -1341,12 +1490,7 @@ function loadVentas() {
 }
 
 async function syncAll() {
-  if (!state.accounts.filter(a => a.accessToken).length) {
-    showToast('⚠️ Primero conectá al menos una cuenta');
-    showPage('setup', document.querySelectorAll('.nav-item')[5]);
-    return;
-  }
-  await loadAllData();
+  await loadDashboardData();
 }
 
 // ─── TOAST ────────────────────────────────────────────────────────────────────
@@ -1526,17 +1670,21 @@ function exportPerformanceExcel() {
 }
 
 function initApp() {
-  // STEP 1: Read OAuth code from URL FIRST before anything else
-  const urlParams = new URLSearchParams(window.location.search);
-  const oauthCode = urlParams.get('code');
-
-  // STEP 2: Load saved credentials and accounts
-  const hasSaved = loadSavedData();
-
-  if (!hasSaved) {
-    showPage('setup', document.querySelectorAll('.nav-item')[5]);
-    goStep(1);
-  }
+  // Load range preference
+  const savedRange = localStorage.getItem('ml_rangeDays');
+  if (savedRange) state.rangeDays = parseInt(savedRange);
+  const lbl = document.getElementById('rangeLabel');
+  if (lbl) lbl.textContent = 'Últimos ' + (state.rangeDays||30) + ' días';
+  document.querySelectorAll('#page-dashboard .range-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.days == (state.rangeDays||30));
+  });
+  // Load clients from server
+  loadClients().then(() => {
+    if (allClients.filter(c => c.ml_user_id).length > 0) loadDashboardData();
+  });
+  // Show dashboard by default
+  showPage('dashboard', document.querySelector('.nav-item[data-page="dashboard"]'));
+  const PLACEHOLDER = '--- ORIGINAL_HAVSAVED ---';
 
   // STEP 3: If there's an OAuth code in the URL, handle it
   if (oauthCode) {
@@ -1824,6 +1972,17 @@ async function loadAdsAnalysis(days) {
     el.innerHTML = '<div style="color:var(--muted);font-size:12px">Error cargando análisis</div>';
     console.error(e);
   }
+}
+
+
+// ── BOOT ──────────────────────────────────────────────────────────────────────
+document.getElementById('currentDate').textContent = new Date().toLocaleDateString('es-AR', {day:'2-digit',month:'long',year:'numeric'});
+
+if (getSession()) {
+  showAppScreen();
+  initApp();
+} else {
+  showLoginScreen();
 }
 </script>
 </body>
