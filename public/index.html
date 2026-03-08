@@ -513,6 +513,12 @@
         Hacé click en Actualizar para cargar datos de Ads
       </div>
     </div>
+    <div class="card" style="margin-top:16px">
+      <div style="font-size:13px;font-weight:700;margin-bottom:16px;color:var(--text)">🔍 Análisis: Ventas con y sin Ads</div>
+      <div id="adsAnalysis" style="color:var(--muted);font-size:13px;padding:10px;text-align:center">
+        Cargá los datos de Ads para ver el análisis
+      </div>
+    </div>
   </div>
 
   <!-- REPUTACION -->
@@ -1621,6 +1627,97 @@ async function loadAds() {
     + '<th style="text-align:right">ACOS</th><th style="text-align:right">ROAS</th>'
     + '<th style="text-align:right">Clicks</th><th style="text-align:right">Impresiones</th>'
     + '</tr></thead><tbody>' + rows + '</tbody></table></div>';
+
+  // Load ads vs organic analysis
+  loadAdsAnalysis(days);
+}
+
+async function loadAdsAnalysis(days) {
+  const el = document.getElementById('adsAnalysis');
+  if (!el) return;
+  const serverUrl = localStorage.getItem('ml_server_url') || '';
+  const connected = state.accounts.filter(a => a.accessToken && a.data && a.data.top_items);
+  if (!connected.length) return;
+
+  el.innerHTML = '<div style="color:var(--muted);font-size:12px">⏳ Analizando ventas con y sin Ads...</div>';
+
+  try {
+    // Get ads item IDs for each account
+    const adsItemSets = {};
+    await Promise.all(connected.map(async acc => {
+      const res = await fetch(serverUrl + '/api/ads-items?token=' + encodeURIComponent(acc.accessToken));
+      const data = await res.json();
+      adsItemSets[acc.name] = new Set(data.ads_item_ids || []);
+    }));
+
+    // Cross with top_items sales data
+    let withAds = { revenue: 0, units: 0, items: [] };
+    let withoutAds = { revenue: 0, units: 0, items: [] };
+
+    connected.forEach(acc => {
+      const adsSet = adsItemSets[acc.name] || new Set();
+      (acc.data.top_items || []).forEach(item => {
+        const hasAds = adsSet.has(item.id);
+        const target = hasAds ? withAds : withoutAds;
+        target.revenue += item.revenue || 0;
+        target.units += item.units || 0;
+        target.items.push({ ...item, cuenta: acc.name, hasAds });
+      });
+    });
+
+    const totalRev = withAds.revenue + withoutAds.revenue;
+    const pctWithAds = totalRev ? ((withAds.revenue / totalRev) * 100).toFixed(1) : 0;
+    const pctWithout = totalRev ? ((withoutAds.revenue / totalRev) * 100).toFixed(1) : 0;
+
+    function fmt(n) {
+      if (n >= 1000000) return '$' + (n/1000000).toFixed(2) + 'M';
+      if (n >= 1000) return '$' + (n/1000).toFixed(1) + 'K';
+      return '$' + Math.round(n).toLocaleString('es-AR');
+    }
+
+    // Top 5 without ads by revenue
+    const topOrganic = withoutAds.items.sort((a,b) => b.revenue - a.revenue).slice(0, 5);
+    const topWithAds = withAds.items.sort((a,b) => b.revenue - a.revenue).slice(0, 5);
+
+    el.innerHTML = `
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:20px">
+        <div style="background:rgba(0,230,118,.08);border:1px solid rgba(0,230,118,.2);border-radius:10px;padding:16px">
+          <div style="font-size:11px;color:var(--muted);margin-bottom:4px">📣 CON ADS</div>
+          <div style="font-size:24px;font-weight:800;color:#00e676">${fmt(withAds.revenue)}</div>
+          <div style="font-size:20px;font-weight:700;color:#00e676">${pctWithAds}% de la facturación</div>
+          <div style="font-size:12px;color:var(--muted);margin-top:4px">${withAds.units} unidades · ${withAds.items.length} productos</div>
+        </div>
+        <div style="background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);border-radius:10px;padding:16px">
+          <div style="font-size:11px;color:var(--muted);margin-bottom:4px">🌱 SIN ADS (Orgánico)</div>
+          <div style="font-size:24px;font-weight:800;color:var(--text)">${fmt(withoutAds.revenue)}</div>
+          <div style="font-size:20px;font-weight:700;color:var(--text)">${pctWithout}% de la facturación</div>
+          <div style="font-size:12px;color:var(--muted);margin-top:4px">${withoutAds.units} unidades · ${withoutAds.items.length} productos</div>
+        </div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+        <div>
+          <div style="font-size:12px;font-weight:600;color:#00e676;margin-bottom:8px">🔥 Top orgánicos sin Ads</div>
+          ${topOrganic.map(i => `
+            <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid rgba(255,255,255,.05);font-size:12px">
+              <span style="color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:200px" title="${i.title}">${i.title}</span>
+              <span style="color:var(--yellow);font-weight:700;margin-left:8px;white-space:nowrap">${fmt(i.revenue)}</span>
+            </div>`).join('')}
+          ${topOrganic.length ? '<div style="font-size:11px;color:var(--muted);margin-top:8px">💡 Estos productos podrían crecer con Ads</div>' : ''}
+        </div>
+        <div>
+          <div style="font-size:12px;font-weight:600;color:var(--yellow);margin-bottom:8px">📣 Top productos con Ads</div>
+          ${topWithAds.map(i => `
+            <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid rgba(255,255,255,.05);font-size:12px">
+              <span style="color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:200px" title="${i.title}">${i.title}</span>
+              <span style="color:var(--yellow);font-weight:700;margin-left:8px;white-space:nowrap">${fmt(i.revenue)}</span>
+            </div>`).join('')}
+        </div>
+      </div>`;
+  } catch(e) {
+    el.innerHTML = '<div style="color:var(--muted);font-size:12px">Error cargando análisis</div>';
+    console.error(e);
+  }
 }
 </script>
 </body>
