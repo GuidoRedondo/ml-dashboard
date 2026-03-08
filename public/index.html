@@ -454,13 +454,21 @@
     <div class="page-header">
       <div>
         <div class="page-title">Publicaciones</div>
-        <div class="page-sub">Gestión de items en todas las cuentas</div>
+        <div class="page-sub">Vista unificada con ventas, ads y conversión</div>
       </div>
-      <button class="sync-btn" onclick="loadPublicaciones()">↻ Actualizar</button>
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+        <button class="range-btn" onclick="setPubsRange(this,7)">7 días</button>
+        <button class="range-btn active" onclick="setPubsRange(this,30)">30 días</button>
+        <button class="range-btn" onclick="setPubsRange(this,60)">60 días</button>
+        <button class="range-btn" onclick="setPubsRange(this,90)">90 días</button>
+        <input id="pubsSearch" placeholder="🔍 Buscar..." oninput="filterPubs(this.value)" style="background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.12);border-radius:8px;padding:6px 12px;color:var(--text);font-size:13px;width:160px">
+        <button class="sync-btn" onclick="exportPubsExcel()" style="background:rgba(0,200,100,.1);border-color:rgba(0,200,100,.3);color:#00c864">⬇ Excel</button>
+        <button class="sync-btn" onclick="loadPublicaciones()">↻ Actualizar</button>
+      </div>
     </div>
-    <div class="card">
+    <div class="card" style="padding:0;overflow:hidden">
       <div id="pubsContent" style="color:var(--muted);font-size:13px;padding:20px;text-align:center">
-        Conectá una cuenta para ver publicaciones
+        Hacé click en Actualizar para cargar
       </div>
     </div>
   </div>
@@ -689,6 +697,7 @@ document.getElementById('currentDate').textContent = new Date().toLocaleDateStri
 // ─── NAVIGATION ──────────────────────────────────────────────────────────────
 function showPage(id, el) {
   if (id === 'performance') setTimeout(loadPerformance, 100);
+  if (id === 'publicaciones') setTimeout(loadPublicaciones, 100);
   if (id === 'ads') setTimeout(loadAds, 100);
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   document.getElementById('page-' + id).classList.add('active');
@@ -1173,32 +1182,129 @@ function buildBarChart() {
   `).join('');
 }
 
-function loadPublicaciones() {
-  const connected = state.accounts.filter(a => a.data?.items);
+function setPubsRange(el, days) {
+  document.querySelectorAll('#page-publicaciones .range-btn').forEach(b => b.classList.remove('active'));
+  if (el) el.classList.add('active');
+  state.pubsDays = parseInt(days);
+  loadPublicaciones();
+}
+
+function filterPubs(q) {
+  if (!window._pubsData) return;
+  const term = q.toLowerCase();
+  document.querySelectorAll('#pubsTable tr.pub-row').forEach(row => {
+    row.style.display = row.dataset.search.includes(term) ? '' : 'none';
+  });
+}
+
+function exportPubsExcel() {
+  if (!window._pubsData || !window._pubsData.length) { showToast('No hay datos para exportar'); return; }
+  const rows = window._pubsData.map(i => ({
+    'MLA': i.id, 'Título': i.title, 'Tiene Ads': i.hasAds ? 'Sí' : 'No',
+    'Unidades': i.units, 'Facturación': Math.round(i.revenue),
+    'Ventas por Ads': Math.round(i.adsSales), '% Aporte': i.revenueShare,
+    'Visitas': i.visits, 'Conversión %': i.conversion,
+    'Clicks Ads': i.adsClicks, 'Conv. Ads %': i.adsConversion
+  }));
+  const ws = XLSX.utils.json_to_sheet(rows);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Publicaciones');
+  XLSX.writeFile(wb, 'publicaciones.xlsx');
+}
+
+async function loadPublicaciones() {
   const el = document.getElementById('pubsContent');
+  if (!el) return;
+  const serverUrl = localStorage.getItem('ml_server_url') || '';
+  const connected = state.accounts.filter(a => a.accessToken);
   if (!connected.length) {
-    el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:20px;text-align:center">Conectá una cuenta para ver publicaciones</div>';
+    el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:20px;text-align:center">Conectá una cuenta primero</div>';
+    return;
+  }
+  if (!serverUrl) { el.innerHTML = '<div style="color:var(--muted)">Configurá el servidor primero</div>'; return; }
+  const days = state.pubsDays || 30;
+  el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:20px;text-align:center">⏳ Cargando publicaciones... puede tardar 30-60 segundos</div>';
+
+  let allItems = [];
+
+  await Promise.all(connected.map(async acc => {
+    try {
+      const res = await fetch(serverUrl + '/api/items-full?token=' + encodeURIComponent(acc.accessToken) + '&days=' + days);
+      const data = await res.json();
+      (data.items || []).forEach(item => allItems.push({ ...item, cuenta: acc.name, color: acc.color, totalRevenue: data.total_revenue }));
+    } catch(e) { console.error('Pubs error:', e); }
+  }));
+
+  if (!allItems.length) {
+    el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:20px;text-align:center">No hay datos para mostrar</div>';
     return;
   }
 
-  let rows = '';
-  connected.forEach(acc => {
-    (acc.data.items.results || []).slice(0, 10).forEach(itemId => {
-      rows += `<tr>
-        <td>${itemId}</td>
-        <td style="color:${acc.color};font-size:11px">${acc.name}</td>
-        <td>—</td>
-        <td>—</td>
-        <td><span class="status s-ok">● Activa</span></td>
-      </tr>`;
-    });
-  });
+  // Re-calculate revenueShare across all accounts
+  const grandTotal = allItems.reduce((s, i) => s + i.revenue, 0);
+  allItems.forEach(i => { i.revenueShare = grandTotal > 0 ? parseFloat(((i.revenue / grandTotal) * 100).toFixed(2)) : 0; });
+  allItems.sort((a, b) => b.revenue - a.revenue);
+  window._pubsData = allItems;
 
-  el.innerHTML = `
-    <table>
-      <thead><tr><th>ID Item</th><th>Cuenta</th><th>Precio</th><th>Stock</th><th>Estado</th></tr></thead>
-      <tbody>${rows || '<tr><td colspan="5" style="text-align:center;color:var(--muted)">Sin publicaciones</td></tr>'}</tbody>
-    </table>`;
+  function fmt(n) {
+    if (n >= 1000000) return '$' + (n/1000000).toFixed(2) + 'M';
+    if (n >= 1000) return '$' + (n/1000).toFixed(1) + 'K';
+    return '$' + Math.round(n).toLocaleString('es-AR');
+  }
+
+  const rows = allItems.map(item => {
+    const adsTag = item.hasAds
+      ? '<span style="background:rgba(255,180,0,.15);color:#ffb400;padding:2px 7px;border-radius:4px;font-size:11px;font-weight:600">📣 Sí</span>'
+      : '<span style="background:rgba(255,255,255,.06);color:var(--muted);padding:2px 7px;border-radius:4px;font-size:11px">—</span>';
+    const convColor = item.conversion >= 3 ? '#00e676' : item.conversion >= 1 ? '#ff9100' : '#ff4d4d';
+    const adsConvColor = item.adsConversion >= 5 ? '#00e676' : item.adsConversion >= 2 ? '#ff9100' : 'var(--muted)';
+    return '<tr class="pub-row" data-search="' + (item.title + item.id + item.cuenta).toLowerCase() + '">'
+      + '<td style="color:var(--muted);font-size:11px">' + item.id + '</td>'
+      + '<td style="max-width:260px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="' + item.title + '">' + item.title + '</td>'
+      + '<td style="color:var(--muted);font-size:11px">' + item.cuenta + '</td>'
+      + '<td>' + adsTag + '</td>'
+      + '<td style="text-align:right;color:#00e676;font-weight:700">' + item.units.toLocaleString('es-AR') + '</td>'
+      + '<td style="text-align:right;color:var(--yellow);font-weight:700">' + fmt(item.revenue) + '</td>'
+      + '<td style="text-align:right;color:#00e676;font-weight:600">' + fmt(item.adsSales) + '</td>'
+      + '<td style="text-align:right;font-size:12px">' + item.revenueShare + '%</td>'
+      + '<td style="text-align:right">' + item.visits.toLocaleString('es-AR') + '</td>'
+      + '<td style="text-align:right"><span style="background:rgba(0,0,0,.2);color:' + convColor + ';padding:2px 7px;border-radius:4px;font-size:12px;font-weight:600">' + item.conversion + '%</span></td>'
+      + '<td style="text-align:right">' + item.adsClicks.toLocaleString('es-AR') + '</td>'
+      + '<td style="text-align:right"><span style="background:rgba(0,0,0,.2);color:' + adsConvColor + ';padding:2px 7px;border-radius:4px;font-size:12px;font-weight:600">' + item.adsConversion + '%</span></td>'
+      + '</tr>';
+  }).join('');
+
+  el.innerHTML = '<div style="padding:12px 16px;font-size:12px;color:var(--muted);border-bottom:1px solid rgba(255,255,255,.06)">'
+    + allItems.length + ' publicaciones · ' + allItems.filter(i => i.hasAds).length + ' con Ads · ' + days + ' días</div>'
+    + '<div style="overflow-x:auto"><table id="pubsTable">'
+    + '<thead><tr>'
+    + '<th style="cursor:pointer" onclick="sortPubs('id')">MLA ↕</th>'
+    + '<th style="cursor:pointer" onclick="sortPubs('title')">Título ↕</th>'
+    + '<th>Cuenta</th>'
+    + '<th>Ads</th>'
+    + '<th style="text-align:right;cursor:pointer" onclick="sortPubs('units')">Unidades ↕</th>'
+    + '<th style="text-align:right;cursor:pointer" onclick="sortPubs('revenue')">Facturación ↕</th>'
+    + '<th style="text-align:right;cursor:pointer" onclick="sortPubs('adsSales')">Ventas Ads ↕</th>'
+    + '<th style="text-align:right;cursor:pointer" onclick="sortPubs('revenueShare')">% Aporte ↕</th>'
+    + '<th style="text-align:right;cursor:pointer" onclick="sortPubs('visits')">Visitas ↕</th>'
+    + '<th style="text-align:right;cursor:pointer" onclick="sortPubs('conversion')">Conv. ↕</th>'
+    + '<th style="text-align:right;cursor:pointer" onclick="sortPubs('adsClicks')">Clicks Ads ↕</th>'
+    + '<th style="text-align:right;cursor:pointer" onclick="sortPubs('adsConversion')">Conv. Ads ↕</th>'
+    + '</tr></thead>'
+    + '<tbody>' + rows + '</tbody></table></div>';
+}
+
+function sortPubs(col) {
+  if (!window._pubsData) return;
+  const asc = window._pubsSortCol === col && !window._pubsSortAsc;
+  window._pubsSortCol = col;
+  window._pubsSortAsc = asc;
+  window._pubsData.sort((a, b) => {
+    const va = a[col], vb = b[col];
+    if (typeof va === 'string') return asc ? va.localeCompare(vb) : vb.localeCompare(va);
+    return asc ? va - vb : vb - va;
+  });
+  loadPublicaciones();
 }
 
 function loadVentas() {
