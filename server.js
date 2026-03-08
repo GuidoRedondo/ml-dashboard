@@ -166,32 +166,39 @@ app.get('/api/ads', async (req, res) => {
     const days = parseInt(req.query.days) || 30;
     if (!token) return res.status(400).json({ error: 'token requerido' });
 
-    const headers = { 'Authorization': `Bearer ${token}`, 'api-version': '2' };
+    const h1 = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'Api-Version': '1' };
+    const h2 = { 'Authorization': `Bearer ${token}`, 'api-version': '2' };
+
     const user = await fetch(`${ML_API}/users/me`, { headers: { 'Authorization': `Bearer ${token}` } }).then(r => r.json());
     if (user.error) return res.status(401).json({ error: 'token invalido' });
-    const uid = user.id;
+    const siteId = user.site_id || 'MLA';
+
+    // Step 1: get advertiser_id (may differ from user_id)
+    const advRes = await fetch(`${ML_API}/advertising/advertisers?product_id=PADS`, { headers: h1 });
+    const advData = await advRes.json();
+    const advertisers = advData.advertisers || [];
+    if (!advertisers.length) {
+      return res.json({ summary: { spend:0, clicks:0, impressions:0, sales:0, acos:null, roas:null }, campaigns: [], error: 'no_advertiser' });
+    }
+    // Pick advertiser for this site
+    const adv = advertisers.find(a => a.site_id === siteId) || advertisers[0];
+    const advId = adv.advertiser_id;
 
     const now = new Date();
     const from = new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
     const fromDate = from.toISOString().slice(0, 10);
     const toDate = now.toISOString().slice(0, 10);
-    const metrics = 'clicks,prints,cost,acos,total_amount,roas';
+    const metrics = 'clicks,prints,cost,cpc,acos,direct_amount,indirect_amount,total_amount,direct_units_quantity,units_quantity,cvr,roas';
 
-    const url = `${ML_API}/advertising/advertisers/${uid}/product_ads/campaigns?limit=50&offset=0&date_from=${fromDate}&date_to=${toDate}&metrics=${metrics}`;
-    const campaignsRes = await fetch(url, { headers });
-    const text = await campaignsRes.text();
-    let campaignsData;
-    try { campaignsData = JSON.parse(text); }
-    catch(e) { console.error('Ads parse error, raw:', text.slice(0,500)); return res.status(500).json({ error: 'parse error', raw: text.slice(0,500) }); }
+    // Step 2: get campaigns with metrics
+    const url = `${ML_API}/advertising/${siteId}/advertisers/${advId}/product_ads/campaigns/search?limit=50&offset=0&date_from=${fromDate}&date_to=${toDate}&metrics=${metrics}&metrics_summary=true`;
+    const text = await fetch(url, { headers: h2 }).then(r => r.text());
+    let data;
+    try { data = JSON.parse(text); }
+    catch(e) { return res.status(500).json({ error: 'parse error', raw: text.slice(0, 300) }); }
 
-    console.log('Ads URL:', url);
-    console.log('Ads response status keys:', Object.keys(campaignsData));
-
-    const campaigns = campaignsData.results || [];
-
-    if (!campaigns.length) {
-      return res.json({ summary: { spend:0, clicks:0, impressions:0, sales:0, acos:null, roas:null }, campaigns: [], raw: campaignsData });
-    }
+    const campaigns = data.results || [];
+    const summary = data.metrics_summary || {};
 
     const enriched = campaigns.map(c => {
       const m = c.metrics || {};
@@ -202,32 +209,32 @@ app.get('/api/ads', async (req, res) => {
         name: c.name,
         status: c.status,
         budget: c.budget,
+        strategy: c.strategy,
         spend,
         clicks: m.clicks || 0,
         impressions: m.prints || 0,
         sales,
         direct_sales: m.direct_amount || 0,
         units: m.units_quantity || 0,
-        acos: spend && sales ? ((spend / sales) * 100).toFixed(1) : null,
+        acos: spend && sales ? ((spend / sales) * 100).toFixed(1) : (m.acos || null),
         roas: m.roas || null
       };
     });
 
-    const totalSpend = enriched.reduce((s, c) => s + c.spend, 0);
-    const totalClicks = enriched.reduce((s, c) => s + c.clicks, 0);
-    const totalImpressions = enriched.reduce((s, c) => s + c.impressions, 0);
-    const totalSales = enriched.reduce((s, c) => s + c.sales, 0);
-
     res.json({
       summary: {
-        spend: totalSpend,
-        clicks: totalClicks,
-        impressions: totalImpressions,
-        sales: totalSales,
-        acos: totalSpend && totalSales ? ((totalSpend / totalSales) * 100).toFixed(1) : null,
-        roas: totalSpend ? (totalSales / totalSpend).toFixed(2) : null
+        spend: summary.cost || 0,
+        clicks: summary.clicks || 0,
+        impressions: summary.prints || 0,
+        sales: summary.total_amount || 0,
+        direct_sales: summary.direct_amount || 0,
+        units: summary.units_quantity || 0,
+        acos: summary.acos || null,
+        roas: summary.roas || null,
+        cvr: summary.cvr || null
       },
-      campaigns: enriched
+      campaigns: enriched,
+      advertiser: adv
     });
   } catch (e) {
     console.error('Ads error:', e);
