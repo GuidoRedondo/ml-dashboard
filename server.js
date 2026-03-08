@@ -213,11 +213,11 @@ app.get('/api/ads', async (req, res) => {
         spend,
         clicks: m.clicks || 0,
         impressions: m.prints || 0,
-        sales,
-        direct_sales: m.direct_amount || 0,
-        units: m.units_quantity || 0,
-        acos: spend && sales ? ((spend / sales) * 100).toFixed(1) : (m.acos || null),
-        roas: m.roas || null
+        sales: m.direct_amount || 0,
+        total_sales: sales,
+        units: m.direct_units_quantity || 0,
+        acos: spend && (m.direct_amount||0) ? ((spend / (m.direct_amount||0)) * 100).toFixed(1) : (m.acos || null),
+        roas: spend && (m.direct_amount||0) ? ((m.direct_amount||0) / spend).toFixed(2) : (m.roas || null)
       };
     });
 
@@ -226,11 +226,11 @@ app.get('/api/ads', async (req, res) => {
         spend: summary.cost || 0,
         clicks: summary.clicks || 0,
         impressions: summary.prints || 0,
-        sales: summary.total_amount || 0,
-        direct_sales: summary.direct_amount || 0,
-        units: summary.units_quantity || 0,
-        acos: summary.acos || null,
-        roas: summary.roas || null,
+        sales: summary.direct_amount || 0,
+        total_sales: summary.total_amount || 0,
+        units: summary.direct_units_quantity || 0,
+        acos: summary.cost && summary.direct_amount ? ((summary.cost / summary.direct_amount) * 100).toFixed(1) : (summary.acos || null),
+        roas: summary.cost && summary.direct_amount ? (summary.direct_amount / summary.cost).toFixed(2) : (summary.roas || null),
         cvr: summary.cvr || null
       },
       campaigns: enriched,
