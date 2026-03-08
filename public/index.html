@@ -505,6 +505,8 @@
       <div class="kpi"><div class="kpi-label">🖱️ Clicks</div><div class="kpi-val" id="ads-clicks">—</div><div class="kpi-delta" id="ads-clicks-d">Total de clicks</div><div class="kpi-bg">🖱️</div></div>
       <div class="kpi"><div class="kpi-label">👁️ Impresiones</div><div class="kpi-val" id="ads-impr">—</div><div class="kpi-delta" id="ads-impr-d">Veces mostrado</div><div class="kpi-bg">👁️</div></div>
       <div class="kpi"><div class="kpi-label">📈 Venta por Ads</div><div class="kpi-val" id="ads-salesshare">—</div><div class="kpi-delta" id="ads-salesshare-d">Ventas Ads / Facturación total</div><div class="kpi-bg">📈</div></div>
+      <div class="kpi"><div class="kpi-label">🎣 CTR</div><div class="kpi-val" id="ads-ctr">—</div><div class="kpi-delta" id="ads-ctr-d">Clicks / Impresiones</div><div class="kpi-bg">🎣</div></div>
+      <div class="kpi"><div class="kpi-label">💵 CPC</div><div class="kpi-val" id="ads-cpc">—</div><div class="kpi-delta" id="ads-cpc-d">Inversión / Clicks</div><div class="kpi-bg">💵</div></div>
     </div>
     <div class="card">
       <div id="adsContent" style="color:var(--muted);font-size:13px;padding:20px;text-align:center">
@@ -1576,6 +1578,14 @@ async function loadAds() {
   document.getElementById('ads-roas').textContent   = roas;
   document.getElementById('ads-clicks').textContent = totalClicks.toLocaleString('es-AR');
   document.getElementById('ads-impr').textContent   = totalImpr >= 1000000 ? (totalImpr/1000000).toFixed(2) + 'M' : totalImpr.toLocaleString('es-AR');
+
+  const ctrNum = totalClicks && totalImpr ? (totalClicks / totalImpr) * 100 : null;
+  const cpcNum = totalSpend && totalClicks ? totalSpend / totalClicks : null;
+  document.getElementById('ads-ctr').textContent = ctrNum ? ctrNum.toFixed(2) + '%' : '—';
+  document.getElementById('ads-ctr-d').textContent = ctrNum ? (ctrNum >= 1 ? '✅ Buen CTR' : ctrNum >= 0.5 ? '⚠️ Mejorable' : '🔴 Bajo') : 'Clicks / Impresiones';
+  document.getElementById('ads-cpc').textContent = cpcNum ? '$' + Math.round(cpcNum).toLocaleString('es-AR') : '—';
+  document.getElementById('ads-cpc-d').textContent = 'Costo por click';
+
   document.getElementById('kpi-ads').textContent = fmt(totalSpend);
   document.getElementById('kpi-ads-delta').textContent = 'TACOS: ' + tacos;
 
