@@ -1,31 +1,223 @@
 const express = require('express');
 const cors = require('cors');
 const fetch = require('node-fetch');
+const { Pool } = require('pg');
+const crypto = require('crypto');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 const ML_API = 'https://api.mercadolibre.com';
 
+// ── DATABASE ──────────────────────────────────────────────────────────────────
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false }
+});
+
+async function initDB() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS users (
+      id SERIAL PRIMARY KEY,
+      username VARCHAR(50) UNIQUE NOT NULL,
+      password_hash VARCHAR(64) NOT NULL,
+      role VARCHAR(20) DEFAULT 'consultant',
+      created_at TIMESTAMP DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS clients (
+      id SERIAL PRIMARY KEY,
+      name VARCHAR(100) NOT NULL,
+      ml_user_id BIGINT UNIQUE,
+      access_token TEXT,
+      refresh_token TEXT,
+      token_expires_at TIMESTAMP,
+      app_id VARCHAR(50),
+      client_secret VARCHAR(100),
+      site_id VARCHAR(10) DEFAULT 'MLA',
+      active BOOLEAN DEFAULT true,
+      created_at TIMESTAMP DEFAULT NOW(),
+      updated_at TIMESTAMP DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS sessions (
+      id VARCHAR(64) PRIMARY KEY,
+      user_id INTEGER REFERENCES users(id),
+      created_at TIMESTAMP DEFAULT NOW(),
+      expires_at TIMESTAMP DEFAULT NOW() + INTERVAL '7 days'
+    );
+  `);
+
+  // Create default admin if not exists (password: admin123 - change after first login)
+  const hash = crypto.createHash('sha256').update('admin123').digest('hex');
+  await pool.query(`
+    INSERT INTO users (username, password_hash, role)
+    VALUES ('admin', $1, 'admin')
+    ON CONFLICT (username) DO NOTHING
+  `, [hash]);
+  console.log('DB initialized');
+}
+
+// ── MIDDLEWARE ────────────────────────────────────────────────────────────────
 app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static('public'));
 
-app.post('/api/token', async (req, res) => {
+async function requireAuth(req, res, next) {
+  const sessionId = req.headers['x-session-id'];
+  if (!sessionId) return res.status(401).json({ error: 'No autenticado' });
+  const result = await pool.query(
+    'SELECT u.* FROM sessions s JOIN users u ON s.user_id = u.id WHERE s.id = $1 AND s.expires_at > NOW()',
+    [sessionId]
+  );
+  if (!result.rows.length) return res.status(401).json({ error: 'Sesión expirada' });
+  req.user = result.rows[0];
+  next();
+}
+
+// ── AUTH ENDPOINTS ────────────────────────────────────────────────────────────
+app.post('/api/login', async (req, res) => {
   try {
-    const body = req.body;
-    const params = { grant_type: body.grant_type || 'authorization_code', client_id: body.client_id, client_secret: body.client_secret };
-    if (body.grant_type === 'refresh_token') { params.refresh_token = body.refresh_token; }
-    else { params.code = body.code; params.redirect_uri = body.redirect_uri; }
-    const r = await fetch(`${ML_API}/oauth/token`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json' },
-      body: new URLSearchParams(params).toString()
-    });
-    res.json(await r.json());
-  } catch (e) { res.status(500).json({ error: e.message }); }
+    const { username, password } = req.body;
+    const hash = crypto.createHash('sha256').update(password).digest('hex');
+    const result = await pool.query('SELECT * FROM users WHERE username = $1 AND password_hash = $2', [username, hash]);
+    if (!result.rows.length) return res.status(401).json({ error: 'Usuario o contraseña incorrectos' });
+    const sessionId = crypto.randomBytes(32).toString('hex');
+    await pool.query('INSERT INTO sessions (id, user_id) VALUES ($1, $2)', [sessionId, result.rows[0].id]);
+    res.json({ sessionId, username: result.rows[0].username, role: result.rows[0].role });
+  } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
+app.post('/api/logout', requireAuth, async (req, res) => {
+  await pool.query('DELETE FROM sessions WHERE id = $1', [req.headers['x-session-id']]);
+  res.json({ ok: true });
+});
+
+app.post('/api/change-password', requireAuth, async (req, res) => {
+  try {
+    const { newPassword } = req.body;
+    const hash = crypto.createHash('sha256').update(newPassword).digest('hex');
+    await pool.query('UPDATE users SET password_hash = $1 WHERE id = $2', [hash, req.user.id]);
+    res.json({ ok: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── CLIENT MANAGEMENT ─────────────────────────────────────────────────────────
+app.get('/api/clients', requireAuth, async (req, res) => {
+  try {
+    const result = await pool.query('SELECT id, name, ml_user_id, site_id, active, token_expires_at, updated_at FROM clients ORDER BY name');
+    res.json(result.rows);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/clients', requireAuth, async (req, res) => {
+  try {
+    const { name, app_id, client_secret } = req.body;
+    const result = await pool.query(
+      'INSERT INTO clients (name, app_id, client_secret) VALUES ($1, $2, $3) RETURNING id, name',
+      [name, app_id, client_secret]
+    );
+    res.json(result.rows[0]);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+app.delete('/api/clients/:id', requireAuth, async (req, res) => {
+  try {
+    await pool.query('DELETE FROM clients WHERE id = $1', [req.params.id]);
+    res.json({ ok: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// Generate OAuth link for a client
+app.get('/api/clients/:id/auth-link', requireAuth, async (req, res) => {
+  try {
+    const result = await pool.query('SELECT * FROM clients WHERE id = $1', [req.params.id]);
+    if (!result.rows.length) return res.status(404).json({ error: 'Cliente no encontrado' });
+    const client = result.rows[0];
+    const redirectUri = process.env.REDIRECT_URI || 'https://ml-dashboard-production.up.railway.app/oauth/callback';
+    const link = `https://auth.mercadolibre.com.ar/authorization?response_type=code&client_id=${client.app_id}&redirect_uri=${encodeURIComponent(redirectUri)}&state=${client.id}`;
+    res.json({ link });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// OAuth callback - saves tokens automatically
+app.get('/oauth/callback', async (req, res) => {
+  try {
+    const { code, state } = req.query;
+    if (!code || !state) return res.send('<h2>Error: faltan parámetros</h2>');
+    const clientId = parseInt(state);
+    const clientResult = await pool.query('SELECT * FROM clients WHERE id = $1', [clientId]);
+    if (!clientResult.rows.length) return res.send('<h2>Error: cliente no encontrado</h2>');
+    const client = clientResult.rows[0];
+    const redirectUri = process.env.REDIRECT_URI || 'https://ml-dashboard-production.up.railway.app/oauth/callback';
+
+    const tokenRes = await fetch(`${ML_API}/oauth/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ grant_type: 'authorization_code', client_id: client.app_id, client_secret: client.client_secret, code, redirect_uri: redirectUri }).toString()
+    });
+    const tokens = await tokenRes.json();
+    if (tokens.error) return res.send(`<h2>Error: ${tokens.message}</h2>`);
+
+    const userRes = await fetch(`${ML_API}/users/me`, { headers: { 'Authorization': `Bearer ${tokens.access_token}` } });
+    const user = await userRes.json();
+    const expiresAt = new Date(Date.now() + (tokens.expires_in || 21600) * 1000);
+
+    await pool.query(`
+      UPDATE clients SET
+        ml_user_id = $1, access_token = $2, refresh_token = $3,
+        token_expires_at = $4, site_id = $5, updated_at = NOW()
+      WHERE id = $6
+    `, [user.id, tokens.access_token, tokens.refresh_token, expiresAt, user.site_id || 'MLA', clientId]);
+
+    res.send(`<!DOCTYPE html><html><body style="font-family:sans-serif;text-align:center;padding:60px;background:#0a0a0a;color:#fff">
+      <h1 style="color:#00e676">✅ ¡Conectado exitosamente!</h1>
+      <p style="color:#aaa">La cuenta <strong style="color:#fff">${user.nickname}</strong> fue vinculada al dashboard.</p>
+      <p style="color:#666;font-size:14px">Podés cerrar esta ventana.</p>
+    </body></html>`);
+  } catch(e) {
+    res.send(`<h2>Error: ${e.message}</h2>`);
+  }
+});
+
+// Auto-refresh tokens (called by cron or on demand)
+async function refreshClientToken(client) {
+  try {
+    const tokenRes = await fetch(`${ML_API}/oauth/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ grant_type: 'refresh_token', client_id: client.app_id, client_secret: client.client_secret, refresh_token: client.refresh_token }).toString()
+    });
+    const tokens = await tokenRes.json();
+    if (tokens.error) { console.error(`Refresh failed for client ${client.id}:`, tokens.message); return false; }
+    const expiresAt = new Date(Date.now() + (tokens.expires_in || 21600) * 1000);
+    await pool.query(`UPDATE clients SET access_token = $1, refresh_token = $2, token_expires_at = $3, updated_at = NOW() WHERE id = $4`,
+      [tokens.access_token, tokens.refresh_token, expiresAt, client.id]);
+    console.log(`Token refreshed for client ${client.id}`);
+    return tokens.access_token;
+  } catch(e) { console.error(`Refresh error for client ${client.id}:`, e.message); return false; }
+}
+
+// Auto-refresh all tokens every 5 hours
+setInterval(async () => {
+  try {
+    const result = await pool.query(`SELECT * FROM clients WHERE active = true AND refresh_token IS NOT NULL AND token_expires_at < NOW() + INTERVAL '2 hours'`);
+    for (const client of result.rows) { await refreshClientToken(client); }
+  } catch(e) { console.error('Auto-refresh error:', e.message); }
+}, 5 * 60 * 60 * 1000);
+
+// Get valid token for a client (refreshing if needed)
+async function getClientToken(clientId) {
+  const result = await pool.query('SELECT * FROM clients WHERE id = $1', [clientId]);
+  if (!result.rows.length) return null;
+  const client = result.rows[0];
+  if (!client.refresh_token) return null;
+  if (client.token_expires_at && new Date(client.token_expires_at) < new Date(Date.now() + 10 * 60 * 1000)) {
+    const newToken = await refreshClientToken(client);
+    return newToken || client.access_token;
+  }
+  return client.access_token;
+}
+
+// ── DASHBOARD DATA (by client ID) ─────────────────────────────────────────────
 async function fetchAllOrders(uid, headers, fromStr, toStr) {
   try {
     const base = `${ML_API}/orders/search?seller=${uid}&order.status=paid&sort=date_desc&limit=50&order.date_created.from=${encodeURIComponent(fromStr)}&order.date_created.to=${encodeURIComponent(toStr)}`;
@@ -38,11 +230,9 @@ async function fetchAllOrders(uid, headers, fromStr, toStr) {
       const maxPages = Math.min(Math.ceil(total / 50), 40);
       for (let b = 1; b < maxPages; b += 5) {
         const end = Math.min(b + 5, maxPages);
-        const batch = await Promise.all(
-          Array.from({length: end - b}, (_, i) =>
-            fetch(`${base}&offset=${(b+i)*50}`, { headers }).then(r => r.json()).catch(() => ({results:[]}))
-          )
-        );
+        const batch = await Promise.all(Array.from({length: end - b}, (_, i) =>
+          fetch(`${base}&offset=${(b+i)*50}`, { headers }).then(r => r.json()).catch(() => ({results:[]}))
+        ));
         batch.forEach(p => { if (p.results) { p.results.forEach(o => { amount += parseFloat(o.total_amount)||0; }); all = all.concat(p.results); } });
       }
     }
@@ -52,12 +242,9 @@ async function fetchAllOrders(uid, headers, fromStr, toStr) {
 
 async function fetchVisits(itemIds, days, headers) {
   try {
-    const results = await Promise.all(
-      itemIds.map(id =>
-        fetch(`${ML_API}/items/${id}/visits/time_window?last=${days}&unit=day`, { headers })
-          .then(r => r.json()).catch(() => null)
-      )
-    );
+    const results = await Promise.all(itemIds.map(id =>
+      fetch(`${ML_API}/items/${id}/visits/time_window?last=${days}&unit=day`, { headers }).then(r => r.json()).catch(() => null)
+    ));
     const map = {};
     results.forEach((v, i) => {
       if (!v) return;
@@ -71,11 +258,14 @@ async function fetchVisits(itemIds, days, headers) {
   } catch(e) { return {}; }
 }
 
-app.get('/api/dashboard', async (req, res) => {
+app.get('/api/dashboard', requireAuth, async (req, res) => {
   try {
-    const token = req.query.token;
+    const clientId = parseInt(req.query.client_id);
     const days = parseInt(req.query.days) || 30;
-    if (!token) return res.status(400).json({ error: 'token requerido' });
+    if (!clientId) return res.status(400).json({ error: 'client_id requerido' });
+
+    const token = await getClientToken(clientId);
+    if (!token) return res.status(401).json({ error: 'Cliente no conectado o token expirado' });
 
     const headers = { 'Authorization': `Bearer ${token}` };
     const user = await fetch(`${ML_API}/users/me`, { headers }).then(r => r.json());
@@ -112,17 +302,11 @@ app.get('/api/dashboard', async (req, res) => {
       const allVisitsMap = {}, allPrevVisitsMap = {};
       for (let i = 0; i < soldItemIds.length; i += 20) {
         const batch = soldItemIds.slice(i, i + 20);
-        const [vm, pvm] = await Promise.all([
-          fetchVisits(batch, days, headers),
-          fetchVisits(batch, days * 2, headers)
-        ]);
-        Object.assign(allVisitsMap, vm);
-        Object.assign(allPrevVisitsMap, pvm);
+        const [vm, pvm] = await Promise.all([fetchVisits(batch, days, headers), fetchVisits(batch, days * 2, headers)]);
+        Object.assign(allVisitsMap, vm); Object.assign(allPrevVisitsMap, pvm);
       }
       totalVisits = Object.values(allVisitsMap).reduce((s, v) => s + v, 0);
-      const allTimeVisits = Object.values(allPrevVisitsMap).reduce((s, v) => s + v, 0);
-      prevTotalVisits = Math.max(0, allTimeVisits - totalVisits);
-
+      prevTotalVisits = Math.max(0, Object.values(allPrevVisitsMap).reduce((s, v) => s + v, 0) - totalVisits);
       topItems = Object.values(salesByItem).map(item => {
         const curVisits = allVisitsMap[item.id] || 0;
         const conv = curVisits > 0 ? ((item.units / curVisits) * 100).toFixed(1) : '0.0';
@@ -137,192 +321,103 @@ app.get('/api/dashboard', async (req, res) => {
     res.json({
       user,
       stats: {
-        total_orders: curData.orders.length,
-        total_amount: curData.amount,
+        total_orders: curData.orders.length, total_amount: curData.amount,
         total_items: (itemsData.paging && itemsData.paging.total) || 0,
-        total_visits: totalVisits,
-        conversion_rate: curConv,
+        total_visits: totalVisits, conversion_rate: curConv,
         prev: { total_orders: prevData.orders.length, total_amount: prevData.amount, total_visits: prevTotalVisits, conversion_rate: prevConv },
-        change: {
-          orders: pct(curData.orders.length, prevData.orders.length),
-          amount: pct(curData.amount, prevData.amount),
-          visits: pct(totalVisits, prevTotalVisits),
-          conversion: pct(parseFloat(curConv), parseFloat(prevConv))
-        }
+        change: { orders: pct(curData.orders.length, prevData.orders.length), amount: pct(curData.amount, prevData.amount), visits: pct(totalVisits, prevTotalVisits), conversion: pct(parseFloat(curConv), parseFloat(prevConv)) }
       },
       recent_orders: curData.orders.slice(0, 20),
       reputation: user.seller_reputation,
       top_items: topItems
     });
-  } catch (e) {
-    console.error('Dashboard error:', e);
-    res.status(500).json({ error: e.message });
-  }
+  } catch(e) { console.error('Dashboard error:', e); res.status(500).json({ error: e.message }); }
 });
 
-app.get('/api/ads', async (req, res) => {
+app.get('/api/ads', requireAuth, async (req, res) => {
   try {
-    const token = req.query.token;
+    const clientId = parseInt(req.query.client_id);
     const days = parseInt(req.query.days) || 30;
-    if (!token) return res.status(400).json({ error: 'token requerido' });
+    const token = await getClientToken(clientId);
+    if (!token) return res.status(401).json({ error: 'Cliente no conectado' });
 
     const h1 = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'Api-Version': '1' };
     const h2 = { 'Authorization': `Bearer ${token}`, 'api-version': '2' };
-
     const user = await fetch(`${ML_API}/users/me`, { headers: { 'Authorization': `Bearer ${token}` } }).then(r => r.json());
-    if (user.error) return res.status(401).json({ error: 'token invalido' });
     const siteId = user.site_id || 'MLA';
 
-    // Step 1: get advertiser_id (may differ from user_id)
-    const advRes = await fetch(`${ML_API}/advertising/advertisers?product_id=PADS`, { headers: h1 });
-    const advData = await advRes.json();
+    const advData = await fetch(`${ML_API}/advertising/advertisers?product_id=PADS`, { headers: h1 }).then(r => r.json());
     const advertisers = advData.advertisers || [];
-    if (!advertisers.length) {
-      return res.json({ summary: { spend:0, clicks:0, impressions:0, sales:0, acos:null, roas:null }, campaigns: [], error: 'no_advertiser' });
-    }
-    // Pick advertiser for this site
+    if (!advertisers.length) return res.json({ summary: { spend:0, clicks:0, impressions:0, sales:0 }, campaigns: [] });
     const adv = advertisers.find(a => a.site_id === siteId) || advertisers[0];
     const advId = adv.advertiser_id;
 
     const now = new Date();
     const from = new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
-    const fromDate = from.toISOString().slice(0, 10);
-    const toDate = now.toISOString().slice(0, 10);
+    const fromDate = from.toISOString().slice(0,10);
+    const toDate = now.toISOString().slice(0,10);
     const metrics = 'clicks,prints,cost,cpc,acos,direct_amount,indirect_amount,total_amount,direct_units_quantity,units_quantity,cvr,roas';
 
-    // Step 2: get campaigns with metrics
     const url = `${ML_API}/advertising/${siteId}/advertisers/${advId}/product_ads/campaigns/search?limit=50&offset=0&date_from=${fromDate}&date_to=${toDate}&metrics=${metrics}&metrics_summary=true`;
     const text = await fetch(url, { headers: h2 }).then(r => r.text());
     let data;
-    try { data = JSON.parse(text); }
-    catch(e) { return res.status(500).json({ error: 'parse error', raw: text.slice(0, 300) }); }
+    try { data = JSON.parse(text); } catch(e) { return res.status(500).json({ error: 'parse error' }); }
 
     const campaigns = data.results || [];
     const summary = data.metrics_summary || {};
 
-    const enriched = campaigns.map(c => {
-      const m = c.metrics || {};
-      const spend = m.cost || 0;
-      const sales = m.total_amount || 0;
-      return {
-        id: c.id,
-        name: c.name,
-        status: c.status,
-        budget: c.budget,
-        strategy: c.strategy,
-        spend,
-        clicks: m.clicks || 0,
-        impressions: m.prints || 0,
-        sales: m.total_amount || 0,
-        units: m.units_quantity || 0,
-        acos: spend && (m.total_amount||0) ? ((spend / (m.total_amount||0)) * 100).toFixed(1) : (m.acos || null),
-        roas: spend && (m.total_amount||0) ? ((m.total_amount||0) / spend).toFixed(2) : (m.roas || null)
-      };
-    });
-
     res.json({
-      summary: {
-        spend: summary.cost || 0,
-        clicks: summary.clicks || 0,
-        impressions: summary.prints || 0,
-        sales: summary.total_amount || 0,
-        units: summary.units_quantity || 0,
-        acos: summary.cost && summary.total_amount ? ((summary.cost / summary.total_amount) * 100).toFixed(1) : (summary.acos || null),
-        roas: summary.cost && summary.total_amount ? (summary.total_amount / summary.cost).toFixed(2) : (summary.roas || null),
-        cvr: summary.cvr || null
-      },
-      campaigns: enriched,
-      advertiser: adv
+      summary: { spend: summary.cost||0, clicks: summary.clicks||0, impressions: summary.prints||0, sales: summary.total_amount||0, acos: summary.cost&&summary.total_amount?((summary.cost/summary.total_amount)*100).toFixed(1):null, roas: summary.cost&&summary.total_amount?(summary.total_amount/summary.cost).toFixed(2):null },
+      campaigns: campaigns.map(c => {
+        const m = c.metrics || {};
+        const spend = m.cost||0, sales = m.total_amount||0;
+        return { id: c.id, name: c.name, status: c.status, budget: c.budget, strategy: c.strategy, spend, clicks: m.clicks||0, impressions: m.prints||0, sales, acos: spend&&sales?((spend/sales)*100).toFixed(1):null, roas: spend&&sales?(sales/spend).toFixed(2):null };
+      })
     });
-  } catch (e) {
-    console.error('Ads error:', e);
-    res.status(500).json({ error: e.message });
-  }
-});
-
-
-app.get('/api/ads-debug', async (req, res) => {
-  try {
-    const token = req.query.token;
-    const h1 = { 'Authorization': `Bearer ${token}` };
-    const h2 = { 'Authorization': `Bearer ${token}`, 'api-version': '2' };
-    const user = await fetch(`${ML_API}/users/me`, { headers: h1 }).then(r => r.json());
-    const uid = user.id;
-    const results = {};
-    const tests = [
-      { url: `/advertising/advertisers/${uid}/product_ads/campaigns?limit=2&date_from=2026-02-01&date_to=2026-03-08&metrics=clicks,cost`, headers: h2 },
-      { url: `/advertising/advertisers/${uid}/product_ads/campaigns?limit=2`, headers: h2 },
-      { url: `/advertising/advertisers/${uid}/product_ads/campaigns?limit=2`, headers: h1 },
-    ];
-    for (const t of tests) {
-      try {
-        const r = await fetch(ML_API + t.url, { headers: t.headers });
-        const text = await r.text();
-        results[t.url] = { status: r.status, raw: text.slice(0, 300) };
-      } catch(e) { results[t.url] = { error: e.message }; }
-    }
-    res.json({ uid, results });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
-
-app.get('/api/ads-items', async (req, res) => {
+app.get('/api/ads-items', requireAuth, async (req, res) => {
   try {
-    const token = req.query.token;
-    if (!token) return res.status(400).json({ error: 'token requerido' });
-
+    const clientId = parseInt(req.query.client_id);
+    const token = await getClientToken(clientId);
+    if (!token) return res.json({ ads_item_ids: [] });
     const h1 = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'Api-Version': '1' };
     const h2 = { 'Authorization': `Bearer ${token}`, 'api-version': '2' };
-
     const user = await fetch(`${ML_API}/users/me`, { headers: { 'Authorization': `Bearer ${token}` } }).then(r => r.json());
-    if (user.error) return res.status(401).json({ error: 'token invalido' });
     const siteId = user.site_id || 'MLA';
-
-    const advRes = await fetch(`${ML_API}/advertising/advertisers?product_id=PADS`, { headers: h1 });
-    const advData = await advRes.json();
+    const advData = await fetch(`${ML_API}/advertising/advertisers?product_id=PADS`, { headers: h1 }).then(r => r.json());
     const advertisers = advData.advertisers || [];
     if (!advertisers.length) return res.json({ ads_item_ids: [] });
     const adv = advertisers.find(a => a.site_id === siteId) || advertisers[0];
-    const advId = adv.advertiser_id;
-
-    // Get all active ads items (paginate up to 500)
     const adsItemIds = new Set();
     let offset = 0;
-    const limit = 100;
     while (true) {
-      const url = `${ML_API}/advertising/${siteId}/advertisers/${advId}/product_ads/ads/search?limit=${limit}&offset=${offset}&filters[statuses]=active,paused`;
+      const url = `${ML_API}/advertising/${siteId}/advertisers/${adv.advertiser_id}/product_ads/ads/search?limit=100&offset=${offset}&filters[statuses]=active,paused`;
       const text = await fetch(url, { headers: h2 }).then(r => r.text());
-      let data;
-      try { data = JSON.parse(text); } catch(e) { break; }
+      let data; try { data = JSON.parse(text); } catch(e) { break; }
       const results = data.results || [];
       results.forEach(item => { if (item.item_id) adsItemIds.add(item.item_id); });
-      if (results.length < limit) break;
-      offset += limit;
+      if (results.length < 100) break;
+      offset += 100;
       if (offset >= 500) break;
     }
-
-    res.json({ ads_item_ids: Array.from(adsItemIds), advertiser_id: advId });
-  } catch (e) {
-    console.error('Ads items error:', e);
-    res.status(500).json({ error: e.message });
-  }
+    res.json({ ads_item_ids: Array.from(adsItemIds) });
+  } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
-
-app.get('/api/items-full', async (req, res) => {
+app.get('/api/items-full', requireAuth, async (req, res) => {
   try {
-    const token = req.query.token;
+    const clientId = parseInt(req.query.client_id);
     const days = parseInt(req.query.days) || 30;
-    if (!token) return res.status(400).json({ error: 'token requerido' });
+    const token = await getClientToken(clientId);
+    if (!token) return res.status(401).json({ error: 'Cliente no conectado' });
 
+    const headers = { 'Authorization': `Bearer ${token}` };
     const h1 = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'Api-Version': '1' };
     const h2 = { 'Authorization': `Bearer ${token}`, 'api-version': '2' };
-    const hb = { 'Authorization': `Bearer ${token}` };
-
-    const user = await fetch(`${ML_API}/users/me`, { headers: hb }).then(r => r.json());
-    if (user.error) return res.status(401).json({ error: 'token invalido' });
-    const uid = user.id;
-    const siteId = user.site_id || 'MLA';
+    const user = await fetch(`${ML_API}/users/me`, { headers }).then(r => r.json());
+    const uid = user.id; const siteId = user.site_id || 'MLA';
 
     const now = new Date();
     const curFrom = new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
@@ -330,99 +425,79 @@ app.get('/api/items-full', async (req, res) => {
     const fromDate = curFrom.toISOString().slice(0,10);
     const toDate = now.toISOString().slice(0,10);
 
-    // 1. Fetch all orders for the period
-    const { orders, amount: totalAmount } = await fetchAllOrders(uid, hb, fmt(curFrom), fmt(now));
-
-    // Build sales+revenue per item from orders
+    const { orders } = await fetchAllOrders(uid, headers, fmt(curFrom), fmt(now));
     const salesByItem = {};
     orders.forEach(order => {
       (order.order_items || []).forEach(oi => {
-        const id = oi.item && oi.item.id;
-        const title = oi.item && oi.item.title;
+        const id = oi.item && oi.item.id; const title = oi.item && oi.item.title;
         if (!id) return;
-        if (!salesByItem[id]) salesByItem[id] = { id, title: title || id, units: 0, revenue: 0 };
-        salesByItem[id].units += oi.quantity || 0;
-        salesByItem[id].revenue += (parseFloat(oi.unit_price) || 0) * (oi.quantity || 0);
+        if (!salesByItem[id]) salesByItem[id] = { id, title: title||id, units: 0, revenue: 0 };
+        salesByItem[id].units += oi.quantity||0;
+        salesByItem[id].revenue += (parseFloat(oi.unit_price)||0) * (oi.quantity||0);
       });
     });
 
     const soldItemIds = Object.keys(salesByItem);
     const totalRevenue = Object.values(salesByItem).reduce((s, i) => s + i.revenue, 0);
 
-    // 2. Get advertiser for ads data
     let advId = null;
     try {
       const advData = await fetch(`${ML_API}/advertising/advertisers?product_id=PADS`, { headers: h1 }).then(r => r.json());
-      const advertisers = advData.advertisers || [];
-      const adv = advertisers.find(a => a.site_id === siteId) || advertisers[0];
+      const adv = (advData.advertisers||[]).find(a => a.site_id === siteId) || (advData.advertisers||[])[0];
       if (adv) advId = adv.advertiser_id;
-    } catch(e) { console.error('Advertiser fetch error:', e.message); }
+    } catch(e) {}
 
-    // 3. Get ads metrics per item (batches of 100)
     const adsByItem = {};
     if (advId && soldItemIds.length > 0) {
       const metrics = 'clicks,prints,cost,acos,direct_amount,total_amount,units_quantity';
       for (let i = 0; i < Math.min(soldItemIds.length, 300); i += 100) {
-        const batch = soldItemIds.slice(i, i + 100);
+        const batch = soldItemIds.slice(i, i+100);
         const idsFilter = batch.map(id => `filters[item_id]=${id}`).join('&');
         const url = `${ML_API}/advertising/${siteId}/advertisers/${advId}/product_ads/ads/search?limit=100&offset=0&date_from=${fromDate}&date_to=${toDate}&metrics=${metrics}&${idsFilter}`;
         try {
-          const text = await fetch(url, { headers: h2 }).then(r => r.text());
-          const data = JSON.parse(text);
-          (data.results || []).forEach(item => {
+          const data = JSON.parse(await fetch(url, { headers: h2 }).then(r => r.text()));
+          (data.results||[]).forEach(item => {
             if (!item.item_id) return;
-            adsByItem[item.item_id] = {
-              hasAds: item.status === 'active' || item.status === 'paused',
-              adsStatus: item.status,
-              clicks: (item.metrics && item.metrics.clicks) || 0,
-              impressions: (item.metrics && item.metrics.prints) || 0,
-              adsSales: (item.metrics && item.metrics.total_amount) || 0,
-              adsCost: (item.metrics && item.metrics.cost) || 0,
-              adsUnits: (item.metrics && item.metrics.units_quantity) || 0,
-            };
+            adsByItem[item.item_id] = { hasAds: true, adsStatus: item.status, clicks: (item.metrics&&item.metrics.clicks)||0, impressions: (item.metrics&&item.metrics.prints)||0, adsSales: (item.metrics&&item.metrics.total_amount)||0, adsCost: (item.metrics&&item.metrics.cost)||0, adsUnits: (item.metrics&&item.metrics.units_quantity)||0 };
           });
-        } catch(e) { console.error('Ads batch error:', e.message); }
+        } catch(e) {}
       }
     }
 
-    // 4. Get visits for sold items (batches of 20)
     const visitsMap = {};
     for (let i = 0; i < Math.min(soldItemIds.length, 300); i += 20) {
-      const batch = soldItemIds.slice(i, i + 20);
-      const vm = await fetchVisits(batch, days, hb);
-      Object.assign(visitsMap, vm);
+      Object.assign(visitsMap, await fetchVisits(soldItemIds.slice(i, i+20), days, headers));
     }
 
-    // 5. Build unified items list
     const items = Object.values(salesByItem).map(item => {
       const ads = adsByItem[item.id] || {};
       const visits = visitsMap[item.id] || 0;
-      const conv = visits > 0 ? ((item.units / visits) * 100).toFixed(1) : 0;
-      const adsConv = ads.clicks > 0 ? ((ads.adsUnits / ads.clicks) * 100).toFixed(1) : 0;
-      const revenueShare = totalRevenue > 0 ? ((item.revenue / totalRevenue) * 100).toFixed(2) : 0;
-      return {
-        id: item.id,
-        title: item.title,
-        units: item.units,
-        revenue: item.revenue,
-        revenueShare: parseFloat(revenueShare),
-        visits,
-        conversion: parseFloat(conv),
-        hasAds: ads.hasAds || false,
-        adsStatus: ads.adsStatus || null,
-        adsClicks: ads.clicks || 0,
-        adsImpressions: ads.impressions || 0,
-        adsSales: ads.adsSales || 0,
-        adsCost: ads.adsCost || 0,
-        adsConversion: parseFloat(adsConv),
+      return { id: item.id, title: item.title, units: item.units, revenue: item.revenue,
+        revenueShare: totalRevenue > 0 ? parseFloat(((item.revenue/totalRevenue)*100).toFixed(2)) : 0,
+        visits, conversion: visits > 0 ? parseFloat(((item.units/visits)*100).toFixed(1)) : 0,
+        hasAds: ads.hasAds||false, adsStatus: ads.adsStatus||null,
+        adsClicks: ads.clicks||0, adsImpressions: ads.impressions||0,
+        adsSales: ads.adsSales||0, adsCost: ads.adsCost||0,
+        adsConversion: ads.clicks > 0 ? parseFloat(((ads.adsUnits||0)/ads.clicks*100).toFixed(1)) : 0
       };
-    }).sort((a, b) => b.revenue - a.revenue);
+    }).sort((a,b) => b.revenue - a.revenue);
 
     res.json({ items, total_revenue: totalRevenue, days });
-  } catch(e) {
-    console.error('items-full error:', e);
-    res.status(500).json({ error: e.message });
-  }
+  } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
-app.listen(PORT, () => console.log(`Puerto ${PORT}`));
+// Keep old token-based endpoints for backward compatibility
+app.post('/api/token', async (req, res) => {
+  try {
+    const body = req.body;
+    const params = { grant_type: body.grant_type||'authorization_code', client_id: body.client_id, client_secret: body.client_secret };
+    if (body.grant_type === 'refresh_token') { params.refresh_token = body.refresh_token; }
+    else { params.code = body.code; params.redirect_uri = body.redirect_uri; }
+    const r = await fetch(`${ML_API}/oauth/token`, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(params).toString() });
+    res.json(await r.json());
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+initDB().then(() => {
+  app.listen(PORT, () => console.log(`Puerto ${PORT}`));
+}).catch(e => { console.error('DB init error:', e); process.exit(1); });
