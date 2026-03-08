@@ -166,8 +166,8 @@ app.get('/api/ads', async (req, res) => {
     const days = parseInt(req.query.days) || 30;
     if (!token) return res.status(400).json({ error: 'token requerido' });
 
-    const headers = { 'Authorization': `Bearer ${token}` };
-    const user = await fetch(`${ML_API}/users/me`, { headers }).then(r => r.json());
+    const headers = { 'Authorization': `Bearer ${token}`, 'api-version': '2' };
+    const user = await fetch(`${ML_API}/users/me`, { headers: { 'Authorization': `Bearer ${token}` } }).then(r => r.json());
     if (user.error) return res.status(401).json({ error: 'token invalido' });
     const uid = user.id;
 
@@ -175,37 +175,38 @@ app.get('/api/ads', async (req, res) => {
     const from = new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
     const fromDate = from.toISOString().slice(0, 10);
     const toDate = now.toISOString().slice(0, 10);
+    const metrics = 'clicks,prints,cost,cpc,acos,direct_amount,indirect_amount,total_amount,direct_units_quantity,units_quantity,cvr,roas';
 
-    const campaignsRes = await fetch(`${ML_API}/advertising/product_ads/advertisers/${uid}/campaigns?status=all&limit=50`, { headers });
+    const url = `${ML_API}/advertising/advertisers/${uid}/product_ads/campaigns?limit=50&offset=0&date_from=${fromDate}&date_to=${toDate}&metrics=${metrics}`;
+    const campaignsRes = await fetch(url, { headers });
     const campaignsData = await campaignsRes.json();
-    const campaigns = campaignsData.results || campaignsData || [];
 
-    if (!Array.isArray(campaigns) || campaigns.length === 0) {
-      return res.json({ summary: { spend:0, clicks:0, impressions:0, sales:0, acos:null, roas:null }, campaigns: [] });
+    console.log('Ads URL:', url);
+    console.log('Ads response status keys:', Object.keys(campaignsData));
+
+    const campaigns = campaignsData.results || [];
+
+    if (!campaigns.length) {
+      return res.json({ summary: { spend:0, clicks:0, impressions:0, sales:0, acos:null, roas:null }, campaigns: [], raw: campaignsData });
     }
 
-    const campaignIds = campaigns.map(c => c.id).slice(0, 20);
-    const campaignStats = await Promise.all(
-      campaignIds.map(id =>
-        fetch(`${ML_API}/advertising/product_ads/advertisers/${uid}/campaigns/${id}/summary?date_from=${fromDate}&date_to=${toDate}`, { headers })
-          .then(r => r.json()).catch(() => null)
-      )
-    );
-
-    const enriched = campaigns.slice(0, 20).map((c, i) => {
-      const s = campaignStats[i] || {};
-      const spend = s.spend || 0;
-      const sales = s.direct_revenue || s.revenue || 0;
+    const enriched = campaigns.map(c => {
+      const m = c.metrics || {};
+      const spend = m.cost || 0;
+      const sales = m.total_amount || 0;
       return {
         id: c.id,
         name: c.name,
         status: c.status,
-        budget: c.daily_budget,
+        budget: c.budget,
         spend,
-        clicks: s.clicks || 0,
-        impressions: s.impressions || 0,
+        clicks: m.clicks || 0,
+        impressions: m.prints || 0,
         sales,
-        acos: spend && sales ? ((spend / sales) * 100).toFixed(1) : null
+        direct_sales: m.direct_amount || 0,
+        units: m.units_quantity || 0,
+        acos: spend && sales ? ((spend / sales) * 100).toFixed(1) : null,
+        roas: m.roas || null
       };
     });
 
