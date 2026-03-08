@@ -265,4 +265,47 @@ app.get('/api/ads-debug', async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
+
+app.get('/api/ads-items', async (req, res) => {
+  try {
+    const token = req.query.token;
+    if (!token) return res.status(400).json({ error: 'token requerido' });
+
+    const h1 = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'Api-Version': '1' };
+    const h2 = { 'Authorization': `Bearer ${token}`, 'api-version': '2' };
+
+    const user = await fetch(`${ML_API}/users/me`, { headers: { 'Authorization': `Bearer ${token}` } }).then(r => r.json());
+    if (user.error) return res.status(401).json({ error: 'token invalido' });
+    const siteId = user.site_id || 'MLA';
+
+    const advRes = await fetch(`${ML_API}/advertising/advertisers?product_id=PADS`, { headers: h1 });
+    const advData = await advRes.json();
+    const advertisers = advData.advertisers || [];
+    if (!advertisers.length) return res.json({ ads_item_ids: [] });
+    const adv = advertisers.find(a => a.site_id === siteId) || advertisers[0];
+    const advId = adv.advertiser_id;
+
+    // Get all active ads items (paginate up to 500)
+    const adsItemIds = new Set();
+    let offset = 0;
+    const limit = 100;
+    while (true) {
+      const url = `${ML_API}/advertising/${siteId}/advertisers/${advId}/product_ads/ads/search?limit=${limit}&offset=${offset}&filters[statuses]=active,paused`;
+      const text = await fetch(url, { headers: h2 }).then(r => r.text());
+      let data;
+      try { data = JSON.parse(text); } catch(e) { break; }
+      const results = data.results || [];
+      results.forEach(item => { if (item.item_id) adsItemIds.add(item.item_id); });
+      if (results.length < limit) break;
+      offset += limit;
+      if (offset >= 500) break;
+    }
+
+    res.json({ ads_item_ids: Array.from(adsItemIds), advertiser_id: advId });
+  } catch (e) {
+    console.error('Ads items error:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.listen(PORT, () => console.log(`Puerto ${PORT}`));
