@@ -239,21 +239,22 @@ app.get('/api/ads', async (req, res) => {
 app.get('/api/ads-debug', async (req, res) => {
   try {
     const token = req.query.token;
-    const headers = { 'Authorization': `Bearer ${token}` };
-    const user = await fetch(`${ML_API}/users/me`, { headers }).then(r => r.json());
+    const h1 = { 'Authorization': `Bearer ${token}` };
+    const h2 = { 'Authorization': `Bearer ${token}`, 'api-version': '2' };
+    const user = await fetch(`${ML_API}/users/me`, { headers: h1 }).then(r => r.json());
     const uid = user.id;
     const results = {};
-    const urls = [
-      `/advertising/product_ads/advertisers/${uid}/campaigns?status=all&limit=5`,
-      `/advertising/advertisers/${uid}/campaigns?limit=5`,
-      `/advertising/product_ads/v2/advertisers/${uid}/campaigns?limit=5`,
+    const tests = [
+      { url: `/advertising/advertisers/${uid}/product_ads/campaigns?limit=2&date_from=2026-02-01&date_to=2026-03-08&metrics=clicks,cost`, headers: h2 },
+      { url: `/advertising/advertisers/${uid}/product_ads/campaigns?limit=2`, headers: h2 },
+      { url: `/advertising/advertisers/${uid}/product_ads/campaigns?limit=2`, headers: h1 },
     ];
-    for (const url of urls) {
+    for (const t of tests) {
       try {
-        const r = await fetch(ML_API + url, { headers });
-        const d = await r.json();
-        results[url] = { status: r.status, body: d };
-      } catch(e) { results[url] = { error: e.message }; }
+        const r = await fetch(ML_API + t.url, { headers: t.headers });
+        const text = await r.text();
+        results[t.url] = { status: r.status, raw: text.slice(0, 300) };
+      } catch(e) { results[t.url] = { error: e.message }; }
     }
     res.json({ uid, results });
   } catch(e) { res.status(500).json({ error: e.message }); }
