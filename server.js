@@ -93,7 +93,6 @@ app.get('/api/dashboard', async (req, res) => {
       fetch(`${ML_API}/users/${uid}/items/search?limit=1`, { headers }).then(r => r.json()).catch(() => ({paging:{total:0}}))
     ]);
 
-    // Build sales+revenue per item from orders
     const salesByItem = {};
     curData.orders.forEach(order => {
       (order.order_items || []).forEach(oi => {
@@ -106,15 +105,11 @@ app.get('/api/dashboard', async (req, res) => {
       });
     });
 
-    // Get visits for all sold items
     const soldItemIds = Object.keys(salesByItem);
-    let totalVisits = 0, prevTotalVisits = 0;
-    let topItems = [];
+    let totalVisits = 0, prevTotalVisits = 0, topItems = [];
 
     if (soldItemIds.length > 0) {
-      // Fetch visits in batches of 20
-      const allVisitsMap = {};
-      const allPrevVisitsMap = {};
+      const allVisitsMap = {}, allPrevVisitsMap = {};
       for (let i = 0; i < soldItemIds.length; i += 20) {
         const batch = soldItemIds.slice(i, i + 20);
         const [vm, pvm] = await Promise.all([
@@ -124,7 +119,6 @@ app.get('/api/dashboard', async (req, res) => {
         Object.assign(allVisitsMap, vm);
         Object.assign(allPrevVisitsMap, pvm);
       }
-
       totalVisits = Object.values(allVisitsMap).reduce((s, v) => s + v, 0);
       const allTimeVisits = Object.values(allPrevVisitsMap).reduce((s, v) => s + v, 0);
       prevTotalVisits = Math.max(0, allTimeVisits - totalVisits);
@@ -166,9 +160,6 @@ app.get('/api/dashboard', async (req, res) => {
   }
 });
 
-app.listen(PORT, () => console.log(`Puerto ${PORT}`));
-
-// ── ADS DATA ─────────────────────────────────────────────────────────────────
 app.get('/api/ads', async (req, res) => {
   try {
     const token = req.query.token;
@@ -185,23 +176,14 @@ app.get('/api/ads', async (req, res) => {
     const fromDate = from.toISOString().slice(0, 10);
     const toDate = now.toISOString().slice(0, 10);
 
-    // Get campaigns
     const campaignsRes = await fetch(`${ML_API}/advertising/product_ads/advertisers/${uid}/campaigns?status=all&limit=50`, { headers });
     const campaignsData = await campaignsRes.json();
     const campaigns = campaignsData.results || campaignsData || [];
 
     if (!Array.isArray(campaigns) || campaigns.length === 0) {
-      return res.json({ summary: null, campaigns: [], items: [] });
+      return res.json({ summary: { spend:0, clicks:0, impressions:0, sales:0, acos:null, roas:null }, campaigns: [] });
     }
 
-    // Get summary stats
-    const summaryRes = await fetch(
-      `${ML_API}/advertising/product_ads/advertisers/${uid}/campaigns/summary?date_from=${fromDate}&date_to=${toDate}`,
-      { headers }
-    );
-    const summaryData = await summaryRes.json();
-
-    // Get per-campaign stats
     const campaignIds = campaigns.map(c => c.id).slice(0, 20);
     const campaignStats = await Promise.all(
       campaignIds.map(id =>
@@ -210,27 +192,27 @@ app.get('/api/ads', async (req, res) => {
       )
     );
 
-    const enrichedCampaigns = campaigns.slice(0, 20).map((c, i) => {
-      const stats = campaignStats[i] || {};
+    const enriched = campaigns.slice(0, 20).map((c, i) => {
+      const s = campaignStats[i] || {};
+      const spend = s.spend || 0;
+      const sales = s.direct_revenue || s.revenue || 0;
       return {
         id: c.id,
         name: c.name,
         status: c.status,
         budget: c.daily_budget,
-        spend: stats.spend || 0,
-        clicks: stats.clicks || 0,
-        impressions: stats.impressions || 0,
-        sales: stats.direct_revenue || stats.revenue || 0,
-        acos: stats.spend && stats.direct_revenue ? ((stats.spend / stats.direct_revenue) * 100).toFixed(1) : null
+        spend,
+        clicks: s.clicks || 0,
+        impressions: s.impressions || 0,
+        sales,
+        acos: spend && sales ? ((spend / sales) * 100).toFixed(1) : null
       };
     });
 
-    // Summary totals
-    const totalSpend = enrichedCampaigns.reduce((s, c) => s + c.spend, 0);
-    const totalClicks = enrichedCampaigns.reduce((s, c) => s + c.clicks, 0);
-    const totalImpressions = enrichedCampaigns.reduce((s, c) => s + c.impressions, 0);
-    const totalSales = enrichedCampaigns.reduce((s, c) => s + c.sales, 0);
-    const totalAcos = totalSpend && totalSales ? ((totalSpend / totalSales) * 100).toFixed(1) : null;
+    const totalSpend = enriched.reduce((s, c) => s + c.spend, 0);
+    const totalClicks = enriched.reduce((s, c) => s + c.clicks, 0);
+    const totalImpressions = enriched.reduce((s, c) => s + c.impressions, 0);
+    const totalSales = enriched.reduce((s, c) => s + c.sales, 0);
 
     res.json({
       summary: {
@@ -238,10 +220,10 @@ app.get('/api/ads', async (req, res) => {
         clicks: totalClicks,
         impressions: totalImpressions,
         sales: totalSales,
-        acos: totalAcos,
+        acos: totalSpend && totalSales ? ((totalSpend / totalSales) * 100).toFixed(1) : null,
         roas: totalSpend ? (totalSales / totalSpend).toFixed(2) : null
       },
-      campaigns: enrichedCampaigns
+      campaigns: enriched
     });
   } catch (e) {
     console.error('Ads error:', e);
