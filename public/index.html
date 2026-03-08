@@ -1278,18 +1278,18 @@ async function loadPublicaciones() {
     + allItems.length + ' publicaciones · ' + allItems.filter(i => i.hasAds).length + ' con Ads · ' + days + ' días</div>'
     + '<div style="overflow-x:auto"><table id="pubsTable">'
     + '<thead><tr>'
-    + '<th style="cursor:pointer" onclick="sortPubs('id')">MLA ↕</th>'
-    + '<th style="cursor:pointer" onclick="sortPubs('title')">Título ↕</th>'
+    + '<th style="cursor:pointer" onclick="sortPubs(&quot;id&quot;)">MLA ↕</th>'
+    + '<th style="cursor:pointer" onclick="sortPubs(&quot;title&quot;)">Título ↕</th>'
     + '<th>Cuenta</th>'
     + '<th>Ads</th>'
-    + '<th style="text-align:right;cursor:pointer" onclick="sortPubs('units')">Unidades ↕</th>'
-    + '<th style="text-align:right;cursor:pointer" onclick="sortPubs('revenue')">Facturación ↕</th>'
-    + '<th style="text-align:right;cursor:pointer" onclick="sortPubs('adsSales')">Ventas Ads ↕</th>'
-    + '<th style="text-align:right;cursor:pointer" onclick="sortPubs('revenueShare')">% Aporte ↕</th>'
-    + '<th style="text-align:right;cursor:pointer" onclick="sortPubs('visits')">Visitas ↕</th>'
-    + '<th style="text-align:right;cursor:pointer" onclick="sortPubs('conversion')">Conv. ↕</th>'
-    + '<th style="text-align:right;cursor:pointer" onclick="sortPubs('adsClicks')">Clicks Ads ↕</th>'
-    + '<th style="text-align:right;cursor:pointer" onclick="sortPubs('adsConversion')">Conv. Ads ↕</th>'
+    + '<th style="text-align:right;cursor:pointer" onclick="sortPubs(&quot;units&quot;)">Unidades ↕</th>'
+    + '<th style="text-align:right;cursor:pointer" onclick="sortPubs(&quot;revenue&quot;)">Facturación ↕</th>'
+    + '<th style="text-align:right;cursor:pointer" onclick="sortPubs(&quot;adsSales&quot;)">Ventas Ads ↕</th>'
+    + '<th style="text-align:right;cursor:pointer" onclick="sortPubs(&quot;revenueShare&quot;)">% Aporte ↕</th>'
+    + '<th style="text-align:right;cursor:pointer" onclick="sortPubs(&quot;visits&quot;)">Visitas ↕</th>'
+    + '<th style="text-align:right;cursor:pointer" onclick="sortPubs(&quot;conversion&quot;)">Conv. ↕</th>'
+    + '<th style="text-align:right;cursor:pointer" onclick="sortPubs(&quot;adsClicks&quot;)">Clicks Ads ↕</th>'
+    + '<th style="text-align:right;cursor:pointer" onclick="sortPubs(&quot;adsConversion&quot;)">Conv. Ads ↕</th>'
     + '</tr></thead>'
     + '<tbody>' + rows + '</tbody></table></div>';
 }
@@ -1799,7 +1799,6 @@ async function loadAdsAnalysis(days) {
           <div style="font-size:20px;font-weight:700;color:var(--text)">${pctWithout}% de la facturación</div>
           <div style="font-size:12px;color:var(--muted);margin-top:4px">${withoutAds.units} unidades · ${withoutAds.items.length} productos</div>
         </div>
-  
       </div>
 
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
