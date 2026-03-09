@@ -658,18 +658,20 @@ function getSessionRole() { return getCookie('ml_session_role'); }
 async function apiCall(method, path, body) {
   const opts = {
     method,
+    credentials: 'include',
     headers: { 'Content-Type': 'application/json', 'x-session-id': getSession() || '' }
   };
   if (body) opts.body = JSON.stringify(body);
   const r = await fetch(SERVER_URL + path, opts);
+  if (r.status === 401) { showLoginScreen(); return null; }
   const data = await r.json();
-  if (r.status === 401) { logout(); return null; }
   return data;
 }
 
 async function login(username, password) {
   const r = await fetch(SERVER_URL + '/api/login', {
     method: 'POST',
+    credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ username, password })
   });
