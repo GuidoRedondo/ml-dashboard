@@ -1419,7 +1419,7 @@ function exportPubsExcel() {
 }
 
 async function loadPublicaciones() {
-  const el = document.getElementById('pubsContent');
+  const el = document.getElementById('publicacionesContent');
   if (!el) return;
   const connected = state.accounts.filter(a => a.data);
   if (!connected.length) {
