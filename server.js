@@ -225,8 +225,9 @@ async function getClientToken(clientId) {
   const result = await pool.query('SELECT * FROM clients WHERE id = $1', [clientId]);
   if (!result.rows.length) return null;
   const client = result.rows[0];
-  if (!client.refresh_token) return null;
-  if (client.token_expires_at && new Date(client.token_expires_at) < new Date(Date.now() + 10 * 60 * 1000)) {
+  if (!client.access_token) return null;
+  // Solo refrescar si tiene refresh_token y el token esta por vencer
+  if (client.refresh_token && client.token_expires_at && new Date(client.token_expires_at) < new Date(Date.now() + 10 * 60 * 1000)) {
     const newToken = await refreshClientToken(client);
     return newToken || client.access_token;
   }
