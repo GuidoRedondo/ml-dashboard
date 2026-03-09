@@ -638,9 +638,22 @@ tbody td {
 // ─── SESSION & LOGIN ──────────────────────────────────────────────────────────
 const SERVER_URL = window.location.origin;
 
-function getSession() { return localStorage.getItem('ml_session_id'); }
-function getSessionUser() { return localStorage.getItem('ml_session_user'); }
-function getSessionRole() { return localStorage.getItem('ml_session_role'); }
+function setCookie(name, value, days) {
+  const d = new Date();
+  d.setTime(d.getTime() + (days||7)*24*60*60*1000);
+  document.cookie = name + '=' + encodeURIComponent(value) + ';expires=' + d.toUTCString() + ';path=/;SameSite=Lax';
+}
+function getCookie(name) {
+  const match = document.cookie.match(new RegExp('(^| )' + name + '=([^;]+)'));
+  return match ? decodeURIComponent(match[2]) : null;
+}
+function deleteCookie(name) {
+  document.cookie = name + '=;expires=Thu, 01 Jan 1970 00:00:00 GMT;path=/';
+}
+
+function getSession() { return getCookie('ml_session_id'); }
+function getSessionUser() { return getCookie('ml_session_user'); }
+function getSessionRole() { return getCookie('ml_session_role'); }
 
 async function apiCall(method, path, body) {
   const opts = {
@@ -662,17 +675,17 @@ async function login(username, password) {
   });
   const data = await r.json();
   if (data.error) throw new Error(data.error);
-  localStorage.setItem('ml_session_id', data.sessionId);
-  localStorage.setItem('ml_session_user', data.username);
-  localStorage.setItem('ml_session_role', data.role);
+  setCookie('ml_session_id', data.sessionId, 7);
+  setCookie('ml_session_user', data.username, 7);
+  setCookie('ml_session_role', data.role, 7);
   return data;
 }
 
 function logout() {
   fetch(SERVER_URL + '/api/logout', { method: 'POST', headers: { 'x-session-id': getSession() || '' } }).catch(() => {});
-  localStorage.removeItem('ml_session_id');
-  localStorage.removeItem('ml_session_user');
-  localStorage.removeItem('ml_session_role');
+  deleteCookie('ml_session_id');
+  deleteCookie('ml_session_user');
+  deleteCookie('ml_session_role');
   showLoginScreen();
 }
 
