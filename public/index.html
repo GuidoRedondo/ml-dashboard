@@ -724,7 +724,11 @@ async function handleLogin() {
   if (!username || !password) { err.textContent = 'Completá usuario y contraseña'; return; }
   btn.textContent = 'Ingresando...'; btn.disabled = true; err.textContent = '';
   try {
-    await login(username, password);
+    const data = await login(username, password);
+    // Set in memory immediately so all subsequent calls use it
+    _sessionId = data.sessionId;
+    _sessionUser = data.username;
+    _sessionRole = data.role;
     showAppScreen();
     initApp();
   } catch(e) {
