@@ -1310,22 +1310,22 @@ function updateDashboard() {
   const avgConv = convRates.length ? (convRates.reduce((a,b) => a+b, 0) / convRates.length).toFixed(1) : 0;
   const avgCh   = arr => arr.length ? (arr.reduce((a,b) => a+b, 0) / arr.length).toFixed(1) : null;
 
-  document.getElementById('kpi-facturacion').textContent = formatMoney(totalFac);
-  document.getElementById('kpi-fac-delta').innerHTML = deltaHtml(avgCh(changes.amount));
-  document.getElementById('kpi-ventas').textContent = totalVentas.toLocaleString('es-AR');
-  document.getElementById('kpi-ven-delta').innerHTML = deltaHtml(avgCh(changes.orders));
-  document.getElementById('kpi-visitas').textContent = totalVisits.toLocaleString('es-AR');
-  document.getElementById('kpi-visitas-delta').innerHTML = deltaHtml(avgCh(changes.visits));
-  document.getElementById('kpi-conversion').textContent = avgConv + '%';
-  document.getElementById('kpi-conversion-delta').innerHTML = deltaHtml(avgCh(changes.conversion));
-  document.getElementById('kpi-pubs').textContent = totalPubs;
-  document.getElementById('kpi-pubs-delta').className = 'kpi-delta up';
-  document.getElementById('kpi-pubs-delta').textContent = 'Publicaciones totales';
-  document.getElementById('kpi-ads').textContent = '—';
-  document.getElementById('kpi-ads-delta').textContent = 'API de ADS próximamente';
+  document.getElementById('kpiAmount').textContent = formatMoney(totalFac);
+  document.getElementById('kpiAmountDelta').innerHTML = deltaHtml(avgCh(changes.amount));
+  document.getElementById('kpiOrders').textContent = totalVentas.toLocaleString('es-AR');
+  document.getElementById('kpiOrdersDelta').innerHTML = deltaHtml(avgCh(changes.orders));
+  document.getElementById('kpiVisits').textContent = totalVisits.toLocaleString('es-AR');
+  document.getElementById('kpiVisitsDelta').innerHTML = deltaHtml(avgCh(changes.visits));
+  document.getElementById('kpiConv').textContent = avgConv + '%';
+  document.getElementById('kpiConvDelta').innerHTML = deltaHtml(avgCh(changes.conversion));
+  document.getElementById('kpiItems').textContent = totalPubs;
+  document.getElementById('kpiItemsDelta').className = 'kpi-delta up';
+  document.getElementById('kpiItemsDelta').textContent = 'Publicaciones totales';
+  document.getElementById('kpiAds').textContent = '—';
+  document.getElementById('kpiAdsDelta').textContent = 'Sin datos de Ads';
 
   // Reputation
-  const repEl = document.getElementById('repList');
+  const repEl = document.getElementById('reputationCards');
   repEl.innerHTML = connected.map(acc => {
     const rep = acc.data.reputation || (acc.data.user && acc.data.user.seller_reputation);
     if (!rep) return '';
@@ -1873,8 +1873,8 @@ async function loadAds() {
   document.getElementById('ads-cpc').textContent = cpcNum ? '$' + Math.round(cpcNum).toLocaleString('es-AR') : '—';
   document.getElementById('ads-cpc-d').textContent = 'Costo por click';
 
-  document.getElementById('kpi-ads').textContent = fmt(totalSpend);
-  document.getElementById('kpi-ads-delta').textContent = 'TACOS: ' + tacos;
+  document.getElementById('kpiAds').textContent = fmt(totalSpend);
+  document.getElementById('kpiAdsDelta').textContent = 'TACOS: ' + tacos;
 
   if (!allCampaigns.length) {
     el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:20px;text-align:center">No se encontraron campañas</div>';
