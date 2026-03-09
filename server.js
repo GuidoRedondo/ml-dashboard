@@ -553,7 +553,26 @@ app.post('/login', async (req, res) => {
     res.cookie('ml_session_id', sessionId, { maxAge: 7*24*60*60*1000, httpOnly: false, sameSite: 'lax', path: '/' });
     res.cookie('ml_session_user', result.rows[0].username, { maxAge: 7*24*60*60*1000, httpOnly: false, sameSite: 'lax', path: '/' });
     res.cookie('ml_session_role', result.rows[0].role, { maxAge: 7*24*60*60*1000, httpOnly: false, sameSite: 'lax', path: '/' });
-    res.redirect('/?sid=' + sessionId);
+    res.send(`<!DOCTYPE html><html><head>
+  <meta charset="UTF-8">
+  <title>ML Centro</title>
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;700&display=swap" rel="stylesheet">
+  <style>
+    body{font-family:Poppins,sans-serif;background:#F5F6FA;display:flex;align-items:center;justify-content:center;min-height:100vh;flex-direction:column;gap:16px}
+    .box{background:#fff;border-radius:20px;padding:40px;text-align:center;box-shadow:0 8px 32px rgba(0,0,0,.10);width:360px}
+    h2{font-size:20px;font-weight:700;margin-bottom:8px}
+    p{color:#8B90A7;font-size:13px;margin-bottom:24px}
+    a{display:block;background:#FFD600;border-radius:10px;padding:13px;font-weight:700;font-size:14px;text-decoration:none;color:#1A1D2E}
+    code{background:#F0F2F8;padding:4px 8px;border-radius:6px;font-size:11px;word-break:break-all;display:block;margin-bottom:16px;text-align:left}
+  </style>
+  </head><body>
+  <div class="box">
+    <h2>✅ Login exitoso</h2>
+    <p>Tu sesión:</p>
+    <code>${sessionId}</code>
+    <a href="/?sid=${sessionId}">Entrar al Dashboard →</a>
+  </div>
+  </body></html>`);
   } catch(e) { res.redirect('/login?error=' + encodeURIComponent(e.message)); }
 });
 
