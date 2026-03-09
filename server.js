@@ -281,11 +281,11 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
     if (!clientId) return res.status(400).json({ error: 'client_id requerido' });
 
     const token = await getClientToken(clientId);
-    if (!token) return res.status(401).json({ error: 'Cliente no conectado o token expirado' });
+    if (!token) return res.status(403).json({ error: 'Cliente no conectado o token expirado' });
 
     const headers = { 'Authorization': `Bearer ${token}` };
     const user = await fetch(`${ML_API}/users/me`, { headers }).then(r => r.json());
-    if (user.error) return res.status(401).json({ error: 'token invalido' });
+    if (user.error) return res.status(403).json({ error: 'token invalido' });
     const uid = user.id;
 
     const now = new Date();
@@ -355,7 +355,7 @@ app.get('/api/ads', requireAuth, async (req, res) => {
     const clientId = parseInt(req.query.client_id);
     const days = parseInt(req.query.days) || 30;
     const token = await getClientToken(clientId);
-    if (!token) return res.status(401).json({ error: 'Cliente no conectado' });
+    if (!token) return res.status(403).json({ error: 'Cliente no conectado' });
 
     const h1 = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'Api-Version': '1' };
     const h2 = { 'Authorization': `Bearer ${token}`, 'api-version': '2' };
@@ -427,7 +427,7 @@ app.get('/api/items-full', requireAuth, async (req, res) => {
     const clientId = parseInt(req.query.client_id);
     const days = parseInt(req.query.days) || 30;
     const token = await getClientToken(clientId);
-    if (!token) return res.status(401).json({ error: 'Cliente no conectado' });
+    if (!token) return res.status(403).json({ error: 'Cliente no conectado' });
 
     const headers = { 'Authorization': `Bearer ${token}` };
     const h1 = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'Api-Version': '1' };
