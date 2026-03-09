@@ -57,14 +57,21 @@ async function initDB() {
 }
 
 // ── MIDDLEWARE ────────────────────────────────────────────────────────────────
-app.use(cors({ origin: true, credentials: true }));
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
+  res.header('Access-Control-Allow-Credentials', 'true');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, x-session-id');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
+  if (req.method === 'OPTIONS') return res.sendStatus(200);
+  next();
+});
 app.use(cookieParser());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static('public'));
 
 async function requireAuth(req, res, next) {
-  const sessionId = req.headers['x-session-id'] || (req.cookies && req.cookies.ml_session_id);
+  const sessionId = req.headers['x-session-id'] || (req.cookies && req.cookies.ml_session_id) || req.query.session_id;
   if (!sessionId) return res.status(401).json({ error: 'No autenticado' });
   const result = await pool.query(
     'SELECT u.* FROM sessions s JOIN users u ON s.user_id = u.id WHERE s.id = $1 AND s.expires_at > NOW()',
