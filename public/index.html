@@ -651,18 +651,29 @@ function deleteCookie(name) {
   document.cookie = name + '=;expires=Thu, 01 Jan 1970 00:00:00 GMT;path=/';
 }
 
-function getSession() { return getCookie('ml_session_id'); }
-function getSessionUser() { return getCookie('ml_session_user'); }
-function getSessionRole() { return getCookie('ml_session_role'); }
+// In-memory session (survives page within tab, not full reload)
+let _sessionId = getCookie('ml_session_id') || null;
+let _sessionUser = getCookie('ml_session_user') || null;
+let _sessionRole = getCookie('ml_session_role') || null;
+
+function getSession() { return _sessionId || getCookie('ml_session_id'); }
+function getSessionUser() { return _sessionUser || getCookie('ml_session_user'); }
+function getSessionRole() { return _sessionRole || getCookie('ml_session_role'); }
 
 async function apiCall(method, path, body) {
+  const sid = getSession() || '';
+  // Append session_id to GET requests as query param fallback
+  let url = SERVER_URL + path;
+  if (method === 'GET' && sid) {
+    url += (url.includes('?') ? '&' : '?') + 'session_id=' + sid;
+  }
   const opts = {
     method,
     credentials: 'include',
-    headers: { 'Content-Type': 'application/json', 'x-session-id': getSession() || '' }
+    headers: { 'Content-Type': 'application/json', 'x-session-id': sid }
   };
   if (body) opts.body = JSON.stringify(body);
-  const r = await fetch(SERVER_URL + path, opts);
+  const r = await fetch(url, opts);
   if (r.status === 401) { showLoginScreen(); return null; }
   const data = await r.json();
   return data;
@@ -680,6 +691,9 @@ async function login(username, password) {
   setCookie('ml_session_id', data.sessionId, 7);
   setCookie('ml_session_user', data.username, 7);
   setCookie('ml_session_role', data.role, 7);
+  _sessionId = data.sessionId;
+  _sessionUser = data.username;
+  _sessionRole = data.role;
   return data;
 }
 
