@@ -622,7 +622,7 @@ tbody td {
 
 <div id="toast" class="toast"></div>
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js" defer></script>
 <script>
 // ─── SESSION & LOGIN ──────────────────────────────────────────────────────────
 const SERVER_URL = window.location.origin;
@@ -896,7 +896,7 @@ const ML_AUTH = 'https://auth.mercadolibre.com.ar/authorization';
 const ML_API  = 'https://api.mercadolibre.com';
 
 // ─── INIT ─────────────────────────────────────────────────────────────────────
-document.getElementById('currentDate').textContent = new Date().toLocaleDateString('es-AR', {day:'2-digit',month:'long',year:'numeric'});
+// (currentDate is set inside DOMContentLoaded below)
 
 // ─── NAVIGATION ──────────────────────────────────────────────────────────────
 function showPage(id, el) {
@@ -2002,9 +2002,9 @@ async function loadAdsAnalysis(days) {
 
 
 // ── BOOT ──────────────────────────────────────────────────────────────────────
-document.getElementById('currentDate').textContent = new Date().toLocaleDateString('es-AR', {day:'2-digit',month:'long',year:'numeric'});
-
 window.addEventListener('DOMContentLoaded', () => {
+  const datEl = document.getElementById('currentDate');
+  if (datEl) datEl.textContent = new Date().toLocaleDateString('es-AR', {day:'2-digit',month:'long',year:'numeric'});
   // Read sid from URL first - keep it in URL until app fully loads
   const urlParams = new URLSearchParams(window.location.search);
   const urlSession = urlParams.get('sid');
