@@ -669,6 +669,7 @@ async function apiCall(method, path, body) {
   if (body) opts.body = JSON.stringify(body);
   const r = await fetch(url, opts);
   if (r.status === 401) { window.location.href = '/login'; return null; }
+  if (r.status === 403) { return null; } // Token ML inválido — no redirigir al login
   const data = await r.json();
   return data;
 }
