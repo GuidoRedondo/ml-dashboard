@@ -400,24 +400,13 @@ tbody td {
 <body>
 
 <!-- LOGIN SCREEN -->
-<div id="loginScreen" style="display:flex">
+<div id="loginScreen" style="display:none">
   <div class="login-box">
     <div class="login-logo">
       <div style="width:48px;height:48px;background:var(--accent);border-radius:12px;display:flex;align-items:center;justify-content:center;margin:0 auto 16px;font-size:24px">📊</div>
       <h1>ML Centro</h1>
-      <p>Dashboard de Mercado Libre</p>
+      <p>Redirigiendo al login...</p>
     </div>
-    <div class="login-field">
-      <label>USUARIO</label>
-      <input id="loginUser" type="text" placeholder="admin" autocomplete="username">
-    </div>
-    <div class="login-field">
-      <label>CONTRASEÑA</label>
-      <input id="loginPass" type="password" placeholder="••••••••" autocomplete="current-password"
-        onkeydown="if(event.key==='Enter') handleLogin()">
-    </div>
-    <button class="login-btn" id="loginBtn" onclick="handleLogin()">Ingresar</button>
-    <div class="login-error" id="loginError"></div>
   </div>
 </div>
 
@@ -706,8 +695,7 @@ function logout() {
 }
 
 function showLoginScreen() {
-  document.getElementById('loginScreen').style.display = 'flex';
-  document.getElementById('app').style.display = 'none';
+  window.location.href = '/login';
 }
 
 function showAppScreen() {
