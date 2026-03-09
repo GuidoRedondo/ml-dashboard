@@ -1512,7 +1512,7 @@ function sortPubs(col) {
 }
 
 function loadVentas() {
-  const connected = state.accounts.filter(a => a.data?.orders);
+  const connected = state.accounts.filter(a => a.data);
   const el = document.getElementById('ventasContent');
   if (!connected.length) {
     el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:20px;text-align:center">Conectá una cuenta para ver ventas</div>';
@@ -1839,42 +1839,37 @@ async function loadAds() {
   const roas = totalSpend && totalSales ? (totalSales / totalSpend).toFixed(2) + 'x' : '—';
   const acosNum = totalSpend && totalSales ? (totalSpend / totalSales) * 100 : null;
 
-  // Calculate TACOS using total revenue from dashboard data
   let totalRevenue = 0;
   state.accounts.forEach(acc => {
     if (acc.data && acc.data.stats) totalRevenue += acc.data.stats.total_amount || 0;
   });
   const tacosNum = totalSpend && totalRevenue ? (totalSpend / totalRevenue) * 100 : null;
   const tacos = tacosNum ? tacosNum.toFixed(1) + '%' : '—';
-
-  document.getElementById('ads-spend').textContent  = fmt(totalSpend);
-  document.getElementById('ads-spend-d').textContent = 'Últimos ' + days + ' días';
-  document.getElementById('ads-sales').textContent  = fmt(totalSales);
-  document.getElementById('ads-acos').textContent   = acos;
-  document.getElementById('ads-acos-d').textContent = acosNum ? (acosNum <= 15 ? '✅ Excelente' : acosNum <= 25 ? '⚠️ Aceptable' : '🔴 Alto') : '';
-  document.getElementById('ads-tacos').textContent  = tacos;
-  document.getElementById('ads-tacos-d').textContent = tacosNum ? (tacosNum <= 8 ? '✅ Excelente' : tacosNum <= 15 ? '⚠️ Aceptable' : '🔴 Alto') : 'Gasto / Facturación total';
-
   const salesShareNum = totalSales && totalRevenue ? (totalSales / totalRevenue) * 100 : null;
-  const salesShare = salesShareNum ? salesShareNum.toFixed(1) + '%' : '—';
-  document.getElementById('ads-salesshare').textContent = salesShare;
-  document.getElementById('ads-salesshare-d').textContent = salesShareNum ? (salesShareNum >= 50 ? '🔥 Muy dependiente de Ads' : salesShareNum >= 30 ? '⚠️ Moderado' : '✅ Saludable') : 'Ventas Ads / Facturación total';
-  document.getElementById('ads-roas').textContent   = roas;
-  document.getElementById('ads-clicks').textContent = totalClicks.toLocaleString('es-AR');
-  document.getElementById('ads-impr').textContent   = totalImpr >= 1000000 ? (totalImpr/1000000).toFixed(2) + 'M' : totalImpr.toLocaleString('es-AR');
-
   const ctrNum = totalClicks && totalImpr ? (totalClicks / totalImpr) * 100 : null;
   const cpcNum = totalSpend && totalClicks ? totalSpend / totalClicks : null;
-  document.getElementById('ads-ctr').textContent = ctrNum ? ctrNum.toFixed(2) + '%' : '—';
-  document.getElementById('ads-ctr-d').textContent = ctrNum ? (ctrNum >= 1 ? '✅ Buen CTR' : ctrNum >= 0.5 ? '⚠️ Mejorable' : '🔴 Bajo') : 'Clicks / Impresiones';
-  document.getElementById('ads-cpc').textContent = cpcNum ? '$' + Math.round(cpcNum).toLocaleString('es-AR') : '—';
-  document.getElementById('ads-cpc-d').textContent = 'Costo por click';
 
-  document.getElementById('kpiAds').textContent = fmt(totalSpend);
-  document.getElementById('kpiAdsDelta').textContent = 'TACOS: ' + tacos;
+  // Update dashboard KPIs if visible
+  const kpiAdsEl = document.getElementById('kpiAds');
+  const kpiAdsDeltaEl = document.getElementById('kpiAdsDelta');
+  if (kpiAdsEl) kpiAdsEl.textContent = fmt(totalSpend);
+  if (kpiAdsDeltaEl) kpiAdsDeltaEl.textContent = 'TACOS: ' + tacos;
+
+  // Build KPI cards HTML inline
+  const kpiCardsHtml = `
+    <div class="kpi-grid" style="margin-bottom:20px">
+      <div class="kpi-card"><div class="kpi-label">💸 GASTO TOTAL</div><div class="kpi-value">${fmt(totalSpend)}</div><div class="kpi-sub">Últimos ${days} días</div></div>
+      <div class="kpi-card"><div class="kpi-label">🛒 VENTAS ADS</div><div class="kpi-value">${fmt(totalSales)}</div></div>
+      <div class="kpi-card"><div class="kpi-label">📊 ACOS</div><div class="kpi-value">${acos}</div><div class="kpi-sub">${acosNum ? (acosNum <= 15 ? '✅ Excelente' : acosNum <= 25 ? '⚠️ Aceptable' : '🔴 Alto') : ''}</div></div>
+      <div class="kpi-card"><div class="kpi-label">📈 TACOS</div><div class="kpi-value">${tacos}</div><div class="kpi-sub">${tacosNum ? (tacosNum <= 8 ? '✅ Excelente' : tacosNum <= 15 ? '⚠️ Aceptable' : '🔴 Alto') : 'Gasto / Facturación total'}</div></div>
+      <div class="kpi-card"><div class="kpi-label">🔄 ROAS</div><div class="kpi-value">${roas}</div></div>
+      <div class="kpi-card"><div class="kpi-label">👆 CLICKS</div><div class="kpi-value">${totalClicks.toLocaleString('es-AR')}</div><div class="kpi-sub">CTR: ${ctrNum ? ctrNum.toFixed(2)+'%' : '—'} · CPC: ${cpcNum ? '$'+Math.round(cpcNum).toLocaleString('es-AR') : '—'}</div></div>
+      <div class="kpi-card"><div class="kpi-label">👁 IMPRESIONES</div><div class="kpi-value">${totalImpr >= 1000000 ? (totalImpr/1000000).toFixed(2)+'M' : totalImpr.toLocaleString('es-AR')}</div></div>
+      <div class="kpi-card"><div class="kpi-label">💰 % VENTAS CON ADS</div><div class="kpi-value">${salesShareNum ? salesShareNum.toFixed(1)+'%' : '—'}</div><div class="kpi-sub">${salesShareNum ? (salesShareNum >= 50 ? '🔥 Muy dependiente de Ads' : salesShareNum >= 30 ? '⚠️ Moderado' : '✅ Saludable') : 'Ventas Ads / Facturación total'}</div></div>
+    </div>`;
 
   if (!allCampaigns.length) {
-    el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:20px;text-align:center">No se encontraron campañas</div>';
+    el.innerHTML = kpiCardsHtml + '<div style="color:var(--muted);font-size:13px;padding:20px;text-align:center">No se encontraron campañas activas</div>';
     return;
   }
 
@@ -1898,7 +1893,8 @@ async function loadAds() {
       + '</tr>';
   }).join('');
 
-  el.innerHTML = '<div style="font-size:13px;font-weight:600;margin-bottom:12px;color:var(--text)">' + allCampaigns.length + ' campañas</div>'
+  el.innerHTML = kpiCardsHtml
+    + '<div style="font-size:13px;font-weight:600;margin-bottom:12px;color:var(--text)">' + allCampaigns.length + ' campañas</div>'
     + '<div style="overflow-x:auto"><table><thead><tr>'
     + '<th>Campaña</th><th>Cuenta</th><th>Estado</th><th>Estrategia</th>'
     + '<th style="text-align:right">Gasto</th><th style="text-align:right">Ventas Ads</th>'
