@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>ML Centro — Argentina</title>
+<title>Negocio Redondo — Argentina</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
@@ -522,6 +522,7 @@ tbody td {
             <span style="font-size:11px;color:var(--muted)" id="weeklyRangeLabel">Últimas 8 semanas</span>
           </div>
           <div id="weeklyChart" style="height:160px;display:flex;align-items:flex-end;gap:4px"></div>
+          <div id="chartLegend" style="display:flex;gap:12px;flex-wrap:wrap;margin-top:8px"></div>
         </div>
         <div class="kpi-card" style="padding:20px">
           <div class="kpi-label" style="margin-bottom:16px">Reputación por cuenta</div>
@@ -1356,10 +1357,10 @@ function updateDashboard() {
 
 function buildBarChart() {
   const connected = state.accounts.filter(a => a.data);
-  const chartEl = document.getElementById('barChart');
+  const chartEl = document.getElementById('weeklyChart');
   const legendEl = document.getElementById('chartLegend');
   chartEl.innerHTML = '';
-  legendEl.innerHTML = '';
+  if (legendEl) legendEl.innerHTML = '';
 
   if (!connected.length) return;
 
