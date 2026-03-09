@@ -1,4 +1,5 @@
 const express = require('express');
+const cookieParser = require('cookie-parser');
 const cors = require('cors');
 const fetch = require('node-fetch');
 const { Pool } = require('pg');
@@ -56,13 +57,14 @@ async function initDB() {
 }
 
 // ── MIDDLEWARE ────────────────────────────────────────────────────────────────
-app.use(cors());
+app.use(cors({ origin: true, credentials: true }));
+app.use(cookieParser());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static('public'));
 
 async function requireAuth(req, res, next) {
-  const sessionId = req.headers['x-session-id'];
+  const sessionId = req.headers['x-session-id'] || (req.cookies && req.cookies.ml_session_id);
   if (!sessionId) return res.status(401).json({ error: 'No autenticado' });
   const result = await pool.query(
     'SELECT u.* FROM sessions s JOIN users u ON s.user_id = u.id WHERE s.id = $1 AND s.expires_at > NOW()',
@@ -82,12 +84,19 @@ app.post('/api/login', async (req, res) => {
     if (!result.rows.length) return res.status(401).json({ error: 'Usuario o contraseña incorrectos' });
     const sessionId = crypto.randomBytes(32).toString('hex');
     await pool.query('INSERT INTO sessions (id, user_id) VALUES ($1, $2)', [sessionId, result.rows[0].id]);
+    // Set cookie server-side so it works regardless of localStorage/cookie settings
+    res.cookie('ml_session_id', sessionId, { maxAge: 7*24*60*60*1000, httpOnly: false, sameSite: 'lax', path: '/' });
+    res.cookie('ml_session_user', result.rows[0].username, { maxAge: 7*24*60*60*1000, httpOnly: false, sameSite: 'lax', path: '/' });
+    res.cookie('ml_session_role', result.rows[0].role, { maxAge: 7*24*60*60*1000, httpOnly: false, sameSite: 'lax', path: '/' });
     res.json({ sessionId, username: result.rows[0].username, role: result.rows[0].role });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
 app.post('/api/logout', requireAuth, async (req, res) => {
   await pool.query('DELETE FROM sessions WHERE id = $1', [req.headers['x-session-id']]);
+  res.clearCookie('ml_session_id', { path: '/' });
+  res.clearCookie('ml_session_user', { path: '/' });
+  res.clearCookie('ml_session_role', { path: '/' });
   res.json({ ok: true });
 });
 
