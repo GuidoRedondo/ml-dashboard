@@ -502,6 +502,61 @@ app.get('/api/items-full', requireAuth, async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
+// Server-side login form - bypasses all client-side cookie issues
+app.get('/login', (req, res) => {
+  const error = req.query.error || '';
+  res.send(`<!DOCTYPE html><html><head>
+  <meta charset="UTF-8">
+  <title>ML Centro — Login</title>
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;700&display=swap" rel="stylesheet">
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{font-family:Poppins,sans-serif;background:#F5F6FA;display:flex;align-items:center;justify-content:center;min-height:100vh}
+    .box{background:#fff;border-radius:20px;padding:44px 40px;width:380px;box-shadow:0 8px 32px rgba(0,0,0,.10)}
+    .logo{text-align:center;margin-bottom:32px}
+    .icon{width:48px;height:48px;background:#FFD600;border-radius:12px;display:flex;align-items:center;justify-content:center;margin:0 auto 16px;font-size:24px}
+    h1{font-size:22px;font-weight:700;color:#1A1D2E}
+    p{color:#8B90A7;font-size:13px;margin-top:4px}
+    label{display:block;font-size:11px;font-weight:600;color:#8B90A7;margin-bottom:6px;text-transform:uppercase;letter-spacing:.5px}
+    .field{margin-bottom:16px}
+    input{width:100%;background:#F0F2F8;border:1.5px solid #E4E7F0;border-radius:10px;padding:11px 14px;font-family:Poppins,sans-serif;font-size:14px;outline:none;color:#1A1D2E}
+    input:focus{border-color:#1A1D2E;background:#fff}
+    button{width:100%;background:#FFD600;border:none;border-radius:10px;padding:13px;font-family:Poppins,sans-serif;font-size:14px;font-weight:700;cursor:pointer;margin-top:8px;color:#1A1D2E}
+    .error{color:#FF4444;font-size:12px;margin-top:10px;text-align:center;font-weight:500}
+  </style>
+  </head><body>
+  <div class="box">
+    <div class="logo">
+      <div class="icon">📊</div>
+      <h1>ML Centro</h1>
+      <p>Dashboard de Mercado Libre</p>
+    </div>
+    <form method="POST" action="/login">
+      <div class="field"><label>Usuario</label><input name="username" type="text" autocomplete="username" required></div>
+      <div class="field"><label>Contraseña</label><input name="password" type="password" autocomplete="current-password" required></div>
+      <button type="submit">Ingresar</button>
+      ${error ? '<div class="error">' + error + '</div>' : ''}
+    </form>
+  </div>
+  </body></html>`);
+});
+
+app.post('/login', async (req, res) => {
+  try {
+    const { username, password } = req.body;
+    if (!username || !password) return res.redirect('/login?error=Completá+usuario+y+contraseña');
+    const hash = require('crypto').createHash('sha256').update(password).digest('hex');
+    const result = await pool.query('SELECT * FROM users WHERE username = $1 AND password_hash = $2', [username, hash]);
+    if (!result.rows.length) return res.redirect('/login?error=Usuario+o+contraseña+incorrectos');
+    const sessionId = require('crypto').randomBytes(32).toString('hex');
+    await pool.query('INSERT INTO sessions (id, user_id) VALUES ($1, $2)', [sessionId, result.rows[0].id]);
+    res.cookie('ml_session_id', sessionId, { maxAge: 7*24*60*60*1000, httpOnly: false, sameSite: 'lax', path: '/' });
+    res.cookie('ml_session_user', result.rows[0].username, { maxAge: 7*24*60*60*1000, httpOnly: false, sameSite: 'lax', path: '/' });
+    res.cookie('ml_session_role', result.rows[0].role, { maxAge: 7*24*60*60*1000, httpOnly: false, sameSite: 'lax', path: '/' });
+    res.redirect('/?sid=' + sessionId);
+  } catch(e) { res.redirect('/login?error=' + encodeURIComponent(e.message)); }
+});
+
 // Keep old token-based endpoints for backward compatibility
 app.post('/api/token', async (req, res) => {
   try {
