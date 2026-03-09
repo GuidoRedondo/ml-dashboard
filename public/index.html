@@ -2005,14 +2005,12 @@ async function loadAdsAnalysis(days) {
 document.getElementById('currentDate').textContent = new Date().toLocaleDateString('es-AR', {day:'2-digit',month:'long',year:'numeric'});
 
 window.addEventListener('DOMContentLoaded', () => {
-  // Check session from cookie or URL param
+  // Read sid from URL first - keep it in URL until app fully loads
   const urlParams = new URLSearchParams(window.location.search);
   const urlSession = urlParams.get('sid');
   if (urlSession) {
     _sessionId = urlSession;
-    setCookie('ml_session_id', urlSession, 7);
-    // Clean URL
-    window.history.replaceState({}, document.title, window.location.pathname);
+    // Don't clean URL yet - keep sid available for all apiCalls during init
   } else {
     _sessionId = getCookie('ml_session_id') || null;
   }
@@ -2021,6 +2019,10 @@ window.addEventListener('DOMContentLoaded', () => {
 
   if (_sessionId) {
     showAppScreen();
+    // Clean URL after a delay to ensure all calls already have the session
+    setTimeout(() => {
+      window.history.replaceState({}, document.title, window.location.pathname);
+    }, 5000);
     initApp();
   } else {
     showLoginScreen();
