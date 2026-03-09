@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Negocio Redondo — Argentina</title>
+<title>ML Centro — Argentina</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
@@ -1421,13 +1421,11 @@ function exportPubsExcel() {
 async function loadPublicaciones() {
   const el = document.getElementById('pubsContent');
   if (!el) return;
-  const serverUrl = localStorage.getItem('ml_server_url') || '';
-  const connected = state.accounts.filter(a => a.accessToken);
+  const connected = state.accounts.filter(a => a.data);
   if (!connected.length) {
-    el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:20px;text-align:center">Conectá una cuenta primero</div>';
+    el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:20px;text-align:center">Sincronizá primero para ver datos</div>';
     return;
   }
-  if (!serverUrl) { el.innerHTML = '<div style="color:var(--muted)">Configurá el servidor primero</div>'; return; }
   const days = state.pubsDays || 30;
   el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:20px;text-align:center">⏳ Cargando publicaciones... puede tardar 30-60 segundos</div>';
 
@@ -1435,7 +1433,7 @@ async function loadPublicaciones() {
 
   await Promise.all(connected.map(async acc => {
     try {
-      const res = await fetch(serverUrl + '/api/items-full?token=' + encodeURIComponent(acc.accessToken) + '&days=' + days);
+      const res = await fetch(SERVER_URL + '/api/items-full?client_id=' + acc.id + '&days=' + days + '&session_id=' + (getSession()||''));
       const data = await res.json();
       (data.items || []).forEach(item => allItems.push({ ...item, cuenta: acc.name, color: acc.color, totalRevenue: data.total_revenue }));
     } catch(e) { console.error('Pubs error:', e); }
@@ -1612,7 +1610,7 @@ function setPerfRange(el, days) {
 function loadPerformance() {
   const el = document.getElementById('performanceContent');
   if (!el) return;
-  const connected = state.accounts.filter(a => a.accessToken && a.data);
+  const connected = state.accounts.filter(a => a.data);
   if (!connected.length) {
     el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:20px;text-align:center">Sincronizá primero para ver los datos</div>';
     return;
@@ -1807,13 +1805,11 @@ function setAdsRange(el, days) {
 async function loadAds() {
   const el = document.getElementById('adsContent');
   if (!el) return;
-  const connected = state.accounts.filter(a => a.accessToken);
+  const connected = state.accounts.filter(a => a.data);
   if (!connected.length) {
-    el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:20px;text-align:center">Conectá una cuenta primero</div>';
+    el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:20px;text-align:center">Sincronizá primero para ver datos</div>';
     return;
   }
-  const serverUrl = localStorage.getItem('ml_server_url') || '';
-  if (!serverUrl) { el.innerHTML = '<div style="color:var(--muted)">Configurá el servidor primero</div>'; return; }
   const days = state.adsDays || 30;
   el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:20px;text-align:center">⏳ Cargando datos de Ads...</div>';
 
@@ -1827,7 +1823,7 @@ async function loadAds() {
 
   await Promise.all(connected.map(async acc => {
     try {
-      const res = await fetch(serverUrl + '/api/ads?token=' + encodeURIComponent(acc.accessToken) + '&days=' + days);
+      const res = await fetch(SERVER_URL + '/api/ads?client_id=' + acc.id + '&days=' + days + '&session_id=' + (getSession()||''));
       const data = await res.json();
       if (data.summary) {
         totalSpend  += data.summary.spend || 0;
@@ -1917,8 +1913,7 @@ async function loadAds() {
 async function loadAdsAnalysis(days) {
   const el = document.getElementById('adsAnalysis');
   if (!el) return;
-  const serverUrl = localStorage.getItem('ml_server_url') || '';
-  const connected = state.accounts.filter(a => a.accessToken && a.data && a.data.top_items);
+  const connected = state.accounts.filter(a => a.data && a.data.top_items);
   if (!connected.length) return;
 
   el.innerHTML = '<div style="color:var(--muted);font-size:12px">⏳ Analizando ventas con y sin Ads...</div>';
@@ -1927,7 +1922,7 @@ async function loadAdsAnalysis(days) {
     // Get ads item IDs for each account
     const adsItemSets = {};
     await Promise.all(connected.map(async acc => {
-      const res = await fetch(serverUrl + '/api/ads-items?token=' + encodeURIComponent(acc.accessToken));
+      const res = await fetch(SERVER_URL + '/api/ads-items?client_id=' + acc.id + '&session_id=' + (getSession()||''));
       const data = await res.json();
       adsItemSets[acc.name] = new Set(data.ads_item_ids || []);
     }));
