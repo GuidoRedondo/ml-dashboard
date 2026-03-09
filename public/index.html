@@ -725,12 +725,14 @@ async function handleLogin() {
   btn.textContent = 'Ingresando...'; btn.disabled = true; err.textContent = '';
   try {
     const data = await login(username, password);
-    // Set in memory immediately so all subsequent calls use it
     _sessionId = data.sessionId;
     _sessionUser = data.username;
     _sessionRole = data.role;
-    showAppScreen();
-    initApp();
+    setCookie('ml_session_id', data.sessionId, 7);
+    setCookie('ml_session_user', data.username, 7);
+    setCookie('ml_session_role', data.role, 7);
+    // Redirect with session in URL to survive any redirect
+    window.location.href = window.location.pathname + '?sid=' + data.sessionId;
   } catch(e) {
     err.textContent = e.message;
     btn.textContent = 'Ingresar'; btn.disabled = false;
@@ -2009,12 +2011,20 @@ async function loadAdsAnalysis(days) {
 // ── BOOT ──────────────────────────────────────────────────────────────────────
 document.getElementById('currentDate').textContent = new Date().toLocaleDateString('es-AR', {day:'2-digit',month:'long',year:'numeric'});
 
-// Wait for DOM to be ready then check session
 window.addEventListener('DOMContentLoaded', () => {
-  // Re-read cookies after DOM is ready
-  _sessionId = getCookie('ml_session_id') || null;
-  _sessionUser = getCookie('ml_session_user') || null;
-  _sessionRole = getCookie('ml_session_role') || null;
+  // Check session from cookie or URL param
+  const urlParams = new URLSearchParams(window.location.search);
+  const urlSession = urlParams.get('sid');
+  if (urlSession) {
+    _sessionId = urlSession;
+    setCookie('ml_session_id', urlSession, 7);
+    // Clean URL
+    window.history.replaceState({}, document.title, window.location.pathname);
+  } else {
+    _sessionId = getCookie('ml_session_id') || null;
+  }
+  _sessionUser = getCookie('ml_session_user') || 'admin';
+  _sessionRole = getCookie('ml_session_role') || 'admin';
 
   if (_sessionId) {
     showAppScreen();
