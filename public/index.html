@@ -2009,12 +2009,20 @@ async function loadAdsAnalysis(days) {
 // ── BOOT ──────────────────────────────────────────────────────────────────────
 document.getElementById('currentDate').textContent = new Date().toLocaleDateString('es-AR', {day:'2-digit',month:'long',year:'numeric'});
 
-if (getSession()) {
-  showAppScreen();
-  initApp();
-} else {
-  showLoginScreen();
-}
+// Wait for DOM to be ready then check session
+window.addEventListener('DOMContentLoaded', () => {
+  // Re-read cookies after DOM is ready
+  _sessionId = getCookie('ml_session_id') || null;
+  _sessionUser = getCookie('ml_session_user') || null;
+  _sessionRole = getCookie('ml_session_role') || null;
+
+  if (_sessionId) {
+    showAppScreen();
+    initApp();
+  } else {
+    showLoginScreen();
+  }
+});
 </script>
 </body>
 </html>
