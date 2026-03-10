@@ -807,12 +807,15 @@ app.get('/api/items-full', requireAuth, async (req, res) => {
       const detail = itemDetailsMap[id] || {};
       const status = statusMap[id] || 'inactive';
       const problems = problemsMap[id] || [];
+      const ads = adsByItem[id] || {};
       return {
         id, title: detail.title || id, status,
         units: 0, revenue: 0, hasSales: false,
         revenueShare: 0, visits: 0, conversion: 0,
-        hasAds: false, adsStatus: null, adsClicks: 0, adsImpressions: 0,
-        adsSales: 0, adsCost: 0, adsConversion: 0,
+        hasAds: ads.hasAds||false, adsStatus: ads.adsStatus||null,
+        adsClicks: ads.clicks||0, adsImpressions: ads.impressions||0,
+        adsSales: ads.adsSales||0, adsCost: ads.adsCost||0,
+        adsConversion: ads.clicks > 0 ? parseFloat(((ads.adsUnits||0)/ads.clicks*100).toFixed(1)) : 0,
         problems, hasProblems: problems.length > 0
       };
     });
