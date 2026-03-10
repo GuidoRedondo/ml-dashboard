@@ -149,7 +149,7 @@ app.get('/api/clients/:id/auth-link', requireAuth, async (req, res) => {
     if (!result.rows.length) return res.status(404).json({ error: 'Cliente no encontrado' });
     const client = result.rows[0];
     const redirectUri = process.env.REDIRECT_URI || 'https://ml-dashboard-production.up.railway.app/oauth/callback';
-    const link = `https://auth.mercadolibre.com.ar/authorization?response_type=code&client_id=${client.app_id}&redirect_uri=${encodeURIComponent(redirectUri)}&state=${client.id}&scope=offline_access`;
+    const link = `https://auth.mercadolibre.com.ar/authorization?response_type=code&client_id=${client.app_id}&redirect_uri=${encodeURIComponent(redirectUri)}&state=${client.id}&scope=offline_access&prompt=consent`;
     res.json({ link });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
@@ -171,6 +171,7 @@ app.get('/oauth/callback', async (req, res) => {
       body: new URLSearchParams({ grant_type: 'authorization_code', client_id: client.app_id, client_secret: client.client_secret, code, redirect_uri: redirectUri }).toString()
     });
     const tokens = await tokenRes.json();
+    console.log('OAuth tokens received:', JSON.stringify({ has_access: !!tokens.access_token, has_refresh: !!tokens.refresh_token, scope: tokens.scope, error: tokens.error }));
     if (tokens.error) return res.send(`<h2>Error: ${tokens.message}</h2>`);
 
     const userRes = await fetch(`${ML_API}/users/me`, { headers: { 'Authorization': `Bearer ${tokens.access_token}` } });
@@ -218,7 +219,7 @@ setInterval(async () => {
     const result = await pool.query(`SELECT * FROM clients WHERE active = true AND refresh_token IS NOT NULL AND token_expires_at < NOW() + INTERVAL '2 hours'`);
     for (const client of result.rows) { await refreshClientToken(client); }
   } catch(e) { console.error('Auto-refresh error:', e.message); }
-}, 5 * 60 * 60 * 1000);
+}, 1 * 60 * 60 * 1000);
 
 // Get valid token for a client (refreshing if needed)
 async function getClientToken(clientId) {
