@@ -457,7 +457,7 @@ tbody td {
 
       <div style="height:1px;background:var(--border);margin:12px 0"></div>
 
-      <div id="clientSelector">
+      <div id="clientSelector" style="display:none">
         <div class="nav-section-label">CUENTAS</div>
         <div class="nav-item" style="color:var(--muted);font-size:12px;pointer-events:none">Cargando...</div>
       </div>
@@ -483,10 +483,16 @@ tbody td {
         <div class="page-title" id="pageTitle">Dashboard General</div>
         <div class="page-subtitle" id="pageSubtitle">Resumen consolidado · <span id="currentDate"></span></div>
       </div>
-      <div class="header-user">
+      <div class="header-user" style="display:flex;align-items:center;gap:10px">
+        <div id="accountSelectorWrap" style="display:none">
+          <select id="accountSelectorDropdown" onchange="onAccountSelect(this.value)"
+            style="font-family:var(--font);font-size:13px;font-weight:600;padding:7px 12px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text);cursor:pointer;min-width:180px">
+            <option value="">— Seleccioná una cuenta —</option>
+          </select>
+        </div>
         <span id="sessionUser">Usuario</span>
         <button class="logout-btn" onclick="logout()">Salir</button>
-        <button class="sync-btn" onclick="syncAll()">⟳ Sincronizar</button>
+        <button class="sync-btn" id="syncBtn" onclick="syncAll()" style="display:none">⟳ Sincronizar</button>
       </div>
     </header>
 
@@ -748,20 +754,44 @@ async function loadClients() {
 }
 
 function renderClientSelector() {
-  const sidebar = document.getElementById('clientSelector');
-  if (!sidebar) return;
-  sidebar.innerHTML = `
-    <div class="nav-section-label">CUENTAS</div>
-    <div class="nav-item ${!activeClientId ? 'active' : ''}" onclick="selectClient(null, this)">
-      <span class="nav-icon">🌐</span> Todas las cuentas
-    </div>
-    ${allClients.filter(c => c.active).map(c => `
-      <div class="nav-item ${activeClientId === c.id ? 'active' : ''}" onclick="selectClient(${c.id}, this)">
-        <span class="nav-icon" style="font-size:10px;background:rgba(255,255,255,.1);padding:3px 5px;border-radius:4px">${c.name.substring(0,2).toUpperCase()}</span>
-        ${c.name}
-        ${!c.ml_user_id ? '<span style="color:#ff9100;font-size:10px">⚠</span>' : ''}
-      </div>`).join('')}
-  `;
+  const role = getSessionRole();
+  const isAdmin = role === 'admin' || role === 'consultant';
+
+  if (isAdmin) {
+    // Show dropdown in topbar
+    const wrap = document.getElementById('accountSelectorWrap');
+    const dropdown = document.getElementById('accountSelectorDropdown');
+    const syncBtn = document.getElementById('syncBtn');
+    if (wrap) wrap.style.display = 'block';
+    if (syncBtn) syncBtn.style.display = '';
+    if (dropdown) {
+      const activeClients = allClients.filter(c => c.active && c.ml_user_id);
+      dropdown.innerHTML = '<option value="">— Seleccioná una cuenta —</option>'
+        + activeClients.map(c => `<option value="${c.id}">${c.name}${!c.ml_user_id ? ' ⚠' : ''}</option>`).join('');
+      // Restore selected if exists
+      if (activeClientId) dropdown.value = activeClientId;
+    }
+  } else {
+    // Client: auto-select their own account
+    const myClient = allClients.find(c => c.active && c.ml_user_id);
+    if (myClient) {
+      activeClientId = myClient.id;
+      loadDashboardData();
+    }
+  }
+}
+
+async function onAccountSelect(value) {
+  if (!value) {
+    // Clear dashboard
+    state.accounts = [];
+    updateDashboard();
+    return;
+  }
+  activeClientId = parseInt(value);
+  const syncBtn = document.getElementById('syncBtn');
+  if (syncBtn) syncBtn.style.display = '';
+  await loadDashboardData();
 }
 
 async function selectClient(clientId, el) {
@@ -1545,6 +1575,7 @@ function loadVentas() {
 }
 
 async function syncAll() {
+  if (!activeClientId) { showToast('⚠️ Seleccioná una cuenta primero'); return; }
   await loadDashboardData();
 }
 
@@ -1733,10 +1764,8 @@ function initApp() {
   document.querySelectorAll('#page-dashboard .range-btn').forEach(b => {
     b.classList.toggle('active', b.dataset.days == (state.rangeDays||30));
   });
-  // Load clients from server
-  loadClients().then(() => {
-    if (allClients.filter(c => c.ml_user_id).length > 0) loadDashboardData();
-  });
+  // Load clients from server - don't auto-load data, wait for account selection
+  loadClients();
   // Show dashboard by default
   showPage('dashboard', document.querySelector('.nav-item[data-page="dashboard"]'));
 
