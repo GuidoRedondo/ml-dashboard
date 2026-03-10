@@ -247,16 +247,14 @@ async function getClientToken(clientId) {
   return client.access_token;
 }
 
-// ── SHIPPING COSTS ────────────────────────────────────────────────────────────
+// ── SHIPPING COSTS + METADATA ─────────────────────────────────────────────────
 async function fetchShippingCosts(orders, headers) {
-  // Get unique shipping IDs
   const shipIds = [...new Set(
     orders.map(o => o.shipping && o.shipping.id).filter(Boolean)
   )];
   if (!shipIds.length) return {};
 
   const costMap = {};
-  // Batch in groups of 10 to avoid rate limits
   for (let i = 0; i < shipIds.length; i += 10) {
     const batch = shipIds.slice(i, i + 10);
     const results = await Promise.all(batch.map(id =>
@@ -266,10 +264,20 @@ async function fetchShippingCosts(orders, headers) {
     ));
     results.forEach((s, idx) => {
       if (!s) return;
-      const baseCost = parseFloat(s.base_cost) || 0;         // real shipping cost
-      const buyerCost = parseFloat(s.cost && s.cost.gross) || 0; // what buyer paid
-      const sellerCost = Math.max(0, baseCost - buyerCost);   // what seller pays
-      costMap[batch[idx]] = sellerCost;
+      const baseCost  = parseFloat(s.base_cost) || 0;
+      const buyerCost = parseFloat(s.cost && s.cost.gross) || 0;
+      const sellerCost = Math.max(0, baseCost - buyerCost);
+
+      // Province: receiver address state
+      const province = (s.receiver_address && (
+        s.receiver_address.state?.name ||
+        s.receiver_address.city?.name
+      )) || 'Sin dato';
+
+      // Shipping mode: home_delivery, pick_up_point, self_service, etc.
+      const mode = s.shipping_option?.name || s.logistic_type || s.shipping_mode || 'Otro';
+
+      costMap[batch[idx]] = { sellerCost, province, mode, baseCost, buyerCost };
     });
   }
   return costMap;
@@ -388,22 +396,84 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
     curData.orders.forEach(order => {
       totalPaidAmount += parseFloat(order.paid_amount) || 0;
 
-      // Commission: sum sale_fee across all order items
       (order.order_items || []).forEach(oi => {
         totalSaleFee += parseFloat(oi.sale_fee) || 0;
       });
 
-      // Taxes
       if (order.taxes && order.taxes.amount) {
         totalTaxes += parseFloat(order.taxes.amount) || 0;
       }
 
-      // Shipping cost paid by seller
       const shipId = order.shipping && order.shipping.id;
       if (shipId && shippingCostMap[shipId] !== undefined) {
-        totalSellerShip += shippingCostMap[shipId];
+        totalSellerShip += shippingCostMap[shipId].sellerCost || 0;
       }
     });
+
+    // ── PERFORMANCE DATA ──────────────────────────────────────────────────────
+    // By shipping mode
+    const byMode     = {};
+    // By province
+    const byProvince = {};
+    // By hour
+    const byHour     = new Array(24).fill(0);
+    // Per item breakdown for top lists
+    const byItem     = {};
+
+    curData.orders.forEach(order => {
+      const hour = new Date(order.date_created).getHours();
+      byHour[hour]++;
+
+      const shipId = order.shipping && order.shipping.id;
+      const shipData = shipId ? shippingCostMap[shipId] : null;
+
+      // Shipping mode
+      let mode = 'Otro';
+      if (shipData && shipData.mode) {
+        const m = shipData.mode.toLowerCase();
+        if (m.includes('pickup') || m.includes('pick_up') || m.includes('punto')) mode = 'Punto de entrega';
+        else if (m.includes('home') || m.includes('domicilio') || m.includes('standard') || m.includes('express')) mode = 'Envío a domicilio';
+        else if (m.includes('self') || m.includes('fulfillment')) mode = 'Fulfillment ML';
+        else mode = shipData.mode;
+      } else if (!shipId) {
+        mode = 'Retiro en local';
+      }
+      byMode[mode] = (byMode[mode] || 0) + 1;
+
+      // Province
+      const province = shipData ? shipData.province : 'Sin envío';
+      byProvince[province] = (byProvince[province] || 0) + 1;
+
+      // Per item
+      const orderSaleFee  = (order.order_items || []).reduce((s, oi) => s + (parseFloat(oi.sale_fee) || 0), 0);
+      const orderTax      = parseFloat((order.taxes || {}).amount) || 0;
+      const orderSellerShip = shipData ? (shipData.sellerCost || 0) : 0;
+      const orderPaid     = parseFloat(order.paid_amount) || 0;
+      const orderNet      = orderPaid - orderSaleFee - orderTax - orderSellerShip;
+
+      (order.order_items || []).forEach(oi => {
+        const id    = oi.item && oi.item.id;
+        const title = oi.item && oi.item.title;
+        if (!id) return;
+        if (!byItem[id]) byItem[id] = { id, title: title || id, revenue: 0, units: 0, net: 0, orders: 0 };
+        const itemRevenue = (parseFloat(oi.unit_price) || 0) * (oi.quantity || 0);
+        const itemFrac    = orderPaid > 0 ? itemRevenue / orderPaid : 0;
+        byItem[id].revenue += itemRevenue;
+        byItem[id].units   += oi.quantity || 0;
+        byItem[id].net     += orderNet * itemFrac;
+        byItem[id].orders  += 1;
+      });
+    });
+
+    // Top 15 lists
+    const itemsArr = Object.values(byItem);
+    const top15Revenue = [...itemsArr].sort((a,b) => b.revenue - a.revenue).slice(0,15)
+      .map(i => ({ ...i, pct_recibido: i.revenue > 0 ? ((i.net/i.revenue)*100).toFixed(1) : '0' }));
+    const top15Units   = [...itemsArr].sort((a,b) => b.units   - a.units  ).slice(0,15)
+      .map(i => ({ ...i, pct_recibido: i.revenue > 0 ? ((i.net/i.revenue)*100).toFixed(1) : '0' }));
+    const top15Pct     = [...itemsArr].filter(i => i.revenue > 0)
+      .sort((a,b) => (b.net/b.revenue) - (a.net/a.revenue)).slice(0,15)
+      .map(i => ({ ...i, pct_recibido: ((i.net/i.revenue)*100).toFixed(1) }));
 
     // Ads spend comes from /api/ads — store raw amounts for frontend to combine
     // Net received = paid_amount - sale_fee - taxes - seller_shipping_cost
@@ -473,7 +543,15 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
       },
       recent_orders: curData.orders,
       reputation: user.seller_reputation,
-      top_items: topItems
+      top_items: topItems,
+      performance: {
+        by_mode:     byMode,
+        by_province: byProvince,
+        by_hour:     byHour,
+        top15_revenue: top15Revenue,
+        top15_units:   top15Units,
+        top15_pct:     top15Pct
+      }
     });
   } catch(e) { console.error('Dashboard error:', e); res.status(500).json({ error: e.message }); }
 });
