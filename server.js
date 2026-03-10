@@ -475,9 +475,10 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
         const itemShip    = orderSellerShip * itemFrac;
         const itemNet     = itemRevenue - itemSaleFee - itemTax - itemShip;
 
-        // DEBUG — log first 3 orders per item to verify breakdown
-        if (byItem[id].orders < 3) {
-          console.log(`[ORDER_DETAIL] item=${id} qty=${oi.quantity} price=$${oi.unit_price} sale_fee=$${itemSaleFee.toFixed(0)} tax=$${itemTax.toFixed(0)} ship=$${itemShip.toFixed(0)} net=$${itemNet.toFixed(0)} pct=${itemRevenue>0?(itemNet/itemRevenue*100).toFixed(1):0}%`);
+        // DEBUG — log ALL orders for MLA1144763103 + first 2 of any item
+        const isTarget = id === 'MLA1144763103';
+        if (isTarget || byItem[id].orders < 2) {
+          console.log(`[ORDER_DETAIL] item=${id} qty=${oi.quantity} price=$${oi.unit_price} revenue=$${itemRevenue.toFixed(0)} sale_fee=$${itemSaleFee.toFixed(0)} tax=$${itemTax.toFixed(0)} ship=$${itemShip.toFixed(0)} net=$${itemNet.toFixed(0)} pct=${itemRevenue>0?(itemNet/itemRevenue*100).toFixed(1):0}% | orderPaid=$${order.paid_amount} orderItemsRevenue=$${orderItemsRevenue.toFixed(0)}`);
         }
 
         byItem[id].revenue += itemRevenue;
