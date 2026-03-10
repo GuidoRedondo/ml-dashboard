@@ -454,23 +454,30 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
       const province = shipData ? shipData.province : 'Sin envío';
       byProvince[province] = (byProvince[province] || 0) + 1;
 
-      // Per item
-      const orderSaleFee  = (order.order_items || []).reduce((s, oi) => s + (parseFloat(oi.sale_fee) || 0), 0);
-      const orderTax      = parseFloat((order.taxes || {}).amount) || 0;
+      // Per item — use item-level sale_fee directly, prorate taxes+shipping by revenue fraction
+      const orderItemsRevenue = (order.order_items || []).reduce((s, oi) =>
+        s + (parseFloat(oi.unit_price) || 0) * (oi.quantity || 0), 0) || 1;
+
+      const orderTax        = parseFloat((order.taxes || {}).amount) || 0;
       const orderSellerShip = shipData ? (shipData.sellerCost || 0) : 0;
-      const orderPaid     = parseFloat(order.paid_amount) || 0;
-      const orderNet      = orderPaid - orderSaleFee - orderTax - orderSellerShip;
 
       (order.order_items || []).forEach(oi => {
         const id    = oi.item && oi.item.id;
         const title = oi.item && oi.item.title;
         if (!id) return;
         if (!byItem[id]) byItem[id] = { id, title: title || id, revenue: 0, units: 0, net: 0, orders: 0 };
+
         const itemRevenue = (parseFloat(oi.unit_price) || 0) * (oi.quantity || 0);
-        const itemFrac    = orderPaid > 0 ? itemRevenue / orderPaid : 0;
+        const itemSaleFee = parseFloat(oi.sale_fee) || 0;
+        // Prorate taxes and seller shipping by this item's share of order revenue
+        const itemFrac    = itemRevenue / orderItemsRevenue;
+        const itemTax     = orderTax * itemFrac;
+        const itemShip    = orderSellerShip * itemFrac;
+        const itemNet     = itemRevenue - itemSaleFee - itemTax - itemShip;
+
         byItem[id].revenue += itemRevenue;
         byItem[id].units   += oi.quantity || 0;
-        byItem[id].net     += orderNet * itemFrac;
+        byItem[id].net     += itemNet;
         byItem[id].orders  += 1;
       });
     });
