@@ -1725,12 +1725,20 @@ async function loadPublicaciones() {
   el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:20px;text-align:center">⏳ Cargando publicaciones... puede tardar 30-60 segundos</div>';
 
   let allItems = [];
+  let totalSummary = { total: 0, active: 0, inactive: 0, withSales: 0, withProblems: 0 };
 
   await Promise.all(connected.map(async acc => {
     try {
       const res = await fetch(SERVER_URL + '/api/items-full?client_id=' + acc.id + '&days=' + days + '&session_id=' + (getSession()||''));
       const data = await res.json();
       (data.items || []).forEach(item => allItems.push({ ...item, cuenta: acc.name, color: acc.color, totalRevenue: data.total_revenue }));
+      if (data.summary) {
+        totalSummary.total        += data.summary.total;
+        totalSummary.active       += data.summary.active;
+        totalSummary.inactive     += data.summary.inactive;
+        totalSummary.withSales    += data.summary.withSales;
+        totalSummary.withProblems += data.summary.withProblems;
+      }
     } catch(e) { console.error('Pubs error:', e); }
   }));
 
@@ -1739,11 +1747,11 @@ async function loadPublicaciones() {
     return;
   }
 
-  // Re-calculate revenueShare across all accounts
   const grandTotal = allItems.reduce((s, i) => s + i.revenue, 0);
   allItems.forEach(i => { i.revenueShare = grandTotal > 0 ? parseFloat(((i.revenue / grandTotal) * 100).toFixed(2)) : 0; });
   allItems.sort((a, b) => b.revenue - a.revenue);
   window._pubsData = allItems;
+  window._pubsFilter = 'all';
 
   function fmt(n) {
     if (n >= 1000000) return '$' + (n/1000000).toFixed(2) + 'M';
@@ -1751,59 +1759,209 @@ async function loadPublicaciones() {
     return '$' + Math.round(n).toLocaleString('es-AR');
   }
 
-  const rows = allItems.map(item => {
+  const T = totalSummary.total || 1;
+  const pctActive   = (totalSummary.active   / T * 100).toFixed(0);
+  const pctInactive = (totalSummary.inactive / T * 100).toFixed(0);
+  const pctSales    = totalSummary.active > 0 ? (totalSummary.withSales / totalSummary.active * 100).toFixed(0) : 0;
+  const pctProblems = (totalSummary.withProblems / T * 100).toFixed(0);
+
+  // ── Dashboard cards ───────────────────────────────────────────────────────
+  const cards = `
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px">
+
+      <!-- Activas -->
+      <div class="kpi-card" style="padding:18px;cursor:pointer;border:2px solid transparent;transition:border .2s"
+           onclick="filterPubs('active',this)" id="pubFilterActive">
+        <div class="kpi-label">Publicaciones activas</div>
+        <div style="font-size:28px;font-weight:800;color:#00e676;margin:8px 0">${totalSummary.active.toLocaleString('es-AR')}</div>
+        <div style="font-size:12px;color:var(--muted)">${pctActive}% del total</div>
+        <div style="background:var(--surface2);border-radius:4px;height:4px;margin-top:10px">
+          <div style="background:#00e676;height:100%;width:${pctActive}%;border-radius:4px"></div>
+        </div>
+      </div>
+
+      <!-- Inactivas/Pausadas -->
+      <div class="kpi-card" style="padding:18px;cursor:pointer;border:2px solid transparent;transition:border .2s"
+           onclick="filterPubs('inactive',this)" id="pubFilterInactive">
+        <div class="kpi-label">Inactivas / Pausadas</div>
+        <div style="font-size:28px;font-weight:800;color:#ff4d4d;margin:8px 0">${totalSummary.inactive.toLocaleString('es-AR')}</div>
+        <div style="font-size:12px;color:var(--muted)">${pctInactive}% del total</div>
+        <div style="background:var(--surface2);border-radius:4px;height:4px;margin-top:10px">
+          <div style="background:#ff4d4d;height:100%;width:${pctInactive}%;border-radius:4px"></div>
+        </div>
+      </div>
+
+      <!-- Exitosas -->
+      <div class="kpi-card" style="padding:18px;cursor:pointer;border:2px solid transparent;transition:border .2s"
+           onclick="filterPubs('sales',this)" id="pubFilterSales">
+        <div class="kpi-label">Exitosas (con ventas)</div>
+        <div style="font-size:28px;font-weight:800;color:#FFD700;margin:8px 0">${totalSummary.withSales.toLocaleString('es-AR')}</div>
+        <div style="font-size:12px;color:var(--muted)">${pctSales}% de las activas · últimos ${days} días</div>
+        <div style="background:var(--surface2);border-radius:4px;height:4px;margin-top:10px">
+          <div style="background:#FFD700;height:100%;width:${pctSales}%;border-radius:4px"></div>
+        </div>
+      </div>
+
+      <!-- Con problemas -->
+      <div class="kpi-card" style="padding:18px;cursor:pointer;border:2px solid transparent;transition:border .2s"
+           onclick="filterPubs('problems',this)" id="pubFilterProblems">
+        <div class="kpi-label">A mejorar (con problemas)</div>
+        <div style="font-size:28px;font-weight:800;color:#ff9100;margin:8px 0">${totalSummary.withProblems.toLocaleString('es-AR')}</div>
+        <div style="font-size:12px;color:var(--muted)">${pctProblems}% del total</div>
+        <div style="background:var(--surface2);border-radius:4px;height:4px;margin-top:10px">
+          <div style="background:#ff9100;height:100%;width:${Math.min(pctProblems,100)}%;border-radius:4px"></div>
+        </div>
+      </div>
+    </div>`;
+
+  el.innerHTML = cards + `
+    <div style="display:flex;gap:10px;align-items:center;margin-bottom:12px;flex-wrap:wrap">
+      <input id="pubSearch" type="text" placeholder="Buscar por título o MLA..."
+        onInput="filterPubSearch(this.value)"
+        style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:8px 12px;color:var(--text);font-family:var(--font-b);font-size:13px;outline:none;flex:1;min-width:200px">
+      <div id="pubCount" style="font-size:12px;color:var(--muted)">${allItems.length} publicaciones</div>
+    </div>
+    <div style="overflow-x:auto">
+      <table id="pubsTable">
+        <thead><tr>
+          <th style="cursor:pointer" onclick="sortPubs('id')">MLA ↕</th>
+          <th style="cursor:pointer" onclick="sortPubs('title')">Título ↕</th>
+          <th>Cuenta</th>
+          <th style="cursor:pointer" onclick="sortPubs('status')">Estado ↕</th>
+          <th>Problemas</th>
+          <th>Ads</th>
+          <th style="text-align:right;cursor:pointer" onclick="sortPubs('units')">Unidades ↕</th>
+          <th style="text-align:right;cursor:pointer" onclick="sortPubs('revenue')">Facturación ↕</th>
+          <th style="text-align:right;cursor:pointer" onclick="sortPubs('adsSales')">Ventas Ads ↕</th>
+          <th style="text-align:right;cursor:pointer" onclick="sortPubs('revenueShare')">% Aporte ↕</th>
+          <th style="text-align:right;cursor:pointer" onclick="sortPubs('visits')">Visitas ↕</th>
+          <th style="text-align:right;cursor:pointer" onclick="sortPubs('conversion')">Conv. ↕</th>
+          <th style="text-align:right;cursor:pointer" onclick="sortPubs('adsClicks')">Clicks Ads ↕</th>
+          <th style="text-align:right;cursor:pointer" onclick="sortPubs('adsConversion')">Conv. Ads ↕</th>
+        </tr></thead>
+        <tbody id="pubsBody">${buildPubRows(allItems, fmt)}</tbody>
+      </table>
+    </div>`;
+}
+
+function buildPubRows(items, fmt) {
+  if (!fmt) fmt = n => n >= 1000000 ? '$'+(n/1000000).toFixed(2)+'M' : n >= 1000 ? '$'+(n/1000).toFixed(1)+'K' : '$'+Math.round(n).toLocaleString('es-AR');
+  return items.map(item => {
     const adsTag = item.hasAds
       ? '<span style="background:rgba(255,180,0,.15);color:#ffb400;padding:2px 7px;border-radius:4px;font-size:11px;font-weight:600">📣 Sí</span>'
       : '<span style="background:rgba(255,255,255,.06);color:var(--muted);padding:2px 7px;border-radius:4px;font-size:11px">—</span>';
-    const convColor = item.conversion >= 3 ? '#00e676' : item.conversion >= 1 ? '#ff9100' : '#ff4d4d';
+
+    const statusCfg = {
+      'active':   { color: '#00e676', label: '● Activa' },
+      'paused':   { color: '#ff9100', label: '⏸ Pausada' },
+      'inactive': { color: '#ff4d4d', label: '○ Inactiva' },
+    };
+    const st = statusCfg[item.status] || { color: 'var(--muted)', label: item.status };
+    const statusTag = `<span style="color:${st.color};font-size:12px;font-weight:600;white-space:nowrap">${st.label}</span>`;
+
+    const problemsTag = item.hasProblems
+      ? `<span style="background:rgba(255,145,0,.15);color:#ff9100;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600;cursor:pointer;white-space:nowrap"
+           title="${(item.problems||[]).map(p=>p.message||p.code||p).join('\n')}"
+           onclick="showProblems('${item.id}',this)">
+           ⚠️ ${item.problems.length} problema${item.problems.length > 1 ? 's' : ''}
+         </span>`
+      : '<span style="color:var(--muted);font-size:11px">✓</span>';
+
+    const convColor = item.conversion >= 3 ? '#00e676' : item.conversion >= 1 ? '#ff9100' : item.conversion > 0 ? '#ff4d4d' : 'var(--muted)';
     const adsConvColor = item.adsConversion >= 5 ? '#00e676' : item.adsConversion >= 2 ? '#ff9100' : 'var(--muted)';
-    return '<tr class="pub-row" data-search="' + (item.title + item.id + item.cuenta).toLowerCase() + '">'
+
+    return '<tr class="pub-row" data-status="' + item.status + '" data-hassales="' + item.hasSales + '" data-hasproblems="' + item.hasProblems + '" data-search="' + (item.title + item.id + item.cuenta).toLowerCase() + '">'
       + '<td style="color:var(--muted);font-size:11px">' + item.id + '</td>'
-      + '<td style="max-width:260px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="' + item.title + '">' + item.title + '</td>'
+      + '<td style="max-width:240px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="' + item.title + '">' + item.title + '</td>'
       + '<td style="color:var(--muted);font-size:11px">' + item.cuenta + '</td>'
+      + '<td>' + statusTag + '</td>'
+      + '<td>' + problemsTag + '</td>'
       + '<td>' + adsTag + '</td>'
-      + '<td style="text-align:right;color:#00e676;font-weight:700">' + item.units.toLocaleString('es-AR') + '</td>'
-      + '<td style="text-align:right;color:var(--yellow);font-weight:700">' + fmt(item.revenue) + '</td>'
-      + '<td style="text-align:right;color:#00e676;font-weight:600">' + fmt(item.adsSales) + '</td>'
-      + '<td style="text-align:right;font-size:12px">' + item.revenueShare + '%</td>'
-      + '<td style="text-align:right">' + item.visits.toLocaleString('es-AR') + '</td>'
-      + '<td style="text-align:right"><span style="background:rgba(0,0,0,.2);color:' + convColor + ';padding:2px 7px;border-radius:4px;font-size:12px;font-weight:600">' + item.conversion + '%</span></td>'
-      + '<td style="text-align:right">' + item.adsClicks.toLocaleString('es-AR') + '</td>'
-      + '<td style="text-align:right"><span style="background:rgba(0,0,0,.2);color:' + adsConvColor + ';padding:2px 7px;border-radius:4px;font-size:12px;font-weight:600">' + item.adsConversion + '%</span></td>'
+      + '<td style="text-align:right;color:#00e676;font-weight:700">' + (item.units || '—') + '</td>'
+      + '<td style="text-align:right;color:var(--yellow);font-weight:700">' + (item.revenue > 0 ? fmt(item.revenue) : '—') + '</td>'
+      + '<td style="text-align:right;color:#00e676;font-weight:600">' + (item.adsSales > 0 ? fmt(item.adsSales) : '—') + '</td>'
+      + '<td style="text-align:right;font-size:12px">' + (item.revenueShare > 0 ? item.revenueShare + '%' : '—') + '</td>'
+      + '<td style="text-align:right">' + (item.visits > 0 ? item.visits.toLocaleString('es-AR') : '—') + '</td>'
+      + '<td style="text-align:right"><span style="background:rgba(0,0,0,.2);color:' + convColor + ';padding:2px 7px;border-radius:4px;font-size:12px;font-weight:600">' + (item.conversion > 0 ? item.conversion + '%' : '—') + '</span></td>'
+      + '<td style="text-align:right">' + (item.adsClicks > 0 ? item.adsClicks.toLocaleString('es-AR') : '—') + '</td>'
+      + '<td style="text-align:right"><span style="background:rgba(0,0,0,.2);color:' + adsConvColor + ';padding:2px 7px;border-radius:4px;font-size:12px;font-weight:600">' + (item.adsConversion > 0 ? item.adsConversion + '%' : '—') + '</span></td>'
       + '</tr>';
   }).join('');
+}
 
-  el.innerHTML = '<div style="padding:12px 16px;font-size:12px;color:var(--muted);border-bottom:1px solid rgba(255,255,255,.06)">'
-    + allItems.length + ' publicaciones · ' + allItems.filter(i => i.hasAds).length + ' con Ads · ' + days + ' días</div>'
-    + '<div style="overflow-x:auto"><table id="pubsTable">'
-    + '<thead><tr>'
-    + '<th style="cursor:pointer" onclick="sortPubs(&quot;id&quot;)">MLA ↕</th>'
-    + '<th style="cursor:pointer" onclick="sortPubs(&quot;title&quot;)">Título ↕</th>'
-    + '<th>Cuenta</th>'
-    + '<th>Ads</th>'
-    + '<th style="text-align:right;cursor:pointer" onclick="sortPubs(&quot;units&quot;)">Unidades ↕</th>'
-    + '<th style="text-align:right;cursor:pointer" onclick="sortPubs(&quot;revenue&quot;)">Facturación ↕</th>'
-    + '<th style="text-align:right;cursor:pointer" onclick="sortPubs(&quot;adsSales&quot;)">Ventas Ads ↕</th>'
-    + '<th style="text-align:right;cursor:pointer" onclick="sortPubs(&quot;revenueShare&quot;)">% Aporte ↕</th>'
-    + '<th style="text-align:right;cursor:pointer" onclick="sortPubs(&quot;visits&quot;)">Visitas ↕</th>'
-    + '<th style="text-align:right;cursor:pointer" onclick="sortPubs(&quot;conversion&quot;)">Conv. ↕</th>'
-    + '<th style="text-align:right;cursor:pointer" onclick="sortPubs(&quot;adsClicks&quot;)">Clicks Ads ↕</th>'
-    + '<th style="text-align:right;cursor:pointer" onclick="sortPubs(&quot;adsConversion&quot;)">Conv. Ads ↕</th>'
-    + '</tr></thead>'
-    + '<tbody>' + rows + '</tbody></table></div>';
+function filterPubs(type, cardEl) {
+  window._pubsFilter = type;
+  // Highlight active card
+  ['pubFilterActive','pubFilterInactive','pubFilterSales','pubFilterProblems'].forEach(id => {
+    const c = document.getElementById(id);
+    if (c) c.style.border = '2px solid transparent';
+  });
+  if (cardEl) cardEl.style.border = '2px solid var(--accent)';
+
+  applyPubsFilter();
+}
+
+function applyPubsFilter() {
+  const f = window._pubsFilter || 'all';
+  const q = (document.getElementById('pubSearch')?.value || '').toLowerCase();
+  let count = 0;
+  document.querySelectorAll('.pub-row').forEach(row => {
+    const matchFilter =
+      f === 'all'      ? true :
+      f === 'active'   ? row.dataset.status === 'active' :
+      f === 'inactive' ? (row.dataset.status === 'inactive' || row.dataset.status === 'paused') :
+      f === 'sales'    ? row.dataset.hassales === 'true' :
+      f === 'problems' ? row.dataset.hasproblems === 'true' : true;
+    const matchSearch = !q || row.dataset.search.includes(q);
+    const show = matchFilter && matchSearch;
+    row.style.display = show ? '' : 'none';
+    if (show) count++;
+  });
+  const el = document.getElementById('pubCount');
+  if (el) el.textContent = count + ' publicaciones';
+}
+
+function filterPubSearch(val) {
+  applyPubsFilter();
 }
 
 function sortPubs(col) {
   if (!window._pubsData) return;
   const asc = window._pubsSortCol === col && !window._pubsSortAsc;
-  window._pubsSortCol = col;
-  window._pubsSortAsc = asc;
+  window._pubsSortCol = col; window._pubsSortAsc = asc;
   window._pubsData.sort((a, b) => {
     const va = a[col], vb = b[col];
     if (typeof va === 'string') return asc ? va.localeCompare(vb) : vb.localeCompare(va);
     return asc ? va - vb : vb - va;
   });
-  loadPublicaciones();
+  const body = document.getElementById('pubsBody');
+  if (body) body.innerHTML = buildPubRows(window._pubsData);
+  applyPubsFilter();
+}
+
+function showProblems(itemId, el) {
+  const item = (window._pubsData || []).find(i => i.id === itemId);
+  if (!item || !item.problems) return;
+  const msgs = item.problems.map(p => {
+    const msg = p.message || p.code || JSON.stringify(p);
+    const type = p.type || '';
+    const icon = type === 'warning' ? '⚠️' : type === 'error' ? '🚫' : 'ℹ️';
+    return `<div style="padding:8px 0;border-bottom:1px solid var(--border);font-size:13px">${icon} ${msg}</div>`;
+  }).join('');
+  // Simple inline tooltip-like panel below the cell
+  const existing = document.getElementById('problemsPanel');
+  if (existing) { existing.remove(); return; }
+  const panel = document.createElement('div');
+  panel.id = 'problemsPanel';
+  panel.style.cssText = 'position:fixed;z-index:9999;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px 16px;max-width:380px;box-shadow:0 8px 32px rgba(0,0,0,.4)';
+  panel.innerHTML = `<div style="font-weight:700;margin-bottom:10px;font-size:13px">Problemas — ${itemId}</div>${msgs}
+    <button onclick="document.getElementById('problemsPanel').remove()"
+      style="margin-top:12px;background:var(--surface2);border:none;color:var(--muted);padding:6px 14px;border-radius:6px;cursor:pointer;font-size:12px">Cerrar</button>`;
+  // Position near click
+  const rect = el.getBoundingClientRect();
+  panel.style.top  = Math.min(rect.bottom + 8, window.innerHeight - 200) + 'px';
+  panel.style.left = Math.min(rect.left, window.innerWidth - 400) + 'px';
+  document.body.appendChild(panel);
 }
 
 function loadVentas() {
@@ -1998,7 +2156,7 @@ function loadPerformance() {
 
   // ── HOUR CHART (full width SVG) ───────────────────────────────────────────
   function hourChart(hours) {
-    const W = 800, H = 120, padL = 30, padR = 10, padT = 10, padB = 25;
+    const W = 900, H = 200, padL = 35, padR = 10, padT = 24, padB = 30;
     const innerW = W - padL - padR, innerH = H - padT - padB;
     const max = Math.max(...hours, 1);
     const barW = innerW / 24;
@@ -2010,17 +2168,15 @@ function loadPerformance() {
       const isNight = i < 6 || i >= 22;
       const isMorning = i >= 6 && i < 12;
       const color = isNight ? '#5c6bc0' : isMorning ? '#FFD700' : '#00e676';
-      const isHour = i % 3 === 0;
       return `
-        <rect x="${(x+1).toFixed(1)}" y="${y.toFixed(1)}" width="${(barW-2).toFixed(1)}" height="${h.toFixed(1)}" fill="${color}" rx="2" opacity="0.9">
+        <rect x="${(x+2).toFixed(1)}" y="${y.toFixed(1)}" width="${(barW-4).toFixed(1)}" height="${h.toFixed(1)}" fill="${color}" rx="3" opacity="0.9">
           <title>${i}:00hs — ${v} ventas</title>
         </rect>
-        ${isHour ? `<text x="${(x+barW/2).toFixed(1)}" y="${H-5}" text-anchor="middle" font-size="9" fill="#888" font-family="sans-serif">${i}h</text>` : ''}
-        ${v > 0 ? `<text x="${(x+barW/2).toFixed(1)}" y="${(y-3).toFixed(1)}" text-anchor="middle" font-size="8" fill="var(--muted)" font-family="sans-serif">${v}</text>` : ''}
+        <text x="${(x+barW/2).toFixed(1)}" y="${H-6}" text-anchor="middle" font-size="10" fill="#888" font-family="sans-serif">${i}h</text>
+        ${v > 0 ? `<text x="${(x+barW/2).toFixed(1)}" y="${(y-5).toFixed(1)}" text-anchor="middle" font-size="9" fill="var(--muted)" font-family="sans-serif">${v}</text>` : ''}
       `;
     }).join('');
 
-    // Y axis labels
     const yLabels = [0, 0.25, 0.5, 0.75, 1].map(f => {
       const y = (padT + innerH - f * innerH).toFixed(1);
       const val = Math.round(f * max);
@@ -2030,11 +2186,11 @@ function loadPerformance() {
 
     const peakHour = hours.indexOf(Math.max(...hours));
     return `
-      <svg viewBox="0 0 ${W} ${H}" style="width:100%;height:130px;display:block">
+      <svg viewBox="0 0 ${W} ${H}" style="width:100%;height:200px;display:block">
         ${yLabels}${bars}
       </svg>
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px;flex-wrap:wrap;gap:8px">
-        <div style="display:flex;gap:12px;font-size:11px;color:var(--muted)">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;flex-wrap:wrap;gap:8px">
+        <div style="display:flex;gap:16px;font-size:11px;color:var(--muted)">
           <span><span style="color:#5c6bc0">■</span> Noche (0-6h · 22-23h)</span>
           <span><span style="color:#FFD700">■</span> Mañana (6-12h)</span>
           <span><span style="color:#00e676">■</span> Tarde/Noche (12-22h)</span>
