@@ -247,6 +247,34 @@ async function getClientToken(clientId) {
   return client.access_token;
 }
 
+// ── SHIPPING COSTS ────────────────────────────────────────────────────────────
+async function fetchShippingCosts(orders, headers) {
+  // Get unique shipping IDs
+  const shipIds = [...new Set(
+    orders.map(o => o.shipping && o.shipping.id).filter(Boolean)
+  )];
+  if (!shipIds.length) return {};
+
+  const costMap = {};
+  // Batch in groups of 10 to avoid rate limits
+  for (let i = 0; i < shipIds.length; i += 10) {
+    const batch = shipIds.slice(i, i + 10);
+    const results = await Promise.all(batch.map(id =>
+      fetch(`${ML_API}/shipments/${id}`, { headers })
+        .then(r => r.json())
+        .catch(() => null)
+    ));
+    results.forEach((s, idx) => {
+      if (!s) return;
+      const baseCost = parseFloat(s.base_cost) || 0;         // real shipping cost
+      const buyerCost = parseFloat(s.cost && s.cost.gross) || 0; // what buyer paid
+      const sellerCost = Math.max(0, baseCost - buyerCost);   // what seller pays
+      costMap[batch[idx]] = sellerCost;
+    });
+  }
+  return costMap;
+}
+
 // ── DASHBOARD DATA (by client ID) ─────────────────────────────────────────────
 async function fetchAllOrders(uid, headers, fromStr, toStr) {
   try {
@@ -348,14 +376,100 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
     const prevConv = prevTotalVisits > 0 ? ((prevData.orders.length / prevTotalVisits) * 100).toFixed(1) : 0;
     const pct = (cur, prev) => prev > 0 ? (((cur - prev) / prev) * 100).toFixed(1) : null;
 
+    // ── IMPORTE RECIBIDO CALCULATION ──────────────────────────────────────────
+    // Fetch shipping costs for all current orders
+    const shippingCostMap = await fetchShippingCosts(curData.orders, headers);
+
+    let totalPaidAmount    = 0; // what buyers actually paid
+    let totalSaleFee       = 0; // ML commission
+    let totalTaxes         = 0; // taxes (IIBB etc)
+    let totalSellerShip    = 0; // shipping cost absorbed by seller
+
+    curData.orders.forEach(order => {
+      totalPaidAmount += parseFloat(order.paid_amount) || 0;
+
+      // Commission: sum sale_fee across all order items
+      (order.order_items || []).forEach(oi => {
+        totalSaleFee += parseFloat(oi.sale_fee) || 0;
+      });
+
+      // Taxes
+      if (order.taxes && order.taxes.amount) {
+        totalTaxes += parseFloat(order.taxes.amount) || 0;
+      }
+
+      // Shipping cost paid by seller
+      const shipId = order.shipping && order.shipping.id;
+      if (shipId && shippingCostMap[shipId] !== undefined) {
+        totalSellerShip += shippingCostMap[shipId];
+      }
+    });
+
+    // Ads spend comes from /api/ads — store raw amounts for frontend to combine
+    // Net received = paid_amount - sale_fee - taxes - seller_shipping_cost
+    // (ads are subtracted in frontend where we have that data, or we can fetch here)
+    const netBeforeAds = totalPaidAmount - totalSaleFee - totalTaxes - totalSellerShip;
+    const totalAmountForPct = curData.amount > 0 ? curData.amount : 1;
+
+    // Fetch ads spend to include in calculation
+    let adsSpend = 0;
+    try {
+      const advData = await fetch(`${ML_API}/advertising/advertisers?product_id=PADS`, {
+        headers: { ...headers, 'Content-Type': 'application/json', 'Api-Version': '1' }
+      }).then(r => r.json());
+      const advertisers = advData.advertisers || [];
+      if (advertisers.length) {
+        const adv = advertisers.find(a => a.site_id === (user.site_id || 'MLA')) || advertisers[0];
+        const siteId = user.site_id || 'MLA';
+        const fromDate = curFrom.toISOString().slice(0,10);
+        const toDate = now.toISOString().slice(0,10);
+        const url = `${ML_API}/advertising/${siteId}/advertisers/${adv.advertiser_id}/product_ads/campaigns/search?limit=1&date_from=${fromDate}&date_to=${toDate}&metrics=cost&metrics_summary=true`;
+        const adsData = await fetch(url, { headers: { ...headers, 'api-version': '2' } }).then(r => r.json()).catch(() => ({}));
+        adsSpend = parseFloat((adsData.metrics_summary || {}).cost) || 0;
+      }
+    } catch(e) { /* ads spend optional */ }
+
+    const importeRecibido = netBeforeAds - adsSpend;
+    const porcentajeRecibido = curData.amount > 0
+      ? ((importeRecibido / curData.amount) * 100).toFixed(1)
+      : '0.0';
+
+    // Units sold
+    const totalUnits = curData.orders.reduce((s, o) =>
+      s + (o.order_items || []).reduce((ss, oi) => ss + (oi.quantity || 0), 0), 0);
+    const prevUnits = prevData.orders.reduce((s, o) =>
+      s + (o.order_items || []).reduce((ss, oi) => ss + (oi.quantity || 0), 0), 0);
+
+    // Ticket promedio
+    const ticketPromedio = curData.orders.length > 0 ? curData.amount / curData.orders.length : 0;
+    const prevTicket = prevData.orders.length > 0 ? prevData.amount / prevData.orders.length : 0;
+
     res.json({
       user,
       stats: {
         total_orders: curData.orders.length, total_amount: curData.amount,
         total_items: (itemsData.paging && itemsData.paging.total) || 0,
         total_visits: totalVisits, conversion_rate: curConv,
-        prev: { total_orders: prevData.orders.length, total_amount: prevData.amount, total_visits: prevTotalVisits, conversion_rate: prevConv },
-        change: { orders: pct(curData.orders.length, prevData.orders.length), amount: pct(curData.amount, prevData.amount), visits: pct(totalVisits, prevTotalVisits), conversion: pct(parseFloat(curConv), parseFloat(prevConv)) }
+        total_units: totalUnits,
+        ticket_promedio: ticketPromedio,
+        importe_recibido: importeRecibido,
+        porcentaje_recibido: parseFloat(porcentajeRecibido),
+        ads_spend: adsSpend,
+        // breakdown for transparency
+        desglose: { paid_amount: totalPaidAmount, sale_fee: totalSaleFee, taxes: totalTaxes, seller_shipping: totalSellerShip, ads: adsSpend },
+        prev: {
+          total_orders: prevData.orders.length, total_amount: prevData.amount,
+          total_visits: prevTotalVisits, conversion_rate: prevConv,
+          total_units: prevUnits, ticket_promedio: prevTicket
+        },
+        change: {
+          orders: pct(curData.orders.length, prevData.orders.length),
+          amount: pct(curData.amount, prevData.amount),
+          visits: pct(totalVisits, prevTotalVisits),
+          conversion: pct(parseFloat(curConv), parseFloat(prevConv)),
+          units: pct(totalUnits, prevUnits),
+          ticket: pct(ticketPromedio, prevTicket)
+        }
       },
       recent_orders: curData.orders.slice(0, 20),
       reputation: user.seller_reputation,
