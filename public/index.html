@@ -1867,8 +1867,8 @@ function buildPubRows(items, fmt) {
          </span>`
       : '<span style="color:var(--muted);font-size:11px">✓</span>';
 
-    const convColor = item.conversion >= 3 ? '#00e676' : item.conversion >= 1 ? '#ff9100' : item.conversion > 0 ? '#ff4d4d' : 'var(--muted)';
-    const adsConvColor = item.adsConversion >= 5 ? '#00e676' : item.adsConversion >= 2 ? '#ff9100' : 'var(--muted)';
+    const convColor    = item.conversion    >= 3 ? '#00e676' : item.conversion    >= 1 ? '#ff9100' : item.conversion    > 0 ? '#ff4d4d' : 'var(--muted)';
+    const adsConvColor = item.adsConversion >= 5 ? '#00e676' : item.adsConversion >= 2 ? '#ff9100' : item.adsConversion > 0 ? '#ff4d4d' : 'var(--muted)';
 
     return '<tr class="pub-row" data-status="' + item.status + '" data-hassales="' + item.hasSales + '" data-hasproblems="' + item.hasProblems + '" data-search="' + (item.title + item.id + item.cuenta).toLowerCase() + '">'
       + '<td style="color:var(--muted);font-size:11px">' + item.id + '</td>'
@@ -1882,9 +1882,9 @@ function buildPubRows(items, fmt) {
       + '<td style="text-align:right;color:#00e676;font-weight:600">' + (item.adsSales > 0 ? fmt(item.adsSales) : '—') + '</td>'
       + '<td style="text-align:right;font-size:12px">' + (item.revenueShare > 0 ? item.revenueShare + '%' : '—') + '</td>'
       + '<td style="text-align:right">' + (item.visits > 0 ? item.visits.toLocaleString('es-AR') : '—') + '</td>'
-      + '<td style="text-align:right"><span style="background:rgba(0,0,0,.2);color:' + convColor + ';padding:2px 7px;border-radius:4px;font-size:12px;font-weight:600">' + (item.conversion > 0 ? item.conversion + '%' : '—') + '</span></td>'
+      + '<td style="text-align:right;font-size:13px;font-weight:700;color:' + convColor + '">' + (item.conversion > 0 ? item.conversion + '%' : '—') + '</td>'
       + '<td style="text-align:right">' + (item.adsClicks > 0 ? item.adsClicks.toLocaleString('es-AR') : '—') + '</td>'
-      + '<td style="text-align:right"><span style="background:rgba(0,0,0,.2);color:' + adsConvColor + ';padding:2px 7px;border-radius:4px;font-size:12px;font-weight:600">' + (item.adsConversion > 0 ? item.adsConversion + '%' : '—') + '</span></td>'
+      + '<td style="text-align:right;font-size:13px;font-weight:700;color:' + adsConvColor + '">' + (item.adsConversion > 0 ? item.adsConversion + '%' : '—') + '</td>'
       + '</tr>';
   }).join('');
 }
