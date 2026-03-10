@@ -588,7 +588,7 @@ tbody td {
           <div class="kpi-label">Evolución — Facturación · Ventas · Conversión</div>
           <span style="font-size:11px;color:var(--muted)" id="weeklyRangeLabel">Últimas semanas</span>
         </div>
-        <div id="weeklyChart" style="height:180px;display:flex;align-items:stretch;gap:4px;width:100%"></div>
+        <div id="weeklyChart" style="width:100%;height:180px;position:relative"></div>
         <div id="chartLegend" style="display:flex;gap:16px;flex-wrap:wrap;margin-top:10px"></div>
       </div>
     </div>
@@ -1470,57 +1470,129 @@ function buildEvolutionChart() {
   if (legendEl) legendEl.innerHTML = '';
   if (!connected.length) return;
 
-  // Build week buckets from recent_orders
   const days = state.rangeDays || 30;
-  const numWeeks = Math.min(8, Math.ceil(days / 7));
   const now = Date.now();
 
-  // Aggregate across accounts
-  const facByWeek   = new Array(numWeeks).fill(0);
-  const ventasByWeek = new Array(numWeeks).fill(0);
-  let totalVisitsAll = 0;
+  // Build daily buckets
+  const facByDay    = new Array(days).fill(0);
+  const ventasByDay = new Array(days).fill(0);
 
   connected.forEach(acc => {
-    const orders = (acc.data.recent_orders || []);
-    orders.forEach(o => {
+    (acc.data.recent_orders || []).forEach(o => {
       const age = (now - new Date(o.date_created).getTime()) / (1000 * 60 * 60 * 24);
-      const wi = Math.min(numWeeks - 1, Math.floor(age / 7));
-      const idx = numWeeks - 1 - wi; // most recent = last bar
-      if (idx >= 0 && idx < numWeeks) {
-        facByWeek[idx]    += parseFloat(o.total_amount) || 0;
-        ventasByWeek[idx] += 1;
+      const di = Math.floor(age);
+      if (di >= 0 && di < days) {
+        const idx = days - 1 - di;
+        facByDay[idx]    += parseFloat(o.total_amount) || 0;
+        ventasByDay[idx] += 1;
       }
     });
-    totalVisitsAll += acc.data.stats?.total_visits || 0;
   });
 
-  const maxFac = Math.max(...facByWeek, 1);
-  const maxVentas = Math.max(...ventasByWeek, 1);
-
-  const weekLabels = [];
-  for (let i = numWeeks - 1; i >= 0; i--) {
-    const d = new Date(now - (i * 7 + 3) * 24 * 60 * 60 * 1000);
-    weekLabels.push(d.toLocaleDateString('es-AR', { day:'2-digit', month:'2-digit' }));
+  // Build label array (show only some dates to avoid clutter)
+  const labels = [];
+  for (let i = 0; i < days; i++) {
+    const d = new Date(now - (days - 1 - i) * 24 * 60 * 60 * 1000);
+    labels.push(d.toLocaleDateString('es-AR', { day:'2-digit', month:'short' }));
   }
-  weekLabels.reverse();
 
-  facByWeek.forEach((fac, wi) => {
-    const ventas = ventasByWeek[wi];
-    const hFac    = Math.max(4, (fac / maxFac) * 100);
-    const hVentas = Math.max(4, (ventas / maxVentas) * 100);
-    const grp = document.createElement('div');
-    grp.className = 'bar-grp';
-    grp.style.flex = '1';
-    grp.innerHTML = `
-      <div style="display:flex;gap:2px;align-items:flex-end;width:100%;height:100%;justify-content:center">
-        <div class="bar" style="background:#FFD700;height:${hFac}%;flex:1;min-width:6px;border-radius:3px 3px 0 0;opacity:0.9"
-          title="Facturación: $${Math.round(fac).toLocaleString('es-AR')}"></div>
-        <div class="bar" style="background:#00e676;height:${hVentas}%;flex:1;min-width:6px;border-radius:3px 3px 0 0;opacity:0.9"
-          title="Ventas: ${ventas}"></div>
-      </div>
-      <div class="bar-lbl" style="font-size:10px">${weekLabels[wi]}</div>`;
-    chartEl.appendChild(grp);
-  });
+  // SVG dimensions
+  const W = chartEl.clientWidth || 800;
+  const H = 180;
+  const padL = 8, padR = 8, padT = 16, padB = 28;
+  const innerW = W - padL - padR;
+  const innerH = H - padT - padB;
+
+  const maxFac    = Math.max(...facByDay, 1);
+  const maxVentas = Math.max(...ventasByDay, 1);
+
+  function pts(arr, maxVal) {
+    return arr.map((v, i) => {
+      const x = padL + (i / (arr.length - 1)) * innerW;
+      const y = padT + innerH - (v / maxVal) * innerH;
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    }).join(' ');
+  }
+
+  function smoothPath(arr, maxVal) {
+    // Catmull-Rom to cubic bezier for smooth lines
+    const points = arr.map((v, i) => ({
+      x: padL + (i / (arr.length - 1)) * innerW,
+      y: padT + innerH - (v / maxVal) * innerH
+    }));
+    if (points.length < 2) return '';
+    let d = `M ${points[0].x.toFixed(1)} ${points[0].y.toFixed(1)}`;
+    for (let i = 0; i < points.length - 1; i++) {
+      const p0 = points[Math.max(0, i - 1)];
+      const p1 = points[i];
+      const p2 = points[i + 1];
+      const p3 = points[Math.min(points.length - 1, i + 2)];
+      const cp1x = p1.x + (p2.x - p0.x) / 6;
+      const cp1y = p1.y + (p2.y - p0.y) / 6;
+      const cp2x = p2.x - (p3.x - p1.x) / 6;
+      const cp2y = p2.y - (p3.y - p1.y) / 6;
+      d += ` C ${cp1x.toFixed(1)} ${cp1y.toFixed(1)}, ${cp2x.toFixed(1)} ${cp2y.toFixed(1)}, ${p2.x.toFixed(1)} ${p2.y.toFixed(1)}`;
+    }
+    return d;
+  }
+
+  function areaPath(arr, maxVal) {
+    const d = smoothPath(arr, maxVal);
+    if (!d) return '';
+    const lastX = (padL + innerW).toFixed(1);
+    const firstX = padL.toFixed(1);
+    const baseY = (padT + innerH).toFixed(1);
+    return `${d} L ${lastX} ${baseY} L ${firstX} ${baseY} Z`;
+  }
+
+  // Determine which x-axis labels to show (avoid overlap)
+  const labelStep = days <= 14 ? 2 : days <= 30 ? 5 : 7;
+  let xLabels = '';
+  for (let i = 0; i < days; i++) {
+    if (i % labelStep !== 0 && i !== days - 1) continue;
+    const x = padL + (i / (days - 1)) * innerW;
+    xLabels += `<text x="${x.toFixed(1)}" y="${H - 6}" text-anchor="middle" fill="#888" font-size="10">${labels[i]}</text>`;
+  }
+
+  // Dashed grid lines
+  const gridLines = [0.25, 0.5, 0.75, 1].map(f => {
+    const y = (padT + innerH - f * innerH).toFixed(1);
+    return `<line x1="${padL}" y1="${y}" x2="${padL + innerW}" y2="${y}" stroke="#e0e0e0" stroke-width="1" stroke-dasharray="4,4"/>`;
+  }).join('');
+
+  const facPath    = smoothPath(facByDay, maxFac);
+  const ventasPath = smoothPath(ventasByDay, maxVentas);
+  const facArea    = areaPath(facByDay, maxFac);
+  const ventasArea = areaPath(ventasByDay, maxVentas);
+
+  chartEl.style.height = H + 'px';
+  chartEl.style.display = 'block';
+  chartEl.innerHTML = `
+    <svg width="100%" height="${H}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="overflow:visible">
+      <defs>
+        <linearGradient id="gradFac" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="#FFD700" stop-opacity="0.25"/>
+          <stop offset="100%" stop-color="#FFD700" stop-opacity="0.02"/>
+        </linearGradient>
+        <linearGradient id="gradVentas" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="#00e676" stop-opacity="0.20"/>
+          <stop offset="100%" stop-color="#00e676" stop-opacity="0.02"/>
+        </linearGradient>
+      </defs>
+
+      ${gridLines}
+
+      <!-- Área relleno -->
+      <path d="${facArea}"    fill="url(#gradFac)"/>
+      <path d="${ventasArea}" fill="url(#gradVentas)"/>
+
+      <!-- Líneas -->
+      <path d="${facPath}"    fill="none" stroke="#FFD700" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+      <path d="${ventasPath}" fill="none" stroke="#00e676" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+
+      <!-- Labels eje X -->
+      ${xLabels}
+    </svg>`;
 
   legendEl.innerHTML = `
     <div class="leg"><div class="leg-dot" style="background:#FFD700"></div>Facturación</div>
