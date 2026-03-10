@@ -475,6 +475,11 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
         const itemShip    = orderSellerShip * itemFrac;
         const itemNet     = itemRevenue - itemSaleFee - itemTax - itemShip;
 
+        // DEBUG — log first 3 orders per item to verify breakdown
+        if (byItem[id].orders < 3) {
+          console.log(`[ORDER_DETAIL] item=${id} qty=${oi.quantity} price=$${oi.unit_price} sale_fee=$${itemSaleFee.toFixed(0)} tax=$${itemTax.toFixed(0)} ship=$${itemShip.toFixed(0)} net=$${itemNet.toFixed(0)} pct=${itemRevenue>0?(itemNet/itemRevenue*100).toFixed(1):0}%`);
+        }
+
         byItem[id].revenue += itemRevenue;
         byItem[id].units   += oi.quantity || 0;
         byItem[id].net     += itemNet;
@@ -484,6 +489,13 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
 
     // Top 15 lists
     const itemsArr = Object.values(byItem);
+
+    // DEBUG — log top 5 by revenue with full breakdown
+    [...itemsArr].sort((a,b) => b.revenue - a.revenue).slice(0,5).forEach(i => {
+      const pct = i.revenue > 0 ? (i.net/i.revenue*100).toFixed(1) : '0';
+      console.log(`[ITEM_NET] "${i.title.slice(0,40)}" revenue=$${Math.round(i.revenue)} net=$${Math.round(i.net)} pct=${pct}% orders=${i.orders}`);
+    });
+
     const top15Revenue = [...itemsArr].sort((a,b) => b.revenue - a.revenue).slice(0,15)
       .map(i => ({ ...i, pct_recibido: i.revenue > 0 ? ((i.net/i.revenue)*100).toFixed(1) : '0' }));
     const top15Units   = [...itemsArr].sort((a,b) => b.units   - a.units  ).slice(0,15)
