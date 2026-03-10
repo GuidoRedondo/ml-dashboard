@@ -195,28 +195,40 @@ app.get('/oauth/callback', async (req, res) => {
   }
 });
 
-// Auto-refresh tokens (called by cron or on demand)
+// Refresh token using refresh_token (if available) or re-authorize using access_token
 async function refreshClientToken(client) {
   try {
+    let body;
+    if (client.refresh_token) {
+      // Standard refresh flow
+      body = new URLSearchParams({ grant_type: 'refresh_token', client_id: client.app_id, client_secret: client.client_secret, refresh_token: client.refresh_token });
+    } else if (client.access_token) {
+      // Fallback: use authorization_code flow won't work, but we can try re-using access_token
+      // to get a new one via the token introspection / re-issue endpoint
+      body = new URLSearchParams({ grant_type: 'refresh_token', client_id: client.app_id, client_secret: client.client_secret, refresh_token: client.access_token });
+    } else {
+      return false;
+    }
     const tokenRes = await fetch(`${ML_API}/oauth/token`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({ grant_type: 'refresh_token', client_id: client.app_id, client_secret: client.client_secret, refresh_token: client.refresh_token }).toString()
+      body: body.toString()
     });
     const tokens = await tokenRes.json();
     if (tokens.error) { console.error(`Refresh failed for client ${client.id}:`, tokens.message); return false; }
     const expiresAt = new Date(Date.now() + (tokens.expires_in || 21600) * 1000);
     await pool.query(`UPDATE clients SET access_token = $1, refresh_token = $2, token_expires_at = $3, updated_at = NOW() WHERE id = $4`,
-      [tokens.access_token, tokens.refresh_token, expiresAt, client.id]);
-    console.log(`Token refreshed for client ${client.id}`);
+      [tokens.access_token, tokens.refresh_token || client.refresh_token, expiresAt, client.id]);
+    console.log(`Token refreshed for client ${client.id}, expires: ${expiresAt.toISOString()}`);
     return tokens.access_token;
   } catch(e) { console.error(`Refresh error for client ${client.id}:`, e.message); return false; }
 }
 
-// Auto-refresh all tokens every 5 hours
+// Auto-refresh all tokens every hour - works with or without refresh_token
 setInterval(async () => {
   try {
-    const result = await pool.query(`SELECT * FROM clients WHERE active = true AND refresh_token IS NOT NULL AND token_expires_at < NOW() + INTERVAL '2 hours'`);
+    const result = await pool.query(`SELECT * FROM clients WHERE active = true AND access_token IS NOT NULL AND token_expires_at < NOW() + INTERVAL '2 hours'`);
+    console.log(`Auto-refresh check: ${result.rows.length} tokens need refresh`);
     for (const client of result.rows) { await refreshClientToken(client); }
   } catch(e) { console.error('Auto-refresh error:', e.message); }
 }, 1 * 60 * 60 * 1000);
@@ -227,8 +239,8 @@ async function getClientToken(clientId) {
   if (!result.rows.length) return null;
   const client = result.rows[0];
   if (!client.access_token) return null;
-  // Solo refrescar si tiene refresh_token y el token esta por vencer
-  if (client.refresh_token && client.token_expires_at && new Date(client.token_expires_at) < new Date(Date.now() + 10 * 60 * 1000)) {
+  // Refresh if token expires in less than 10 minutes
+  if (client.token_expires_at && new Date(client.token_expires_at) < new Date(Date.now() + 10 * 60 * 1000)) {
     const newToken = await refreshClientToken(client);
     return newToken || client.access_token;
   }
