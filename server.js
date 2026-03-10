@@ -268,6 +268,11 @@ async function fetchShippingCosts(orders, headers) {
       const buyerCost = parseFloat(s.cost && s.cost.gross) || 0;
       const sellerCost = Math.max(0, baseCost - buyerCost);
 
+      // DEBUG — log cost fields for first 5 shipments
+      if (idx < 2 && i < 20) {
+        console.log(`[SHIPMENT] id=${batch[idx]} base_cost=${s.base_cost} cost.gross=${s.cost?.gross} cost.special=${s.cost?.special} cost.net=${s.cost?.net} cost.discount=${s.cost?.discount} sellerCost=${sellerCost} logistic=${s.logistic_type}`);
+      }
+
       // Province: receiver address state
       const province = (s.receiver_address && (
         s.receiver_address.state?.name ||
