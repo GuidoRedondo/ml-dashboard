@@ -201,6 +201,50 @@ body {
   margin-top: 4px;
 }
 
+/* ── BAR CHART ── */
+.bar-grp {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  flex: 1;
+  height: 100%;
+  gap: 4px;
+}
+.bar-grp > div:first-child {
+  flex: 1;
+  width: 100%;
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  justify-content: center;
+}
+.bar {
+  border-radius: 3px 3px 0 0;
+  transition: opacity 0.2s;
+  min-width: 4px;
+}
+.bar:hover { opacity: 0.75 !important; }
+.bar-lbl {
+  font-size: 10px;
+  color: var(--muted);
+  text-align: center;
+  white-space: nowrap;
+  padding-top: 4px;
+}
+.leg {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.leg-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
 /* ── BUTTONS ── */
 .sync-btn {
   background: var(--surface);
@@ -544,7 +588,7 @@ tbody td {
           <div class="kpi-label">Evolución — Facturación · Ventas · Conversión</div>
           <span style="font-size:11px;color:var(--muted)" id="weeklyRangeLabel">Últimas semanas</span>
         </div>
-        <div id="weeklyChart" style="height:180px;display:flex;align-items:flex-end;gap:4px"></div>
+        <div id="weeklyChart" style="height:180px;display:flex;align-items:stretch;gap:4px;width:100%"></div>
         <div id="chartLegend" style="display:flex;gap:16px;flex-wrap:wrap;margin-top:10px"></div>
       </div>
     </div>
