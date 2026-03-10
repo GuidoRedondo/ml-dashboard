@@ -735,45 +735,41 @@ app.get('/api/items-full', requireAuth, async (req, res) => {
     } catch(e) {}
 
     const adsByItem = {};
-    if (advId && allIds.length > 0) {
+    if (advId) {
       const metrics = 'clicks,prints,cost,acos,direct_amount,total_amount,units_quantity';
-      // Query ALL items (not just sold), in batches of 100
-      for (let i = 0; i < allIds.length; i += 100) {
-        const batch = allIds.slice(i, i + 100);
-        const idsFilter = batch.map(id => `filters[item_id]=${id}`).join('&');
-        const url = `${ML_API}/advertising/${siteId}/advertisers/${advId}/product_ads/ads/search?limit=100&offset=0&date_from=${fromDate}&date_to=${toDate}&metrics=${metrics}&${idsFilter}`;
+      // Fetch ALL ads without item_id filter — paginate through all results
+      let offset = 0;
+      const limit = 100;
+      let keepFetching = true;
+      let pageCount = 0;
+      while (keepFetching && pageCount < 50) { // max 5000 ads
+        const url = `${ML_API}/advertising/${siteId}/advertisers/${advId}/product_ads/ads/search?limit=${limit}&offset=${offset}&date_from=${fromDate}&date_to=${toDate}&metrics=${metrics}`;
         try {
-          const data = JSON.parse(await fetch(url, { headers: h2 }).then(r => r.text()));
-          (data.results||[]).forEach(ad => {
+          const raw = await fetch(url, { headers: h2 }).then(r => r.text());
+          const data = JSON.parse(raw);
+          if (pageCount === 0) console.log(`[ADS] First page response keys: ${Object.keys(data).join(',')} total=${data.paging?.total}`);
+          const results = data.results || [];
+          results.forEach(ad => {
             if (!ad.item_id) return;
             const m = ad.metrics || {};
             adsByItem[ad.item_id] = {
               hasAds:      true,
               adsStatus:   ad.status,
-              clicks:      m.clicks       || 0,
-              impressions: m.prints       || 0,
-              adsSales:    m.total_amount || 0,
-              adsCost:     m.cost         || 0,
+              clicks:      m.clicks         || 0,
+              impressions: m.prints         || 0,
+              adsSales:    m.total_amount   || 0,
+              adsCost:     m.cost           || 0,
               adsUnits:    m.units_quantity || 0,
             };
           });
-          // Handle pagination within ads results
-          const total = data.paging && data.paging.total;
-          if (total && total > 100) {
-            const extraPages = Math.min(Math.ceil(total / 100) - 1, 9); // max 10 pages
-            for (let p = 1; p <= extraPages; p++) {
-              const urlP = url.replace('offset=0', `offset=${p*100}`);
-              try {
-                const dP = JSON.parse(await fetch(urlP, { headers: h2 }).then(r => r.text()));
-                (dP.results||[]).forEach(ad => {
-                  if (!ad.item_id) return;
-                  const m = ad.metrics || {};
-                  adsByItem[ad.item_id] = { hasAds: true, adsStatus: ad.status, clicks: m.clicks||0, impressions: m.prints||0, adsSales: m.total_amount||0, adsCost: m.cost||0, adsUnits: m.units_quantity||0 };
-                });
-              } catch(e) {}
-            }
-          }
-        } catch(e) { console.error('Ads batch error:', e.message); }
+          const total = (data.paging && data.paging.total) || 0;
+          offset += limit;
+          pageCount++;
+          keepFetching = results.length === limit && offset < total;
+        } catch(e) {
+          console.error('Ads fetch error:', e.message);
+          keepFetching = false;
+        }
       }
     }
     console.log(`[ADS] Found ${Object.keys(adsByItem).length} items with ads out of ${allIds.length} total`);
