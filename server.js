@@ -149,7 +149,7 @@ app.get('/api/clients/:id/auth-link', requireAuth, async (req, res) => {
     if (!result.rows.length) return res.status(404).json({ error: 'Cliente no encontrado' });
     const client = result.rows[0];
     const redirectUri = process.env.REDIRECT_URI || 'https://ml-dashboard-production.up.railway.app/oauth/callback';
-    const link = `https://auth.mercadolibre.com.ar/authorization?response_type=code&client_id=${client.app_id}&redirect_uri=${encodeURIComponent(redirectUri)}&state=${client.id}`;
+    const link = `https://auth.mercadolibre.com.ar/authorization?response_type=code&client_id=${client.app_id}&redirect_uri=${encodeURIComponent(redirectUri)}&state=${client.id}&scope=offline_access`;
     res.json({ link });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
