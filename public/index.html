@@ -1879,7 +1879,7 @@ function buildPubRows(items, fmt) {
     const adsConvColor = item.adsConversion >= 5 ? '#00e676' : item.adsConversion >= 2 ? '#ff9100' : item.adsConversion > 0 ? '#ff4d4d' : 'var(--muted)';
 
     return '<tr class="pub-row" data-status="' + item.status + '" data-hassales="' + item.hasSales + '" data-hasproblems="' + item.hasProblems + '" data-search="' + (item.title + item.id + item.cuenta).toLowerCase() + '">'
-      + '<td style="color:var(--muted);font-size:11px">' + item.id + '</td>'
+      + '<td style="font-size:11px"><span style="color:var(--muted);cursor:pointer" title="Click para copiar" onclick="copyMLA(this,\'' + item.id + '\')">' + item.id + '</span></td>'
       + '<td style="max-width:240px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="' + item.title + '">' + item.title + '</td>'
       + '<td style="color:var(--muted);font-size:11px">' + item.cuenta + '</td>'
       + '<td>' + statusTag + '</td>'
@@ -1931,6 +1931,23 @@ function applyPubsFilter() {
 
 function filterPubSearch(val) {
   applyPubsFilter();
+}
+
+function copyMLA(el, id) {
+  navigator.clipboard.writeText(id).then(() => {
+    const orig = el.textContent;
+    el.textContent = '✓ copiado';
+    el.style.color = '#00e676';
+    setTimeout(() => { el.textContent = orig; el.style.color = 'var(--muted)'; }, 1500);
+  }).catch(() => {
+    // fallback
+    const ta = document.createElement('textarea');
+    ta.value = id; document.body.appendChild(ta); ta.select();
+    document.execCommand('copy'); document.body.removeChild(ta);
+    const orig = el.textContent;
+    el.textContent = '✓ copiado'; el.style.color = '#00e676';
+    setTimeout(() => { el.textContent = orig; el.style.color = 'var(--muted)'; }, 1500);
+  });
 }
 
 function sortPubs(col) {
