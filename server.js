@@ -726,7 +726,7 @@ app.get('/api/items-full', requireAuth, async (req, res) => {
     const soldItemIds = Object.keys(salesByItem);
     const totalRevenue = Object.values(salesByItem).reduce((s, i) => s + i.revenue, 0);
 
-    // ── 5. Ads data ──────────────────────────────────────────────────────────
+    // ── 5. Ads data — ALL items ──────────────────────────────────────────────
     let advId = null;
     try {
       const advData = await fetch(`${ML_API}/advertising/advertisers?product_id=PADS`, { headers: h1 }).then(r => r.json());
@@ -735,21 +735,48 @@ app.get('/api/items-full', requireAuth, async (req, res) => {
     } catch(e) {}
 
     const adsByItem = {};
-    if (advId && soldItemIds.length > 0) {
+    if (advId && allIds.length > 0) {
       const metrics = 'clicks,prints,cost,acos,direct_amount,total_amount,units_quantity';
-      for (let i = 0; i < Math.min(soldItemIds.length, 300); i += 100) {
-        const batch = soldItemIds.slice(i, i+100);
+      // Query ALL items (not just sold), in batches of 100
+      for (let i = 0; i < allIds.length; i += 100) {
+        const batch = allIds.slice(i, i + 100);
         const idsFilter = batch.map(id => `filters[item_id]=${id}`).join('&');
         const url = `${ML_API}/advertising/${siteId}/advertisers/${advId}/product_ads/ads/search?limit=100&offset=0&date_from=${fromDate}&date_to=${toDate}&metrics=${metrics}&${idsFilter}`;
         try {
           const data = JSON.parse(await fetch(url, { headers: h2 }).then(r => r.text()));
-          (data.results||[]).forEach(item => {
-            if (!item.item_id) return;
-            adsByItem[item.item_id] = { hasAds: true, adsStatus: item.status, clicks: (item.metrics&&item.metrics.clicks)||0, impressions: (item.metrics&&item.metrics.prints)||0, adsSales: (item.metrics&&item.metrics.total_amount)||0, adsCost: (item.metrics&&item.metrics.cost)||0, adsUnits: (item.metrics&&item.metrics.units_quantity)||0 };
+          (data.results||[]).forEach(ad => {
+            if (!ad.item_id) return;
+            const m = ad.metrics || {};
+            adsByItem[ad.item_id] = {
+              hasAds:      true,
+              adsStatus:   ad.status,
+              clicks:      m.clicks       || 0,
+              impressions: m.prints       || 0,
+              adsSales:    m.total_amount || 0,
+              adsCost:     m.cost         || 0,
+              adsUnits:    m.units_quantity || 0,
+            };
           });
-        } catch(e) {}
+          // Handle pagination within ads results
+          const total = data.paging && data.paging.total;
+          if (total && total > 100) {
+            const extraPages = Math.min(Math.ceil(total / 100) - 1, 9); // max 10 pages
+            for (let p = 1; p <= extraPages; p++) {
+              const urlP = url.replace('offset=0', `offset=${p*100}`);
+              try {
+                const dP = JSON.parse(await fetch(urlP, { headers: h2 }).then(r => r.text()));
+                (dP.results||[]).forEach(ad => {
+                  if (!ad.item_id) return;
+                  const m = ad.metrics || {};
+                  adsByItem[ad.item_id] = { hasAds: true, adsStatus: ad.status, clicks: m.clicks||0, impressions: m.prints||0, adsSales: m.total_amount||0, adsCost: m.cost||0, adsUnits: m.units_quantity||0 };
+                });
+              } catch(e) {}
+            }
+          }
+        } catch(e) { console.error('Ads batch error:', e.message); }
       }
     }
+    console.log(`[ADS] Found ${Object.keys(adsByItem).length} items with ads out of ${allIds.length} total`);
 
     // ── 6. Visits (only items with sales) ───────────────────────────────────
     const visitsMap = {};
