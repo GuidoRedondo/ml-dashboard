@@ -471,7 +471,7 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
           ticket: pct(ticketPromedio, prevTicket)
         }
       },
-      recent_orders: curData.orders.slice(0, 20),
+      recent_orders: curData.orders,
       reputation: user.seller_reputation,
       top_items: topItems
     });
