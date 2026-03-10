@@ -1747,8 +1747,16 @@ async function loadPublicaciones() {
     return;
   }
 
-  const grandTotal = allItems.reduce((s, i) => s + i.revenue, 0);
-  allItems.forEach(i => { i.revenueShare = grandTotal > 0 ? parseFloat(((i.revenue / grandTotal) * 100).toFixed(2)) : 0; });
+  // % Aporte calculated per-account (each item vs its own account total)
+  // Group by cuenta to get per-account revenue totals
+  const revenueByAccount = {};
+  allItems.forEach(i => {
+    revenueByAccount[i.cuenta] = (revenueByAccount[i.cuenta] || 0) + i.revenue;
+  });
+  allItems.forEach(i => {
+    const accTotal = revenueByAccount[i.cuenta] || 1;
+    i.revenueShare = accTotal > 0 ? parseFloat(((i.revenue / accTotal) * 100).toFixed(2)) : 0;
+  });
   allItems.sort((a, b) => b.revenue - a.revenue);
   window._pubsData = allItems;
   window._pubsFilter = 'all';
