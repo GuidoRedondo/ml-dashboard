@@ -2237,6 +2237,7 @@ function loadPerformance() {
         <thead>
           <tr style="border-bottom:1px solid var(--border)">
             <th style="text-align:left;padding:6px 4px;color:var(--muted);font-weight:600">#</th>
+            <th style="text-align:left;padding:6px 4px;color:var(--muted);font-weight:600">MLA</th>
             <th style="text-align:left;padding:6px 4px;color:var(--muted);font-weight:600">Publicación</th>
             <th style="text-align:right;padding:6px 4px;color:var(--muted);font-weight:600">${mainLabel}</th>
             <th style="text-align:right;padding:6px 4px;color:var(--muted);font-weight:600">% del total</th>
@@ -2251,7 +2252,11 @@ function loadPerformance() {
             const recColor = parseFloat(pctRec) >= 60 ? '#00e676' : parseFloat(pctRec) >= 40 ? '#FFD700' : '#ff9100';
             return `<tr style="border-bottom:1px solid var(--border)">
               <td style="padding:6px 4px;color:var(--muted)">${i+1}</td>
-              <td style="padding:6px 4px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${item.title}">${item.title}</td>
+              <td style="padding:6px 4px;white-space:nowrap">
+                <span style="color:var(--muted);cursor:pointer;font-size:11px" title="Click para copiar"
+                  onclick="copyMLA(this,'${item.id}')">${item.id}</span>
+              </td>
+              <td style="padding:6px 4px;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${item.title}">${item.title}</td>
               <td style="padding:6px 4px;text-align:right;font-weight:700;color:var(--accent)">${mainFmt(val)}</td>
               <td style="padding:6px 4px;text-align:right;color:var(--muted)">${pctTot}%</td>
               <td style="padding:6px 4px;text-align:right;font-weight:700;color:${recColor}">${pctRec}%</td>
