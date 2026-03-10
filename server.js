@@ -280,7 +280,7 @@ async function fetchShippingCosts(orders, headers) {
       const sm = (s.shipping_mode || '').toLowerCase();
       let mode;
       if (lt === 'fulfillment' || sn.includes('fulfillment'))                                               mode = 'FULL';
-      else if (lt === 'flex' || lt.includes('flex') || sn.includes('flex'))                                 mode = 'FLEX';
+      else if (lt === 'flex' || lt === 'self_service' || lt.includes('flex') || sn.includes('flex')) mode = 'FLEX';
       else if (lt.includes('cross') || lt.includes('me1') || lt.includes('me2') || lt.includes('colect') || lt.includes('correo')) mode = 'Correo';
       else if (lt.includes('xd') || lt.includes('drop') || lt.includes('pick'))                             mode = 'Punto de entrega';
       else if (lt.includes('custom') || sm.includes('custom'))                                              mode = 'Retiro en local';
