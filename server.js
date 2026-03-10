@@ -657,6 +657,7 @@ app.get('/api/items-full', requireAuth, async (req, res) => {
     const fromDate = curFrom.toISOString().slice(0,10);
     const toDate = now.toISOString().slice(0,10);
 
+    // ── 1. Sales data (last N days) ──────────────────────────────────────────
     const { orders } = await fetchAllOrders(uid, headers, fmt(curFrom), fmt(now));
     const salesByItem = {};
     orders.forEach(order => {
@@ -669,9 +670,63 @@ app.get('/api/items-full', requireAuth, async (req, res) => {
       });
     });
 
+    // ── 2. ALL items (active + inactive) ────────────────────────────────────
+    async function fetchAllItems(status) {
+      const base = `${ML_API}/users/${uid}/items/search?status=${status}&limit=100`;
+      const first = await fetch(base, { headers }).then(r => r.json());
+      const total = (first.paging && first.paging.total) || 0;
+      let ids = first.results || [];
+      if (total > 100) {
+        const pages = Math.min(Math.ceil(total / 100), 20);
+        for (let p = 1; p < pages; p++) {
+          const r = await fetch(`${base}&offset=${p*100}`, { headers }).then(r => r.json()).catch(() => ({}));
+          ids = ids.concat(r.results || []);
+        }
+      }
+      return ids;
+    }
+
+    const [activeIds, inactiveIds, pausedIds] = await Promise.all([
+      fetchAllItems('active'),
+      fetchAllItems('inactive'),
+      fetchAllItems('paused')
+    ]);
+
+    const allIds = [...new Set([...activeIds, ...inactiveIds, ...pausedIds])];
+    const statusMap = {};
+    activeIds.forEach(id   => { statusMap[id] = 'active'; });
+    pausedIds.forEach(id   => { statusMap[id] = 'paused'; });
+    inactiveIds.forEach(id => { statusMap[id] = 'inactive'; });
+
+    // ── 3. Fetch item details (title) in batches of 20 ──────────────────────
+    const itemDetailsMap = {};
+    for (let i = 0; i < allIds.length; i += 20) {
+      const batch = allIds.slice(i, i+20);
+      try {
+        const data = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,title,price,status,sub_status`, { headers }).then(r => r.json());
+        (Array.isArray(data) ? data : []).forEach(r => {
+          if (r.code === 200 && r.body) itemDetailsMap[r.body.id] = r.body;
+        });
+      } catch(e) {}
+    }
+
+    // ── 4. Fetch problems for ALL items (batches of 20) ─────────────────────
+    const problemsMap = {};
+    for (let i = 0; i < allIds.length; i += 20) {
+      const batch = allIds.slice(i, i+20);
+      await Promise.all(batch.map(async id => {
+        try {
+          const data = await fetch(`${ML_API}/items/${id}/problems`, { headers }).then(r => r.json());
+          const problems = Array.isArray(data) ? data : (data.results || []);
+          if (problems.length > 0) problemsMap[id] = problems;
+        } catch(e) {}
+      }));
+    }
+
     const soldItemIds = Object.keys(salesByItem);
     const totalRevenue = Object.values(salesByItem).reduce((s, i) => s + i.revenue, 0);
 
+    // ── 5. Ads data ──────────────────────────────────────────────────────────
     let advId = null;
     try {
       const advData = await fetch(`${ML_API}/advertising/advertisers?product_id=PADS`, { headers: h1 }).then(r => r.json());
@@ -696,25 +751,61 @@ app.get('/api/items-full', requireAuth, async (req, res) => {
       }
     }
 
+    // ── 6. Visits (only items with sales) ───────────────────────────────────
     const visitsMap = {};
     for (let i = 0; i < Math.min(soldItemIds.length, 300); i += 20) {
       Object.assign(visitsMap, await fetchVisits(soldItemIds.slice(i, i+20), days, headers));
     }
 
-    const items = Object.values(salesByItem).map(item => {
-      const ads = adsByItem[item.id] || {};
+    // ── 7. Build final items list ────────────────────────────────────────────
+    // Items with sales
+    const itemsWithSales = Object.values(salesByItem).map(item => {
+      const ads  = adsByItem[item.id] || {};
       const visits = visitsMap[item.id] || 0;
-      return { id: item.id, title: item.title, units: item.units, revenue: item.revenue,
+      const detail = itemDetailsMap[item.id] || {};
+      const status = statusMap[item.id] || detail.status || 'active';
+      const problems = problemsMap[item.id] || [];
+      return {
+        id: item.id, title: detail.title || item.title, status,
+        units: item.units, revenue: item.revenue, hasSales: true,
         revenueShare: totalRevenue > 0 ? parseFloat(((item.revenue/totalRevenue)*100).toFixed(2)) : 0,
         visits, conversion: visits > 0 ? parseFloat(((item.units/visits)*100).toFixed(1)) : 0,
         hasAds: ads.hasAds||false, adsStatus: ads.adsStatus||null,
         adsClicks: ads.clicks||0, adsImpressions: ads.impressions||0,
         adsSales: ads.adsSales||0, adsCost: ads.adsCost||0,
-        adsConversion: ads.clicks > 0 ? parseFloat(((ads.adsUnits||0)/ads.clicks*100).toFixed(1)) : 0
+        adsConversion: ads.clicks > 0 ? parseFloat(((ads.adsUnits||0)/ads.clicks*100).toFixed(1)) : 0,
+        problems, hasProblems: problems.length > 0
       };
-    }).sort((a,b) => b.revenue - a.revenue);
+    });
 
-    res.json({ items, total_revenue: totalRevenue, days });
+    // Items WITHOUT sales (active/paused/inactive but not sold)
+    const soldSet = new Set(soldItemIds);
+    const itemsNoSales = allIds.filter(id => !soldSet.has(id)).map(id => {
+      const detail = itemDetailsMap[id] || {};
+      const status = statusMap[id] || 'inactive';
+      const problems = problemsMap[id] || [];
+      return {
+        id, title: detail.title || id, status,
+        units: 0, revenue: 0, hasSales: false,
+        revenueShare: 0, visits: 0, conversion: 0,
+        hasAds: false, adsStatus: null, adsClicks: 0, adsImpressions: 0,
+        adsSales: 0, adsCost: 0, adsConversion: 0,
+        problems, hasProblems: problems.length > 0
+      };
+    });
+
+    const items = [...itemsWithSales, ...itemsNoSales].sort((a,b) => b.revenue - a.revenue);
+
+    // ── 8. Summary stats ─────────────────────────────────────────────────────
+    const summary = {
+      total:      items.length,
+      active:     items.filter(i => i.status === 'active').length,
+      inactive:   items.filter(i => i.status === 'inactive' || i.status === 'paused').length,
+      withSales:  items.filter(i => i.hasSales).length,
+      withProblems: items.filter(i => i.hasProblems).length,
+    };
+
+    res.json({ items, total_revenue: totalRevenue, days, summary });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
