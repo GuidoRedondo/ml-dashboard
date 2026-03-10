@@ -1489,37 +1489,31 @@ function buildEvolutionChart() {
     });
   });
 
-  // Build label array (show only some dates to avoid clutter)
+  // Date labels
   const labels = [];
   for (let i = 0; i < days; i++) {
     const d = new Date(now - (days - 1 - i) * 24 * 60 * 60 * 1000);
-    labels.push(d.toLocaleDateString('es-AR', { day:'2-digit', month:'short' }));
+    labels.push(d.toLocaleDateString('es-AR', { day:'2-digit', month:'short' }).replace('.',''));
   }
 
-  // SVG dimensions
-  const W = chartEl.clientWidth || 800;
-  const H = 180;
-  const padL = 8, padR = 8, padT = 16, padB = 28;
+  const W = chartEl.clientWidth || 900;
+  const H = 200;
+  const padL = 12, padR = 12, padT = 20, padB = 32;
   const innerW = W - padL - padR;
   const innerH = H - padT - padB;
 
+  // Independent max for each series
   const maxFac    = Math.max(...facByDay, 1);
   const maxVentas = Math.max(...ventasByDay, 1);
 
-  function pts(arr, maxVal) {
-    return arr.map((v, i) => {
-      const x = padL + (i / (arr.length - 1)) * innerW;
-      const y = padT + innerH - (v / maxVal) * innerH;
-      return `${x.toFixed(1)},${y.toFixed(1)}`;
-    }).join(' ');
-  }
-
-  function smoothPath(arr, maxVal) {
-    // Catmull-Rom to cubic bezier for smooth lines
-    const points = arr.map((v, i) => ({
-      x: padL + (i / (arr.length - 1)) * innerW,
+  function getPoints(arr, maxVal) {
+    return arr.map((v, i) => ({
+      x: padL + (i / Math.max(arr.length - 1, 1)) * innerW,
       y: padT + innerH - (v / maxVal) * innerH
     }));
+  }
+
+  function smoothD(points) {
     if (points.length < 2) return '';
     let d = `M ${points[0].x.toFixed(1)} ${points[0].y.toFixed(1)}`;
     for (let i = 0; i < points.length - 1; i++) {
@@ -1536,63 +1530,73 @@ function buildEvolutionChart() {
     return d;
   }
 
-  function areaPath(arr, maxVal) {
-    const d = smoothPath(arr, maxVal);
-    if (!d) return '';
-    const lastX = (padL + innerW).toFixed(1);
-    const firstX = padL.toFixed(1);
+  function areaD(points) {
+    const line = smoothD(points);
+    if (!line) return '';
     const baseY = (padT + innerH).toFixed(1);
-    return `${d} L ${lastX} ${baseY} L ${firstX} ${baseY} Z`;
+    return `${line} L ${points[points.length-1].x.toFixed(1)} ${baseY} L ${points[0].x.toFixed(1)} ${baseY} Z`;
   }
 
-  // Determine which x-axis labels to show (avoid overlap)
-  const labelStep = days <= 14 ? 2 : days <= 30 ? 5 : 7;
+  const ptsFac    = getPoints(facByDay, maxFac);
+  const ptsVentas = getPoints(ventasByDay, maxVentas);
+
+  // X axis labels — smart spacing
+  const labelStep = days <= 14 ? 1 : days <= 30 ? 3 : 7;
   let xLabels = '';
   for (let i = 0; i < days; i++) {
     if (i % labelStep !== 0 && i !== days - 1) continue;
     const x = padL + (i / (days - 1)) * innerW;
-    xLabels += `<text x="${x.toFixed(1)}" y="${H - 6}" text-anchor="middle" fill="#888" font-size="10">${labels[i]}</text>`;
+    xLabels += `<text x="${x.toFixed(1)}" y="${H - 8}" text-anchor="middle" fill="#aaa" font-size="10" font-family="sans-serif">${labels[i]}</text>`;
   }
 
-  // Dashed grid lines
+  // Tooltip dots (invisible circles for hover)
+  let dots = '';
+  facByDay.forEach((v, i) => {
+    const p = ptsFac[i];
+    const fmt = n => n >= 1000000 ? '$'+(n/1000000).toFixed(2)+'M' : n >= 1000 ? '$'+(n/1000).toFixed(1)+'K' : '$'+Math.round(n).toLocaleString('es-AR');
+    dots += `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="3" fill="#FFD700" opacity="0" class="chart-dot">
+      <title>${labels[i]}: ${fmt(v)}</title></circle>`;
+  });
+  ventasByDay.forEach((v, i) => {
+    const p = ptsVentas[i];
+    dots += `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="3" fill="#00e676" opacity="0" class="chart-dot">
+      <title>${labels[i]}: ${v} ventas</title></circle>`;
+  });
+
+  // Grid lines
   const gridLines = [0.25, 0.5, 0.75, 1].map(f => {
     const y = (padT + innerH - f * innerH).toFixed(1);
-    return `<line x1="${padL}" y1="${y}" x2="${padL + innerW}" y2="${y}" stroke="#e0e0e0" stroke-width="1" stroke-dasharray="4,4"/>`;
+    return `<line x1="${padL}" y1="${y}" x2="${padL + innerW}" y2="${y}" stroke="#e8e8e8" stroke-width="1" stroke-dasharray="4,4"/>`;
   }).join('');
-
-  const facPath    = smoothPath(facByDay, maxFac);
-  const ventasPath = smoothPath(ventasByDay, maxVentas);
-  const facArea    = areaPath(facByDay, maxFac);
-  const ventasArea = areaPath(ventasByDay, maxVentas);
 
   chartEl.style.height = H + 'px';
   chartEl.style.display = 'block';
   chartEl.innerHTML = `
-    <svg width="100%" height="${H}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="overflow:visible">
+    <svg width="100%" height="${H}" viewBox="0 0 ${W} ${H}" style="overflow:visible;display:block">
       <defs>
-        <linearGradient id="gradFac" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stop-color="#FFD700" stop-opacity="0.25"/>
-          <stop offset="100%" stop-color="#FFD700" stop-opacity="0.02"/>
+        <linearGradient id="gFac" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="#FFD700" stop-opacity="0.3"/>
+          <stop offset="100%" stop-color="#FFD700" stop-opacity="0.0"/>
         </linearGradient>
-        <linearGradient id="gradVentas" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stop-color="#00e676" stop-opacity="0.20"/>
-          <stop offset="100%" stop-color="#00e676" stop-opacity="0.02"/>
+        <linearGradient id="gVentas" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="#00e676" stop-opacity="0.25"/>
+          <stop offset="100%" stop-color="#00e676" stop-opacity="0.0"/>
         </linearGradient>
       </defs>
-
       ${gridLines}
-
-      <!-- Área relleno -->
-      <path d="${facArea}"    fill="url(#gradFac)"/>
-      <path d="${ventasArea}" fill="url(#gradVentas)"/>
-
-      <!-- Líneas -->
-      <path d="${facPath}"    fill="none" stroke="#FFD700" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
-      <path d="${ventasPath}" fill="none" stroke="#00e676" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
-
-      <!-- Labels eje X -->
+      <path d="${areaD(ptsFac)}"    fill="url(#gFac)"/>
+      <path d="${areaD(ptsVentas)}" fill="url(#gVentas)"/>
+      <path d="${smoothD(ptsFac)}"    fill="none" stroke="#FFD700" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+      <path d="${smoothD(ptsVentas)}" fill="none" stroke="#00e676" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+      ${dots}
       ${xLabels}
     </svg>`;
+
+  // Add hover effect for dots via CSS
+  const style = document.getElementById('chart-dot-style') || document.createElement('style');
+  style.id = 'chart-dot-style';
+  style.textContent = '.chart-dot:hover { opacity: 1 !important; r: 5; cursor: pointer; }';
+  document.head.appendChild(style);
 
   legendEl.innerHTML = `
     <div class="leg"><div class="leg-dot" style="background:#FFD700"></div>Facturación</div>
