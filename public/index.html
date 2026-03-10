@@ -1912,75 +1912,142 @@ function loadPerformance() {
     return;
   }
 
-  let allItems = [];
+  // Aggregate performance data from all accounts
+  const byMode = {}, byProvince = {}, byHour = new Array(24).fill(0);
+  const top15Rev = [], top15Units = [], top15Pct = [];
+
   connected.forEach(acc => {
-    (acc.data.top_items || []).forEach(item => {
-      const conv = item.visits > 0 ? ((item.units / item.visits) * 100).toFixed(1) : (item.conversion || '0.0');
-      allItems.push({
-        cuenta: acc.name,
-        id: item.id,
-        titulo: item.title || '—',
-        ventas: item.units || item.sold || 0,
-        facturacion: item.revenue || 0,
-        visitas: item.visits || 0,
-        conversion: parseFloat(conv),
-      });
-    });
+    const perf = acc.data.performance;
+    if (!perf) return;
+    Object.entries(perf.by_mode || {}).forEach(([k,v]) => { byMode[k] = (byMode[k]||0) + v; });
+    Object.entries(perf.by_province || {}).forEach(([k,v]) => { byProvince[k] = (byProvince[k]||0) + v; });
+    (perf.by_hour || []).forEach((v,i) => { byHour[i] += v; });
+    top15Rev.push(...(perf.top15_revenue || []));
+    top15Units.push(...(perf.top15_units || []));
+    top15Pct.push(...(perf.top15_pct || []));
   });
 
-  // Sort by ventas desc
-  allItems.sort((a, b) => b.facturacion - a.facturacion);
+  const fmt = n => n >= 1000000 ? '$'+(n/1000000).toFixed(2)+'M' : n >= 1000 ? '$'+(n/1000).toFixed(1)+'K' : '$'+Math.round(n).toLocaleString('es-AR');
 
-  if (!allItems.length) {
-    el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:20px;text-align:center">No hay datos de publicaciones</div>';
-    return;
+  // ── HELPER: Mini horizontal bar chart ─────────────────────────────────────
+  function hBarChart(data, colorFn, labelFn) {
+    const entries = Object.entries(data).sort((a,b) => b[1]-a[1]).slice(0,10);
+    const max = Math.max(...entries.map(e=>e[1]), 1);
+    return entries.map(([label, val]) => `
+      <div style="margin-bottom:10px">
+        <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px">
+          <span style="color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:65%">${label}</span>
+          <span style="color:var(--muted);font-weight:600">${labelFn(val)}</span>
+        </div>
+        <div style="background:var(--surface2);border-radius:4px;height:6px;overflow:hidden">
+          <div style="background:${colorFn(label,val)};height:100%;width:${(val/max*100).toFixed(1)}%;border-radius:4px;transition:width .4s"></div>
+        </div>
+      </div>`).join('');
   }
 
-  // Search filter
-  const rows = allItems.map((item, i) => `
-    <tr class="perf-row" data-search="${(item.titulo + item.id + item.cuenta).toLowerCase()}">
-      <td style="color:var(--muted);font-size:11px">${item.id}</td>
-      <td style="max-width:250px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${item.titulo}">${item.titulo}</td>
-      <td style="color:var(--muted);font-size:11px">${item.cuenta}</td>
-      <td style="text-align:right;font-weight:600">$${Math.round(item.facturacion).toLocaleString('es-AR')}</td>
-      <td style="text-align:right;color:#00e676;font-weight:700">${item.ventas.toLocaleString('es-AR')}</td>
-      <td style="text-align:right">${item.visitas.toLocaleString('es-AR')}</td>
-      <td style="text-align:right">
-        <span style="background:${item.conversion >= 3 ? 'rgba(0,230,118,.15)' : item.conversion >= 1 ? 'rgba(255,145,0,.15)' : 'rgba(255,77,77,.15)'};color:${item.conversion >= 3 ? '#00e676' : item.conversion >= 1 ? '#ff9100' : '#ff4d4d'};padding:2px 8px;border-radius:4px;font-size:12px;font-weight:600">
-          ${item.conversion}%
-        </span>
-      </td>
-      <td style="text-align:right">${item.stock}</td>
-      <td><span class="status ${item.estado === 'Activa' ? 's-ok' : 's-off'}">● ${item.estado}</span></td>
-    </tr>
-  `).join('');
+  // ── HELPER: Hour chart (SVG sparkline) ────────────────────────────────────
+  function hourChart(hours) {
+    const W = 100, H = 50;
+    const max = Math.max(...hours, 1);
+    const barW = W / 24;
+    const bars = hours.map((v, i) => {
+      const h = Math.max(2, (v/max) * H);
+      const x = i * barW;
+      const isNight = i < 6 || i >= 22;
+      const isMorning = i >= 6 && i < 12;
+      const color = isNight ? '#3a3a5c' : isMorning ? '#FFD700' : '#00e676';
+      return `<rect x="${x.toFixed(1)}" y="${(H-h).toFixed(1)}" width="${(barW-1).toFixed(1)}" height="${h.toFixed(1)}" fill="${color}" rx="1"/>`;
+    }).join('');
+    const labels = ['0','6','12','18','23'].map(h => {
+      const x = (parseInt(h) * barW).toFixed(1);
+      return `<text x="${x}" y="${H+10}" font-size="7" fill="#888" font-family="sans-serif">${h}h</text>`;
+    }).join('');
+    return `<svg viewBox="0 0 ${W} ${H+12}" style="width:100%;height:60px">${bars}${labels}</svg>`;
+  }
+
+  // ── HELPER: Top 15 table ────────────────────────────────────────────────
+  function top15Table(items, valueKey, valueFmt, valueLabel) {
+    if (!items.length) return '<div style="color:var(--muted);font-size:12px;padding:10px">Sin datos</div>';
+    const sorted = [...items].sort((a,b) => parseFloat(b[valueKey]) - parseFloat(a[valueKey])).slice(0,15);
+    const max = parseFloat(sorted[0][valueKey]) || 1;
+    return sorted.map((item, i) => {
+      const val = parseFloat(item[valueKey]) || 0;
+      const pct = (val/max*100).toFixed(0);
+      return `
+        <div style="display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--border)">
+          <div style="font-size:11px;color:var(--muted);width:18px;text-align:right">${i+1}</div>
+          <div style="flex:1;min-width:0">
+            <div style="font-size:12px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${item.title}">${item.title}</div>
+            <div style="background:var(--surface2);border-radius:3px;height:4px;margin-top:4px">
+              <div style="background:var(--accent);height:100%;width:${pct}%;border-radius:3px"></div>
+            </div>
+          </div>
+          <div style="font-size:12px;font-weight:700;color:var(--accent);white-space:nowrap">${valueFmt(val)}</div>
+        </div>`;
+    }).join('');
+  }
+
+  // Province colors cycle
+  const provColors = ['#FFD700','#00e676','#2196F3','#ff9100','#e91e63','#9c27b0','#00bcd4','#ff5722','#8bc34a','#795548'];
+  let provIdx = 0; const provColorMap = {};
+  Object.keys(byProvince).forEach(p => { provColorMap[p] = provColors[provIdx++ % provColors.length]; });
+
+  const modeColors = { 'Envío a domicilio':'#2196F3','Fulfillment ML':'#00e676','Punto de entrega':'#FFD700','Retiro en local':'#ff9100','Otro':'#888' };
 
   el.innerHTML = `
-    <div style="display:flex;gap:10px;align-items:center;margin-bottom:16px;flex-wrap:wrap">
-      <input id="perfSearch" type="text" placeholder="Buscar por título o MLA..." onInput="filterPerformance(this.value)"
-        style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:8px 12px;color:var(--text);font-family:var(--font-b);font-size:13px;outline:none;flex:1;min-width:200px">
-      <div style="font-size:12px;color:var(--muted)">${allItems.length} publicaciones</div>
+    <!-- ROW 1: 3 Charts -->
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:12px">
+
+      <!-- Forma de entrega -->
+      <div class="kpi-card" style="padding:18px">
+        <div class="kpi-label" style="margin-bottom:14px">📦 Ventas por forma de entrega</div>
+        ${hBarChart(byMode, (l) => modeColors[l] || '#888', v => v + ' ventas')}
+      </div>
+
+      <!-- Provincia -->
+      <div class="kpi-card" style="padding:18px">
+        <div class="kpi-label" style="margin-bottom:14px">📍 Ventas por provincia</div>
+        ${hBarChart(byProvince, (l) => provColorMap[l] || '#888', v => v + ' ventas')}
+      </div>
+
+      <!-- Horario -->
+      <div class="kpi-card" style="padding:18px">
+        <div class="kpi-label" style="margin-bottom:14px">🕐 Ventas por horario</div>
+        ${hourChart(byHour)}
+        <div style="display:flex;gap:10px;margin-top:6px;font-size:10px;color:var(--muted)">
+          <span><span style="color:#3a3a5c">■</span> Noche (0-6h)</span>
+          <span><span style="color:#FFD700">■</span> Mañana (6-12h)</span>
+          <span><span style="color:#00e676">■</span> Tarde/Noche (12-22h)</span>
+        </div>
+        <div style="margin-top:10px;font-size:11px;color:var(--muted)">
+          Hora pico: <strong style="color:var(--text)">${byHour.indexOf(Math.max(...byHour))}:00hs</strong>
+          · Total: <strong style="color:var(--text)">${byHour.reduce((a,b)=>a+b,0)} ventas</strong>
+        </div>
+      </div>
     </div>
-    <div style="overflow-x:auto">
-      <table id="perfTable">
-        <thead>
-          <tr>
-            <th onclick="sortPerformance('id')" style="cursor:pointer">MLA ↕</th>
-            <th onclick="sortPerformance('titulo')" style="cursor:pointer">Título ↕</th>
-            <th>Cuenta</th>
-            <th style="text-align:right;cursor:pointer" onclick="sortPerformance('facturacion')">Facturación ↕</th>
-            <th style="text-align:right;cursor:pointer" onclick="sortPerformance('ventas')">Unidades ↕</th>
-            <th style="text-align:right;cursor:pointer" onclick="sortPerformance('visitas')">Visitas ↕</th>
-            <th style="text-align:right;cursor:pointer" onclick="sortPerformance('conversion')">Conv. ↕</th>
-          </tr>
-        </thead>
-        <tbody id="perfBody">${rows}</tbody>
-      </table>
+
+    <!-- ROW 2: Top 15 tables -->
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">
+
+      <!-- Top 15 Facturación -->
+      <div class="kpi-card" style="padding:18px">
+        <div class="kpi-label" style="margin-bottom:14px">🏆 Top 15 Facturación</div>
+        ${top15Table(top15Rev, 'revenue', fmt, 'Facturación')}
+      </div>
+
+      <!-- Top 15 Unidades -->
+      <div class="kpi-card" style="padding:18px">
+        <div class="kpi-label" style="margin-bottom:14px">📦 Top 15 Unidades vendidas</div>
+        ${top15Table(top15Units, 'units', v => v.toLocaleString('es-AR') + ' u.', 'Unidades')}
+      </div>
+
+      <!-- Top 15 % Recibido -->
+      <div class="kpi-card" style="padding:18px">
+        <div class="kpi-label" style="margin-bottom:14px">💰 Top 15 % Recibido</div>
+        ${top15Table(top15Pct, 'pct_recibido', v => v + '%', '% Recibido')}
+      </div>
     </div>
   `;
-  // Store for sorting
-  window._perfData = allItems;
-  window._perfSort = { col: 'ventas', asc: false };
 }
 
 function filterPerformance(val) {
