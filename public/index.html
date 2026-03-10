@@ -1355,6 +1355,7 @@ async function loadAllData() {
 }
 
 function updateDashboard() {
+  try {
   const connected = state.accounts.filter(a => a.data);
   if (!connected.length) return;
 
@@ -1455,20 +1456,23 @@ function updateDashboard() {
   }
 
   // Gráfico evolución
-  buildEvolutionChart();
+  try { buildEvolutionChart(); } catch(e) { console.error('Chart error:', e); }
 
   // Subpáginas
   loadPublicaciones();
   loadVentas();
+  } catch(e) { console.error('Dashboard update error:', e); }
 }
 
 function buildEvolutionChart() {
   const connected = state.accounts.filter(a => a.data);
   const chartEl = document.getElementById('weeklyChart');
   const legendEl = document.getElementById('chartLegend');
+  if (!chartEl) return;
   chartEl.innerHTML = '';
   if (legendEl) legendEl.innerHTML = '';
   if (!connected.length) return;
+  try {
 
   const days = state.rangeDays || 30;
   const now = Date.now();
@@ -1676,6 +1680,8 @@ function buildEvolutionChart() {
     <div class="leg"><div class="leg-dot" style="background:#FFD700"></div>Facturación</div>
     <div class="leg"><div class="leg-dot" style="background:#00e676"></div>Ventas</div>
   `;
+  } catch(e) { console.error('Chart render error:', e); }
+}
 
 function setPubsRange(el, days) {
   document.querySelectorAll('#page-publicaciones .range-btn').forEach(b => b.classList.remove('active'));
