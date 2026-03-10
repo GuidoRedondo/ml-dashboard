@@ -274,8 +274,17 @@ async function fetchShippingCosts(orders, headers) {
         s.receiver_address.city?.name
       )) || 'Sin dato';
 
-      // Shipping mode: home_delivery, pick_up_point, self_service, etc.
-      const mode = s.shipping_option?.name || s.logistic_type || s.shipping_mode || 'Otro';
+      // Shipping mode based on logistic_type (ML standard values)
+      // logistic_type: fulfillment=FULL, flex=FLEX, me1/me2/colect=Colecta/Correo, xd_drop_off=Punto entrega
+      const lt = (s.logistic_type || '').toLowerCase();
+      const sn = (s.shipping_option?.name || '').toLowerCase();
+      let mode;
+      if (lt === 'fulfillment' || sn.includes('full'))           mode = 'FULL';
+      else if (lt === 'flex' || sn.includes('flex'))             mode = 'FLEX';
+      else if (lt.includes('me1') || lt.includes('colect') || lt.includes('correo') || lt.includes('me2')) mode = 'Colecta / Correo';
+      else if (lt.includes('xd') || lt.includes('drop') || lt.includes('pick')) mode = 'Punto de entrega';
+      else if (lt.includes('self') || lt.includes('custom'))     mode = 'Retiro en local';
+      else mode = s.logistic_type || s.shipping_mode || 'Otro';
 
       costMap[batch[idx]] = { sellerCost, province, mode, baseCost, buyerCost };
     });
@@ -427,17 +436,10 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
       const shipId = order.shipping && order.shipping.id;
       const shipData = shipId ? shippingCostMap[shipId] : null;
 
-      // Shipping mode
-      let mode = 'Otro';
-      if (shipData && shipData.mode) {
-        const m = shipData.mode.toLowerCase();
-        if (m.includes('pickup') || m.includes('pick_up') || m.includes('punto')) mode = 'Punto de entrega';
-        else if (m.includes('home') || m.includes('domicilio') || m.includes('standard') || m.includes('express')) mode = 'Envío a domicilio';
-        else if (m.includes('self') || m.includes('fulfillment')) mode = 'Fulfillment ML';
-        else mode = shipData.mode;
-      } else if (!shipId) {
-        mode = 'Retiro en local';
-      }
+      // Shipping mode — comes directly from shippingCostMap
+      let mode = 'Sin envío';
+      if (shipData && shipData.mode) mode = shipData.mode;
+      else if (shipId && !shipData)  mode = 'Otro';
       byMode[mode] = (byMode[mode] || 0) + 1;
 
       // Province
