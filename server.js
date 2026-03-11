@@ -260,7 +260,11 @@ async function fetchShippingCosts(orders, headers) {
     const results = await Promise.all(batch.map(id =>
       fetch(`${ML_API}/shipments/${id}`, { headers })
         .then(r => r.json())
-        .catch(() => null)
+        .then(data => { 
+          if (batch.indexOf(id) < 2 && i < 10) console.log(`[SHIPMENT_RAW] id=${id} keys=${Object.keys(data||{}).join(',')} base_cost=${data?.base_cost} logistic=${data?.logistic_type} cost=${JSON.stringify(data?.cost)}`);
+          return data;
+        })
+        .catch(e => { console.log(`[SHIPMENT_ERR] id=${id} err=${e.message}`); return null; })
     ));
     results.forEach((s, idx) => {
       if (!s) return;
@@ -427,6 +431,11 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
       }
     });
 
+    // DEBUG — log first 2 orders raw to understand structure
+    curData.orders.slice(0, 2).forEach((order, i) => {
+      console.log(`[ORDER_RAW] #${i} id=${order.id} paid=${order.paid_amount} total=${order.total_amount} shipping=${JSON.stringify(order.shipping)} taxes=${JSON.stringify(order.taxes)} items=${(order.order_items||[]).map(oi => `${oi.item?.id}:price=${oi.unit_price}:qty=${oi.quantity}:fee=${oi.sale_fee}`).join('|')}`);
+    });
+
     // ── PERFORMANCE DATA ──────────────────────────────────────────────────────
     // Log all unique logistic_type values for debugging
     const uniqueLogisticTypes = {};
@@ -442,9 +451,14 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
     // Per item breakdown for top lists
     const byItem     = {};
 
-    curData.orders.forEach(order => {
+    curData.orders.forEach((order, orderIdx) => {
       const hour = new Date(order.date_created).getHours();
       byHour[hour]++;
+
+      // DEBUG — log first 2 orders to see real structure
+      if (orderIdx < 2) {
+        console.log(`[ORDER_RAW] id=${order.id} paid=${order.paid_amount} total=${order.total_amount} shipping=${JSON.stringify(order.shipping)} taxes=${JSON.stringify(order.taxes)} items=${(order.order_items||[]).map(i => i.item?.id+':price='+i.unit_price+':qty='+i.quantity+':fee='+i.sale_fee).join(' | ')}`);
+      }
 
       const shipId = order.shipping && order.shipping.id;
       const shipData = shipId ? shippingCostMap[shipId] : null;
@@ -719,9 +733,12 @@ app.get('/api/items-full', requireAuth, async (req, res) => {
 
     const allIds = [...new Set([...activeIds, ...inactiveIds, ...pausedIds])];
     const statusMap = {};
-    activeIds.forEach(id   => { statusMap[id] = 'active'; });
-    pausedIds.forEach(id   => { statusMap[id] = 'paused'; });
+    // Priority: active > paused > inactive (in case of duplicates across statuses)
     inactiveIds.forEach(id => { statusMap[id] = 'inactive'; });
+    pausedIds.forEach(id   => { statusMap[id] = 'paused'; });
+    activeIds.forEach(id   => { statusMap[id] = 'active'; }); // active wins
+
+    console.log(`[ITEMS] active=${activeIds.length} paused=${pausedIds.length} inactive=${inactiveIds.length} total_unique=${allIds.length} active_unique=${Object.values(statusMap).filter(s=>s==='active').length}`);
 
     // ── 3. Fetch item details (title) in batches of 20 ──────────────────────
     const itemDetailsMap = {};
@@ -806,12 +823,13 @@ app.get('/api/items-full', requireAuth, async (req, res) => {
     }
 
     // ── 7. Build final items list ────────────────────────────────────────────
-    // Items with sales
+    // Use item detail status as source of truth (more reliable than search endpoint)
     const itemsWithSales = Object.values(salesByItem).map(item => {
-      const ads  = adsByItem[item.id] || {};
+      const ads    = adsByItem[item.id] || {};
       const visits = visitsMap[item.id] || 0;
       const detail = itemDetailsMap[item.id] || {};
-      const status = statusMap[item.id] || detail.status || 'active';
+      // Prefer real status from item detail, fallback to search status
+      const status = detail.status || statusMap[item.id] || 'active';
       const problems = problemsMap[item.id] || [];
       return {
         id: item.id, title: detail.title || item.title, status,
@@ -826,11 +844,10 @@ app.get('/api/items-full', requireAuth, async (req, res) => {
       };
     });
 
-    // Items WITHOUT sales (active/paused/inactive but not sold)
     const soldSet = new Set(soldItemIds);
     const itemsNoSales = allIds.filter(id => !soldSet.has(id)).map(id => {
       const detail = itemDetailsMap[id] || {};
-      const status = statusMap[id] || 'inactive';
+      const status = detail.status || statusMap[id] || 'inactive';
       const problems = problemsMap[id] || [];
       const ads = adsByItem[id] || {};
       return {
