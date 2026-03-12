@@ -451,21 +451,18 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
     // Per item breakdown for top lists
     const byItem     = {};
     // Per item breakdown per shipping mode (for filtering)
-    const byItemPerMode = {};
+    const byItemPerMode     = {};
+    const byProvincePerMode = {};
+    const byHourPerMode     = {};
 
     curData.orders.forEach((order, orderIdx) => {
       const hour = new Date(order.date_created).getHours();
       byHour[hour]++;
 
-      // DEBUG — log first 2 orders to see real structure
-      if (orderIdx < 2) {
-        console.log(`[ORDER_RAW] id=${order.id} paid=${order.paid_amount} total=${order.total_amount} shipping=${JSON.stringify(order.shipping)} taxes=${JSON.stringify(order.taxes)} items=${(order.order_items||[]).map(i => i.item?.id+':price='+i.unit_price+':qty='+i.quantity+':fee='+i.sale_fee).join(' | ')}`);
-      }
-
       const shipId = order.shipping && order.shipping.id;
       const shipData = shipId ? shippingCostMap[shipId] : null;
 
-      // Shipping mode — comes directly from shippingCostMap
+      // Shipping mode
       let mode = 'Sin envío';
       if (shipData && shipData.mode) mode = shipData.mode;
       else if (shipId && !shipData)  mode = 'Otro';
@@ -474,6 +471,13 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
       // Province
       const province = shipData ? shipData.province : 'Sin envío';
       byProvince[province] = (byProvince[province] || 0) + 1;
+
+      // Per-mode province + hour
+      if (!byProvincePerMode[mode]) byProvincePerMode[mode] = {};
+      byProvincePerMode[mode][province] = (byProvincePerMode[mode][province] || 0) + 1;
+
+      if (!byHourPerMode[mode]) byHourPerMode[mode] = new Array(24).fill(0);
+      byHourPerMode[mode][hour]++;
 
       // Per item — use item-level sale_fee directly, prorate taxes+shipping by revenue fraction
       const orderItemsRevenue = (order.order_items || []).reduce((s, oi) =>
@@ -614,12 +618,14 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
       reputation: user.seller_reputation,
       top_items: topItems,
       performance: {
-        by_mode:     byMode,
-        by_province: byProvince,
-        by_hour:     byHour,
-        top15_revenue: top15Revenue,
-        top15_units:   top15Units,
-        top15_by_mode: top15ByMode
+        by_mode:              byMode,
+        by_province:          byProvince,
+        by_hour:              byHour,
+        by_province_per_mode: byProvincePerMode,
+        by_hour_per_mode:     byHourPerMode,
+        top15_revenue:        top15Revenue,
+        top15_units:          top15Units,
+        top15_by_mode:        top15ByMode
       }
     });
   } catch(e) { console.error('Dashboard error:', e); res.status(500).json({ error: e.message }); }
