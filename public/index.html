@@ -2106,12 +2106,14 @@ function loadPerformance() {
   connected.forEach(acc => {
     const perf = acc.data.performance;
     if (!perf) return;
+    console.log('[PERF_FILTER] filter=', window._perfModeFilter, 'has_top15_by_mode=', !!perf.top15_by_mode, 'modes=', perf.top15_by_mode ? Object.keys(perf.top15_by_mode) : 'none');
     Object.entries(perf.by_mode     || {}).forEach(([k,v]) => { byMode[k]     = (byMode[k]||0)     + v; });
     Object.entries(perf.by_province || {}).forEach(([k,v]) => { byProvince[k] = (byProvince[k]||0) + v; });
     (perf.by_hour || []).forEach((v,i) => { byHour[i] += v; });
     // Use filtered top15 if a mode filter is active
     const f = window._perfModeFilter;
     const modeTop = f && perf.top15_by_mode && perf.top15_by_mode[f];
+    console.log('[PERF_FILTER] modeTop=', !!modeTop, f ? 'using filtered' : 'using all');
     top15Rev.push(  ...(modeTop ? modeTop.revenue : (perf.top15_revenue || [])));
     top15Units.push(...(modeTop ? modeTop.units   : (perf.top15_units   || [])));
   });
