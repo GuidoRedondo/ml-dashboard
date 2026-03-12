@@ -260,6 +260,13 @@ body {
   white-space: nowrap;
 }
 .sync-btn:hover { background: var(--surface2); border-color: #C5CAE0; }
+    .vf-btn {
+      padding: 6px 14px; border-radius: 20px; border: 1px solid var(--border);
+      background: var(--surface2); color: var(--muted); font-size: 12px;
+      cursor: pointer; transition: all .15s; white-space: nowrap;
+    }
+    .vf-btn:hover { border-color: #C5CAE0; color: var(--text); }
+    .vf-active { background: var(--accent) !important; color: #fff !important; border-color: var(--accent) !important; }
 
 .range-btn {
   background: transparent;
@@ -624,10 +631,17 @@ tbody td {
 
     <!-- VENTAS -->
     <div class="page" id="page-ventas">
-      <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px;flex-wrap:wrap">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap">
         <h2 style="margin:0;font-family:var(--font-b);flex:1">💳 Ventas</h2>
         <input type="text" id="ventasSearch" placeholder="Buscar por # orden o producto..." oninput="filterVentas()"
-          style="padding:7px 12px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:12px;width:240px">
+          style="padding:7px 12px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:12px;width:220px">
+      </div>
+      <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap">
+        <button id="vf-all"    onclick="setVentasMode('all')"    class="vf-btn vf-active">Todos</button>
+        <button id="vf-FULL"   onclick="setVentasMode('FULL')"   class="vf-btn">📦 FULL</button>
+        <button id="vf-flex"   onclick="setVentasMode('flex')"   class="vf-btn">⚡ Flex</button>
+        <button id="vf-correo" onclick="setVentasMode('correo')" class="vf-btn">📮 Correo / Colecta</button>
+        <button id="vf-other"  onclick="setVentasMode('other')"  class="vf-btn">📍 Otros</button>
       </div>
       <div id="ventasContent"><div style="color:var(--muted);font-size:13px;padding:20px;text-align:center">Sincronizá primero para ver los datos</div></div>
     </div>
@@ -2180,12 +2194,36 @@ function loadVentas() {
   renderVentas(allOrders);
 }
 
+function setVentasMode(mode) {
+  window._ventasMode = mode;
+  window._ventasPage = 0;
+  // Toggle active class
+  ['all','FULL','flex','correo','other'].forEach(m => {
+    const btn = document.getElementById('vf-'+m);
+    if (btn) btn.classList.toggle('vf-active', m === mode);
+  });
+  filterVentas();
+}
+
 function filterVentas() {
-  const q = (document.getElementById('ventasSearch')?.value || '').toLowerCase();
+  const q    = (document.getElementById('ventasSearch')?.value || '').toLowerCase();
+  const mode = window._ventasMode || 'all';
   if (!window._ventasData) return;
-  const filtered = !q ? window._ventasData : window._ventasData.filter(o =>
-    String(o.id).includes(q) ||
-    (o.productos||[]).some(p => (p.title||'').toLowerCase().includes(q) || (p.id||'').toLowerCase().includes(q))
+
+  const modeMatch = (o) => {
+    if (mode === 'all') return true;
+    const m = (o.mode || '').toLowerCase();
+    if (mode === 'FULL')   return m.includes('full');
+    if (mode === 'flex')   return m.includes('flex');
+    if (mode === 'correo') return m.includes('correo') || m.includes('colecta') || m.includes('collect') || m.includes('xd');
+    if (mode === 'other')  return !m.includes('full') && !m.includes('flex') && !m.includes('correo') && !m.includes('colecta') && !m.includes('collect') && !m.includes('xd');
+    return true;
+  };
+
+  const filtered = window._ventasData.filter(o =>
+    modeMatch(o) &&
+    (!q || String(o.id).includes(q) ||
+      (o.productos||[]).some(p => (p.title||'').toLowerCase().includes(q) || (p.id||'').toLowerCase().includes(q)))
   );
   renderVentas(filtered);
 }
