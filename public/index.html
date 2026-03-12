@@ -2348,38 +2348,7 @@ function showProblems(itemId, el) {
   document.body.appendChild(panel);
 }
 
-function loadVentas() {
-  const connected = state.accounts.filter(a => a.data);
-  const el = document.getElementById('ventasContent');
-  if (!connected.length) {
-    el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:20px;text-align:center">Conectá una cuenta para ver ventas</div>';
-    return;
-  }
 
-  let rows = '';
-  connected.forEach(acc => {
-    const orderList = acc.data.recent_orders || (acc.data.orders && acc.data.orders.results) || [];
-    orderList.slice(0, 15).forEach(o => {
-      const date = new Date(o.date_created).toLocaleDateString('es-AR');
-      const buyer = o.buyer?.nickname || '—';
-      const amount = '$' + (o.total_amount || 0).toLocaleString('es-AR');
-      rows += `<tr>
-        <td style="font-size:11px;color:var(--muted)">#${o.id}</td>
-        <td style="color:${acc.color};font-size:11px">${acc.name}</td>
-        <td>${buyer}</td>
-        <td>${amount}</td>
-        <td>${date}</td>
-        <td><span class="status s-ok">● Pagada</span></td>
-      </tr>`;
-    });
-  });
-
-  el.innerHTML = `
-    <table>
-      <thead><tr><th>Orden</th><th>Cuenta</th><th>Comprador</th><th>Total</th><th>Fecha</th><th>Estado</th></tr></thead>
-      <tbody>${rows || '<tr><td colspan="6" style="text-align:center;color:var(--muted)">Sin ventas recientes</td></tr>'}</tbody>
-    </table>`;
-}
 
 async function syncAll() {
   if (!activeClientId) { showToast('⚠️ Seleccioná una cuenta primero'); return; }
