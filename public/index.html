@@ -2002,8 +2002,21 @@ function loadRentabilidad() {
   });
 
   const products = Object.values(allProducts)
-    .sort((a, b) => b.revenue - a.revenue)
     .map(p => ({ ...p, pct_neto: p.revenue > 0 ? ((p.neto/p.revenue)*100).toFixed(1) : '0' }));
+
+  // Sort state
+  if (!window._rentSort) window._rentSort = { col: 'revenue', asc: false };
+  const sc = window._rentSort.col, sa = window._rentSort.asc;
+  const colVal = p => {
+    if (sc === 'title')    return p.title?.toLowerCase() || '';
+    if (sc === 'pct_neto') return parseFloat(p.pct_neto) || 0;
+    return parseFloat(p[sc]) || 0;
+  };
+  products.sort((a, b) => {
+    const va = colVal(a), vb = colVal(b);
+    if (typeof va === 'string') return sa ? va.localeCompare(vb) : vb.localeCompare(va);
+    return sa ? va - vb : vb - va;
+  });
 
   const utilidad_final = R.neto_ml - R.costo_productos;
   const base = R.facturacion || 1;
@@ -2101,28 +2114,29 @@ function loadRentabilidad() {
 
     <!-- TABLA PRODUCTOS -->
     <div class="kpi-card" style="padding:18px">
-      <div class="kpi-label" style="margin-bottom:14px">📋 DESGLOSE POR PRODUCTO — ordenado por facturación</div>
+      <div class="kpi-label" style="margin-bottom:14px">📋 DESGLOSE POR PRODUCTO</div>
       <div style="overflow-x:auto">
         <table style="width:100%;border-collapse:collapse;font-size:12px">
           <thead>
             <tr style="border-bottom:2px solid rgba(255,255,255,.1)">
               <th style="text-align:left;padding:8px 10px;color:var(--muted);font-weight:600">#</th>
-              <th style="text-align:left;padding:8px 10px;color:var(--muted);font-weight:600">Producto</th>
-              <th style="text-align:right;padding:8px 10px;color:var(--muted);font-weight:600">Facturación</th>
-              <th style="text-align:right;padding:8px 10px;color:var(--muted);font-weight:600">Unidades</th>
-              <th style="text-align:right;padding:8px 10px;color:var(--muted);font-weight:600">Comisiones</th>
-              <th style="text-align:right;padding:8px 10px;color:var(--muted);font-weight:600">Res. Envío</th>
-              <th style="text-align:right;padding:8px 10px;color:var(--muted);font-weight:600">Inv. Ads</th>
-              <th style="text-align:right;padding:8px 10px;color:var(--muted);font-weight:600">Neto</th>
-              <th style="text-align:right;padding:8px 10px;color:var(--muted);font-weight:600">% Neto</th>
-              <th style="text-align:right;padding:8px 10px;color:var(--muted);font-weight:600">% Total</th>
+              ${['title','revenue','units','comision','resultado_envio','pct_neto','pct_neto'].map((col,i) => {
+                const labels = ['Producto','Facturación','Unidades','Comisiones','Res. Envío','Inv. Ads','% Neto','% Total'];
+                const cols   = ['title','revenue','units','comision','resultado_envio','_ads','pct_neto','revenue'];
+                const label  = ['Producto','Facturación','Unidades','Comisiones','Res. Envío','Inv. Ads','% Neto','% Total'][i];
+                const c      = cols[i];
+                const active = window._rentSort.col === c;
+                const arrow  = active ? (window._rentSort.asc ? ' ↑' : ' ↓') : '';
+                const align  = i === 0 ? 'left' : 'right';
+                return `<th onclick="sortRent('${c}')" style="text-align:${align};padding:8px 10px;color:${active?'var(--text)':'var(--muted)'};font-weight:600;cursor:pointer;user-select:none;white-space:nowrap">${label}${arrow}</th>`;
+              }).join('')}
+              <th onclick="sortRent('revenue_pct')" style="text-align:right;padding:8px 10px;color:${window._rentSort.col==='revenue_pct'?'var(--text)':'var(--muted)'};font-weight:600;cursor:pointer;user-select:none">% Total${window._rentSort.col==='revenue_pct'?(window._rentSort.asc?' ↑':' ↓'):''}</th>
             </tr>
           </thead>
           <tbody>
             ${products.map((p, i) => {
               const resEnvio = p.resultado_envio || 0;
               const resEnvioColor = resEnvio >= 0 ? '#00e676' : '#ff5252';
-              const adsItem = 0; // ads per item not yet available
               return `
               <tr style="border-bottom:1px solid rgba(255,255,255,.05);${i%2===0?'background:rgba(255,255,255,.02)':''}">
                 <td style="padding:8px 10px;color:var(--muted)">${i+1}</td>
@@ -2135,7 +2149,6 @@ function loadRentabilidad() {
                 <td style="padding:8px 10px;text-align:right;color:#ff5252">${fmtM(-p.comision)}</td>
                 <td style="padding:8px 10px;text-align:right;color:${resEnvioColor}" title="Cobrado: ${fmtM(p.envio_cobrado)} / Pagado: ${fmtM(p.envio_pagado)}">${fmtM(resEnvio)}</td>
                 <td style="padding:8px 10px;text-align:right;color:var(--muted)">—</td>
-                <td style="padding:8px 10px;text-align:right;color:${parseFloat(p.neto)>=0?'#00e676':'#ff5252'}">${fmtM(p.neto)}</td>
                 <td style="padding:8px 10px;text-align:right;font-weight:700;color:${pctColor(parseFloat(p.pct_neto))}">${p.pct_neto}%</td>
                 <td style="padding:8px 10px;text-align:right;color:var(--muted)">${pct(p.revenue, base)}</td>
               </tr>`;
@@ -2144,6 +2157,17 @@ function loadRentabilidad() {
         </table>
       </div>
     </div>`;
+}
+
+function sortRent(col) {
+  if (!window._rentSort) window._rentSort = { col: 'revenue', asc: false };
+  if (window._rentSort.col === col) {
+    window._rentSort.asc = !window._rentSort.asc;
+  } else {
+    window._rentSort.col = col;
+    window._rentSort.asc = false; // always start desc
+  }
+  loadRentabilidad();
 }
 
 function sortPubs(col) {
