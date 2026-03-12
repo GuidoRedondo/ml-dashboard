@@ -1981,8 +1981,27 @@ function loadRentabilidad() {
     return;
   }
 
-  const R = { facturacion:0, envios_cobrados:0, total_ingresos:0, comisiones:0, impuestos:0, costo_envios:0, anulaciones:0, cancelled_count:0, total_egresos:0, neto_ml:0, costo_productos:0 };
-  connected.forEach(acc => { const r = acc.data.rentabilidad; Object.keys(R).forEach(k => { R[k] += r[k]||0; }); });
+  const R = { facturacion:0, envios_cobrados:0, total_ingresos:0, comisiones:0, impuestos:0, costo_envios:0, anulaciones:0, cancelled_count:0, inversion_ads:0, total_egresos:0, neto_ml:0, costo_productos:0 };
+  const allProducts = {};
+  connected.forEach(acc => {
+    const r = acc.data.rentabilidad;
+    Object.keys(R).forEach(k => { R[k] += r[k]||0; });
+    // Merge by_product across accounts
+    (r.by_product || []).forEach(p => {
+      if (!allProducts[p.id]) allProducts[p.id] = { ...p };
+      else {
+        allProducts[p.id].revenue  += p.revenue;
+        allProducts[p.id].units    += p.units;
+        allProducts[p.id].orders   += p.orders;
+        allProducts[p.id].comision += p.comision;
+        allProducts[p.id].neto     += p.neto;
+      }
+    });
+  });
+
+  const products = Object.values(allProducts)
+    .sort((a, b) => b.revenue - a.revenue)
+    .map(p => ({ ...p, pct_neto: p.revenue > 0 ? ((p.neto/p.revenue)*100).toFixed(1) : '0' }));
 
   const utilidad_final = R.neto_ml - R.costo_productos;
   const base = R.facturacion || 1;
@@ -1995,7 +2014,6 @@ function loadRentabilidad() {
   };
   const pct = (val, b) => b > 0 ? (val/b*100).toFixed(1)+'%' : '—';
 
-  // Mini stat row inside a card
   function statRow(label, value, pctVal, valueColor) {
     return `
       <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid rgba(255,255,255,.06)">
@@ -2007,7 +2025,6 @@ function loadRentabilidad() {
       </div>`;
   }
 
-  // Big total card
   function totalCard(icon, label, value, color, sub) {
     return `
       <div class="kpi-card" style="border-top:3px solid ${color}">
@@ -2017,58 +2034,55 @@ function loadRentabilidad() {
       </div>`;
   }
 
+  // Pct neto color
+  const pctColor = p => p >= 60 ? '#00e676' : p >= 40 ? '#FFD700' : '#ff5252';
+
   el.innerHTML = `
-    <!-- FILA 1: 4 KPIs principales -->
-    <div class="kpi-grid" style="grid-template-columns:repeat(4,1fr);margin-bottom:12px">
-      ${totalCard('📥','TOTAL INGRESOS',    R.total_ingresos,  '#00e676', pct(R.total_ingresos, base) + ' sobre facturación')}
-      ${totalCard('📤','TOTAL EGRESOS',    -R.total_egresos,   '#ff5252', pct(R.total_egresos,  base) + ' sobre facturación')}
-      ${totalCard('🏦','NETO ML',           R.neto_ml,         R.neto_ml >= 0 ? '#00e676' : '#ff5252', pct(R.neto_ml, base) + ' sobre facturación')}
-      ${totalCard('🎯','UTILIDAD FINAL',    utilidad_final,    utilidad_final >= 0 ? '#FFD700' : '#ff5252', R.costo_productos > 0 ? pct(utilidad_final, base)+' sobre facturación' : 'Sin costo de productos aún')}
+    <!-- FILA 1: 5 KPIs principales -->
+    <div class="kpi-grid" style="grid-template-columns:repeat(5,1fr);margin-bottom:12px">
+      ${totalCard('📥','TOTAL INGRESOS',   R.total_ingresos,  '#00e676', pct(R.total_ingresos, base)+' sobre facturación')}
+      ${totalCard('📤','TOTAL EGRESOS',   -R.total_egresos,   '#ff5252', pct(R.total_egresos,  base)+' sobre facturación')}
+      ${totalCard('📣','INVERSIÓN ADS',   -R.inversion_ads,   '#ff9100', pct(R.inversion_ads,  base)+' sobre facturación')}
+      ${totalCard('🏦','NETO ML',          R.neto_ml,         R.neto_ml>=0?'#00e676':'#ff5252', pct(R.neto_ml, base)+' sobre facturación')}
+      ${totalCard('🎯','UTILIDAD FINAL',   utilidad_final,    utilidad_final>=0?'#FFD700':'#ff5252', R.costo_productos>0?pct(utilidad_final,base)+' sobre facturación':'Sin costo de productos aún')}
     </div>
 
     <!-- FILA 2: Desglose INGRESOS + EGRESOS -->
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
-
-      <!-- INGRESOS -->
       <div class="kpi-card" style="padding:18px">
         <div class="kpi-label" style="margin-bottom:12px">📥 DESGLOSE DE INGRESOS</div>
-        ${statRow('Facturación (productos)', R.facturacion,     pct(R.facturacion,     base), '#fff')}
-        ${statRow('Envíos cobrados al comprador', R.envios_cobrados, pct(R.envios_cobrados, base), '#00e676')}
+        ${statRow('Facturación (productos)',          R.facturacion,     pct(R.facturacion,     base), '#fff')}
+        ${statRow('Envíos cobrados al comprador',     R.envios_cobrados, pct(R.envios_cobrados, base), '#00e676')}
         <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0 0">
-          <span style="font-size:13px;font-weight:700;color:var(--text)">Total Ingresos</span>
+          <span style="font-size:13px;font-weight:700">Total Ingresos</span>
           <span style="font-size:15px;font-weight:700;color:#00e676">${fmtM(R.total_ingresos)}</span>
         </div>
       </div>
-
-      <!-- EGRESOS -->
       <div class="kpi-card" style="padding:18px">
         <div class="kpi-label" style="margin-bottom:12px">📤 DESGLOSE DE EGRESOS</div>
-        ${statRow('Comisiones ML (sale_fee)',        -R.comisiones,   pct(R.comisiones,   base), '#ff5252')}
-        ${statRow('Impuestos (IIBB / percepciones)', -R.impuestos,    pct(R.impuestos,    base), '#ff5252')}
-        ${statRow('Costo de envíos (vendedor)',       -R.costo_envios, pct(R.costo_envios, base), '#ff5252')}
+        ${statRow('Comisiones ML (sale_fee)',          -R.comisiones,    pct(R.comisiones,    base), '#ff5252')}
+        ${statRow('Impuestos (IIBB / percepciones)',   -R.impuestos,     pct(R.impuestos,     base), '#ff5252')}
+        ${statRow('Costo de envíos (vendedor)',         -R.costo_envios,  pct(R.costo_envios,  base), '#ff5252')}
         ${statRow(`Anulaciones y reembolsos (${R.cancelled_count})`, -R.anulaciones, pct(R.anulaciones, base), '#ff9100')}
+        ${statRow('Inversión en publicidad (Ads)',      -R.inversion_ads, pct(R.inversion_ads, base), '#ff9100')}
         <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0 0">
-          <span style="font-size:13px;font-weight:700;color:var(--text)">Total Egresos</span>
+          <span style="font-size:13px;font-weight:700">Total Egresos</span>
           <span style="font-size:15px;font-weight:700;color:#ff5252">${fmtM(-R.total_egresos)}</span>
         </div>
       </div>
     </div>
 
-    <!-- FILA 3: Resultado final -->
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
-
-      <!-- NETO ML -->
+    <!-- FILA 3: Resultados -->
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
       <div class="kpi-card" style="padding:18px">
         <div class="kpi-label" style="margin-bottom:12px">🏦 RESULTADO NETO ML</div>
         ${statRow('Total Ingresos',  R.total_ingresos,  pct(R.total_ingresos,  base), '#00e676')}
         ${statRow('Total Egresos',  -R.total_egresos,   pct(R.total_egresos,   base), '#ff5252')}
         <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0 0">
-          <span style="font-size:13px;font-weight:700;color:var(--text)">Neto ML</span>
+          <span style="font-size:13px;font-weight:700">Neto ML</span>
           <span style="font-size:15px;font-weight:700;color:${R.neto_ml>=0?'#00e676':'#ff5252'}">${fmtM(R.neto_ml)}</span>
         </div>
       </div>
-
-      <!-- UTILIDAD FINAL -->
       <div class="kpi-card" style="padding:18px">
         <div class="kpi-label" style="margin-bottom:12px">🎯 RESULTADO CON COSTO DE PRODUCTOS</div>
         ${statRow('Neto ML', R.neto_ml, pct(R.neto_ml, base), R.neto_ml>=0?'#00e676':'#ff5252')}
@@ -2077,9 +2091,48 @@ function loadRentabilidad() {
           : `<div style="padding:8px 0;border-bottom:1px solid rgba(255,255,255,.06);font-size:12px;color:var(--muted);font-style:italic">Costo de productos — próximamente</div>`
         }
         <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0 0">
-          <span style="font-size:13px;font-weight:700;color:var(--text)">Utilidad Final</span>
+          <span style="font-size:13px;font-weight:700">Utilidad Final</span>
           <span style="font-size:15px;font-weight:700;color:${utilidad_final>=0?'#FFD700':'#ff5252'}">${fmtM(utilidad_final)}</span>
         </div>
+      </div>
+    </div>
+
+    <!-- TABLA PRODUCTOS -->
+    <div class="kpi-card" style="padding:18px">
+      <div class="kpi-label" style="margin-bottom:14px">📋 DESGLOSE POR PRODUCTO — ordenado por facturación</div>
+      <div style="overflow-x:auto">
+        <table style="width:100%;border-collapse:collapse;font-size:12px">
+          <thead>
+            <tr style="border-bottom:2px solid rgba(255,255,255,.1)">
+              <th style="text-align:left;padding:8px 10px;color:var(--muted);font-weight:600">#</th>
+              <th style="text-align:left;padding:8px 10px;color:var(--muted);font-weight:600">Producto</th>
+              <th style="text-align:right;padding:8px 10px;color:var(--muted);font-weight:600">Facturación</th>
+              <th style="text-align:right;padding:8px 10px;color:var(--muted);font-weight:600">Unidades</th>
+              <th style="text-align:right;padding:8px 10px;color:var(--muted);font-weight:600">Órdenes</th>
+              <th style="text-align:right;padding:8px 10px;color:var(--muted);font-weight:600">Comisiones</th>
+              <th style="text-align:right;padding:8px 10px;color:var(--muted);font-weight:600">Neto</th>
+              <th style="text-align:right;padding:8px 10px;color:var(--muted);font-weight:600">% Neto</th>
+              <th style="text-align:right;padding:8px 10px;color:var(--muted);font-weight:600">% Total</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${products.map((p, i) => `
+              <tr style="border-bottom:1px solid rgba(255,255,255,.05);${i%2===0?'background:rgba(255,255,255,.02)':''}">
+                <td style="padding:8px 10px;color:var(--muted)">${i+1}</td>
+                <td style="padding:8px 10px;max-width:240px">
+                  <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${p.title}">${p.title}</div>
+                  <div style="font-size:10px;color:var(--muted);cursor:pointer" onclick="copyMLA(this,'${p.id}')">${p.id}</div>
+                </td>
+                <td style="padding:8px 10px;text-align:right;font-weight:700">${fmtM(p.revenue)}</td>
+                <td style="padding:8px 10px;text-align:right">${p.units}</td>
+                <td style="padding:8px 10px;text-align:right">${p.orders}</td>
+                <td style="padding:8px 10px;text-align:right;color:#ff5252">${fmtM(-p.comision)}</td>
+                <td style="padding:8px 10px;text-align:right;color:${parseFloat(p.neto)>=0?'#00e676':'#ff5252'}">${fmtM(p.neto)}</td>
+                <td style="padding:8px 10px;text-align:right;font-weight:700;color:${pctColor(parseFloat(p.pct_neto))}">${p.pct_neto}%</td>
+                <td style="padding:8px 10px;text-align:right;color:var(--muted)">${pct(p.revenue, base)}</td>
+              </tr>`).join('')}
+          </tbody>
+        </table>
       </div>
     </div>`;
 }
