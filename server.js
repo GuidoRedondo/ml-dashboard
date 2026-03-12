@@ -490,18 +490,19 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
         const id    = oi.item && oi.item.id;
         const title = oi.item && oi.item.title;
         if (!id) return;
-        if (!byItem[id]) byItem[id] = { id, title: title || id, revenue: 0, units: 0, net: 0, orders: 0 };
+        if (!byItem[id]) byItem[id] = { id, title: title || id, revenue: 0, units: 0, net: 0, orders: 0, envio_cobrado: 0, envio_pagado: 0 };
 
         // Also track per mode
         if (!byItemPerMode[mode])     byItemPerMode[mode] = {};
         if (!byItemPerMode[mode][id]) byItemPerMode[mode][id] = { id, title: title || id, revenue: 0, units: 0, net: 0, orders: 0 };
 
-        const itemRevenue = (parseFloat(oi.unit_price) || 0) * (oi.quantity || 0);
-        const itemSaleFee = parseFloat(oi.sale_fee) || 0;
-        const itemFrac    = itemRevenue / orderItemsRevenue;
-        const itemTax     = orderTax * itemFrac;
-        const itemShip    = orderSellerShip * itemFrac;
-        const itemNet     = itemRevenue - itemSaleFee - itemTax - itemShip;
+        const itemRevenue    = (parseFloat(oi.unit_price) || 0) * (oi.quantity || 0);
+        const itemSaleFee    = parseFloat(oi.sale_fee) || 0;
+        const itemFrac       = itemRevenue / orderItemsRevenue;
+        const itemTax        = orderTax * itemFrac;
+        const itemShip       = orderSellerShip * itemFrac;
+        const itemBuyerShip  = shipData ? (shipData.buyerCost || 0) * itemFrac : 0;
+        const itemNet        = itemRevenue - itemSaleFee - itemTax - itemShip;
 
         // DEBUG — log ALL orders for MLA1144763103 + first 2 of any item
         const isTarget = id === 'MLA1144763103';
@@ -509,10 +510,12 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
           console.log(`[ORDER_DETAIL] item=${id} qty=${oi.quantity} price=$${oi.unit_price} revenue=$${itemRevenue.toFixed(0)} sale_fee=$${itemSaleFee.toFixed(0)} tax=$${itemTax.toFixed(0)} ship=$${itemShip.toFixed(0)} net=$${itemNet.toFixed(0)} pct=${itemRevenue>0?(itemNet/itemRevenue*100).toFixed(1):0}% | orderPaid=$${order.paid_amount} orderItemsRevenue=$${orderItemsRevenue.toFixed(0)}`);
         }
 
-        byItem[id].revenue += itemRevenue;
-        byItem[id].units   += oi.quantity || 0;
-        byItem[id].net     += itemNet;
-        byItem[id].orders  += 1;
+        byItem[id].revenue       += itemRevenue;
+        byItem[id].units         += oi.quantity || 0;
+        byItem[id].net           += itemNet;
+        byItem[id].orders        += 1;
+        byItem[id].envio_cobrado += itemBuyerShip;
+        byItem[id].envio_pagado  += itemShip;
 
         byItemPerMode[mode][id].revenue += itemRevenue;
         byItemPerMode[mode][id].units   += oi.quantity || 0;
@@ -599,14 +602,16 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
     const byProduct = Object.values(byItem)
       .sort((a, b) => b.revenue - a.revenue)
       .map(i => ({
-        id:       i.id,
-        title:    i.title,
-        revenue:  i.revenue,
-        units:    i.units,
-        orders:   i.orders,
-        comision: i.revenue > 0 ? (i.revenue - i.net) : 0,
-        neto:     i.net,
-        pct_neto: i.revenue > 0 ? ((i.net / i.revenue) * 100).toFixed(1) : '0'
+        id:              i.id,
+        title:           i.title,
+        revenue:         i.revenue,
+        units:           i.units,
+        comision:        i.revenue > 0 ? (i.revenue - i.net) : 0,
+        envio_cobrado:   i.envio_cobrado,
+        envio_pagado:    i.envio_pagado,
+        resultado_envio: i.envio_cobrado - i.envio_pagado,
+        neto:            i.net,
+        pct_neto:        i.revenue > 0 ? ((i.net / i.revenue) * 100).toFixed(1) : '0'
       }));
 
     const rentabilidad = {
