@@ -2120,13 +2120,14 @@ function loadPerformance() {
   const totalOrders = Object.values(byMode).reduce((a,b)=>a+b,0) || 1;
 
   // Store raw data globally for filtering
-  window._perfRawData = { byMode, byProvince, byHour, top15Rev, top15Units, allOrders: [] };
+  window._perfRawData = { byMode, byProvince, byHour, top15Rev: [], top15Units: [], allOrders: [] };
+  if (window._perfModeFilter === undefined) window._perfModeFilter = null;
   connected.forEach(acc => {
     (acc.data.recent_orders || []).forEach(o => {
       window._perfRawData.allOrders.push({ ...o, _account: acc.name });
     });
   });
-  window._perfModeFilter = null; // null = all
+  // Keep window._perfModeFilter as-is — set by perfFilterMode, not reset here
 
   function getFilteredItems(items) {
     const f = window._perfModeFilter;
