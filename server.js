@@ -640,6 +640,29 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
     const ticketPromedio = curData.orders.length > 0 ? curData.amount / curData.orders.length : 0;
     const prevTicket = prevData.orders.length > 0 ? prevData.amount / prevData.orders.length : 0;
 
+    // ── ORDERS DETAIL (for Ventas section) ───────────────────────────────────
+    const orders_detail = curData.orders.map(order => {
+      const shipId      = order.shipping && order.shipping.id;
+      const shipData    = shipId ? shippingCostMap[shipId] : null;
+      const facturacion = (order.order_items||[]).reduce((s,oi) => s+(parseFloat(oi.unit_price)||0)*(oi.quantity||0), 0);
+      const comision    = (order.order_items||[]).reduce((s,oi) => s+(parseFloat(oi.sale_fee)||0), 0);
+      const impuestos   = parseFloat((order.taxes||{}).amount) || 0;
+      const envio_vendedor  = shipData ? (shipData.sellerCost||0) : 0;
+      const envio_comprador = shipData ? (shipData.buyerCost||0)  : 0;
+      const neto        = facturacion - comision - impuestos - envio_vendedor;
+      const pct_neto    = facturacion > 0 ? ((neto/facturacion)*100).toFixed(1) : '0';
+      const productos   = (order.order_items||[]).map(oi => ({
+        id: oi.item&&oi.item.id, title: oi.item&&oi.item.title,
+        qty: oi.quantity||1, price: parseFloat(oi.unit_price)||0
+      }));
+      return {
+        id: order.id, date: order.date_created, status: order.status,
+        facturacion, comision, impuestos, envio_vendedor, envio_comprador,
+        neto, pct_neto, productos,
+        mode: shipData ? shipData.mode : (shipId ? 'Sin datos' : 'Sin envío'),
+      };
+    }).sort((a,b) => new Date(b.date) - new Date(a.date));
+
     res.json({
       user,
       stats: {
@@ -651,7 +674,6 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
         importe_recibido: importeRecibido,
         porcentaje_recibido: parseFloat(porcentajeRecibido),
         ads_spend: adsSpend,
-        // breakdown for transparency
         desglose: { paid_amount: totalPaidAmount, sale_fee: totalSaleFee, taxes: totalTaxes, seller_shipping: totalSellerShip, ads: adsSpend },
         prev: {
           total_orders: prevData.orders.length, total_amount: prevData.amount,
@@ -667,9 +689,8 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
           ticket: pct(ticketPromedio, prevTicket)
         }
       },
-      recent_orders: curData.orders,
-      reputation: user.seller_reputation,
       top_items: topItems,
+      orders_detail,
       performance: {
         by_mode:              byMode,
         by_province:          byProvince,
