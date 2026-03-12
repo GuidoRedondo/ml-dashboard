@@ -1981,103 +1981,107 @@ function loadRentabilidad() {
     return;
   }
 
-  // Aggregate across accounts
-  const R = {
-    facturacion: 0, envios_cobrados: 0, total_ingresos: 0,
-    comisiones: 0, impuestos: 0, costo_envios: 0, anulaciones: 0, cancelled_count: 0, total_egresos: 0,
-    neto_ml: 0, costo_productos: 0
-  };
-  connected.forEach(acc => {
-    const r = acc.data.rentabilidad;
-    Object.keys(R).forEach(k => { R[k] += r[k] || 0; });
-  });
+  const R = { facturacion:0, envios_cobrados:0, total_ingresos:0, comisiones:0, impuestos:0, costo_envios:0, anulaciones:0, cancelled_count:0, total_egresos:0, neto_ml:0, costo_productos:0 };
+  connected.forEach(acc => { const r = acc.data.rentabilidad; Object.keys(R).forEach(k => { R[k] += r[k]||0; }); });
 
   const utilidad_final = R.neto_ml - R.costo_productos;
-  const dias = state.rangeDays || 30;
-
-  const fmtM = n => {
-    const abs = Math.abs(n);
-    const sign = n < 0 ? '-' : '';
-    if (abs >= 1000000) return sign + '$' + (abs/1000000).toFixed(2) + 'M';
-    if (abs >= 1000)    return sign + '$' + (abs/1000).toFixed(1) + 'K';
-    return sign + '$' + Math.round(abs).toLocaleString('es-AR');
-  };
-  const pct = (val, base) => base > 0 ? (val/base*100).toFixed(2)+'%' : '—';
-  const pctN = (val, base) => base > 0 ? (val/base*100).toFixed(2) : null;
-
-  // ── ROW builder ─────────────────────────────────────────────────────────
-  function row(label, value, pctVal, color, bold, indent) {
-    const isNeg = value < 0;
-    const pctColor = isNeg ? '#ff5252' : '#00e676';
-    return `
-      <div style="display:grid;grid-template-columns:1fr auto auto;align-items:center;padding:10px 14px;
-                  background:${color};border-radius:6px;margin-bottom:4px;
-                  ${bold ? 'font-weight:700;' : ''}${indent ? 'margin-left:12px;' : ''}">
-        <div style="font-size:13px;color:${bold ? 'var(--text)' : 'var(--text)'}">
-          ${indent ? '<span style="color:var(--muted);margin-right:6px">└</span>' : ''}${label}
-        </div>
-        <div style="font-size:${bold ? '16px' : '14px'};text-align:right;margin-right:20px;
-                    color:${isNeg ? '#ff5252' : bold ? 'var(--text)' : 'var(--text)'}">
-          ${fmtM(value)}
-        </div>
-        <div style="font-size:13px;font-weight:700;min-width:70px;text-align:right;color:${pctColor}">
-          ${pctVal !== null ? (value >= 0 ? '+' : '') + pctVal + '%' : ''}
-        </div>
-      </div>`;
-  }
-
-  function block(title, color, rows) {
-    return `
-      <div style="margin-bottom:16px">
-        <div style="background:${color};padding:10px 14px;border-radius:8px 8px 0 0;margin-bottom:4px">
-          <span style="font-size:13px;font-weight:700;color:#fff;letter-spacing:.5px">▶ ${title}</span>
-        </div>
-        ${rows}
-      </div>`;
-  }
-
   const base = R.facturacion || 1;
 
-  const html = `
-    <div style="max-width:700px">
+  const fmtM = n => {
+    const abs = Math.abs(n), sign = n < 0 ? '-' : '';
+    if (abs >= 1000000) return sign+'$'+(abs/1000000).toFixed(2)+'M';
+    if (abs >= 1000)    return sign+'$'+(abs/1000).toFixed(1)+'K';
+    return sign+'$'+Math.round(abs).toLocaleString('es-AR');
+  };
+  const pct = (val, b) => b > 0 ? (val/b*100).toFixed(1)+'%' : '—';
 
-      <!-- Período -->
-      <div style="font-size:12px;color:var(--muted);margin-bottom:16px">
-        Período: últimos ${dias} días · ${connected.map(a=>a.name).join(' + ')}
+  // Mini stat row inside a card
+  function statRow(label, value, pctVal, valueColor) {
+    return `
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid rgba(255,255,255,.06)">
+        <span style="font-size:12px;color:var(--muted)">${label}</span>
+        <div style="display:flex;align-items:center;gap:12px">
+          <span style="font-size:13px;font-weight:700;color:${valueColor||'var(--text)'};">${fmtM(value)}</span>
+          <span style="font-size:11px;color:var(--muted);min-width:50px;text-align:right">${pctVal}</span>
+        </div>
+      </div>`;
+  }
+
+  // Big total card
+  function totalCard(icon, label, value, color, sub) {
+    return `
+      <div class="kpi-card" style="border-top:3px solid ${color}">
+        <div class="kpi-label">${icon} ${label}</div>
+        <div class="kpi-value" style="color:${color}">${fmtM(value)}</div>
+        <div class="kpi-sub">${sub}</div>
+      </div>`;
+  }
+
+  el.innerHTML = `
+    <!-- FILA 1: 4 KPIs principales -->
+    <div class="kpi-grid" style="grid-template-columns:repeat(4,1fr);margin-bottom:12px">
+      ${totalCard('📥','TOTAL INGRESOS',    R.total_ingresos,  '#00e676', pct(R.total_ingresos, base) + ' sobre facturación')}
+      ${totalCard('📤','TOTAL EGRESOS',    -R.total_egresos,   '#ff5252', pct(R.total_egresos,  base) + ' sobre facturación')}
+      ${totalCard('🏦','NETO ML',           R.neto_ml,         R.neto_ml >= 0 ? '#00e676' : '#ff5252', pct(R.neto_ml, base) + ' sobre facturación')}
+      ${totalCard('🎯','UTILIDAD FINAL',    utilidad_final,    utilidad_final >= 0 ? '#FFD700' : '#ff5252', R.costo_productos > 0 ? pct(utilidad_final, base)+' sobre facturación' : 'Sin costo de productos aún')}
+    </div>
+
+    <!-- FILA 2: Desglose INGRESOS + EGRESOS -->
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
+
+      <!-- INGRESOS -->
+      <div class="kpi-card" style="padding:18px">
+        <div class="kpi-label" style="margin-bottom:12px">📥 DESGLOSE DE INGRESOS</div>
+        ${statRow('Facturación (productos)', R.facturacion,     pct(R.facturacion,     base), '#fff')}
+        ${statRow('Envíos cobrados al comprador', R.envios_cobrados, pct(R.envios_cobrados, base), '#00e676')}
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0 0">
+          <span style="font-size:13px;font-weight:700;color:var(--text)">Total Ingresos</span>
+          <span style="font-size:15px;font-weight:700;color:#00e676">${fmtM(R.total_ingresos)}</span>
+        </div>
       </div>
 
-      ${block('INGRESOS', '#1a5276', `
-        ${row('Facturación (ingresos por productos)', R.facturacion, pctN(R.facturacion, base), 'var(--surface2)', false, true)}
-        ${row('Ingresos por envíos cobrados al comprador', R.envios_cobrados, pctN(R.envios_cobrados, base), 'var(--surface2)', false, true)}
-        ${row('→ TOTAL INGRESOS', R.total_ingresos, pctN(R.total_ingresos, base), '#1a5276', true, false)}
-      `)}
+      <!-- EGRESOS -->
+      <div class="kpi-card" style="padding:18px">
+        <div class="kpi-label" style="margin-bottom:12px">📤 DESGLOSE DE EGRESOS</div>
+        ${statRow('Comisiones ML (sale_fee)',        -R.comisiones,   pct(R.comisiones,   base), '#ff5252')}
+        ${statRow('Impuestos (IIBB / percepciones)', -R.impuestos,    pct(R.impuestos,    base), '#ff5252')}
+        ${statRow('Costo de envíos (vendedor)',       -R.costo_envios, pct(R.costo_envios, base), '#ff5252')}
+        ${statRow(`Anulaciones y reembolsos (${R.cancelled_count})`, -R.anulaciones, pct(R.anulaciones, base), '#ff9100')}
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0 0">
+          <span style="font-size:13px;font-weight:700;color:var(--text)">Total Egresos</span>
+          <span style="font-size:15px;font-weight:700;color:#ff5252">${fmtM(-R.total_egresos)}</span>
+        </div>
+      </div>
+    </div>
 
-      ${block('EGRESOS', '#6e2c00', `
-        ${row('Comisiones ML (sale_fee)', -R.comisiones, pctN(-R.comisiones, base), 'var(--surface2)', false, true)}
-        ${row('Impuestos (IIBB / percepciones)', -R.impuestos, pctN(-R.impuestos, base), 'var(--surface2)', false, true)}
-        ${row('Costo de envíos (a cargo del vendedor)', -R.costo_envios, pctN(-R.costo_envios, base), 'var(--surface2)', false, true)}
-        ${row(`Anulaciones y reembolsos (${R.cancelled_count} órdenes)`, -R.anulaciones, pctN(-R.anulaciones, base), 'var(--surface2)', false, true)}
-        ${row('→ TOTAL EGRESOS', -R.total_egresos, pctN(-R.total_egresos, base), '#6e2c00', true, false)}
-      `)}
+    <!-- FILA 3: Resultado final -->
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
 
-      ${block('RESULTADO NETO ML  (Ingresos − Egresos)', '#1d4f1d', `
-        ${row('→ RESULTADO NETO ML', R.neto_ml, pctN(R.neto_ml, base), '#1d4f1d', true, false)}
-      `)}
+      <!-- NETO ML -->
+      <div class="kpi-card" style="padding:18px">
+        <div class="kpi-label" style="margin-bottom:12px">🏦 RESULTADO NETO ML</div>
+        ${statRow('Total Ingresos',  R.total_ingresos,  pct(R.total_ingresos,  base), '#00e676')}
+        ${statRow('Total Egresos',  -R.total_egresos,   pct(R.total_egresos,   base), '#ff5252')}
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0 0">
+          <span style="font-size:13px;font-weight:700;color:var(--text)">Neto ML</span>
+          <span style="font-size:15px;font-weight:700;color:${R.neto_ml>=0?'#00e676':'#ff5252'}">${fmtM(R.neto_ml)}</span>
+        </div>
+      </div>
 
-      ${block('RESULTADO FINAL CON COSTO DE PRODUCTOS', '#4a235a', `
-        ${row('Resultado Neto ML', R.neto_ml, pctN(R.neto_ml, base), 'var(--surface2)', false, true)}
+      <!-- UTILIDAD FINAL -->
+      <div class="kpi-card" style="padding:18px">
+        <div class="kpi-label" style="margin-bottom:12px">🎯 RESULTADO CON COSTO DE PRODUCTOS</div>
+        ${statRow('Neto ML', R.neto_ml, pct(R.neto_ml, base), R.neto_ml>=0?'#00e676':'#ff5252')}
         ${R.costo_productos > 0
-          ? row('Costo de Productos', -R.costo_productos, pctN(-R.costo_productos, base), 'var(--surface2)', false, true)
-          : `<div style="padding:10px 14px;background:var(--surface2);border-radius:6px;margin-bottom:4px;margin-left:12px;font-size:12px;color:var(--muted)">
-               └ <em>Costo de Productos — próximamente disponible</em>
-             </div>`
+          ? statRow('Costo de Productos', -R.costo_productos, pct(R.costo_productos, base), '#ff9100')
+          : `<div style="padding:8px 0;border-bottom:1px solid rgba(255,255,255,.06);font-size:12px;color:var(--muted);font-style:italic">Costo de productos — próximamente</div>`
         }
-        ${row('→ UTILIDAD FINAL', utilidad_final, pctN(utilidad_final, base), '#4a235a', true, false)}
-      `)}
-
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0 0">
+          <span style="font-size:13px;font-weight:700;color:var(--text)">Utilidad Final</span>
+          <span style="font-size:15px;font-weight:700;color:${utilidad_final>=0?'#FFD700':'#ff5252'}">${fmtM(utilidad_final)}</span>
+        </div>
+      </div>
     </div>`;
-
-  el.innerHTML = html;
 }
 
 function sortPubs(col) {
