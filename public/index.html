@@ -492,8 +492,8 @@ tbody td {
       <div class="nav-item" data-page="publicaciones" onclick="showPage('publicaciones',this)">
         <span class="nav-icon">📦</span> Publicaciones
       </div>
-      <div class="nav-item" data-page="ventas" onclick="showPage('ventas',this)">
-        <span class="nav-icon">💰</span> Ventas
+      <div class="nav-item" data-page="ventas" onclick="showPage('ventas',this);loadVentas()">
+        <span class="nav-icon">💳</span> Ventas
       </div>
       <div class="nav-item" data-page="rentabilidad" onclick="showPage('rentabilidad',this);loadRentabilidad()">
         <span class="nav-icon">📊</span> Rentabilidad
@@ -625,9 +625,11 @@ tbody td {
     <!-- VENTAS -->
     <div class="page" id="page-ventas">
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px;flex-wrap:wrap">
-        <h2 style="margin:0;font-family:var(--font-b);flex:1">Ventas</h2>
+        <h2 style="margin:0;font-family:var(--font-b);flex:1">💳 Ventas</h2>
+        <input type="text" id="ventasSearch" placeholder="Buscar por # orden o producto..." oninput="filterVentas()"
+          style="padding:7px 12px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:12px;width:240px">
       </div>
-      <div id="ventasContent"><div style="color:var(--muted);font-size:13px">Próximamente</div></div>
+      <div id="ventasContent"><div style="color:var(--muted);font-size:13px;padding:20px;text-align:center">Sincronizá primero para ver los datos</div></div>
     </div>
 
     <!-- RENTABILIDAD -->
@@ -2157,6 +2159,143 @@ function loadRentabilidad() {
         </table>
       </div>
     </div>`;
+}
+
+function loadVentas() {
+  const el = document.getElementById('ventasContent');
+  if (!el) return;
+  const connected = state.accounts.filter(a => a.data && a.data.orders_detail);
+  if (!connected.length) {
+    el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:20px;text-align:center">Sincronizá primero para ver los datos</div>';
+    return;
+  }
+
+  // Merge orders from all accounts, re-sort by date desc
+  const allOrders = [];
+  connected.forEach(acc => {
+    (acc.data.orders_detail || []).forEach(o => allOrders.push({ ...o, _account: acc.name }));
+  });
+  allOrders.sort((a,b) => new Date(b.date) - new Date(a.date));
+  window._ventasData = allOrders;
+  renderVentas(allOrders);
+}
+
+function filterVentas() {
+  const q = (document.getElementById('ventasSearch')?.value || '').toLowerCase();
+  if (!window._ventasData) return;
+  const filtered = !q ? window._ventasData : window._ventasData.filter(o =>
+    String(o.id).includes(q) ||
+    (o.productos||[]).some(p => (p.title||'').toLowerCase().includes(q) || (p.id||'').toLowerCase().includes(q))
+  );
+  renderVentas(filtered);
+}
+
+function renderVentas(orders) {
+  const el = document.getElementById('ventasContent');
+  if (!el) return;
+
+  const PAGE = 50;
+  if (!window._ventasPage) window._ventasPage = 0;
+  const page  = window._ventasPage;
+  const total = orders.length;
+  const slice = orders.slice(page * PAGE, (page+1) * PAGE);
+
+  const fmtM = n => {
+    const abs = Math.abs(n), sign = n < 0 ? '-' : '';
+    if (abs >= 1000000) return sign+'$'+(abs/1000000).toFixed(2)+'M';
+    if (abs >= 1000)    return sign+'$'+(abs/1000).toFixed(1)+'K';
+    return sign+'$'+Math.round(abs).toLocaleString('es-AR');
+  };
+  const fmtDate = d => {
+    const dt = new Date(d);
+    return dt.toLocaleDateString('es-AR',{day:'2-digit',month:'2-digit',year:'numeric'}) + ' ' +
+           dt.toLocaleTimeString('es-AR',{hour:'2-digit',minute:'2-digit'});
+  };
+  const pctColor = p => parseFloat(p) >= 60 ? '#00e676' : parseFloat(p) >= 40 ? '#FFD700' : '#ff5252';
+
+  // Summary KPIs
+  const totFact  = orders.reduce((s,o) => s+o.facturacion, 0);
+  const totNeto  = orders.reduce((s,o) => s+o.neto, 0);
+  const totCom   = orders.reduce((s,o) => s+o.comision, 0);
+  const totShip  = orders.reduce((s,o) => s+o.envio_vendedor, 0);
+  const totComp  = orders.reduce((s,o) => s+o.envio_comprador, 0);
+  const avgPct   = totFact > 0 ? (totNeto/totFact*100).toFixed(1) : '0';
+
+  const kpis = `
+    <div class="kpi-grid" style="grid-template-columns:repeat(6,1fr);margin-bottom:12px">
+      <div class="kpi-card"><div class="kpi-label">📋 ÓRDENES</div><div class="kpi-value">${total.toLocaleString('es-AR')}</div></div>
+      <div class="kpi-card"><div class="kpi-label">💵 FACTURACIÓN</div><div class="kpi-value">${fmtM(totFact)}</div></div>
+      <div class="kpi-card"><div class="kpi-label">📤 COMISIONES</div><div class="kpi-value" style="color:#ff5252">${fmtM(-totCom)}</div></div>
+      <div class="kpi-card"><div class="kpi-label">🚚 RES. ENVÍO</div><div class="kpi-value" style="color:${totComp-totShip>=0?'#00e676':'#ff5252'}">${fmtM(totComp-totShip)}</div></div>
+      <div class="kpi-card"><div class="kpi-label">🏦 NETO</div><div class="kpi-value" style="color:#00e676">${fmtM(totNeto)}</div></div>
+      <div class="kpi-card"><div class="kpi-label">📈 % NETO PROM.</div><div class="kpi-value" style="color:${pctColor(avgPct)}">${avgPct}%</div></div>
+    </div>`;
+
+  // Table
+  const thStyle = (col) => `style="text-align:${col==='Fecha'||col==='#Orden'||col==='Producto'?'left':'right'};padding:8px 10px;color:var(--muted);font-weight:600;white-space:nowrap;font-size:11px"`;
+
+  const rows = slice.map((o, i) => {
+    const resEnvio = o.envio_comprador - o.envio_vendedor;
+    const mainProduct = o.productos && o.productos[0];
+    const extraCount  = o.productos && o.productos.length > 1 ? ` <span style="color:var(--muted);font-size:10px">+${o.productos.length-1} más</span>` : '';
+    const bgStripe    = (page*PAGE+i) % 2 === 0 ? 'background:rgba(255,255,255,.02)' : '';
+
+    return `
+      <tr style="border-bottom:1px solid rgba(255,255,255,.05);${bgStripe}">
+        <td style="padding:8px 10px;white-space:nowrap;font-size:12px;color:var(--muted)">${fmtDate(o.date)}</td>
+        <td style="padding:8px 10px;font-size:12px">
+          <span style="font-family:monospace;color:var(--muted);font-size:11px">#${o.id}</span>
+        </td>
+        <td style="padding:8px 10px;max-width:260px;font-size:12px">
+          <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${(o.productos||[]).map(p=>p.title).join(', ')}">
+            ${mainProduct ? mainProduct.title : '—'}${extraCount}
+          </div>
+          ${mainProduct ? `<div style="font-size:10px;color:var(--muted);cursor:pointer" onclick="copyMLA(this,'${mainProduct.id}')">${mainProduct.id}</div>` : ''}
+        </td>
+        <td style="padding:8px 10px;text-align:right;font-size:12px;font-weight:700">${fmtM(o.facturacion)}</td>
+        <td style="padding:8px 10px;text-align:right;font-size:12px;color:#ff5252">${fmtM(-o.comision)}</td>
+        <td style="padding:8px 10px;text-align:right;font-size:12px;color:#ff5252">${o.impuestos > 0 ? fmtM(-o.impuestos) : '<span style="color:var(--muted)">—</span>'}</td>
+        <td style="padding:8px 10px;text-align:right;font-size:12px;color:${resEnvio>=0?'#00e676':'#ff5252'}" title="Cobrado al comprador: ${fmtM(o.envio_comprador)} / Pagado: ${fmtM(o.envio_vendedor)}">${fmtM(resEnvio)}</td>
+        <td style="padding:8px 10px;text-align:right;font-size:12px;color:${parseFloat(o.neto)>=0?'#00e676':'#ff5252'};font-weight:700">${fmtM(o.neto)}</td>
+        <td style="padding:8px 10px;text-align:right;font-size:12px;font-weight:700;color:${pctColor(o.pct_neto)}">${o.pct_neto}%</td>
+        <td style="padding:8px 10px;text-align:right;font-size:11px;color:var(--muted)">${o.mode||'—'}</td>
+      </tr>`;
+  }).join('');
+
+  // Pagination
+  const totalPages = Math.ceil(total / PAGE);
+  const pagination = totalPages > 1 ? `
+    <div style="display:flex;align-items:center;justify-content:center;gap:8px;margin-top:14px;font-size:12px">
+      <button onclick="ventasPage(${page-1})" ${page===0?'disabled':''} class="sync-btn" style="padding:5px 12px">← Ant</button>
+      <span style="color:var(--muted)">Página ${page+1} de ${totalPages} · ${total} órdenes</span>
+      <button onclick="ventasPage(${page+1})" ${page>=totalPages-1?'disabled':''} class="sync-btn" style="padding:5px 12px">Sig →</button>
+    </div>` : `<div style="font-size:11px;color:var(--muted);text-align:center;margin-top:8px">${total} órdenes</div>`;
+
+  el.innerHTML = kpis + `
+    <div class="kpi-card" style="padding:18px">
+      <div style="overflow-x:auto">
+        <table style="width:100%;border-collapse:collapse">
+          <thead>
+            <tr style="border-bottom:2px solid rgba(255,255,255,.1)">
+              ${['Fecha','# Orden','Producto','Facturación','Comisión','Impuestos','Res. Envío','Neto','% Neto','Modo envío'].map(h => `<th ${thStyle(h)}>${h}</th>`).join('')}
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+      ${pagination}
+    </div>`;
+}
+
+function ventasPage(p) {
+  window._ventasPage = p;
+  const q = (document.getElementById('ventasSearch')?.value || '').toLowerCase();
+  const filtered = !q ? window._ventasData : window._ventasData.filter(o =>
+    String(o.id).includes(q) ||
+    (o.productos||[]).some(pr => (pr.title||'').toLowerCase().includes(q) || (pr.id||'').toLowerCase().includes(q))
+  );
+  renderVentas(filtered);
+  document.getElementById('ventasContent').scrollIntoView({ behavior: 'smooth' });
 }
 
 function sortRent(col) {
