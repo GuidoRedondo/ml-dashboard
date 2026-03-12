@@ -450,6 +450,8 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
     const byHour     = new Array(24).fill(0);
     // Per item breakdown for top lists
     const byItem     = {};
+    // Per item breakdown per shipping mode (for filtering)
+    const byItemPerMode = {};
 
     curData.orders.forEach((order, orderIdx) => {
       const hour = new Date(order.date_created).getHours();
@@ -486,9 +488,12 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
         if (!id) return;
         if (!byItem[id]) byItem[id] = { id, title: title || id, revenue: 0, units: 0, net: 0, orders: 0 };
 
+        // Also track per mode
+        if (!byItemPerMode[mode])     byItemPerMode[mode] = {};
+        if (!byItemPerMode[mode][id]) byItemPerMode[mode][id] = { id, title: title || id, revenue: 0, units: 0, net: 0, orders: 0 };
+
         const itemRevenue = (parseFloat(oi.unit_price) || 0) * (oi.quantity || 0);
         const itemSaleFee = parseFloat(oi.sale_fee) || 0;
-        // Prorate taxes and seller shipping by this item's share of order revenue
         const itemFrac    = itemRevenue / orderItemsRevenue;
         const itemTax     = orderTax * itemFrac;
         const itemShip    = orderSellerShip * itemFrac;
@@ -504,6 +509,11 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
         byItem[id].units   += oi.quantity || 0;
         byItem[id].net     += itemNet;
         byItem[id].orders  += 1;
+
+        byItemPerMode[mode][id].revenue += itemRevenue;
+        byItemPerMode[mode][id].units   += oi.quantity || 0;
+        byItemPerMode[mode][id].net     += itemNet;
+        byItemPerMode[mode][id].orders  += 1;
       });
     });
 
@@ -516,13 +526,23 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
       console.log(`[ITEM_NET] "${i.title.slice(0,40)}" revenue=$${Math.round(i.revenue)} net=$${Math.round(i.net)} pct=${pct}% orders=${i.orders}`);
     });
 
-    const top15Revenue = [...itemsArr].sort((a,b) => b.revenue - a.revenue).slice(0,15)
-      .map(i => ({ ...i, pct_recibido: i.revenue > 0 ? ((i.net/i.revenue)*100).toFixed(1) : '0' }));
-    const top15Units   = [...itemsArr].sort((a,b) => b.units   - a.units  ).slice(0,15)
-      .map(i => ({ ...i, pct_recibido: i.revenue > 0 ? ((i.net/i.revenue)*100).toFixed(1) : '0' }));
-    const top15Pct     = [...itemsArr].filter(i => i.revenue > 0)
-      .sort((a,b) => (b.net/b.revenue) - (a.net/a.revenue)).slice(0,15)
-      .map(i => ({ ...i, pct_recibido: ((i.net/i.revenue)*100).toFixed(1) }));
+    function makeTop15(arr) {
+      return {
+        revenue: [...arr].sort((a,b) => b.revenue - a.revenue).slice(0,15)
+          .map(i => ({ ...i, pct_recibido: i.revenue > 0 ? ((i.net/i.revenue)*100).toFixed(1) : '0' })),
+        units: [...arr].sort((a,b) => b.units - a.units).slice(0,15)
+          .map(i => ({ ...i, pct_recibido: i.revenue > 0 ? ((i.net/i.revenue)*100).toFixed(1) : '0' })),
+      };
+    }
+
+    const top15Revenue = makeTop15(itemsArr).revenue;
+    const top15Units   = makeTop15(itemsArr).units;
+
+    // Per-mode top15
+    const top15ByMode = {};
+    Object.entries(byItemPerMode).forEach(([mode, itemsObj]) => {
+      top15ByMode[mode] = makeTop15(Object.values(itemsObj));
+    });
 
     // Ads spend comes from /api/ads — store raw amounts for frontend to combine
     // Net received = paid_amount - sale_fee - taxes - seller_shipping_cost
@@ -599,7 +619,7 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
         by_hour:     byHour,
         top15_revenue: top15Revenue,
         top15_units:   top15Units,
-        top15_pct:     top15Pct
+        top15_by_mode: top15ByMode
       }
     });
   } catch(e) { console.error('Dashboard error:', e); res.status(500).json({ error: e.message }); }
