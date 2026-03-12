@@ -562,26 +562,9 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
     let totalBuyerShip = 0;
     Object.values(shippingCostMap).forEach(s => { totalBuyerShip += s.buyerCost || 0; });
 
-    // Facturación = sum of item revenues (unit_price * qty)
+    // Facturación = sum of item revenues
     const totalFacturacion = Object.values(byItem).reduce((s, i) => s + i.revenue, 0);
 
-    const rentabilidad = {
-      // INGRESOS
-      facturacion:        totalFacturacion,
-      envios_cobrados:    totalBuyerShip,
-      total_ingresos:     totalFacturacion + totalBuyerShip,
-      // EGRESOS
-      comisiones:         totalSaleFee,
-      impuestos:          totalTaxes,
-      costo_envios:       totalSellerShip,
-      anulaciones:        totalCancelled,
-      cancelled_count:    cancelledCount,
-      total_egresos:      totalSaleFee + totalTaxes + totalSellerShip + totalCancelled,
-      // RESULTADO NETO ML
-      neto_ml:            (totalFacturacion + totalBuyerShip) - (totalSaleFee + totalTaxes + totalSellerShip + totalCancelled),
-      // Costo productos — not yet available
-      costo_productos:    0,
-    };
     const netBeforeAds = totalPaidAmount - totalSaleFee - totalTaxes - totalSellerShip;
     const totalAmountForPct = curData.amount > 0 ? curData.amount : 1;
 
@@ -607,6 +590,40 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
     const porcentajeRecibido = curData.amount > 0
       ? ((importeRecibido / curData.amount) * 100).toFixed(1)
       : '0.0';
+
+    // Build rentabilidad now that adsSpend is available
+    const totalEgresos = totalSaleFee + totalTaxes + totalSellerShip + totalCancelled + adsSpend;
+    const netoML = (totalFacturacion + totalBuyerShip) - totalEgresos;
+
+    // By-product breakdown for rentabilidad table
+    const byProduct = Object.values(byItem)
+      .sort((a, b) => b.revenue - a.revenue)
+      .map(i => ({
+        id:       i.id,
+        title:    i.title,
+        revenue:  i.revenue,
+        units:    i.units,
+        orders:   i.orders,
+        comision: i.revenue > 0 ? (i.revenue - i.net) : 0,
+        neto:     i.net,
+        pct_neto: i.revenue > 0 ? ((i.net / i.revenue) * 100).toFixed(1) : '0'
+      }));
+
+    const rentabilidad = {
+      facturacion:     totalFacturacion,
+      envios_cobrados: totalBuyerShip,
+      total_ingresos:  totalFacturacion + totalBuyerShip,
+      comisiones:      totalSaleFee,
+      impuestos:       totalTaxes,
+      costo_envios:    totalSellerShip,
+      anulaciones:     totalCancelled,
+      cancelled_count: cancelledCount,
+      inversion_ads:   adsSpend,
+      total_egresos:   totalEgresos,
+      neto_ml:         netoML,
+      costo_productos: 0,
+      by_product:      byProduct,
+    };
 
     // Units sold
     const totalUnits = curData.orders.reduce((s, o) =>
