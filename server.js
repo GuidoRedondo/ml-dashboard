@@ -548,9 +548,40 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
       top15ByMode[mode] = makeTop15(Object.values(itemsObj));
     });
 
-    // Ads spend comes from /api/ads — store raw amounts for frontend to combine
-    // Net received = paid_amount - sale_fee - taxes - seller_shipping_cost
-    // (ads are subtracted in frontend where we have that data, or we can fetch here)
+    // ── RENTABILIDAD ─────────────────────────────────────────────────────────
+    // Cancelled orders (for anulaciones y reembolsos)
+    let totalCancelled = 0, cancelledCount = 0;
+    try {
+      const cancelBase = `${ML_API}/orders/search?seller=${uid}&order.status=cancelled&sort=date_desc&limit=50&order.date_created.from=${encodeURIComponent(fmt(curFrom))}&order.date_created.to=${encodeURIComponent(fmt(now))}`;
+      const cancelData = await fetch(cancelBase, { headers }).then(r => r.json());
+      (cancelData.results || []).forEach(o => { totalCancelled += parseFloat(o.total_amount) || 0; });
+      cancelledCount = (cancelData.paging && cancelData.paging.total) || (cancelData.results || []).length;
+    } catch(e) {}
+
+    // Buyer shipping — what buyers paid for shipping (buyerCost from shipments)
+    let totalBuyerShip = 0;
+    Object.values(shippingCostMap).forEach(s => { totalBuyerShip += s.buyerCost || 0; });
+
+    // Facturación = sum of item revenues (unit_price * qty)
+    const totalFacturacion = Object.values(byItem).reduce((s, i) => s + i.revenue, 0);
+
+    const rentabilidad = {
+      // INGRESOS
+      facturacion:        totalFacturacion,
+      envios_cobrados:    totalBuyerShip,
+      total_ingresos:     totalFacturacion + totalBuyerShip,
+      // EGRESOS
+      comisiones:         totalSaleFee,
+      impuestos:          totalTaxes,
+      costo_envios:       totalSellerShip,
+      anulaciones:        totalCancelled,
+      cancelled_count:    cancelledCount,
+      total_egresos:      totalSaleFee + totalTaxes + totalSellerShip + totalCancelled,
+      // RESULTADO NETO ML
+      neto_ml:            (totalFacturacion + totalBuyerShip) - (totalSaleFee + totalTaxes + totalSellerShip + totalCancelled),
+      // Costo productos — not yet available
+      costo_productos:    0,
+    };
     const netBeforeAds = totalPaidAmount - totalSaleFee - totalTaxes - totalSellerShip;
     const totalAmountForPct = curData.amount > 0 ? curData.amount : 1;
 
@@ -626,7 +657,8 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
         top15_revenue:        top15Revenue,
         top15_units:          top15Units,
         top15_by_mode:        top15ByMode
-      }
+      },
+      rentabilidad
     });
   } catch(e) { console.error('Dashboard error:', e); res.status(500).json({ error: e.message }); }
 });
