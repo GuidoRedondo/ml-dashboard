@@ -2114,10 +2114,24 @@ function loadPerformance() {
     const perf = acc.data.performance;
     if (!perf) return;
     console.log('[PERF_FILTER] filter=', window._perfModeFilter, 'has_top15_by_mode=', !!perf.top15_by_mode, 'modes=', perf.top15_by_mode ? Object.keys(perf.top15_by_mode) : 'none');
-    Object.entries(perf.by_mode     || {}).forEach(([k,v]) => { byMode[k]     = (byMode[k]||0)     + v; });
-    Object.entries(perf.by_province || {}).forEach(([k,v]) => { byProvince[k] = (byProvince[k]||0) + v; });
-    (perf.by_hour || []).forEach((v,i) => { byHour[i] += v; });
     const f = window._perfModeFilter;
+
+    // Province — use filtered data if mode active
+    const provinceData = f && perf.by_province_per_mode && perf.by_province_per_mode[f]
+      ? perf.by_province_per_mode[f]
+      : (perf.by_province || {});
+    Object.entries(provinceData).forEach(([k,v]) => { byProvince[k] = (byProvince[k]||0) + v; });
+
+    // Hour — use filtered data if mode active
+    const hourData = f && perf.by_hour_per_mode && perf.by_hour_per_mode[f]
+      ? perf.by_hour_per_mode[f]
+      : (perf.by_hour || []);
+    hourData.forEach((v,i) => { byHour[i] += v; });
+
+    // by_mode always shows full picture (for the pie itself)
+    Object.entries(perf.by_mode || {}).forEach(([k,v]) => { byMode[k] = (byMode[k]||0) + v; });
+
+    // Top15
     const modeTop = f && perf.top15_by_mode && perf.top15_by_mode[f];
     console.log('[PERF_FILTER] modeTop=', !!modeTop, f ? 'using filtered' : 'using all');
     top15Rev.push(  ...(modeTop ? modeTop.revenue : (perf.top15_revenue || [])));
