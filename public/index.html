@@ -495,6 +495,9 @@ tbody td {
       <div class="nav-item" data-page="ventas" onclick="showPage('ventas',this)">
         <span class="nav-icon">💰</span> Ventas
       </div>
+      <div class="nav-item" data-page="rentabilidad" onclick="showPage('rentabilidad',this);loadRentabilidad()">
+        <span class="nav-icon">📊</span> Rentabilidad
+      </div>
       <div class="nav-item" data-page="ads" onclick="showPage('ads',this)">
         <span class="nav-icon">📣</span> Publicidad
       </div>
@@ -625,6 +628,14 @@ tbody td {
         <h2 style="margin:0;font-family:var(--font-b);flex:1">Ventas</h2>
       </div>
       <div id="ventasContent"><div style="color:var(--muted);font-size:13px">Próximamente</div></div>
+    </div>
+
+    <!-- RENTABILIDAD -->
+    <div class="page" id="page-rentabilidad">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px;flex-wrap:wrap">
+        <h2 style="margin:0;font-family:var(--font-b);flex:1">📊 Rentabilidad</h2>
+      </div>
+      <div id="rentabilidadContent"><div style="color:var(--muted);font-size:13px;padding:20px;text-align:center">Sincronizá primero para ver los datos</div></div>
     </div>
 
     <!-- ADS -->
@@ -1959,6 +1970,114 @@ function perfFilterMode(idx) {
     window._perfModeFilter = (window._perfModeFilter === label) ? null : label;
   }
   loadPerformance();
+}
+
+function loadRentabilidad() {
+  const el = document.getElementById('rentabilidadContent');
+  if (!el) return;
+  const connected = state.accounts.filter(a => a.data && a.data.rentabilidad);
+  if (!connected.length) {
+    el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:20px;text-align:center">Sincronizá primero para ver los datos</div>';
+    return;
+  }
+
+  // Aggregate across accounts
+  const R = {
+    facturacion: 0, envios_cobrados: 0, total_ingresos: 0,
+    comisiones: 0, impuestos: 0, costo_envios: 0, anulaciones: 0, cancelled_count: 0, total_egresos: 0,
+    neto_ml: 0, costo_productos: 0
+  };
+  connected.forEach(acc => {
+    const r = acc.data.rentabilidad;
+    Object.keys(R).forEach(k => { R[k] += r[k] || 0; });
+  });
+
+  const utilidad_final = R.neto_ml - R.costo_productos;
+  const dias = state.rangeDays || 30;
+
+  const fmtM = n => {
+    const abs = Math.abs(n);
+    const sign = n < 0 ? '-' : '';
+    if (abs >= 1000000) return sign + '$' + (abs/1000000).toFixed(2) + 'M';
+    if (abs >= 1000)    return sign + '$' + (abs/1000).toFixed(1) + 'K';
+    return sign + '$' + Math.round(abs).toLocaleString('es-AR');
+  };
+  const pct = (val, base) => base > 0 ? (val/base*100).toFixed(2)+'%' : '—';
+  const pctN = (val, base) => base > 0 ? (val/base*100).toFixed(2) : null;
+
+  // ── ROW builder ─────────────────────────────────────────────────────────
+  function row(label, value, pctVal, color, bold, indent) {
+    const isNeg = value < 0;
+    const pctColor = isNeg ? '#ff5252' : '#00e676';
+    return `
+      <div style="display:grid;grid-template-columns:1fr auto auto;align-items:center;padding:10px 14px;
+                  background:${color};border-radius:6px;margin-bottom:4px;
+                  ${bold ? 'font-weight:700;' : ''}${indent ? 'margin-left:12px;' : ''}">
+        <div style="font-size:13px;color:${bold ? 'var(--text)' : 'var(--text)'}">
+          ${indent ? '<span style="color:var(--muted);margin-right:6px">└</span>' : ''}${label}
+        </div>
+        <div style="font-size:${bold ? '16px' : '14px'};text-align:right;margin-right:20px;
+                    color:${isNeg ? '#ff5252' : bold ? 'var(--text)' : 'var(--text)'}">
+          ${fmtM(value)}
+        </div>
+        <div style="font-size:13px;font-weight:700;min-width:70px;text-align:right;color:${pctColor}">
+          ${pctVal !== null ? (value >= 0 ? '+' : '') + pctVal + '%' : ''}
+        </div>
+      </div>`;
+  }
+
+  function block(title, color, rows) {
+    return `
+      <div style="margin-bottom:16px">
+        <div style="background:${color};padding:10px 14px;border-radius:8px 8px 0 0;margin-bottom:4px">
+          <span style="font-size:13px;font-weight:700;color:#fff;letter-spacing:.5px">▶ ${title}</span>
+        </div>
+        ${rows}
+      </div>`;
+  }
+
+  const base = R.facturacion || 1;
+
+  const html = `
+    <div style="max-width:700px">
+
+      <!-- Período -->
+      <div style="font-size:12px;color:var(--muted);margin-bottom:16px">
+        Período: últimos ${dias} días · ${connected.map(a=>a.name).join(' + ')}
+      </div>
+
+      ${block('INGRESOS', '#1a5276', `
+        ${row('Facturación (ingresos por productos)', R.facturacion, pctN(R.facturacion, base), 'var(--surface2)', false, true)}
+        ${row('Ingresos por envíos cobrados al comprador', R.envios_cobrados, pctN(R.envios_cobrados, base), 'var(--surface2)', false, true)}
+        ${row('→ TOTAL INGRESOS', R.total_ingresos, pctN(R.total_ingresos, base), '#1a5276', true, false)}
+      `)}
+
+      ${block('EGRESOS', '#6e2c00', `
+        ${row('Comisiones ML (sale_fee)', -R.comisiones, pctN(-R.comisiones, base), 'var(--surface2)', false, true)}
+        ${row('Impuestos (IIBB / percepciones)', -R.impuestos, pctN(-R.impuestos, base), 'var(--surface2)', false, true)}
+        ${row('Costo de envíos (a cargo del vendedor)', -R.costo_envios, pctN(-R.costo_envios, base), 'var(--surface2)', false, true)}
+        ${row(`Anulaciones y reembolsos (${R.cancelled_count} órdenes)`, -R.anulaciones, pctN(-R.anulaciones, base), 'var(--surface2)', false, true)}
+        ${row('→ TOTAL EGRESOS', -R.total_egresos, pctN(-R.total_egresos, base), '#6e2c00', true, false)}
+      `)}
+
+      ${block('RESULTADO NETO ML  (Ingresos − Egresos)', '#1d4f1d', `
+        ${row('→ RESULTADO NETO ML', R.neto_ml, pctN(R.neto_ml, base), '#1d4f1d', true, false)}
+      `)}
+
+      ${block('RESULTADO FINAL CON COSTO DE PRODUCTOS', '#4a235a', `
+        ${row('Resultado Neto ML', R.neto_ml, pctN(R.neto_ml, base), 'var(--surface2)', false, true)}
+        ${R.costo_productos > 0
+          ? row('Costo de Productos', -R.costo_productos, pctN(-R.costo_productos, base), 'var(--surface2)', false, true)
+          : `<div style="padding:10px 14px;background:var(--surface2);border-radius:6px;margin-bottom:4px;margin-left:12px;font-size:12px;color:var(--muted)">
+               └ <em>Costo de Productos — próximamente disponible</em>
+             </div>`
+        }
+        ${row('→ UTILIDAD FINAL', utilidad_final, pctN(utilidad_final, base), '#4a235a', true, false)}
+      `)}
+
+    </div>`;
+
+  el.innerHTML = html;
 }
 
 function sortPubs(col) {
