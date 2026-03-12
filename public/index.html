@@ -1990,11 +1990,13 @@ function loadRentabilidad() {
     (r.by_product || []).forEach(p => {
       if (!allProducts[p.id]) allProducts[p.id] = { ...p };
       else {
-        allProducts[p.id].revenue  += p.revenue;
-        allProducts[p.id].units    += p.units;
-        allProducts[p.id].orders   += p.orders;
-        allProducts[p.id].comision += p.comision;
-        allProducts[p.id].neto     += p.neto;
+        allProducts[p.id].revenue         += p.revenue;
+        allProducts[p.id].units           += p.units;
+        allProducts[p.id].comision        += p.comision;
+        allProducts[p.id].envio_cobrado   += p.envio_cobrado || 0;
+        allProducts[p.id].envio_pagado    += p.envio_pagado  || 0;
+        allProducts[p.id].resultado_envio += p.resultado_envio || 0;
+        allProducts[p.id].neto            += p.neto;
       }
     });
   });
@@ -2108,29 +2110,36 @@ function loadRentabilidad() {
               <th style="text-align:left;padding:8px 10px;color:var(--muted);font-weight:600">Producto</th>
               <th style="text-align:right;padding:8px 10px;color:var(--muted);font-weight:600">Facturación</th>
               <th style="text-align:right;padding:8px 10px;color:var(--muted);font-weight:600">Unidades</th>
-              <th style="text-align:right;padding:8px 10px;color:var(--muted);font-weight:600">Órdenes</th>
               <th style="text-align:right;padding:8px 10px;color:var(--muted);font-weight:600">Comisiones</th>
+              <th style="text-align:right;padding:8px 10px;color:var(--muted);font-weight:600">Res. Envío</th>
+              <th style="text-align:right;padding:8px 10px;color:var(--muted);font-weight:600">Inv. Ads</th>
               <th style="text-align:right;padding:8px 10px;color:var(--muted);font-weight:600">Neto</th>
               <th style="text-align:right;padding:8px 10px;color:var(--muted);font-weight:600">% Neto</th>
               <th style="text-align:right;padding:8px 10px;color:var(--muted);font-weight:600">% Total</th>
             </tr>
           </thead>
           <tbody>
-            ${products.map((p, i) => `
+            ${products.map((p, i) => {
+              const resEnvio = p.resultado_envio || 0;
+              const resEnvioColor = resEnvio >= 0 ? '#00e676' : '#ff5252';
+              const adsItem = 0; // ads per item not yet available
+              return `
               <tr style="border-bottom:1px solid rgba(255,255,255,.05);${i%2===0?'background:rgba(255,255,255,.02)':''}">
                 <td style="padding:8px 10px;color:var(--muted)">${i+1}</td>
-                <td style="padding:8px 10px;max-width:240px">
+                <td style="padding:8px 10px;max-width:220px">
                   <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${p.title}">${p.title}</div>
                   <div style="font-size:10px;color:var(--muted);cursor:pointer" onclick="copyMLA(this,'${p.id}')">${p.id}</div>
                 </td>
                 <td style="padding:8px 10px;text-align:right;font-weight:700">${fmtM(p.revenue)}</td>
                 <td style="padding:8px 10px;text-align:right">${p.units}</td>
-                <td style="padding:8px 10px;text-align:right">${p.orders}</td>
                 <td style="padding:8px 10px;text-align:right;color:#ff5252">${fmtM(-p.comision)}</td>
+                <td style="padding:8px 10px;text-align:right;color:${resEnvioColor}" title="Cobrado: ${fmtM(p.envio_cobrado)} / Pagado: ${fmtM(p.envio_pagado)}">${fmtM(resEnvio)}</td>
+                <td style="padding:8px 10px;text-align:right;color:var(--muted)">—</td>
                 <td style="padding:8px 10px;text-align:right;color:${parseFloat(p.neto)>=0?'#00e676':'#ff5252'}">${fmtM(p.neto)}</td>
                 <td style="padding:8px 10px;text-align:right;font-weight:700;color:${pctColor(parseFloat(p.pct_neto))}">${p.pct_neto}%</td>
                 <td style="padding:8px 10px;text-align:right;color:var(--muted)">${pct(p.revenue, base)}</td>
-              </tr>`).join('')}
+              </tr>`;
+            }).join('')}
           </tbody>
         </table>
       </div>
