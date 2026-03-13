@@ -818,6 +818,17 @@ function getSession() {
 function getSessionUser() { return _sessionUser || getCookie('ml_session_user'); }
 function getSessionRole() { return _sessionRole || getCookie('ml_session_role'); }
 
+// Helper: get the currently selected client from allClients
+function getActiveClient() {
+  if (!allClients.length) return null;
+  if (activeClientId) {
+    const c = allClients.find(c => String(c.id) === String(activeClientId));
+    if (c) return c;
+  }
+  // Fallback: first active client with ml_user_id
+  return allClients.find(c => c.ml_user_id && (c.active === true || c.active === 't' || c.active === 1)) || null;
+}
+
 async function apiCall(method, path, body) {
   const sid = getSession() || '';
   let url = SERVER_URL + path;
@@ -3535,8 +3546,9 @@ async function loadFotos() {
   const el = document.getElementById('fotosContent');
   el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">⏳ Cargando publicaciones...</div>';
   try {
-    const client = activeClientId ? allClients.find(c => c.id === activeClientId) : allClients.find(c => c.ml_user_id && c.active);
-    if (!client || !client.ml_user_id) { el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">Sin cuenta conectada</div>'; return; }
+    const client = getActiveClient();
+    console.log('[FOTOS] client=', client, 'activeClientId=', activeClientId, 'allClients=', allClients.length);
+    if (!client || !client.ml_user_id) { el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">Sin cuenta conectada — seleccioná una cuenta en el topbar</div>'; return; }
     const { date_from, date_to } = getDateRange();
     const r = await apiCall('GET', `/api/items-full?uid=${client.ml_user_id}&client_id=${client.id}&date_from=${date_from}&date_to=${date_to}`);
     _fotosData = (r && r.items) || [];
@@ -3617,8 +3629,8 @@ async function loadLogistica() {
   const el = document.getElementById('logisticaContent');
   el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">⏳ Consultando configuración de envíos...</div>';
   try {
-    const client = activeClientId ? allClients.find(c => c.id === activeClientId) : allClients.find(c => c.ml_user_id && c.active);
-    if (!client || !client.ml_user_id) { el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">Sin cuenta conectada</div>'; return; }
+    const client = getActiveClient();
+    if (!client || !client.ml_user_id) { el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">Sin cuenta conectada — seleccioná una cuenta en el topbar</div>'; return; }
     const data = await apiCall('GET', `/api/logistica?uid=${client.ml_user_id}&client_id=${client.id}`);
     if (data) renderLogistica(data);
     else el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">Error al cargar datos</div>';
@@ -3718,8 +3730,8 @@ async function loadCompetencia() {
   const el = document.getElementById('competenciaContent');
   el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">⏳ Cargando categorías...</div>';
   try {
-    const client = activeClientId ? allClients.find(c => c.id === activeClientId) : allClients.find(c => c.ml_user_id && c.active);
-    if (!client || !client.ml_user_id) { el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">Sin cuenta conectada</div>'; return; }
+    const client = getActiveClient();
+    if (!client || !client.ml_user_id) { el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">Sin cuenta conectada — seleccioná una cuenta en el topbar</div>'; return; }
     const data = await apiCall('GET', `/api/competencia?uid=${client.ml_user_id}&client_id=${client.id}`);
     renderCompetenciaCategorias((data && data.categories) || [], client);
   } catch(e) {
