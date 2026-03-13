@@ -812,20 +812,22 @@ app.get('/api/items-full', requireAuth, async (req, res) => {
 
     const now = new Date();
     const fmt = d => d.toISOString().slice(0,19) + '.000-00:00';
-    let curFrom, toDate, fromDate;
+    let curFrom, curTo, fromDate, toDate, effectiveDays;
     if (req.query.date_from && req.query.date_to) {
-      curFrom  = new Date(req.query.date_from + 'T00:00:00');
-      toDate   = req.query.date_to;
-      fromDate = req.query.date_from;
+      curFrom      = new Date(req.query.date_from + 'T00:00:00');
+      curTo        = new Date(req.query.date_to   + 'T23:59:59');
+      fromDate     = req.query.date_from;
+      toDate       = req.query.date_to;
+      effectiveDays = Math.max(1, Math.round((curTo - curFrom) / (24*60*60*1000)));
     } else {
-      const days = parseInt(req.query.days) || 30;
-      curFrom  = new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
+      effectiveDays = parseInt(req.query.days) || 30;
+      curFrom  = new Date(now.getTime() - effectiveDays * 24 * 60 * 60 * 1000);
+      curTo    = now;
       fromDate = curFrom.toISOString().slice(0,10);
       toDate   = now.toISOString().slice(0,10);
     }
 
     // ── 1. Sales data ────────────────────────────────────────────────────────
-    const curTo = req.query.date_to ? new Date(req.query.date_to + 'T23:59:59') : now;
     const { orders } = await fetchAllOrders(uid, headers, fmt(curFrom), fmt(curTo));
     const salesByItem = {};
     orders.forEach(order => {
@@ -1002,8 +1004,8 @@ app.get('/api/items-full', requireAuth, async (req, res) => {
       withProblems: items.filter(i => i.hasProblems).length,
     };
 
-    res.json({ items, total_revenue: totalRevenue, days, summary });
-  } catch(e) { res.status(500).json({ error: e.message }); }
+    res.json({ items, total_revenue: totalRevenue, days: effectiveDays, summary });
+  } catch(e) { console.error('[ITEMS-FULL ERROR]', e.message, e.stack); res.status(500).json({ error: e.message }); }
 });
 
 // Server-side login form - bypasses all client-side cookie issues
