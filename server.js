@@ -738,9 +738,15 @@ app.get('/api/ads', requireAuth, async (req, res) => {
     const advId = adv.advertiser_id;
 
     const now = new Date();
-    const from = new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
-    const fromDate = from.toISOString().slice(0,10);
-    const toDate = now.toISOString().slice(0,10);
+    let fromDate, toDate;
+    if (req.query.date_from && req.query.date_to) {
+      fromDate = req.query.date_from;
+      toDate   = req.query.date_to;
+    } else {
+      const from = new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
+      fromDate = from.toISOString().slice(0,10);
+      toDate   = now.toISOString().slice(0,10);
+    }
     const metrics = 'clicks,prints,cost,cpc,acos,direct_amount,indirect_amount,total_amount,direct_units_quantity,units_quantity,cvr,roas';
 
     const url = `${ML_API}/advertising/${siteId}/advertisers/${advId}/product_ads/campaigns/search?limit=50&offset=0&date_from=${fromDate}&date_to=${toDate}&metrics=${metrics}&metrics_summary=true`;
