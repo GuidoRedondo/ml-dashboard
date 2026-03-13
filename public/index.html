@@ -267,6 +267,7 @@ body {
     }
     .vf-btn:hover { border-color: #C5CAE0; color: var(--text); }
     .vf-active { background: var(--accent) !important; color: #fff !important; border-color: var(--accent) !important; }
+    input[type="date"] { color-scheme: dark; }
 
 .range-btn {
   background: transparent;
@@ -556,14 +557,20 @@ tbody td {
         <div id="accountTabs" style="display:flex;gap:8px;flex-wrap:wrap;flex:1">
           <button class="acc-tab active" onclick="filterAccount(null,this)">● Todas las cuentas</button>
         </div>
-        <div style="display:flex;gap:6px;align-items:center">
+        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
           <span style="font-size:12px;color:var(--muted)">Período:</span>
-          <button class="range-btn active" data-days="7" onclick="setRange(this,7)">7 días</button>
-          <button class="range-btn" data-days="30" onclick="setRange(this,30)">30 días</button>
-          <button class="range-btn" data-days="60" onclick="setRange(this,60)">60 días</button>
-          <button class="range-btn" data-days="90" onclick="setRange(this,90)">90 días</button>
+          <input type="date" id="globalDateFrom" onchange="applyGlobalRange()"
+            style="padding:5px 8px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:12px">
+          <span style="font-size:12px;color:var(--muted)">→</span>
+          <input type="date" id="globalDateTo" onchange="applyGlobalRange()"
+            style="padding:5px 8px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:12px">
+          <div style="display:flex;gap:4px">
+            <button class="range-btn active" id="qr-7"  onclick="setQuickRange(7)"  >7d</button>
+            <button class="range-btn"        id="qr-30" onclick="setQuickRange(30)" >30d</button>
+            <button class="range-btn"        id="qr-60" onclick="setQuickRange(60)" >60d</button>
+            <button class="range-btn"        id="qr-90" onclick="setQuickRange(90)" >90d</button>
+          </div>
         </div>
-        <span style="font-size:12px;color:var(--muted)" id="rangeLabel">Últimos 30 días</span>
       </div>
 
       <!-- FILA 1: Facturación, Ventas, Ticket promedio -->
@@ -607,10 +614,6 @@ tbody td {
     <div class="page" id="page-performance">
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px;flex-wrap:wrap">
         <h2 style="margin:0;font-family:var(--font-b);flex:1">Performance por publicación</h2>
-        <button class="range-btn active" onclick="setPerfRange(this,7)">7 días</button>
-        <button class="range-btn" onclick="setPerfRange(this,30)">30 días</button>
-        <button class="range-btn" onclick="setPerfRange(this,60)">60 días</button>
-        <button class="range-btn" onclick="setPerfRange(this,90)">90 días</button>
         <button class="sync-btn" onclick="exportPerformanceExcel()">📥 Excel</button>
       </div>
       <div id="performanceContent"></div>
@@ -620,10 +623,6 @@ tbody td {
     <div class="page" id="page-publicaciones">
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px;flex-wrap:wrap">
         <h2 style="margin:0;font-family:var(--font-b);flex:1">Publicaciones</h2>
-        <button class="range-btn active" onclick="setPubsRange(this,7)">7 días</button>
-        <button class="range-btn" onclick="setPubsRange(this,30)">30 días</button>
-        <button class="range-btn" onclick="setPubsRange(this,60)">60 días</button>
-        <button class="range-btn" onclick="setPubsRange(this,90)">90 días</button>
         <button class="sync-btn" onclick="exportPubsExcel()">📥 Excel</button>
       </div>
       <div id="publicacionesContent"></div>
@@ -637,11 +636,11 @@ tbody td {
           style="padding:7px 12px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:12px;width:220px">
       </div>
       <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap">
-        <button id="vf-all"    onclick="setVentasMode('all')"    class="vf-btn vf-active">Todos</button>
-        <button id="vf-FULL"   onclick="setVentasMode('FULL')"   class="vf-btn">📦 FULL</button>
-        <button id="vf-flex"   onclick="setVentasMode('flex')"   class="vf-btn">⚡ Flex</button>
-        <button id="vf-correo" onclick="setVentasMode('correo')" class="vf-btn">📮 Correo / Colecta</button>
-        <button id="vf-other"  onclick="setVentasMode('other')"  class="vf-btn">📍 Otros</button>
+        <button id="vf-all"      onclick="setVentasMode('all')"      class="vf-btn vf-active">Todos</button>
+        <button id="vf-FULL"     onclick="setVentasMode('FULL')"     class="vf-btn">📦 FULL</button>
+        <button id="vf-flex"     onclick="setVentasMode('flex')"     class="vf-btn">⚡ Flex</button>
+        <button id="vf-correo"   onclick="setVentasMode('correo')"   class="vf-btn">📮 Correo / Colecta</button>
+        <button id="vf-coordinar" onclick="setVentasMode('coordinar')" class="vf-btn">🤝 A coordinar</button>
       </div>
       <div id="ventasContent"><div style="color:var(--muted);font-size:13px;padding:20px;text-align:center">Sincronizá primero para ver los datos</div></div>
     </div>
@@ -658,10 +657,6 @@ tbody td {
     <div class="page" id="page-ads">
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px;flex-wrap:wrap">
         <h2 style="margin:0;font-family:var(--font-b);flex:1">Publicidad</h2>
-        <button class="range-btn active" onclick="setAdsRange(this,7)">7 días</button>
-        <button class="range-btn" onclick="setAdsRange(this,30)">30 días</button>
-        <button class="range-btn" onclick="setAdsRange(this,60)">60 días</button>
-        <button class="range-btn" onclick="setAdsRange(this,90)">90 días</button>
       </div>
       <div id="adsContent"></div>
     </div>
@@ -894,11 +889,11 @@ async function loadDashboardData() {
   }
 
   showToast('⏳ Sincronizando...');
-  const days = state.rangeDays || 30;
+  const { date_from, date_to } = getDateRange();
 
   await Promise.all(clientsToLoad.map(async client => {
     try {
-      const data = await apiCall('GET', `/api/dashboard?client_id=${client.id}&days=${days}`);
+      const data = await apiCall('GET', `/api/dashboard?client_id=${client.id}&date_from=${date_from}&date_to=${date_to}`);
       if (data) {
         const acc = { id: client.id, name: client.name, color: clientColor(client.id), data, accessToken: null, clientId: client.id };
         const existing = state.accounts.findIndex(a => a.id === client.id);
@@ -1354,7 +1349,19 @@ async function loadAllData() {
 
   await Promise.all(connected.map(async acc => {
     try {
-      const res = await fetch(serverUrl + '/api/dashboard?token=' + encodeURIComponent(acc.accessToken) + '&days=' + (state.rangeDays || 30));
+      const fromEl = document.getElementById('globalDateFrom');
+      const toEl   = document.getElementById('globalDateTo');
+      const from   = fromEl?.value;
+      const to     = toEl?.value;
+      let apiUrl;
+      if (from && to && !state.rangeDays) {
+        apiUrl = serverUrl + '/api/dashboard?token=' + encodeURIComponent(acc.accessToken)
+               + '&date_from=' + from + '&date_to=' + to;
+      } else {
+        apiUrl = serverUrl + '/api/dashboard?token=' + encodeURIComponent(acc.accessToken)
+               + '&days=' + (state.rangeDays || 30);
+      }
+      const res = await fetch(apiUrl);
       const data = await res.json();
 
       if (data.error) {
@@ -1710,12 +1717,8 @@ function buildEvolutionChart() {
   } catch(e) { console.error('Chart render error:', e); }
 }
 
-function setPubsRange(el, days) {
-  document.querySelectorAll('#page-publicaciones .range-btn').forEach(b => b.classList.remove('active'));
-  if (el) el.classList.add('active');
-  state.pubsDays = parseInt(days);
-  loadPublicaciones();
-}
+function setPubsRange(el, days) { setQuickRange(days); }
+
 
 function filterPubs(q) {
   if (!window._pubsData) return;
@@ -2197,8 +2200,7 @@ function loadVentas() {
 function setVentasMode(mode) {
   window._ventasMode = mode;
   window._ventasPage = 0;
-  // Toggle active class
-  ['all','FULL','flex','correo','other'].forEach(m => {
+  ['all','FULL','flex','correo','coordinar'].forEach(m => {
     const btn = document.getElementById('vf-'+m);
     if (btn) btn.classList.toggle('vf-active', m === mode);
   });
@@ -2213,10 +2215,10 @@ function filterVentas() {
   const modeMatch = (o) => {
     if (mode === 'all') return true;
     const m = (o.mode || '').toLowerCase();
-    if (mode === 'FULL')   return m.includes('full');
-    if (mode === 'flex')   return m.includes('flex');
-    if (mode === 'correo') return m.includes('correo') || m.includes('colecta') || m.includes('collect') || m.includes('xd');
-    if (mode === 'other')  return !m.includes('full') && !m.includes('flex') && !m.includes('correo') && !m.includes('colecta') && !m.includes('collect') && !m.includes('xd');
+    if (mode === 'FULL')      return m.includes('full');
+    if (mode === 'flex')      return m.includes('flex');
+    if (mode === 'correo')    return m.includes('correo') || m.includes('colecta') || m.includes('collect') || m.includes('xd');
+    if (mode === 'coordinar') return m.includes('coordinar') || m.includes('sin envío') || m.includes('sin datos') || m.includes('retiro') || m.includes('pickup');
     return true;
   };
 
@@ -2404,15 +2406,55 @@ function showToast(msg) {
 }
 
 // ─── INIT ─────────────────────────────────────────────────────────────────────
-function setRange(el, days) {
-  document.querySelectorAll('.range-btn').forEach(b => b.classList.remove('active'));
-  if (el) el.classList.add('active');
-  state.rangeDays = parseInt(days);
+// ─── GLOBAL DATE RANGE ────────────────────────────────────────────────────────
+function getDateRange() {
+  const from = document.getElementById('globalDateFrom')?.value;
+  const to   = document.getElementById('globalDateTo')?.value;
+  if (from && to) return { date_from: from, date_to: to };
+  // fallback to days
+  const days = state.rangeDays || 30;
+  const now  = new Date();
+  const from2 = new Date(now.getTime() - days * 24*60*60*1000);
+  return {
+    date_from: from2.toISOString().slice(0,10),
+    date_to:   now.toISOString().slice(0,10)
+  };
+}
+
+function setQuickRange(days) {
+  const now  = new Date();
+  const from = new Date(now.getTime() - days * 24*60*60*1000);
+  const toStr   = now.toISOString().slice(0,10);
+  const fromStr = from.toISOString().slice(0,10);
+  const fromEl = document.getElementById('globalDateFrom');
+  const toEl   = document.getElementById('globalDateTo');
+  if (fromEl) fromEl.value = fromStr;
+  if (toEl)   toEl.value   = toStr;
+  // update quick range button active state
+  ['7','30','60','90'].forEach(d => {
+    const btn = document.getElementById('qr-'+d);
+    if (btn) btn.classList.toggle('active', parseInt(d) === days);
+  });
+  state.rangeDays = days;
   localStorage.setItem('ml_rangeDays', days);
-  const lbl = document.getElementById('rangeLabel');
-  if (lbl) lbl.textContent = 'Últimos ' + days + ' días';
   loadAllData();
 }
+
+function applyGlobalRange() {
+  const from = document.getElementById('globalDateFrom')?.value;
+  const to   = document.getElementById('globalDateTo')?.value;
+  if (!from || !to) return;
+  if (from > to) { showToast('⚠️ La fecha de inicio debe ser anterior a la de fin'); return; }
+  // Deactivate quick range buttons
+  ['7','30','60','90'].forEach(d => {
+    const btn = document.getElementById('qr-'+d);
+    if (btn) btn.classList.remove('active');
+  });
+  state.rangeDays = null;
+  loadAllData();
+}
+
+function setRange(el, days) { setQuickRange(days); } // backwards compat
 
 function saveAccounts() {
   try { localStorage.setItem('ml_accounts', JSON.stringify(state.accounts)); } catch(e) {}
@@ -2440,17 +2482,8 @@ function loadSavedData() {
 }
 // Start on setup if no accounts
 
-function setPerfRange(el, days) {
-  document.querySelectorAll('#page-performance .range-btn').forEach(b => b.classList.remove('active'));
-  if (el) el.classList.add('active');
-  state.rangeDays = parseInt(days);
-  localStorage.setItem('ml_rangeDays', days);
-  // Update main range buttons too
-  document.querySelectorAll('#page-dashboard .range-btn').forEach(b => {
-    b.classList.toggle('active', b.textContent.trim() === days + ' días');
-  });
-  loadAllData().then(() => loadPerformance());
-}
+function setPerfRange(el, days) { setQuickRange(days); }
+
 
 function loadPerformance() {
   if (window._perfModeFilter === undefined) window._perfModeFilter = null;
@@ -2759,19 +2792,25 @@ function exportPerformanceExcel() {
 }
 
 function initApp() {
-  // Load range preference
+  // Initialize date pickers with default range (30 days)
   const savedRange = localStorage.getItem('ml_rangeDays');
-  if (savedRange) state.rangeDays = parseInt(savedRange);
-  const lbl = document.getElementById('rangeLabel');
-  if (lbl) lbl.textContent = 'Últimos ' + (state.rangeDays||30) + ' días';
-  document.querySelectorAll('#page-dashboard .range-btn').forEach(b => {
-    b.classList.toggle('active', b.dataset.days == (state.rangeDays||30));
-  });
-  // Load clients from server - don't auto-load data, wait for account selection
-  loadClients();
-  // Show dashboard by default
-  showPage('dashboard', document.querySelector('.nav-item[data-page="dashboard"]'));
+  const days = savedRange ? parseInt(savedRange) : 30;
+  state.rangeDays = days;
 
+  const now  = new Date();
+  const from = new Date(now.getTime() - days * 24*60*60*1000);
+  const fromEl = document.getElementById('globalDateFrom');
+  const toEl   = document.getElementById('globalDateTo');
+  if (fromEl) fromEl.value = from.toISOString().slice(0,10);
+  if (toEl)   toEl.value   = now.toISOString().slice(0,10);
+
+  // Mark active quick range button
+  const btn = document.getElementById('qr-'+days);
+  if (btn) btn.classList.add('active');
+
+  // Load clients from server
+  loadClients();
+  showPage('dashboard', document.querySelector('.nav-item[data-page="dashboard"]'));
 }
 
 async function exchangeCodeAuto(code) {
@@ -2827,12 +2866,8 @@ setInterval(() => {
   if (state.accounts.filter(a => a.accessToken).length) loadAllData();
 }, 30 * 60 * 1000);
 
-function setAdsRange(el, days) {
-  document.querySelectorAll('#page-ads .range-btn').forEach(b => b.classList.remove('active'));
-  if (el) el.classList.add('active');
-  state.adsDays = parseInt(days);
-  loadAds();
-}
+function setAdsRange(el, days) { setQuickRange(days); }
+
 
 async function loadAds() {
   const el = document.getElementById('adsContent');
