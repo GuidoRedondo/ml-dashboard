@@ -270,9 +270,9 @@ body {
     input[type="date"] { color-scheme: dark; }
 
 .range-btn {
-  background: transparent;
-  border: 1px solid var(--border);
-  color: var(--muted);
+  background: rgba(255,255,255,0.08);
+  border: 1px solid rgba(255,255,255,0.18);
+  color: var(--text);
   border-radius: 7px;
   padding: 5px 12px;
   font-family: var(--font);
@@ -281,12 +281,21 @@ body {
   cursor: pointer;
   transition: all 0.15s;
 }
-.range-btn:hover { border-color: var(--text); color: var(--text); }
+.range-btn:hover { background: rgba(255,255,255,0.15); border-color: rgba(255,255,255,0.35); }
 .range-btn.active {
   background: var(--text);
   border-color: var(--text);
-  color: #fff;
+  color: #111;
   font-weight: 600;
+}
+input[type="date"]::-webkit-calendar-picker-indicator {
+  filter: invert(0.6);
+  cursor: pointer;
+  border-radius: 4px;
+}
+input[type="date"]:focus {
+  outline: none;
+  border-color: var(--accent) !important;
 }
 
 .acc-tab {
@@ -539,17 +548,17 @@ tbody td {
         <div class="page-subtitle" id="pageSubtitle">Resumen consolidado · <span id="currentDate"></span></div>
       </div>
       <!-- DATE RANGE PICKER — global, visible en todas las secciones -->
-      <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap" id="globalRangePicker">
+      <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;background:var(--surface2);border:1px solid var(--border);border-radius:12px;padding:6px 12px" id="globalRangePicker">
         <input type="date" id="globalDateFrom" onchange="applyGlobalRange()"
-          style="padding:5px 8px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:11px">
-        <span style="font-size:11px;color:var(--muted)">→</span>
+          style="padding:4px 8px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:12px;font-family:var(--font);cursor:pointer">
+        <span style="font-size:12px;color:var(--muted);font-family:var(--font)">→</span>
         <input type="date" id="globalDateTo" onchange="applyGlobalRange()"
-          style="padding:5px 8px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:11px">
-        <div style="display:flex;gap:3px">
-          <button class="range-btn active" id="qr-7"  onclick="setQuickRange(7)"  style="padding:4px 8px;font-size:11px">7d</button>
-          <button class="range-btn"        id="qr-30" onclick="setQuickRange(30)" style="padding:4px 8px;font-size:11px">30d</button>
-          <button class="range-btn"        id="qr-60" onclick="setQuickRange(60)" style="padding:4px 8px;font-size:11px">60d</button>
-          <button class="range-btn"        id="qr-90" onclick="setQuickRange(90)" style="padding:4px 8px;font-size:11px">90d</button>
+          style="padding:4px 8px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:12px;font-family:var(--font);cursor:pointer">
+        <div style="display:flex;gap:3px;margin-left:4px">
+          <button class="range-btn active" id="qr-7"  onclick="setQuickRange(7)"  style="padding:3px 9px;font-size:11px">7d</button>
+          <button class="range-btn"        id="qr-30" onclick="setQuickRange(30)" style="padding:3px 9px;font-size:11px">30d</button>
+          <button class="range-btn"        id="qr-60" onclick="setQuickRange(60)" style="padding:3px 9px;font-size:11px">60d</button>
+          <button class="range-btn"        id="qr-90" onclick="setQuickRange(90)" style="padding:3px 9px;font-size:11px">90d</button>
         </div>
       </div>
       <div class="header-user" style="display:flex;align-items:center;gap:10px">
@@ -2881,7 +2890,19 @@ async function loadAds() {
     el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:20px;text-align:center">Sincronizá primero para ver datos</div>';
     return;
   }
-  const days = state.adsDays || 30;
+
+  // Use global date range
+  const fromEl = document.getElementById('globalDateFrom');
+  const toEl   = document.getElementById('globalDateTo');
+  const from   = fromEl?.value;
+  const to     = toEl?.value;
+  let dateParam;
+  if (from && to && !state.rangeDays) {
+    dateParam = '&date_from=' + from + '&date_to=' + to;
+  } else {
+    dateParam = '&days=' + (state.rangeDays || 30);
+  }
+
   el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:20px;text-align:center">⏳ Cargando datos de Ads...</div>';
 
   function fmt(n) {
@@ -2894,7 +2915,7 @@ async function loadAds() {
 
   await Promise.all(connected.map(async acc => {
     try {
-      const res = await fetch(SERVER_URL + '/api/ads?client_id=' + acc.id + '&days=' + days + '&session_id=' + (getSession()||''));
+      const res = await fetch(SERVER_URL + '/api/ads?client_id=' + acc.id + dateParam + '&session_id=' + (getSession()||''));
       const data = await res.json();
       if (data.summary) {
         totalSpend  += data.summary.spend || 0;
@@ -2974,10 +2995,10 @@ async function loadAds() {
     + '</tr></thead><tbody>' + rows + '</tbody></table></div>';
 
   // Load ads vs organic analysis
-  loadAdsAnalysis(days);
+  loadAdsAnalysis(dateParam);
 }
 
-async function loadAdsAnalysis(days) {
+async function loadAdsAnalysis(dateParam) {
   const el = document.getElementById('adsAnalysis');
   if (!el) return;
   const connected = state.accounts.filter(a => a.data && a.data.top_items);
