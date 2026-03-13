@@ -974,7 +974,7 @@ async function loadDashboardData() {
     try {
       const data = await apiCall('GET', `/api/dashboard?client_id=${client.id}&date_from=${date_from}&date_to=${date_to}`);
       if (data) {
-        const acc = { id: client.id, name: client.name, color: clientColor(client.id), data, accessToken: null, clientId: client.id };
+        const acc = { id: client.id, name: client.name, color: clientColor(client.id), data, accessToken: null, clientId: client.id, userId: client.ml_user_id };
         const existing = state.accounts.findIndex(a => a.id === client.id);
         if (existing >= 0) state.accounts[existing] = acc;
         else state.accounts.push(acc);
@@ -3535,12 +3535,11 @@ async function loadFotos() {
   const el = document.getElementById('fotosContent');
   el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">⏳ Cargando publicaciones...</div>';
   try {
-    const acc = state.accounts[0];
-    if (!acc) { el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">Sin cuenta conectada</div>'; return; }
-    const { from, to } = getDateRange();
-    const r = await fetch(`${SERVER_URL}/api/items-full?uid=${acc.userId}&client_id=${acc.id}&date_from=${from}&date_to=${to}&session_id=${getSession()||''}`);
-    const data = await r.json();
-    _fotosData = data.items || [];
+    const client = activeClientId ? allClients.find(c => c.id === activeClientId) : allClients.find(c => c.ml_user_id && c.active);
+    if (!client || !client.ml_user_id) { el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">Sin cuenta conectada</div>'; return; }
+    const { date_from, date_to } = getDateRange();
+    const r = await apiCall('GET', `/api/items-full?uid=${client.ml_user_id}&client_id=${client.id}&date_from=${date_from}&date_to=${date_to}`);
+    _fotosData = (r && r.items) || [];
     renderFotosTabla();
   } catch(e) {
     el.innerHTML = `<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Error: ${e.message}</div>`;
@@ -3618,11 +3617,11 @@ async function loadLogistica() {
   const el = document.getElementById('logisticaContent');
   el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">⏳ Consultando configuración de envíos...</div>';
   try {
-    const acc = state.accounts[0];
-    if (!acc) { el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">Sin cuenta conectada</div>'; return; }
-    const r = await fetch(`${SERVER_URL}/api/logistica?uid=${acc.userId}&client_id=${acc.id}&session_id=${getSession()||''}`);
-    const data = await r.json();
-    renderLogistica(data);
+    const client = activeClientId ? allClients.find(c => c.id === activeClientId) : allClients.find(c => c.ml_user_id && c.active);
+    if (!client || !client.ml_user_id) { el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">Sin cuenta conectada</div>'; return; }
+    const data = await apiCall('GET', `/api/logistica?uid=${client.ml_user_id}&client_id=${client.id}`);
+    if (data) renderLogistica(data);
+    else el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">Error al cargar datos</div>';
   } catch(e) {
     el.innerHTML = `<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Error: ${e.message}</div>`;
   }
@@ -3719,22 +3718,23 @@ async function loadCompetencia() {
   const el = document.getElementById('competenciaContent');
   el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">⏳ Cargando categorías...</div>';
   try {
-    const acc = state.accounts[0];
-    if (!acc) { el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">Sin cuenta conectada</div>'; return; }
-    const r = await fetch(`${SERVER_URL}/api/competencia?uid=${acc.userId}&client_id=${acc.id}&session_id=${getSession()||''}`);
-    const data = await r.json();
-    renderCompetenciaCategorias(data.categories || [], acc);
+    const client = activeClientId ? allClients.find(c => c.id === activeClientId) : allClients.find(c => c.ml_user_id && c.active);
+    if (!client || !client.ml_user_id) { el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">Sin cuenta conectada</div>'; return; }
+    const data = await apiCall('GET', `/api/competencia?uid=${client.ml_user_id}&client_id=${client.id}`);
+    renderCompetenciaCategorias((data && data.categories) || [], client);
   } catch(e) {
     el.innerHTML = `<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Error: ${e.message}</div>`;
   }
 }
 
-function renderCompetenciaCategorias(cats, acc) {
+function renderCompetenciaCategorias(cats, client) {
   const el = document.getElementById('competenciaContent');
   if (!cats.length) { el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">No se encontraron categorías</div>'; return; }
 
+  const uid = client.ml_user_id || client.userId;
+  const cid = client.id;
   const cards = cats.map(c => `
-    <div onclick="loadCompetenciaDetalle('${c.id}','${c.name.replace(/'/g,"\\'")}',${acc.userId},${acc.id})"
+    <div onclick="loadCompetenciaDetalle('${c.id}','${c.name.replace(/'/g,"\\'")}',${uid},${cid})"
          style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px 16px;cursor:pointer;transition:border-color 0.15s"
          onmouseover="this.style.borderColor='var(--accent)'" onmouseout="this.style.borderColor='var(--border)'">
       <div style="font-size:13px;font-weight:600;margin-bottom:4px">${c.name}</div>
@@ -3750,9 +3750,9 @@ async function loadCompetenciaDetalle(catId, catName, uid, clientId) {
   const el = document.getElementById('competenciaContent');
   el.innerHTML = `<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">⏳ Analizando categoría <strong>${catName}</strong>...</div>`;
   try {
-    const r = await fetch(`${SERVER_URL}/api/competencia?uid=${uid}&client_id=${clientId}&category_id=${catId}&session_id=${getSession()||''}`);
-    const data = await r.json();
-    renderCompetenciaDetalle(data, uid);
+    const data = await apiCall('GET', `/api/competencia?uid=${uid}&client_id=${clientId}&category_id=${catId}`);
+    if (data) renderCompetenciaDetalle(data, uid);
+    else el.innerHTML = '<div style="color:var(--muted);padding:40px">Error al cargar categoría</div>';
   } catch(e) {
     el.innerHTML = `<div style="color:var(--muted);font-size:13px;padding:40px">Error: ${e.message}</div>`;
   }
