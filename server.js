@@ -801,7 +801,6 @@ app.get('/api/ads-items', requireAuth, async (req, res) => {
 app.get('/api/items-full', requireAuth, async (req, res) => {
   try {
     const clientId = parseInt(req.query.client_id);
-    const days = parseInt(req.query.days) || 30;
     const token = await getClientToken(clientId);
     if (!token) return res.status(403).json({ error: 'Cliente no conectado' });
 
@@ -812,13 +811,22 @@ app.get('/api/items-full', requireAuth, async (req, res) => {
     const uid = user.id; const siteId = user.site_id || 'MLA';
 
     const now = new Date();
-    const curFrom = new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
     const fmt = d => d.toISOString().slice(0,19) + '.000-00:00';
-    const fromDate = curFrom.toISOString().slice(0,10);
-    const toDate = now.toISOString().slice(0,10);
+    let curFrom, toDate, fromDate;
+    if (req.query.date_from && req.query.date_to) {
+      curFrom  = new Date(req.query.date_from + 'T00:00:00');
+      toDate   = req.query.date_to;
+      fromDate = req.query.date_from;
+    } else {
+      const days = parseInt(req.query.days) || 30;
+      curFrom  = new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
+      fromDate = curFrom.toISOString().slice(0,10);
+      toDate   = now.toISOString().slice(0,10);
+    }
 
-    // ── 1. Sales data (last N days) ──────────────────────────────────────────
-    const { orders } = await fetchAllOrders(uid, headers, fmt(curFrom), fmt(now));
+    // ── 1. Sales data ────────────────────────────────────────────────────────
+    const curTo = req.query.date_to ? new Date(req.query.date_to + 'T23:59:59') : now;
+    const { orders } = await fetchAllOrders(uid, headers, fmt(curFrom), fmt(curTo));
     const salesByItem = {};
     orders.forEach(order => {
       (order.order_items || []).forEach(oi => {
