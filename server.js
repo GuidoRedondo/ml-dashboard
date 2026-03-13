@@ -1353,12 +1353,26 @@ app.get('/api/competencia', requireAuth, async (req, res) => {
 
     if (categoryId) {
       // ── Top sellers + price range for a specific category ──────────────────
-      const [searchRes, catRes] = await Promise.all([
-        fetch(`${ML_API}/sites/MLA/search?category=${categoryId}&sort=sold_quantity_desc&limit=20`, { headers }).then(r => r.json()).catch(() => ({})),
-        fetch(`${ML_API}/categories/${categoryId}`, { headers }).then(r => r.json()).catch(() => ({}))
-      ]);
+      // ML search API is public — no auth header needed, use multiple sort options
+      const searchUrl = `${ML_API}/sites/MLA/search?category=${categoryId}&sort=sold_quantity_desc&limit=50`;
+      const searchUrl2 = `${ML_API}/sites/MLA/search?category=${categoryId}&limit=50`;
+      
+      let searchRes = {};
+      try {
+        searchRes = await fetch(searchUrl, { headers }).then(r => r.json());
+        console.log(`[COMP] category=${categoryId} results=${(searchRes.results||[]).length} total=${searchRes.paging?.total} error=${searchRes.error}`);
+        // Fallback if sort not available
+        if (!searchRes.results || searchRes.results.length === 0) {
+          searchRes = await fetch(searchUrl2, { headers }).then(r => r.json());
+          console.log(`[COMP] fallback results=${(searchRes.results||[]).length}`);
+        }
+      } catch(e) { console.error('[COMP] search error:', e.message); }
+
+      const catRes = await fetch(`${ML_API}/categories/${categoryId}`, { headers }).then(r => r.json()).catch(() => ({}));
 
       const results = searchRes.results || [];
+      console.log(`[COMP] processing ${results.length} results, first=`, results[0] && { id: results[0].id, seller: results[0].seller, price: results[0].price });
+      
       const prices = results.map(r => parseFloat(r.price)||0).filter(p => p > 0);
       const priceStats = prices.length ? {
         min: Math.min(...prices),
@@ -1369,22 +1383,23 @@ app.get('/api/competencia', requireAuth, async (req, res) => {
       // Group by seller
       const sellers = {};
       results.forEach(r => {
-        const sid = r.seller && r.seller.id;
+        const sid = r.seller && (r.seller.id || r.seller);
+        const snick = (r.seller && r.seller.nickname) || (typeof r.seller === 'string' ? r.seller : String(sid));
         if (!sid) return;
-        if (!sellers[sid]) sellers[sid] = { id: sid, nickname: r.seller.nickname || sid, items: [], total_sold: 0 };
-        sellers[sid].items.push({ id: r.id, title: r.title, price: r.price, sold_quantity: r.sold_quantity || 0, thumbnail: r.thumbnail });
+        if (!sellers[sid]) sellers[sid] = { id: sid, nickname: snick, items: [], total_sold: 0 };
+        sellers[sid].items.push({ id: r.id, title: r.title, price: r.price, sold_quantity: r.sold_quantity || 0 });
         sellers[sid].total_sold += r.sold_quantity || 0;
       });
 
       // My items in this category
-      const myItems = results.filter(r => r.seller && String(r.seller.id) === String(uid));
+      const myItems = results.filter(r => r.seller && String(r.seller.id || r.seller) === String(uid));
 
       return res.json({
         category: { id: categoryId, name: catRes.name || categoryId },
         price_stats: priceStats,
         sellers: Object.values(sellers).sort((a,b) => b.total_sold - a.total_sold).slice(0,10),
         my_items: myItems,
-        top_listings: results.slice(0,20)
+        top_listings: results.slice(0,50)
       });
     }
 
