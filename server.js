@@ -360,13 +360,26 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
     const uid = user.id;
 
     const now = new Date();
-    const curFrom = new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
-    const prevFrom = new Date(curFrom.getTime() - days * 24 * 60 * 60 * 1000);
     const fmt = d => d.toISOString().slice(0,19) + '.000-00:00';
 
+    let curFrom, curTo, prevFrom, prevTo, effectiveDays;
+    if (req.query.date_from && req.query.date_to) {
+      curFrom  = new Date(req.query.date_from + 'T00:00:00');
+      curTo    = new Date(req.query.date_to   + 'T23:59:59');
+      effectiveDays = Math.round((curTo - curFrom) / (24*60*60*1000));
+      prevTo   = new Date(curFrom.getTime() - 1);
+      prevFrom = new Date(prevTo.getTime() - effectiveDays * 24*60*60*1000);
+    } else {
+      curFrom  = new Date(now.getTime() - days * 24*60*60*1000);
+      curTo    = now;
+      prevFrom = new Date(curFrom.getTime() - days * 24*60*60*1000);
+      prevTo   = curFrom;
+      effectiveDays = days;
+    }
+
     const [curData, prevData, itemsData] = await Promise.all([
-      fetchAllOrders(uid, headers, fmt(curFrom), fmt(now)),
-      fetchAllOrders(uid, headers, fmt(prevFrom), fmt(curFrom)),
+      fetchAllOrders(uid, headers, fmt(curFrom), fmt(curTo)),
+      fetchAllOrders(uid, headers, fmt(prevFrom), fmt(prevTo)),
       fetch(`${ML_API}/users/${uid}/items/search?limit=1`, { headers }).then(r => r.json()).catch(() => ({paging:{total:0}}))
     ]);
 
@@ -389,7 +402,7 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
       const allVisitsMap = {}, allPrevVisitsMap = {};
       for (let i = 0; i < soldItemIds.length; i += 20) {
         const batch = soldItemIds.slice(i, i + 20);
-        const [vm, pvm] = await Promise.all([fetchVisits(batch, days, headers), fetchVisits(batch, days * 2, headers)]);
+        const [vm, pvm] = await Promise.all([fetchVisits(batch, effectiveDays, headers), fetchVisits(batch, effectiveDays * 2, headers)]);
         Object.assign(allVisitsMap, vm); Object.assign(allPrevVisitsMap, pvm);
       }
       totalVisits = Object.values(allVisitsMap).reduce((s, v) => s + v, 0);
@@ -582,7 +595,7 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
         const adv = advertisers.find(a => a.site_id === (user.site_id || 'MLA')) || advertisers[0];
         const siteId = user.site_id || 'MLA';
         const fromDate = curFrom.toISOString().slice(0,10);
-        const toDate = now.toISOString().slice(0,10);
+        const toDate = curTo.toISOString().slice(0,10);
         const url = `${ML_API}/advertising/${siteId}/advertisers/${adv.advertiser_id}/product_ads/campaigns/search?limit=1&date_from=${fromDate}&date_to=${toDate}&metrics=cost&metrics_summary=true`;
         const adsData = await fetch(url, { headers: { ...headers, 'api-version': '2' } }).then(r => r.json()).catch(() => ({}));
         adsSpend = parseFloat((adsData.metrics_summary || {}).cost) || 0;
@@ -920,7 +933,7 @@ app.get('/api/items-full', requireAuth, async (req, res) => {
     // ── 6. Visits (only items with sales) ───────────────────────────────────
     const visitsMap = {};
     for (let i = 0; i < Math.min(soldItemIds.length, 300); i += 20) {
-      Object.assign(visitsMap, await fetchVisits(soldItemIds.slice(i, i+20), days, headers));
+      Object.assign(visitsMap, await fetchVisits(soldItemIds.slice(i, i+20), effectiveDays, headers));
     }
 
     // ── 7. Build final items list ────────────────────────────────────────────
