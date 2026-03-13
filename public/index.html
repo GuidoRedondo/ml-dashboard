@@ -1362,18 +1362,9 @@ async function loadAllData() {
 
   await Promise.all(connected.map(async acc => {
     try {
-      const fromEl = document.getElementById('globalDateFrom');
-      const toEl   = document.getElementById('globalDateTo');
-      const from   = fromEl?.value;
-      const to     = toEl?.value;
-      let apiUrl;
-      if (from && to && !state.rangeDays) {
-        apiUrl = serverUrl + '/api/dashboard?token=' + encodeURIComponent(acc.accessToken)
-               + '&date_from=' + from + '&date_to=' + to;
-      } else {
-        apiUrl = serverUrl + '/api/dashboard?token=' + encodeURIComponent(acc.accessToken)
-               + '&days=' + (state.rangeDays || 30);
-      }
+      const range  = getDateRange();
+      const apiUrl = serverUrl + '/api/dashboard?token=' + encodeURIComponent(acc.accessToken)
+                   + '&date_from=' + range.date_from + '&date_to=' + range.date_to;
       const res = await fetch(apiUrl);
       const data = await res.json();
 
@@ -2891,17 +2882,9 @@ async function loadAds() {
     return;
   }
 
-  // Use global date range
-  const fromEl = document.getElementById('globalDateFrom');
-  const toEl   = document.getElementById('globalDateTo');
-  const from   = fromEl?.value;
-  const to     = toEl?.value;
-  let dateParam;
-  if (from && to && !state.rangeDays) {
-    dateParam = '&date_from=' + from + '&date_to=' + to;
-  } else {
-    dateParam = '&days=' + (state.rangeDays || 30);
-  }
+  // Use global date range helper
+  const range = getDateRange();
+  const dateParam = '&date_from=' + range.date_from + '&date_to=' + range.date_to;
 
   el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:20px;text-align:center">⏳ Cargando datos de Ads...</div>';
 
