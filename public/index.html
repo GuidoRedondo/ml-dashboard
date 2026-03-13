@@ -1051,11 +1051,12 @@ function showPage(id, el) {
   if (id === 'publicaciones') setTimeout(loadPublicaciones, 100);
   if (id === 'ads') setTimeout(loadAds, 100);
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
-  document.getElementById('page-' + id).classList.add('active');
+  const pageEl = document.getElementById('page-' + id);
+  if (pageEl) pageEl.classList.add('active');
   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
   if (el) el.classList.add('active');
   // Show date picker only on data pages
-  const noPicker = ['login','setup','clientes'];
+  const noPicker = ['login','setup','clientes','diagnostico'];
   const picker = document.getElementById('globalRangePicker');
   if (picker) picker.style.display = noPicker.includes(id) ? 'none' : 'flex';
 }
@@ -3125,15 +3126,34 @@ async function loadAdsAnalysis(dateParam) {
 // ── DIAGNÓSTICO MENSUAL ───────────────────────────────────────────────────────
 
 function loadDiagnostico() {
-  // Populate client selector
+  // Populate client selector from state.accounts OR from loaded clients
   const sel = document.getElementById('diagClientSel');
-  if (sel && sel.options.length === 0) {
-    state.accounts.forEach(acc => {
-      const opt = document.createElement('option');
-      opt.value = acc.id;
-      opt.textContent = acc.name;
-      sel.appendChild(opt);
-    });
+  if (!sel) return;
+
+  // Clear and repopulate always (accounts may have loaded after nav init)
+  sel.innerHTML = '';
+  const accounts = state.accounts.length ? state.accounts : (window._allClients || []);
+  accounts.forEach(acc => {
+    const opt = document.createElement('option');
+    opt.value = acc.id;
+    opt.textContent = acc.name;
+    sel.appendChild(opt);
+  });
+
+  // If still empty, try fetching clients
+  if (!sel.options.length) {
+    fetch(SERVER_URL + '/api/clients?session_id=' + (getSession()||''))
+      .then(r => r.json())
+      .then(data => {
+        (data.clients || []).forEach(c => {
+          const opt = document.createElement('option');
+          opt.value = c.id;
+          opt.textContent = c.name;
+          sel.appendChild(opt);
+        });
+        if (sel.options.length) diagCargarHistorial();
+      });
+    return;
   }
   diagCargarHistorial();
 }
