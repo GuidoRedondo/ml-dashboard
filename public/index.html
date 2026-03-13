@@ -1513,7 +1513,9 @@ function buildEvolutionChart() {
   try {
 
   const range = getDateRange();
-  const days = state.rangeDays || Math.round((new Date(range.date_to) - new Date(range.date_from)) / (1000*60*60*24)) || 30;
+  const fromMs = new Date(range.date_from).getTime();
+  const toMs   = new Date(range.date_to).getTime();
+  const days   = (fromMs && toMs) ? Math.max(1, Math.round((toMs - fromMs) / (1000*60*60*24))) : (state.rangeDays || 30);
   const now = Date.now();
 
   // Build daily buckets
@@ -1757,7 +1759,7 @@ async function loadPublicaciones() {
     return;
   }
   const range2 = getDateRange();
-  const days = state.rangeDays || Math.round((new Date(range2.date_to) - new Date(range2.date_from)) / (1000*60*60*24)) || 30;
+  const dateParams = '&date_from=' + range2.date_from + '&date_to=' + range2.date_to;
   el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:20px;text-align:center">⏳ Cargando publicaciones... puede tardar 30-60 segundos</div>';
 
   let allItems = [];
@@ -1765,7 +1767,7 @@ async function loadPublicaciones() {
 
   await Promise.all(connected.map(async acc => {
     try {
-      const res = await fetch(SERVER_URL + '/api/items-full?client_id=' + acc.id + '&days=' + days + '&session_id=' + (getSession()||''));
+      const res = await fetch(SERVER_URL + '/api/items-full?client_id=' + acc.id + dateParams + '&session_id=' + (getSession()||''));
       const data = await res.json();
       (data.items || []).forEach(item => allItems.push({ ...item, cuenta: acc.name, color: acc.color, totalRevenue: data.total_revenue }));
       if (data.summary) {
