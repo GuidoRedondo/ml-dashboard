@@ -748,9 +748,10 @@ app.get('/api/ads', requireAuth, async (req, res) => {
       toDate   = now.toISOString().slice(0,10);
     }
     const metrics = 'clicks,prints,cost,cpc,acos,direct_amount,indirect_amount,total_amount,direct_units_quantity,units_quantity,cvr,roas';
-
+    console.log(`[ADS] client=${clientId} from=${fromDate} to=${toDate}`);
     const url = `${ML_API}/advertising/${siteId}/advertisers/${advId}/product_ads/campaigns/search?limit=50&offset=0&date_from=${fromDate}&date_to=${toDate}&metrics=${metrics}&metrics_summary=true`;
     const text = await fetch(url, { headers: h2 }).then(r => r.text());
+    console.log(`[ADS] ML response (first 200): ${text.slice(0,200)}`);
     let data;
     try { data = JSON.parse(text); } catch(e) { return res.status(500).json({ error: 'parse error' }); }
 
