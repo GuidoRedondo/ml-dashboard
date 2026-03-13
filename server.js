@@ -912,12 +912,12 @@ app.get('/api/items-full', requireAuth, async (req, res) => {
 
     console.log(`[ITEMS] active=${activeIds.length} paused=${pausedIds.length} inactive=${inactiveIds.length} total_unique=${allIds.length} active_unique=${Object.values(statusMap).filter(s=>s==='active').length}`);
 
-    // ── 3. Fetch item details (title) in batches of 20 ──────────────────────
+    // ── 3. Fetch item details in batches of 20 ──────────────────────────────
     const itemDetailsMap = {};
     for (let i = 0; i < allIds.length; i += 20) {
       const batch = allIds.slice(i, i+20);
       try {
-        const data = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,title,price,status,sub_status`, { headers }).then(r => r.json());
+        const data = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,title,price,status,sub_status,available_quantity,listing_type_id,category_id,shipping,pictures,condition,catalog_listing`, { headers }).then(r => r.json());
         (Array.isArray(data) ? data : []).forEach(r => {
           if (r.code === 200 && r.body) itemDetailsMap[r.body.id] = r.body;
         });
@@ -1000,11 +1000,23 @@ app.get('/api/items-full', requireAuth, async (req, res) => {
       const ads    = adsByItem[item.id] || {};
       const visits = visitsMap[item.id] || 0;
       const detail = itemDetailsMap[item.id] || {};
-      // Prefer real status from item detail, fallback to search status
       const status = detail.status || statusMap[item.id] || 'active';
       const problems = problemsMap[item.id] || [];
+      const pics = detail.pictures || [];
+      const isFull = (detail.shipping && detail.shipping.logistic_type === 'fulfillment') || false;
+      const isFlex = (detail.shipping && detail.shipping.local_pick_up === false && detail.shipping.free_shipping && !isFull) || false;
       return {
         id: item.id, title: detail.title || item.title, status,
+        price: detail.price || 0,
+        available_quantity: detail.available_quantity || 0,
+        listing_type_id: detail.listing_type_id || '',
+        category_id: detail.category_id || '',
+        condition: detail.condition || '',
+        catalog_listing: detail.catalog_listing || false,
+        photo_count: pics.length,
+        photo_urls: pics.slice(0,3).map(p => p.url || p.secure_url || ''),
+        is_full: isFull,
+        is_flex: isFlex,
         units: item.units, revenue: item.revenue, hasSales: true,
         revenueShare: totalRevenue > 0 ? parseFloat(((item.revenue/totalRevenue)*100).toFixed(2)) : 0,
         visits, conversion: visits > 0 ? parseFloat(((item.units/visits)*100).toFixed(1)) : 0,
@@ -1022,8 +1034,21 @@ app.get('/api/items-full', requireAuth, async (req, res) => {
       const status = detail.status || statusMap[id] || 'inactive';
       const problems = problemsMap[id] || [];
       const ads = adsByItem[id] || {};
+      const pics = detail.pictures || [];
+      const isFull = (detail.shipping && detail.shipping.logistic_type === 'fulfillment') || false;
+      const isFlex = (detail.shipping && detail.shipping.local_pick_up === false && detail.shipping.free_shipping && !isFull) || false;
       return {
         id, title: detail.title || id, status,
+        price: detail.price || 0,
+        available_quantity: detail.available_quantity || 0,
+        listing_type_id: detail.listing_type_id || '',
+        category_id: detail.category_id || '',
+        condition: detail.condition || '',
+        catalog_listing: detail.catalog_listing || false,
+        photo_count: pics.length,
+        photo_urls: pics.slice(0,3).map(p => p.url || p.secure_url || ''),
+        is_full: isFull,
+        is_flex: isFlex,
         units: 0, revenue: 0, hasSales: false,
         revenueShare: 0, visits: 0, conversion: 0,
         hasAds: ads.hasAds||false, adsStatus: ads.adsStatus||null,
@@ -1248,7 +1273,195 @@ app.post('/api/diagnostico/manuales', requireAuth, async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
-// Server-side login form - bypasses all client-side cookie issues
+// ── LOGÍSTICA ─────────────────────────────────────────────────────────────────
+app.get('/api/logistica', requireAuth, async (req, res) => {
+  try {
+    const uid = req.query.uid;
+    const token = await getClientToken(parseInt(req.query.client_id));
+    if (!token) return res.status(403).json({ error: 'Sin token' });
+    const headers = { 'Authorization': `Bearer ${token}` };
+
+    // ── Shipping preferences (FLEX + handling time) ──────────────────────────
+    const [prefRes, userRes] = await Promise.all([
+      fetch(`${ML_API}/users/${uid}/shipping_preferences`, { headers }).then(r => r.json()).catch(() => ({})),
+      fetch(`${ML_API}/users/${uid}`, { headers }).then(r => r.json()).catch(() => ({}))
+    ]);
+
+    const flexActive = !!(prefRes.flex && prefRes.flex.enabled);
+    const flexZones  = (prefRes.flex && prefRes.flex.zones) || [];
+    const handlingTime = prefRes.handling_time || prefRes.default_handling_time || null;
+    const fullEnabled = !!(prefRes.fulfillment && prefRes.fulfillment.enabled);
+
+    // ── Items activos: cuántos son FULL / FLEX / correo ──────────────────────
+    // Fetch active items in batches
+    let allActiveIds = [];
+    let offset = 0;
+    while (true) {
+      const r = await fetch(`${ML_API}/users/${uid}/items/search?status=active&limit=100&offset=${offset}`, { headers }).then(r => r.json());
+      const ids = r.results || [];
+      allActiveIds = allActiveIds.concat(ids);
+      if (ids.length < 100 || allActiveIds.length >= (r.paging && r.paging.total || 0)) break;
+      offset += 100;
+      if (offset > 2000) break;
+    }
+
+    // Fetch shipping info for all active items
+    let fullCount = 0, flexCount = 0, correoCount = 0, otroCount = 0;
+    const itemsLogistic = [];
+    for (let i = 0; i < allActiveIds.length; i += 20) {
+      const batch = allActiveIds.slice(i, i+20);
+      try {
+        const data = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,title,price,available_quantity,shipping,listing_type_id`, { headers }).then(r => r.json());
+        (Array.isArray(data) ? data : []).forEach(r => {
+          if (r.code !== 200 || !r.body) return;
+          const b = r.body;
+          const lt = (b.shipping && b.shipping.logistic_type) || '';
+          let mode;
+          if (lt === 'fulfillment') { mode = 'FULL'; fullCount++; }
+          else if (lt === 'flex' || lt === 'self_service') { mode = 'FLEX'; flexCount++; }
+          else if (lt.includes('cross') || lt.includes('me2') || lt.includes('colect')) { mode = 'Correo'; correoCount++; }
+          else { mode = lt || 'Otro'; otroCount++; }
+          itemsLogistic.push({
+            id: b.id, title: b.title, price: b.price,
+            available_quantity: b.available_quantity,
+            listing_type_id: b.listing_type_id,
+            logistic_type: lt, mode,
+            free_shipping: b.shipping && b.shipping.free_shipping
+          });
+        });
+      } catch(e) {}
+    }
+
+    res.json({
+      flex: { active: flexActive, zones: flexZones },
+      full: { enabled: fullEnabled, count: fullCount },
+      handling_time: handlingTime,
+      summary: { full: fullCount, flex: flexCount, correo: correoCount, otro: otroCount, total: allActiveIds.length },
+      items: itemsLogistic
+    });
+  } catch(e) { console.error('[LOGISTICA]', e.message); res.status(500).json({ error: e.message }); }
+});
+
+// ── COMPETENCIA ───────────────────────────────────────────────────────────────
+app.get('/api/competencia', requireAuth, async (req, res) => {
+  try {
+    const uid = req.query.uid;
+    const categoryId = req.query.category_id;
+    const token = await getClientToken(parseInt(req.query.client_id));
+    if (!token) return res.status(403).json({ error: 'Sin token' });
+    const headers = { 'Authorization': `Bearer ${token}` };
+
+    if (categoryId) {
+      // ── Top sellers + price range for a specific category ──────────────────
+      const [searchRes, catRes] = await Promise.all([
+        fetch(`${ML_API}/sites/MLA/search?category=${categoryId}&sort=sold_quantity_desc&limit=20`, { headers }).then(r => r.json()).catch(() => ({})),
+        fetch(`${ML_API}/categories/${categoryId}`, { headers }).then(r => r.json()).catch(() => ({}))
+      ]);
+
+      const results = searchRes.results || [];
+      const prices = results.map(r => parseFloat(r.price)||0).filter(p => p > 0);
+      const priceStats = prices.length ? {
+        min: Math.min(...prices),
+        max: Math.max(...prices),
+        avg: Math.round(prices.reduce((a,b)=>a+b,0) / prices.length)
+      } : null;
+
+      // Group by seller
+      const sellers = {};
+      results.forEach(r => {
+        const sid = r.seller && r.seller.id;
+        if (!sid) return;
+        if (!sellers[sid]) sellers[sid] = { id: sid, nickname: r.seller.nickname || sid, items: [], total_sold: 0 };
+        sellers[sid].items.push({ id: r.id, title: r.title, price: r.price, sold_quantity: r.sold_quantity || 0, thumbnail: r.thumbnail });
+        sellers[sid].total_sold += r.sold_quantity || 0;
+      });
+
+      // My items in this category
+      const myItems = results.filter(r => r.seller && String(r.seller.id) === String(uid));
+
+      return res.json({
+        category: { id: categoryId, name: catRes.name || categoryId },
+        price_stats: priceStats,
+        sellers: Object.values(sellers).sort((a,b) => b.total_sold - a.total_sold).slice(0,10),
+        my_items: myItems,
+        top_listings: results.slice(0,20)
+      });
+    }
+
+    // ── No category: return my categories ────────────────────────────────────
+    let activeIds = [];
+    const r = await fetch(`${ML_API}/users/${uid}/items/search?status=active&limit=100`, { headers }).then(r => r.json());
+    activeIds = r.results || [];
+
+    const catCount = {};
+    for (let i = 0; i < activeIds.length; i += 20) {
+      const batch = activeIds.slice(i, i+20);
+      try {
+        const data = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,title,category_id`, { headers }).then(r => r.json());
+        (Array.isArray(data) ? data : []).forEach(r => {
+          if (r.code !== 200 || !r.body) return;
+          const cid = r.body.category_id;
+          if (!catCount[cid]) catCount[cid] = { id: cid, name: cid, count: 0 };
+          catCount[cid].count++;
+        });
+      } catch(e) {}
+    }
+
+    // Resolve category names
+    const topCats = Object.values(catCount).sort((a,b) => b.count - a.count).slice(0,15);
+    await Promise.all(topCats.map(async c => {
+      try {
+        const cd = await fetch(`${ML_API}/categories/${c.id}`, { headers }).then(r => r.json());
+        c.name = cd.name || c.id;
+      } catch(e) {}
+    }));
+
+    res.json({ categories: topCats });
+  } catch(e) { console.error('[COMPETENCIA]', e.message); res.status(500).json({ error: e.message }); }
+});
+
+// ── DEVOLUCIONES ──────────────────────────────────────────────────────────────
+app.get('/api/devoluciones', requireAuth, async (req, res) => {
+  try {
+    const uid = req.query.uid;
+    const token = await getClientToken(parseInt(req.query.client_id));
+    if (!token) return res.status(403).json({ error: 'Sin token' });
+    const headers = { 'Authorization': `Bearer ${token}` };
+    const { fromDate, toDate } = getDateRange(req);
+    const fmt = d => new Date(d).toISOString().slice(0,19) + '.000-00:00';
+
+    // Fetch refunded orders
+    const url = `${ML_API}/orders/search?seller=${uid}&order.status=partially_refunded&sort=date_desc&limit=50&order.date_created.from=${encodeURIComponent(fmt(fromDate))}&order.date_created.to=${encodeURIComponent(fmt(toDate))}`;
+    const [refundedRes, cancelledRes] = await Promise.all([
+      fetch(url, { headers }).then(r => r.json()).catch(() => ({results:[]})),
+      fetch(`${ML_API}/orders/search?seller=${uid}&order.status=cancelled&sort=date_desc&limit=50&order.date_created.from=${encodeURIComponent(fmt(fromDate))}&order.date_created.to=${encodeURIComponent(fmt(toDate))}`, { headers }).then(r => r.json()).catch(() => ({results:[]}))
+    ]);
+
+    const refunded  = refundedRes.results  || [];
+    const cancelled = cancelledRes.results || [];
+
+    const mapOrder = o => ({
+      id: o.id,
+      date: o.date_created,
+      buyer: o.buyer && o.buyer.nickname,
+      amount: parseFloat(o.total_amount) || 0,
+      status: o.status,
+      items: (o.order_items||[]).map(oi => ({ title: oi.item && oi.item.title, qty: oi.quantity, price: oi.unit_price })),
+      cancel_reason: o.cancel_detail || null
+    });
+
+    const allDev = [...refunded.map(mapOrder), ...cancelled.map(mapOrder)];
+    const totalMonto = allDev.reduce((s,o) => s + o.amount, 0);
+
+    res.json({
+      devoluciones: allDev,
+      total: allDev.length,
+      monto_total: totalMonto,
+      canceladas: cancelled.length,
+      reembolsadas: refunded.length
+    });
+  } catch(e) { console.error('[DEVOLUCIONES]', e.message); res.status(500).json({ error: e.message }); }
+});
 app.get('/login', (req, res) => {
   const error = req.query.error || '';
   res.send(`<!DOCTYPE html><html><head>
