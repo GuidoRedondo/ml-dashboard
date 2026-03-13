@@ -44,6 +44,47 @@ async function initDB() {
       created_at TIMESTAMP DEFAULT NOW(),
       expires_at TIMESTAMP DEFAULT NOW() + INTERVAL '7 days'
     );
+    CREATE TABLE IF NOT EXISTS diagnostico_mensual (
+      id               SERIAL PRIMARY KEY,
+      client_id        INTEGER NOT NULL REFERENCES clients(id),
+      mes              DATE NOT NULL,
+      facturacion      NUMERIC(14,2),
+      ventas           INTEGER,
+      unidades         INTEGER,
+      visitas          INTEGER,
+      conversion       NUMERIC(6,2),
+      ticket_promedio  NUMERIC(12,2),
+      carritos         NUMERIC(6,2),
+      pads_inversion   NUMERIC(12,2),
+      pads_ingresos    NUMERIC(14,2),
+      pads_acos        NUMERIC(6,2),
+      pads_tacos       NUMERIC(6,2),
+      pads_roas        NUMERIC(6,2),
+      pads_clicks      INTEGER,
+      pads_ventas      INTEGER,
+      pads_conversion  NUMERIC(6,2),
+      pads_impresiones INTEGER,
+      pads_ctr         NUMERIC(6,2),
+      pads_aporte_pct  NUMERIC(6,2),
+      rep_medalla      VARCHAR(20),
+      rep_ventas_60    INTEGER,
+      rep_concretadas  INTEGER,
+      rep_no_concretadas INTEGER,
+      rep_reclamos     NUMERIC(6,2),
+      rep_demoras      NUMERIC(6,2),
+      rep_cancelaciones NUMERIC(6,2),
+      rep_mediaciones  NUMERIC(6,2),
+      rep_no_conc_monto NUMERIC(14,2),
+      rep_no_conc_pct  NUMERIC(6,2),
+      pub_total        INTEGER,
+      pub_activas      INTEGER,
+      pub_inactivas    INTEGER,
+      pub_exitosas     INTEGER,
+      pub_pareto_pct   NUMERIC(6,2),
+      pub_interes      NUMERIC(6,2),
+      manuales         JSONB DEFAULT '{}',
+      UNIQUE(client_id, mes)
+    );
   `);
 
   // Create default admin if not exists (password: admin123 - change after first login)
@@ -1006,6 +1047,205 @@ app.get('/api/items-full', requireAuth, async (req, res) => {
 
     res.json({ items, total_revenue: totalRevenue, days: effectiveDays, summary });
   } catch(e) { console.error('[ITEMS-FULL ERROR]', e.message, e.stack); res.status(500).json({ error: e.message }); }
+});
+
+// ── DIAGNÓSTICO MENSUAL ───────────────────────────────────────────────────────
+
+// GET /api/diagnostico?client_id=X  → lista todos los meses guardados
+app.get('/api/diagnostico', requireAuth, async (req, res) => {
+  try {
+    const clientId = parseInt(req.query.client_id);
+    const rows = await pool.query(
+      'SELECT * FROM diagnostico_mensual WHERE client_id=$1 ORDER BY mes DESC',
+      [clientId]
+    );
+    res.json({ meses: rows.rows });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// POST /api/diagnostico/calcular  → calcula métricas del mes desde la API y guarda
+app.post('/api/diagnostico/calcular', requireAuth, async (req, res) => {
+  try {
+    const { client_id, mes } = req.body; // mes = "2024-12-01"
+    if (!client_id || !mes) return res.status(400).json({ error: 'Faltan parámetros' });
+
+    const token = await getClientToken(parseInt(client_id));
+    if (!token) return res.status(403).json({ error: 'Cliente no conectado' });
+
+    const headers = { 'Authorization': `Bearer ${token}` };
+    const mesDate = new Date(mes);
+    const year = mesDate.getFullYear();
+    const month = mesDate.getMonth();
+    const dateFrom = new Date(year, month, 1);
+    const dateTo   = new Date(year, month + 1, 0, 23, 59, 59);
+    const fmt = d => d.toISOString().slice(0,19) + '.000-00:00';
+
+    // ── 1. Usuario ────────────────────────────────────────────────────────────
+    const user = await fetch(`${ML_API}/users/me`, { headers }).then(r => r.json());
+    const uid = user.id;
+
+    // ── 2. Órdenes del mes ────────────────────────────────────────────────────
+    const { orders } = await fetchAllOrders(uid, headers, fmt(dateFrom), fmt(dateTo));
+    const facturacion = orders.reduce((s, o) => s + (parseFloat(o.total_amount)||0), 0);
+    const ventas = orders.length;
+    let unidades = 0;
+    orders.forEach(o => (o.order_items||[]).forEach(oi => { unidades += oi.quantity||0; }));
+    const ticket_promedio = ventas > 0 ? facturacion / ventas : 0;
+
+    // Carritos: promedio de items por orden
+    const carritos = ventas > 0 ? parseFloat((unidades / ventas).toFixed(2)) : 0;
+
+    // ── 3. Visitas y publicaciones ────────────────────────────────────────────
+    const days30 = 30;
+    const itemsRes = await fetch(
+      `${ML_API}/users/${uid}/items/search?status=active&limit=100`, { headers }
+    ).then(r => r.json());
+    const activeIds = itemsRes.results || [];
+    const totalActive = (itemsRes.paging && itemsRes.paging.total) || activeIds.length;
+
+    const itemsInactRes = await fetch(
+      `${ML_API}/users/${uid}/items/search?status=inactive&limit=1`, { headers }
+    ).then(r => r.json());
+    const totalInactive = (itemsInactRes.paging && itemsInactRes.paging.total) || 0;
+    const pubTotal = totalActive + totalInactive;
+
+    // Visitas del mes (sumamos visitas de items activos, batch de 20)
+    let visitas = 0;
+    const allActiveIds = activeIds.slice(0, 200);
+    for (let i = 0; i < allActiveIds.length; i += 20) {
+      const batch = allActiveIds.slice(i, i+20);
+      const vMap = await fetchVisits(batch, days30, headers);
+      Object.values(vMap).forEach(v => { visitas += v; });
+    }
+
+    // Conversión
+    const conversion = visitas > 0 ? parseFloat(((ventas / visitas) * 100).toFixed(2)) : 0;
+
+    // ── 4. Publicaciones exitosas y Pareto ────────────────────────────────────
+    const salesByItem = {};
+    orders.forEach(o => {
+      (o.order_items||[]).forEach(oi => {
+        const id = oi.item && oi.item.id;
+        if (!id) return;
+        if (!salesByItem[id]) salesByItem[id] = { units: 0, revenue: 0 };
+        salesByItem[id].units += oi.quantity||0;
+        salesByItem[id].revenue += (parseFloat(oi.unit_price)||0) * (oi.quantity||0);
+      });
+    });
+    const pubExitosas = Object.keys(salesByItem).length;
+
+    // Pareto: % de publicaciones activas que generan el 80% de la facturación
+    const itemsSorted = Object.values(salesByItem).sort((a,b) => b.revenue - a.revenue);
+    const target80 = facturacion * 0.8;
+    let cumul = 0; let paretoCount = 0;
+    for (const it of itemsSorted) { cumul += it.revenue; paretoCount++; if (cumul >= target80) break; }
+    const pubParetoP = totalActive > 0 ? parseFloat(((paretoCount / totalActive)*100).toFixed(1)) : 0;
+    const pubInteres = totalActive > 0 ? parseFloat((visitas / totalActive).toFixed(1)) : 0;
+
+    // ── 5. Reputación ─────────────────────────────────────────────────────────
+    const repRes = await fetch(`${ML_API}/users/${uid}`, { headers }).then(r => r.json());
+    const rep = repRes.seller_reputation || {};
+    const repTrans = rep.transactions || {};
+    const repMetrics = rep.metrics || {};
+    const repMedalla = rep.power_seller_status ? rep.power_seller_status.toUpperCase() :
+                       (rep.level_id ? rep.level_id.toUpperCase() : '—');
+    const repVentas60 = repTrans.total || 0;
+    const repConcretadas = repTrans.completed || 0;
+    const repNoConcretadas = repTrans.not_yet_rated || 0;
+    const repReclamos = repMetrics.claims ? parseFloat((repMetrics.claims.rate||0).toFixed(4)) : 0;
+    const repDemoras  = repMetrics.delayed_handling_time ? parseFloat((repMetrics.delayed_handling_time.rate||0).toFixed(4)) : 0;
+    const repCancelaciones = repMetrics.cancellations ? parseFloat((repMetrics.cancellations.rate||0).toFixed(4)) : 0;
+    const repMediaciones = 0; // no expuesto directamente en API pública
+
+    // No concretadas en $: órdenes canceladas del mes
+    const cancelledRes = await fetch(
+      `${ML_API}/orders/search?seller=${uid}&order.status=cancelled&order.date_created.from=${encodeURIComponent(fmt(dateFrom))}&order.date_created.to=${encodeURIComponent(fmt(dateTo))}&limit=50`,
+      { headers }
+    ).then(r => r.json());
+    const cancelledOrders = cancelledRes.results || [];
+    const repNoConcMonto = cancelledOrders.reduce((s,o) => s+(parseFloat(o.total_amount)||0), 0);
+    const repNoConcPct = (facturacion + repNoConcMonto) > 0
+      ? parseFloat(((repNoConcMonto / (facturacion + repNoConcMonto))*100).toFixed(2)) : 0;
+
+    // ── 6. Publicidad (PADS) ──────────────────────────────────────────────────
+    let padsInversion=0, padsIngresos=0, padsClicks=0, padsVentas=0, padsImpresiones=0;
+    try {
+      const adsUrl = `${ML_API}/advertising/advertisers/${uid}/campaigns?app_version=v2&date_from=${dateFrom.toISOString().slice(0,10)}&date_to=${dateTo.toISOString().slice(0,10)}`;
+      const adsRes = await fetch(adsUrl, {
+        headers: { 'Authorization': `Bearer ${token}`, 'Api-Version': '2' }
+      }).then(r => r.json());
+      (adsRes.results || adsRes.campaigns || []).forEach(c => {
+        padsInversion   += parseFloat(c.cost||c.spend||0);
+        padsIngresos    += parseFloat(c.revenue||c.attributed_revenue||0);
+        padsClicks      += parseInt(c.clicks||0);
+        padsVentas      += parseInt(c.units_sold||c.attributed_units||0);
+        padsImpresiones += parseInt(c.prints||c.impressions||0);
+      });
+    } catch(e) { console.error('[DIAG ADS]', e.message); }
+    const padsAcos = padsIngresos > 0 ? parseFloat(((padsInversion/padsIngresos)*100).toFixed(2)) : 0;
+    const padsTacos = facturacion > 0 ? parseFloat(((padsInversion/facturacion)*100).toFixed(2)) : 0;
+    const padsRoas = padsInversion > 0 ? parseFloat((padsIngresos/padsInversion).toFixed(2)) : 0;
+    const padsCtr = padsImpresiones > 0 ? parseFloat(((padsClicks/padsImpresiones)*100).toFixed(2)) : 0;
+    const padsConversion = padsClicks > 0 ? parseFloat(((padsVentas/padsClicks)*100).toFixed(2)) : 0;
+    const padsAportePct = ventas > 0 ? parseFloat(((padsVentas/ventas)*100).toFixed(2)) : 0;
+
+    // ── 7. Guardar en DB ──────────────────────────────────────────────────────
+    const mesStr = `${year}-${String(month+1).padStart(2,'0')}-01`;
+    const existing = await pool.query('SELECT id, manuales FROM diagnostico_mensual WHERE client_id=$1 AND mes=$2', [client_id, mesStr]);
+    const manualesExistentes = existing.rows.length > 0 ? existing.rows[0].manuales : {};
+
+    await pool.query(`
+      INSERT INTO diagnostico_mensual
+        (client_id, mes, facturacion, ventas, unidades, visitas, conversion, ticket_promedio, carritos,
+         pads_inversion, pads_ingresos, pads_acos, pads_tacos, pads_roas, pads_clicks, pads_ventas,
+         pads_conversion, pads_impresiones, pads_ctr, pads_aporte_pct,
+         rep_medalla, rep_ventas_60, rep_concretadas, rep_no_concretadas,
+         rep_reclamos, rep_demoras, rep_cancelaciones, rep_mediaciones,
+         rep_no_conc_monto, rep_no_conc_pct,
+         pub_total, pub_activas, pub_inactivas, pub_exitosas, pub_pareto_pct, pub_interes, manuales)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
+              $21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37)
+      ON CONFLICT (client_id, mes) DO UPDATE SET
+        facturacion=$3, ventas=$4, unidades=$5, visitas=$6, conversion=$7, ticket_promedio=$8, carritos=$9,
+        pads_inversion=$10, pads_ingresos=$11, pads_acos=$12, pads_tacos=$13, pads_roas=$14,
+        pads_clicks=$15, pads_ventas=$16, pads_conversion=$17, pads_impresiones=$18, pads_ctr=$19, pads_aporte_pct=$20,
+        rep_medalla=$21, rep_ventas_60=$22, rep_concretadas=$23, rep_no_concretadas=$24,
+        rep_reclamos=$25, rep_demoras=$26, rep_cancelaciones=$27, rep_mediaciones=$28,
+        rep_no_conc_monto=$29, rep_no_conc_pct=$30,
+        pub_total=$31, pub_activas=$32, pub_inactivas=$33, pub_exitosas=$34, pub_pareto_pct=$35, pub_interes=$36
+    `, [
+      client_id, mesStr,
+      facturacion, ventas, unidades, visitas, conversion, ticket_promedio, carritos,
+      padsInversion, padsIngresos, padsAcos, padsTacos, padsRoas, padsClicks, padsVentas,
+      padsConversion, padsImpresiones, padsCtr, padsAportePct,
+      repMedalla, repVentas60, repConcretadas, repNoConcretadas,
+      repReclamos, repDemoras, repCancelaciones, repMediaciones,
+      repNoConcMonto, repNoConcPct,
+      pubTotal, totalActive, totalInactive, pubExitosas, pubParetoP, pubInteres,
+      JSON.stringify(manualesExistentes)
+    ]);
+
+    const saved = await pool.query('SELECT * FROM diagnostico_mensual WHERE client_id=$1 AND mes=$2', [client_id, mesStr]);
+    res.json({ ok: true, data: saved.rows[0] });
+  } catch(e) { console.error('[DIAG CALC]', e.message, e.stack); res.status(500).json({ error: e.message }); }
+});
+
+// POST /api/diagnostico/manuales  → guarda los campos manuales de un mes
+app.post('/api/diagnostico/manuales', requireAuth, async (req, res) => {
+  try {
+    const { client_id, mes, manuales } = req.body;
+    if (!client_id || !mes) return res.status(400).json({ error: 'Faltan parámetros' });
+    const mesStr = `${mes.slice(0,7)}-01`;
+
+    // Upsert: si no existe el mes, lo crea con solo manuales
+    await pool.query(`
+      INSERT INTO diagnostico_mensual (client_id, mes, manuales)
+      VALUES ($1, $2, $3)
+      ON CONFLICT (client_id, mes) DO UPDATE SET manuales = $3
+    `, [client_id, mesStr, JSON.stringify(manuales)]);
+
+    res.json({ ok: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
 // Server-side login form - bypasses all client-side cookie issues
