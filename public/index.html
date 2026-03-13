@@ -1512,7 +1512,8 @@ function buildEvolutionChart() {
   if (!connected.length) return;
   try {
 
-  const days = state.rangeDays || 30;
+  const range = getDateRange();
+  const days = state.rangeDays || Math.round((new Date(range.date_to) - new Date(range.date_from)) / (1000*60*60*24)) || 30;
   const now = Date.now();
 
   // Build daily buckets
@@ -1755,7 +1756,8 @@ async function loadPublicaciones() {
     el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:20px;text-align:center">Sincronizá primero para ver datos</div>';
     return;
   }
-  const days = state.pubsDays || 30;
+  const range2 = getDateRange();
+  const days = state.rangeDays || Math.round((new Date(range2.date_to) - new Date(range2.date_from)) / (1000*60*60*24)) || 30;
   el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:20px;text-align:center">⏳ Cargando publicaciones... puede tardar 30-60 segundos</div>';
 
   let allItems = [];
@@ -2951,7 +2953,7 @@ async function loadAds() {
   // Build KPI cards HTML inline
   const kpiCardsHtml = `
     <div class="kpi-grid" style="margin-bottom:20px">
-      <div class="kpi-card"><div class="kpi-label">💸 GASTO TOTAL</div><div class="kpi-value">${fmt(totalSpend)}</div><div class="kpi-sub">Últimos ${days} días</div></div>
+      <div class="kpi-card"><div class="kpi-label">💸 GASTO TOTAL</div><div class="kpi-value">${fmt(totalSpend)}</div><div class="kpi-sub">${range.date_from} → ${range.date_to}</div></div>
       <div class="kpi-card"><div class="kpi-label">🛒 VENTAS ADS</div><div class="kpi-value">${fmt(totalSales)}</div></div>
       <div class="kpi-card"><div class="kpi-label">📊 ACOS</div><div class="kpi-value">${acos}</div><div class="kpi-sub">${acosNum ? (acosNum <= 15 ? '✅ Excelente' : acosNum <= 25 ? '⚠️ Aceptable' : '🔴 Alto') : ''}</div></div>
       <div class="kpi-card"><div class="kpi-label">📈 TACOS</div><div class="kpi-value">${tacos}</div><div class="kpi-sub">${tacosNum ? (tacosNum <= 8 ? '✅ Excelente' : tacosNum <= 15 ? '⚠️ Aceptable' : '🔴 Alto') : 'Gasto / Facturación total'}</div></div>
