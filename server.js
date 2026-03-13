@@ -782,8 +782,8 @@ app.get('/api/ads-items', requireAuth, async (req, res) => {
     if (!advertisers.length) return res.json({ ads_item_ids: [] });
     const adv = advertisers.find(a => a.site_id === siteId) || advertisers[0];
     const adsItemIds = new Set();
-    let offset = 0;
-    while (true) {
+    let offset = 0, maxPages = 20;
+    while (maxPages-- > 0) {
       const url = `${ML_API}/advertising/${siteId}/advertisers/${adv.advertiser_id}/product_ads/ads/search?limit=100&offset=${offset}&filters[statuses]=active,paused`;
       const text = await fetch(url, { headers: h2 }).then(r => r.text());
       let data; try { data = JSON.parse(text); } catch(e) { break; }
