@@ -521,6 +521,15 @@ tbody td {
       <div class="nav-item" data-page="diagnostico" onclick="showPage('diagnostico',this);loadDiagnostico()">
         <span class="nav-icon">🩺</span> Diagnóstico
       </div>
+      <div class="nav-item" data-page="fotos" onclick="showPage('fotos',this);loadFotos()">
+        <span class="nav-icon">📷</span> Fotos
+      </div>
+      <div class="nav-item" data-page="logistica" onclick="showPage('logistica',this);loadLogistica()">
+        <span class="nav-icon">🚚</span> Logística
+      </div>
+      <div class="nav-item" data-page="competencia" onclick="showPage('competencia',this);loadCompetencia()">
+        <span class="nav-icon">🏆</span> Competencia
+      </div>
 
       <div style="height:1px;background:var(--border);margin:12px 0"></div>
 
@@ -698,6 +707,37 @@ tbody td {
         <button class="sync-btn" id="diagCalcBtn" onclick="diagCalcular()" style="background:var(--accent);color:#fff;border:none">⚡ Calcular mes</button>
       </div>
       <div id="diagContent"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Seleccioná un cliente y calculá el diagnóstico del mes</div></div>
+    </div>
+
+    <!-- FOTOS -->
+    <div class="page" id="page-fotos">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px;flex-wrap:wrap">
+        <h2 style="margin:0;font-family:var(--font-b);flex:1">📷 Fotos de Publicaciones</h2>
+        <select id="fotosFilter" onchange="renderFotosTabla()" style="padding:6px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px">
+          <option value="all">Todas</option>
+          <option value="pocas">Pocas fotos (≤3)</option>
+          <option value="sin">Sin fotos</option>
+          <option value="ok">Suficientes (≥6)</option>
+        </select>
+      </div>
+      <div id="fotosContent"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Cargando...</div></div>
+    </div>
+
+    <!-- LOGÍSTICA -->
+    <div class="page" id="page-logistica">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px;flex-wrap:wrap">
+        <h2 style="margin:0;font-family:var(--font-b);flex:1">🚚 Logística</h2>
+        <button class="sync-btn" onclick="loadLogistica()">🔄 Actualizar</button>
+      </div>
+      <div id="logisticaContent"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Cargando...</div></div>
+    </div>
+
+    <!-- COMPETENCIA -->
+    <div class="page" id="page-competencia">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px;flex-wrap:wrap">
+        <h2 style="margin:0;font-family:var(--font-b);flex:1">🏆 Competencia</h2>
+      </div>
+      <div id="competenciaContent"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Cargando categorías...</div></div>
     </div>
 
     <!-- CLIENTES ADMIN -->
@@ -3484,6 +3524,322 @@ function diagRenderTabla(meses) {
   </div>`;
 
   el.innerHTML = formHTML + tableHTML;
+}
+
+// ── DIAGNÓSTICO MENSUAL ───────────────────────────────────────────────────────
+
+// ── FOTOS ─────────────────────────────────────────────────────────────────────
+let _fotosData = [];
+
+async function loadFotos() {
+  const el = document.getElementById('fotosContent');
+  el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">⏳ Cargando publicaciones...</div>';
+  try {
+    const acc = state.accounts[0];
+    if (!acc) { el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">Sin cuenta conectada</div>'; return; }
+    const { from, to } = getDateRange();
+    const r = await fetch(`${SERVER_URL}/api/items-full?uid=${acc.userId}&client_id=${acc.id}&date_from=${from}&date_to=${to}&session_id=${getSession()||''}`);
+    const data = await r.json();
+    _fotosData = data.items || [];
+    renderFotosTabla();
+  } catch(e) {
+    el.innerHTML = `<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Error: ${e.message}</div>`;
+  }
+}
+
+function renderFotosTabla() {
+  const el = document.getElementById('fotosContent');
+  const filtro = document.getElementById('fotosFilter')?.value || 'all';
+  let items = _fotosData;
+  if (filtro === 'sin')   items = items.filter(i => i.photo_count === 0);
+  if (filtro === 'pocas') items = items.filter(i => i.photo_count > 0 && i.photo_count <= 3);
+  if (filtro === 'ok')    items = items.filter(i => i.photo_count >= 6);
+
+  const sinFotos = _fotosData.filter(i => i.photo_count === 0).length;
+  const pocasFotos = _fotosData.filter(i => i.photo_count > 0 && i.photo_count <= 3).length;
+  const buenas = _fotosData.filter(i => i.photo_count >= 6).length;
+
+  const kpis = `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:12px;margin-bottom:20px">
+    ${[
+      ['Total pubs', _fotosData.length, ''],
+      ['Sin fotos', sinFotos, sinFotos > 0 ? '#f97316' : '#22c55e'],
+      ['Con 1-3 fotos', pocasFotos, pocasFotos > 0 ? '#f59e0b' : '#22c55e'],
+      ['6+ fotos ✓', buenas, '#22c55e'],
+    ].map(([l,v,c]) => `<div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px 14px">
+      <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em">${l}</div>
+      <div style="font-size:22px;font-weight:700;font-family:var(--font-b);color:${c||'var(--text)'};margin-top:4px">${v}</div>
+    </div>`).join('')}
+  </div>`;
+
+  const rows = items.map(item => {
+    const thumbs = (item.photo_urls||[]).slice(0,3).map(url =>
+      url ? `<img src="${url}" style="width:40px;height:40px;object-fit:cover;border-radius:4px;border:1px solid var(--border)" onerror="this.style.display='none'">` : ''
+    ).join('');
+    const badge = item.photo_count === 0
+      ? `<span style="background:#fee2e2;color:#dc2626;padding:2px 7px;border-radius:4px;font-size:11px;font-weight:600">Sin fotos</span>`
+      : item.photo_count <= 3
+      ? `<span style="background:#fef3c7;color:#d97706;padding:2px 7px;border-radius:4px;font-size:11px;font-weight:600">${item.photo_count} foto${item.photo_count>1?'s':''}</span>`
+      : `<span style="background:#dcfce7;color:#16a34a;padding:2px 7px;border-radius:4px;font-size:11px;font-weight:600">${item.photo_count} fotos</span>`;
+    const statusBadge = item.status === 'active'
+      ? `<span style="background:#dcfce7;color:#16a34a;font-size:10px;padding:1px 6px;border-radius:3px">Activa</span>`
+      : `<span style="background:#f3f4f6;color:#6b7280;font-size:10px;padding:1px 6px;border-radius:3px">${item.status}</span>`;
+    return `<tr>
+      <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px">
+        <a href="https://articulo.mercadolibre.com.ar/${item.id}" target="_blank" style="color:var(--accent);text-decoration:none">${item.id}</a>
+      </td>
+      <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${item.title}</td>
+      <td style="padding:8px 10px;border-bottom:1px solid var(--border)">${statusBadge}</td>
+      <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;text-align:center">${badge}</td>
+      <td style="padding:8px 10px;border-bottom:1px solid var(--border)">${thumbs || '<span style="color:var(--muted);font-size:11px">—</span>'}</td>
+      <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;text-align:right">$${(item.price||0).toLocaleString('es-AR')}</td>
+      <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;text-align:center">${item.available_quantity ?? '—'}</td>
+      <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;text-align:center">${item.catalog_listing ? '✓' : '—'}</td>
+    </tr>`;
+  }).join('');
+
+  el.innerHTML = kpis + `<div style="overflow-x:auto">
+  <table style="width:100%;border-collapse:collapse;font-size:12px">
+    <thead><tr style="background:var(--surface2)">
+      <th style="padding:8px 10px;text-align:left;font-size:11px;font-weight:600;color:var(--muted);border-bottom:1px solid var(--border)">MLA</th>
+      <th style="padding:8px 10px;text-align:left;font-size:11px;font-weight:600;color:var(--muted);border-bottom:1px solid var(--border)">Título</th>
+      <th style="padding:8px 10px;text-align:left;font-size:11px;font-weight:600;color:var(--muted);border-bottom:1px solid var(--border)">Estado</th>
+      <th style="padding:8px 10px;text-align:center;font-size:11px;font-weight:600;color:var(--muted);border-bottom:1px solid var(--border)">Fotos</th>
+      <th style="padding:8px 10px;text-align:left;font-size:11px;font-weight:600;color:var(--muted);border-bottom:1px solid var(--border)">Preview</th>
+      <th style="padding:8px 10px;text-align:right;font-size:11px;font-weight:600;color:var(--muted);border-bottom:1px solid var(--border)">Precio</th>
+      <th style="padding:8px 10px;text-align:center;font-size:11px;font-weight:600;color:var(--muted);border-bottom:1px solid var(--border)">Stock</th>
+      <th style="padding:8px 10px;text-align:center;font-size:11px;font-weight:600;color:var(--muted);border-bottom:1px solid var(--border)">Catálogo</th>
+    </tr></thead>
+    <tbody>${rows || '<tr><td colspan="8" style="padding:30px;text-align:center;color:var(--muted)">No hay publicaciones con este filtro</td></tr>'}</tbody>
+  </table></div>`;
+}
+
+// ── LOGÍSTICA ─────────────────────────────────────────────────────────────────
+async function loadLogistica() {
+  const el = document.getElementById('logisticaContent');
+  el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">⏳ Consultando configuración de envíos...</div>';
+  try {
+    const acc = state.accounts[0];
+    if (!acc) { el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">Sin cuenta conectada</div>'; return; }
+    const r = await fetch(`${SERVER_URL}/api/logistica?uid=${acc.userId}&client_id=${acc.id}&session_id=${getSession()||''}`);
+    const data = await r.json();
+    renderLogistica(data);
+  } catch(e) {
+    el.innerHTML = `<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Error: ${e.message}</div>`;
+  }
+}
+
+function renderLogistica(data) {
+  const el = document.getElementById('logisticaContent');
+  const { flex, full, handling_time, summary, items } = data;
+
+  // ── KPIs ────────────────────────────────────────────────────────────────────
+  const kpis = `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:12px;margin-bottom:24px">
+    ${[
+      ['Total activas', summary.total, ''],
+      ['FULL', summary.full, summary.full > 0 ? '#6366f1' : 'var(--muted)'],
+      ['FLEX', summary.flex, summary.flex > 0 ? '#10b981' : 'var(--muted)'],
+      ['Correo', summary.correo, ''],
+      ['Otro / sin clasif.', summary.otro, ''],
+    ].map(([l,v,c]) => `<div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px 14px">
+      <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em">${l}</div>
+      <div style="font-size:22px;font-weight:700;font-family:var(--font-b);color:${c||'var(--text)'};margin-top:4px">${v}</div>
+    </div>`).join('')}
+  </div>`;
+
+  // ── FLEX card ───────────────────────────────────────────────────────────────
+  const flexZonesList = (flex.zones||[]).length
+    ? flex.zones.map(z => `<span style="background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:3px 9px;font-size:12px">${z.name||z.id||z}</span>`).join(' ')
+    : '<span style="color:var(--muted);font-size:12px">Sin zonas activas</span>';
+
+  const flexCard = `<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:18px;margin-bottom:16px">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+      <span style="font-size:18px">⚡</span>
+      <span style="font-size:14px;font-weight:600;font-family:var(--font-b)">Mercado Envíos FLEX</span>
+      <span style="padding:2px 10px;border-radius:20px;font-size:11px;font-weight:600;background:${flex.active?'#dcfce7':'#fee2e2'};color:${flex.active?'#16a34a':'#dc2626'}">${flex.active ? 'ACTIVO' : 'INACTIVO'}</span>
+    </div>
+    ${flex.active ? `<div style="margin-bottom:8px"><span style="font-size:12px;color:var(--muted)">Zonas activas:</span></div>
+    <div style="display:flex;flex-wrap:wrap;gap:6px">${flexZonesList}</div>` : '<div style="font-size:12px;color:var(--muted)">FLEX no está habilitado en esta cuenta.</div>'}
+  </div>`;
+
+  // ── FULL card ────────────────────────────────────────────────────────────────
+  const fullCard = `<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:18px;margin-bottom:16px">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+      <span style="font-size:18px">📦</span>
+      <span style="font-size:14px;font-weight:600;font-family:var(--font-b)">Mercado Envíos FULL</span>
+      <span style="padding:2px 10px;border-radius:20px;font-size:11px;font-weight:600;background:${full.enabled?'#e0e7ff':'#fee2e2'};color:${full.enabled?'#4338ca':'#dc2626'}">${full.enabled ? 'HABILITADO' : 'NO HABILITADO'}</span>
+    </div>
+    <div style="font-size:13px;color:var(--text)">Publicaciones activas en FULL: <strong>${summary.full}</strong> de ${summary.total}</div>
+  </div>`;
+
+  // ── Tiempo de preparación ──────────────────────────────────────────────────
+  const prepCard = `<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:18px;margin-bottom:20px">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px">
+      <span style="font-size:18px">⏱️</span>
+      <span style="font-size:14px;font-weight:600;font-family:var(--font-b)">Tiempo de preparación</span>
+    </div>
+    <div style="font-size:22px;font-weight:700;color:var(--accent);margin-top:6px">${handling_time != null ? handling_time + (handling_time === 1 ? ' día' : ' días') : '—'}</div>
+  </div>`;
+
+  // ── Items table ──────────────────────────────────────────────────────────────
+  const modeColor = { 'FULL': '#e0e7ff:#4338ca', 'FLEX': '#dcfce7:#16a34a', 'Correo': '#fef3c7:#d97706' };
+  const rows = (items||[]).map(item => {
+    const [bg, fg] = (modeColor[item.mode] || 'var(--surface2):var(--text)').split(':');
+    return `<tr>
+      <td style="padding:7px 10px;border-bottom:1px solid var(--border);font-size:12px">
+        <a href="https://articulo.mercadolibre.com.ar/${item.id}" target="_blank" style="color:var(--accent);text-decoration:none">${item.id}</a>
+      </td>
+      <td style="padding:7px 10px;border-bottom:1px solid var(--border);font-size:12px;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${item.title}</td>
+      <td style="padding:7px 10px;border-bottom:1px solid var(--border);font-size:12px;text-align:center">
+        <span style="background:${bg};color:${fg};padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600">${item.mode}</span>
+      </td>
+      <td style="padding:7px 10px;border-bottom:1px solid var(--border);font-size:12px;text-align:center">${item.available_quantity ?? '—'}</td>
+      <td style="padding:7px 10px;border-bottom:1px solid var(--border);font-size:12px;text-align:right">$${(item.price||0).toLocaleString('es-AR')}</td>
+      <td style="padding:7px 10px;border-bottom:1px solid var(--border);font-size:12px;text-align:center">${item.free_shipping ? '✓' : '—'}</td>
+    </tr>`;
+  }).join('');
+
+  const table = `<div style="overflow-x:auto">
+  <table style="width:100%;border-collapse:collapse">
+    <thead><tr style="background:var(--surface2)">
+      <th style="padding:8px 10px;text-align:left;font-size:11px;font-weight:600;color:var(--muted);border-bottom:1px solid var(--border)">MLA</th>
+      <th style="padding:8px 10px;text-align:left;font-size:11px;font-weight:600;color:var(--muted);border-bottom:1px solid var(--border)">Título</th>
+      <th style="padding:8px 10px;text-align:center;font-size:11px;font-weight:600;color:var(--muted);border-bottom:1px solid var(--border)">Logística</th>
+      <th style="padding:8px 10px;text-align:center;font-size:11px;font-weight:600;color:var(--muted);border-bottom:1px solid var(--border)">Stock</th>
+      <th style="padding:8px 10px;text-align:right;font-size:11px;font-weight:600;color:var(--muted);border-bottom:1px solid var(--border)">Precio</th>
+      <th style="padding:8px 10px;text-align:center;font-size:11px;font-weight:600;color:var(--muted);border-bottom:1px solid var(--border)">Envío gratis</th>
+    </tr></thead>
+    <tbody>${rows || '<tr><td colspan="6" style="padding:30px;text-align:center;color:var(--muted)">Sin publicaciones activas</td></tr>'}</tbody>
+  </table></div>`;
+
+  el.innerHTML = kpis + flexCard + fullCard + prepCard + table;
+}
+
+// ── COMPETENCIA ───────────────────────────────────────────────────────────────
+async function loadCompetencia() {
+  const el = document.getElementById('competenciaContent');
+  el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">⏳ Cargando categorías...</div>';
+  try {
+    const acc = state.accounts[0];
+    if (!acc) { el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">Sin cuenta conectada</div>'; return; }
+    const r = await fetch(`${SERVER_URL}/api/competencia?uid=${acc.userId}&client_id=${acc.id}&session_id=${getSession()||''}`);
+    const data = await r.json();
+    renderCompetenciaCategorias(data.categories || [], acc);
+  } catch(e) {
+    el.innerHTML = `<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Error: ${e.message}</div>`;
+  }
+}
+
+function renderCompetenciaCategorias(cats, acc) {
+  const el = document.getElementById('competenciaContent');
+  if (!cats.length) { el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">No se encontraron categorías</div>'; return; }
+
+  const cards = cats.map(c => `
+    <div onclick="loadCompetenciaDetalle('${c.id}','${c.name.replace(/'/g,"\\'")}',${acc.userId},${acc.id})"
+         style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px 16px;cursor:pointer;transition:border-color 0.15s"
+         onmouseover="this.style.borderColor='var(--accent)'" onmouseout="this.style.borderColor='var(--border)'">
+      <div style="font-size:13px;font-weight:600;margin-bottom:4px">${c.name}</div>
+      <div style="font-size:11px;color:var(--muted)">${c.count} publicación${c.count!==1?'es':''} tuya${c.count!==1?'s':''}</div>
+      <div style="font-size:11px;color:var(--accent);margin-top:6px">Ver competidores →</div>
+    </div>`).join('');
+
+  el.innerHTML = `<div style="font-size:13px;color:var(--muted);margin-bottom:16px">Tus categorías con más publicaciones — hacé click para ver la competencia</div>
+  <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px">${cards}</div>`;
+}
+
+async function loadCompetenciaDetalle(catId, catName, uid, clientId) {
+  const el = document.getElementById('competenciaContent');
+  el.innerHTML = `<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">⏳ Analizando categoría <strong>${catName}</strong>...</div>`;
+  try {
+    const r = await fetch(`${SERVER_URL}/api/competencia?uid=${uid}&client_id=${clientId}&category_id=${catId}&session_id=${getSession()||''}`);
+    const data = await r.json();
+    renderCompetenciaDetalle(data, uid);
+  } catch(e) {
+    el.innerHTML = `<div style="color:var(--muted);font-size:13px;padding:40px">Error: ${e.message}</div>`;
+  }
+}
+
+function renderCompetenciaDetalle(data, uid) {
+  const el = document.getElementById('competenciaContent');
+  const { category, price_stats, sellers, my_items, top_listings } = data;
+
+  const backBtn = `<button onclick="loadCompetencia()" style="padding:6px 14px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:12px;cursor:pointer;margin-bottom:16px">← Volver a categorías</button>`;
+
+  const priceCard = price_stats ? `<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px;margin-bottom:16px">
+    <div style="font-size:13px;font-weight:600;margin-bottom:12px">💰 Rango de precios — <span style="color:var(--accent)">${category.name}</span></div>
+    <div style="display:flex;gap:20px;flex-wrap:wrap">
+      ${[['Mínimo','$'+price_stats.min.toLocaleString('es-AR')],['Promedio','$'+price_stats.avg.toLocaleString('es-AR')],['Máximo','$'+price_stats.max.toLocaleString('es-AR')]].map(([l,v])=>`
+        <div><div style="font-size:11px;color:var(--muted)">${l}</div><div style="font-size:18px;font-weight:700;font-family:var(--font-b)">${v}</div></div>`).join('')}
+    </div>
+  </div>` : '';
+
+  // My items vs market
+  const myCard = my_items.length ? `<div style="background:#f0f4ff;border:1px solid #c7d2fe;border-radius:12px;padding:16px;margin-bottom:16px">
+    <div style="font-size:13px;font-weight:600;margin-bottom:10px">🎯 Tus publicaciones en esta categoría</div>
+    ${my_items.map(i => {
+      const diff = price_stats ? Math.round(((i.price - price_stats.avg) / price_stats.avg) * 100) : null;
+      const diffStr = diff != null ? `<span style="color:${Math.abs(diff)<10?'#16a34a':diff>0?'#dc2626':'#d97706'};font-size:11px;margin-left:8px">${diff>0?'+':''}${diff}% vs promedio</span>` : '';
+      return `<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid #c7d2fe;font-size:12px">
+        <span style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${i.title}</span>
+        <span style="font-weight:600">$${(i.price||0).toLocaleString('es-AR')}${diffStr}</span>
+      </div>`;
+    }).join('')}
+  </div>` : '';
+
+  // Top sellers
+  const sellersRows = (sellers||[]).map((s,idx) => {
+    const isMe = String(s.id) === String(uid);
+    return `<tr style="${isMe?'background:#f0f4ff':''}">
+      <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;font-weight:600">#${idx+1}</td>
+      <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px">
+        ${isMe?'<span style="color:#4338ca;font-weight:600">▶ </span>':''}${s.nickname}${isMe?' (vos)':''}
+      </td>
+      <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;text-align:center">${s.items.length}</td>
+      <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;text-align:right;font-weight:600">${s.total_sold.toLocaleString('es-AR')}</td>
+    </tr>`;
+  }).join('');
+
+  const topRows = (top_listings||[]).map((i,idx) => {
+    const isMe = i.seller && String(i.seller.id) === String(uid);
+    return `<tr style="${isMe?'background:#f0f4ff':''}">
+      <td style="padding:7px 10px;border-bottom:1px solid var(--border);font-size:11px;color:var(--muted)">${idx+1}</td>
+      <td style="padding:7px 10px;border-bottom:1px solid var(--border);font-size:12px;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+        <a href="${i.permalink||'#'}" target="_blank" style="color:var(--text);text-decoration:none">${i.title}</a>
+        ${isMe?'<span style="color:#4338ca;font-size:10px;font-weight:600;margin-left:6px">[Tuya]</span>':''}
+      </td>
+      <td style="padding:7px 10px;border-bottom:1px solid var(--border);font-size:12px;text-align:right;font-weight:600">$${(i.price||0).toLocaleString('es-AR')}</td>
+      <td style="padding:7px 10px;border-bottom:1px solid var(--border);font-size:12px;text-align:center">${i.sold_quantity||0}</td>
+      <td style="padding:7px 10px;border-bottom:1px solid var(--border);font-size:12px">${i.seller&&i.seller.nickname||'—'}</td>
+    </tr>`;
+  }).join('');
+
+  el.innerHTML = backBtn + priceCard + myCard +
+  `<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;flex-wrap:wrap">
+    <div>
+      <div style="font-size:13px;font-weight:600;margin-bottom:10px">🏆 Top vendedores</div>
+      <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse">
+        <thead><tr style="background:var(--surface2)">
+          <th style="padding:7px 10px;font-size:11px;color:var(--muted);border-bottom:1px solid var(--border)">#</th>
+          <th style="padding:7px 10px;font-size:11px;color:var(--muted);border-bottom:1px solid var(--border);text-align:left">Vendedor</th>
+          <th style="padding:7px 10px;font-size:11px;color:var(--muted);border-bottom:1px solid var(--border)">Pubs</th>
+          <th style="padding:7px 10px;font-size:11px;color:var(--muted);border-bottom:1px solid var(--border);text-align:right">Ventas</th>
+        </tr></thead>
+        <tbody>${sellersRows}</tbody>
+      </table></div>
+    </div>
+    <div>
+      <div style="font-size:13px;font-weight:600;margin-bottom:10px">📋 Top 20 publicaciones</div>
+      <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse">
+        <thead><tr style="background:var(--surface2)">
+          <th style="padding:7px 10px;font-size:11px;color:var(--muted);border-bottom:1px solid var(--border)">#</th>
+          <th style="padding:7px 10px;font-size:11px;color:var(--muted);border-bottom:1px solid var(--border);text-align:left">Título</th>
+          <th style="padding:7px 10px;font-size:11px;color:var(--muted);border-bottom:1px solid var(--border);text-align:right">Precio</th>
+          <th style="padding:7px 10px;font-size:11px;color:var(--muted);border-bottom:1px solid var(--border)">Vendidos</th>
+          <th style="padding:7px 10px;font-size:11px;color:var(--muted);border-bottom:1px solid var(--border)">Vendedor</th>
+        </tr></thead>
+        <tbody>${topRows}</tbody>
+      </table></div>
+    </div>
+  </div>`;
 }
 
 // ── DIAGNÓSTICO MENSUAL ───────────────────────────────────────────────────────
