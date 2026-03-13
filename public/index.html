@@ -2912,11 +2912,17 @@ async function loadAds() {
   }
 
   let allCampaigns = [], totalSpend = 0, totalSales = 0, totalClicks = 0, totalImpr = 0;
+  let hasError = false;
 
   await Promise.all(connected.map(async acc => {
     try {
-      const res = await fetch(SERVER_URL + '/api/ads?client_id=' + acc.id + dateParam + '&session_id=' + (getSession()||''));
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 20000);
+      const res = await fetch(SERVER_URL + '/api/ads?client_id=' + acc.id + dateParam + '&session_id=' + (getSession()||''), { signal: controller.signal });
+      clearTimeout(timeout);
+      if (!res.ok) { hasError = true; console.error('Ads HTTP error:', res.status); return; }
       const data = await res.json();
+      if (data.error) { hasError = true; console.error('Ads API error:', data.error); return; }
       if (data.summary) {
         totalSpend  += data.summary.spend || 0;
         totalSales  += data.summary.sales || 0;
@@ -2924,8 +2930,16 @@ async function loadAds() {
         totalImpr   += data.summary.impressions || 0;
       }
       (data.campaigns || []).forEach(c => allCampaigns.push({ ...c, cuenta: acc.name, color: acc.color }));
-    } catch(e) { console.error('Ads error:', e); }
+    } catch(e) {
+      hasError = true;
+      console.error('Ads fetch error:', e.name === 'AbortError' ? 'Timeout (20s)' : e);
+    }
   }));
+
+  if (hasError && !allCampaigns.length) {
+    el.innerHTML = '<div style="color:#ff5252;font-size:13px;padding:20px;text-align:center">❌ Error cargando Ads. Revisá los logs en Railway o intentá con otro rango de fechas.</div>';
+    return;
+  }
 
   const acos = totalSpend && totalSales ? ((totalSpend / totalSales) * 100).toFixed(1) + '%' : '—';
   const roas = totalSpend && totalSales ? (totalSales / totalSpend).toFixed(2) + 'x' : '—';
