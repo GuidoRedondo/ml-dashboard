@@ -518,6 +518,9 @@ tbody td {
       <div class="nav-item" data-page="ads" onclick="showPage('ads',this)">
         <span class="nav-icon">📣</span> Publicidad
       </div>
+      <div class="nav-item" data-page="diagnostico" onclick="showPage('diagnostico',this);loadDiagnostico()">
+        <span class="nav-icon">🩺</span> Diagnóstico
+      </div>
 
       <div style="height:1px;background:var(--border);margin:12px 0"></div>
 
@@ -668,6 +671,33 @@ tbody td {
         <h2 style="margin:0;font-family:var(--font-b);flex:1">Publicidad</h2>
       </div>
       <div id="adsContent"></div>
+    </div>
+
+    <!-- DIAGNÓSTICO MENSUAL -->
+    <div class="page" id="page-diagnostico">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px;flex-wrap:wrap">
+        <h2 style="margin:0;font-family:var(--font-b);flex:1">🩺 Diagnóstico Mensual</h2>
+        <select id="diagClientSel" onchange="loadDiagnostico()" style="padding:6px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px"></select>
+        <select id="diagMesSel" style="padding:6px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px">
+          <option value="2025-01-01">Ene 2025</option>
+          <option value="2025-02-01">Feb 2025</option>
+          <option value="2025-03-01">Mar 2025</option>
+          <option value="2025-04-01">Abr 2025</option>
+          <option value="2025-05-01">May 2025</option>
+          <option value="2025-06-01">Jun 2025</option>
+          <option value="2025-07-01">Jul 2025</option>
+          <option value="2025-08-01">Ago 2025</option>
+          <option value="2025-09-01">Sep 2025</option>
+          <option value="2025-10-01">Oct 2025</option>
+          <option value="2025-11-01">Nov 2025</option>
+          <option value="2025-12-01">Dic 2025</option>
+          <option value="2026-01-01">Ene 2026</option>
+          <option value="2026-02-01">Feb 2026</option>
+          <option value="2026-03-01" selected>Mar 2026</option>
+        </select>
+        <button class="sync-btn" id="diagCalcBtn" onclick="diagCalcular()" style="background:var(--accent);color:#fff;border:none">⚡ Calcular mes</button>
+      </div>
+      <div id="diagContent"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Seleccioná un cliente y calculá el diagnóstico del mes</div></div>
     </div>
 
     <!-- CLIENTES ADMIN -->
@@ -3091,6 +3121,352 @@ async function loadAdsAnalysis(dateParam) {
   }
 }
 
+
+// ── DIAGNÓSTICO MENSUAL ───────────────────────────────────────────────────────
+
+function loadDiagnostico() {
+  // Populate client selector
+  const sel = document.getElementById('diagClientSel');
+  if (sel && sel.options.length === 0) {
+    state.accounts.forEach(acc => {
+      const opt = document.createElement('option');
+      opt.value = acc.id;
+      opt.textContent = acc.name;
+      sel.appendChild(opt);
+    });
+  }
+  diagCargarHistorial();
+}
+
+async function diagCargarHistorial() {
+  const clientId = document.getElementById('diagClientSel')?.value;
+  if (!clientId) return;
+  const el = document.getElementById('diagContent');
+  el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:20px;text-align:center">⏳ Cargando historial...</div>';
+  try {
+    const r = await fetch(SERVER_URL + '/api/diagnostico?client_id=' + clientId + '&session_id=' + (getSession()||''));
+    const data = await r.json();
+    diagRenderTabla(data.meses || []);
+  } catch(e) {
+    el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:20px">Error cargando diagnóstico</div>';
+  }
+}
+
+async function diagCalcular() {
+  const clientId = document.getElementById('diagClientSel')?.value;
+  const mes = document.getElementById('diagMesSel')?.value;
+  if (!clientId || !mes) return alert('Seleccioná un cliente y un mes');
+  const btn = document.getElementById('diagCalcBtn');
+  btn.disabled = true; btn.textContent = '⏳ Calculando...';
+  try {
+    const r = await fetch(SERVER_URL + '/api/diagnostico/calcular', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ client_id: clientId, mes, session_id: getSession()||'' })
+    });
+    const data = await r.json();
+    if (!data.ok) throw new Error(data.error || 'Error desconocido');
+    await diagCargarHistorial();
+  } catch(e) {
+    alert('Error: ' + e.message);
+  } finally {
+    btn.disabled = false; btn.textContent = '⚡ Calcular mes';
+  }
+}
+
+async function diagGuardarManuales(clientId, mes) {
+  const get = id => document.getElementById(id)?.value || '';
+  const getCheck = id => document.getElementById(id)?.value || 'NO';
+  const manuales = {
+    rep_resp_lv:        get('dm_rep_resp_lv'),
+    rep_resp_noche:     get('dm_rep_resp_noche'),
+    rep_resp_finde:     get('dm_rep_resp_finde'),
+    flex_horario_lv:    get('dm_flex_horario_lv'),
+    flex_horario_sab:   get('dm_flex_horario_sab'),
+    flex_turbo:         get('dm_flex_turbo'),
+    flex_km:            get('dm_flex_km'),
+    full_activo:        get('dm_full_activo'),
+    full_espacio:       get('dm_full_espacio'),
+    full_puntaje:       get('dm_full_puntaje'),
+    menv_colecta:       get('dm_menv_colecta'),
+    menv_horario:       get('dm_menv_horario'),
+    menv_prep:          get('dm_menv_prep'),
+    marca_tienda_of:    get('dm_marca_tienda_of'),
+    marca_registrada:   get('dm_marca_registrada'),
+    marca_optimizada:   get('dm_marca_optimizada'),
+    marca_web:          get('dm_marca_web'),
+    mkt_descuentos:     get('dm_mkt_descuentos'),
+    mkt_estrategia:     get('dm_mkt_estrategia'),
+    mkt_cupones_nuevos: get('dm_mkt_cupones_nuevos'),
+    mkt_cupones_seg:    get('dm_mkt_cupones_seg'),
+    mkt_difusiones:     get('dm_mkt_difusiones'),
+    mkt_carritos:       get('dm_mkt_carritos'),
+    pub_catalogo:       get('dm_pub_catalogo'),
+    brand_inversion:    get('dm_brand_inversion'),
+    brand_ingresos:     get('dm_brand_ingresos'),
+    display_inversion:  get('dm_display_inversion'),
+    notas:              get('dm_notas'),
+  };
+  const btn = document.getElementById('diagSaveBtn');
+  btn.disabled = true; btn.textContent = '⏳ Guardando...';
+  try {
+    const r = await fetch(SERVER_URL + '/api/diagnostico/manuales', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ client_id: clientId, mes, manuales, session_id: getSession()||'' })
+    });
+    const d = await r.json();
+    if (!d.ok) throw new Error(d.error);
+    btn.textContent = '✓ Guardado'; setTimeout(() => { btn.disabled=false; btn.textContent='💾 Guardar datos manuales'; }, 2000);
+  } catch(e) {
+    alert('Error al guardar: ' + e.message); btn.disabled=false; btn.textContent='💾 Guardar datos manuales';
+  }
+}
+
+function diagRenderTabla(meses) {
+  const el = document.getElementById('diagContent');
+  const clientId = document.getElementById('diagClientSel')?.value;
+  const mesSel = document.getElementById('diagMesSel')?.value || '';
+
+  if (!meses.length) {
+    el.innerHTML = `<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">
+      No hay datos calculados aún.<br>Seleccioná un mes y hacé click en <strong>⚡ Calcular mes</strong>.</div>`;
+    return;
+  }
+
+  const fmt = v => v == null ? '—' : typeof v === 'number' ? v.toLocaleString('es-AR') : v;
+  const fmtM = v => v == null ? '—' : '$' + parseFloat(v).toLocaleString('es-AR', {minimumFractionDigits:0,maximumFractionDigits:0});
+  const fmtP = v => v == null ? '—' : parseFloat(v).toFixed(2) + '%';
+  const fmtR = v => v == null ? '—' : parseFloat(v).toFixed(2) + 'x';
+  const nomMes = d => { const m=['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic']; const dt=new Date(d+'T12:00:00'); return m[dt.getMonth()]+' '+dt.getFullYear(); };
+
+  // Current selected month data for manual form
+  const mesFmt = mesSel ? mesSel.slice(0,7)+'-01' : null;
+  const mesData = mesFmt ? meses.find(m => m.mes && m.mes.slice(0,7) === mesFmt.slice(0,7)) : null;
+  const man = mesData ? (mesData.manuales || {}) : {};
+
+  // Build columns (up to 6 most recent + headers)
+  const cols = meses.slice(0,6).reverse(); // oldest first for table
+
+  const secciones = [
+    { titulo: 'KPIs', color: '#f0e6ff', rows: [
+      { label: 'Facturación',      key: d => fmtM(d.facturacion) },
+      { label: 'Ventas',           key: d => fmt(d.ventas) },
+      { label: 'Unidades vendidas',key: d => fmt(d.unidades) },
+      { label: 'Visitas',          key: d => fmt(d.visitas) },
+      { label: 'Conversión',       key: d => fmtP(d.conversion) },
+      { label: 'Tkt promedio',     key: d => fmtM(d.ticket_promedio) },
+      { label: 'Carritos',         key: d => d.carritos != null ? parseFloat(d.carritos).toFixed(2) : '—' },
+    ]},
+    { titulo: 'Publicidad — PADS', color: '#fffbe6', rows: [
+      { label: 'Inversión',        key: d => fmtM(d.pads_inversion) },
+      { label: 'Ingresos',         key: d => fmtM(d.pads_ingresos) },
+      { label: 'ACOS',             key: d => fmtP(d.pads_acos) },
+      { label: 'TACOS',            key: d => fmtP(d.pads_tacos), bold: true },
+      { label: '% aporte PADS',    key: d => fmtP(d.pads_aporte_pct) },
+      { label: 'Clicks',           key: d => fmt(d.pads_clicks) },
+      { label: 'Ventas',           key: d => fmt(d.pads_ventas) },
+      { label: 'Conversión',       key: d => fmtP(d.pads_conversion) },
+      { label: 'Impresiones',      key: d => fmt(d.pads_impresiones) },
+      { label: 'CTR',              key: d => fmtP(d.pads_ctr) },
+    ]},
+    { titulo: 'Publicidad — Brand', color: '#fffbe6', rows: [
+      { label: 'Inversión',        key: d => d.manuales?.brand_inversion || '—' },
+      { label: 'Ingresos',         key: d => d.manuales?.brand_ingresos || '—' },
+    ]},
+    { titulo: 'Publicidad — Display', color: '#fffbe6', rows: [
+      { label: 'Inversión',        key: d => d.manuales?.display_inversion || '—' },
+    ]},
+    { titulo: 'Reputación', color: '#e6eeff', rows: [
+      { label: 'Medalla',          key: d => d.rep_medalla || '—', bold: true },
+      { label: 'Ventas 60 días',   key: d => fmt(d.rep_ventas_60) },
+      { label: 'Ventas concretadas',key: d => fmt(d.rep_concretadas) },
+      { label: 'Reclamos',         key: d => fmtP(d.rep_reclamos) },
+      { label: 'Demoras',          key: d => fmtP(d.rep_demoras) },
+      { label: 'Cancelaciones',    key: d => fmtP(d.rep_cancelaciones) },
+      { label: 'Mediaciones',      key: d => d.rep_mediaciones != null ? d.rep_mediaciones : '—' },
+      { label: 'Ventas NO concretadas', key: d => fmt(d.rep_no_concretadas) },
+      { label: 'No concretadas $', key: d => fmtM(d.rep_no_conc_monto) },
+      { label: '% no concretadas', key: d => fmtP(d.rep_no_conc_pct) },
+      { label: 'Resp. LV 9-18',    key: d => d.manuales?.rep_resp_lv || '—' },
+      { label: 'Resp. LV 18-24',   key: d => d.manuales?.rep_resp_noche || '—' },
+      { label: 'Resp. Sab/Dom',    key: d => d.manuales?.rep_resp_finde || '—' },
+    ]},
+    { titulo: 'Publicaciones', color: '#e6f7ef', rows: [
+      { label: 'Total publicaciones', key: d => fmt(d.pub_total) },
+      { label: 'Activas',          key: d => fmt(d.pub_activas) },
+      { label: 'Inactivas',        key: d => fmt(d.pub_inactivas) },
+      { label: '% Activas',        key: d => d.pub_activas && d.pub_total ? fmtP((d.pub_activas/d.pub_total)*100) : '—' },
+      { label: 'Exitosas (≥1 venta)', key: d => fmt(d.pub_exitosas) },
+      { label: 'Oferta relevante', key: d => d.pub_exitosas && d.pub_activas ? fmtP((d.pub_exitosas/d.pub_activas)*100) : '0%' },
+      { label: 'Interés (vis/pub activa)', key: d => d.pub_interes != null ? parseFloat(d.pub_interes).toFixed(1) : '—' },
+      { label: 'Pareto',           key: d => d.pub_pareto_pct != null ? fmtP(d.pub_pareto_pct) : '—' },
+      { label: 'Catálogo',         key: d => d.manuales?.pub_catalogo || '—' },
+    ]},
+    { titulo: 'Central de Marketing — Marca', color: '#fff3e6', rows: [
+      { label: 'Tienda Oficial',   key: d => d.manuales?.marca_tienda_of || '—' },
+      { label: 'Marca Registrada', key: d => d.manuales?.marca_registrada || '—' },
+      { label: 'Página optimizada',key: d => d.manuales?.marca_optimizada || '—' },
+      { label: 'Sitio Web',        key: d => d.manuales?.marca_web || '—' },
+    ]},
+    { titulo: 'Central de Marketing — Marketing', color: '#fff3e6', rows: [
+      { label: 'Hace descuentos',  key: d => d.manuales?.mkt_descuentos || '—' },
+      { label: 'Estrategia precios',key: d => d.manuales?.mkt_estrategia || '—', bold: true },
+      { label: 'Cupones nuevos',   key: d => d.manuales?.mkt_cupones_nuevos || '—' },
+      { label: 'Cupones seguidores',key: d => d.manuales?.mkt_cupones_seg || '—' },
+      { label: 'Difusiones',       key: d => d.manuales?.mkt_difusiones || '—' },
+      { label: 'Carritos abandonados',key: d => d.manuales?.mkt_carritos || '—' },
+    ]},
+    { titulo: 'Mercado Envíos — FULL', color: '#fce6e6', rows: [
+      { label: 'Activo',           key: d => d.manuales?.full_activo || '—' },
+      { label: 'Espacio asignado', key: d => d.manuales?.full_espacio || '—' },
+      { label: 'Puntaje',          key: d => d.manuales?.full_puntaje || '—' },
+    ]},
+    { titulo: 'Mercado Envíos — FLEX', color: '#fce6e6', rows: [
+      { label: 'Activo',           key: d => d.manuales?.flex_activo || '—' },
+      { label: 'Horario corte L-V',key: d => d.manuales?.flex_horario_lv || '—' },
+      { label: 'Horario corte Sáb',key: d => d.manuales?.flex_horario_sab || '—' },
+      { label: 'Turbo',            key: d => d.manuales?.flex_turbo || '—' },
+      { label: 'Km turbo',         key: d => d.manuales?.flex_km || '—' },
+    ]},
+    { titulo: 'Mercado Envíos — M.Envíos', color: '#fce6e6', rows: [
+      { label: 'Colecta',          key: d => d.manuales?.menv_colecta || '—' },
+      { label: 'Horario corte',    key: d => d.manuales?.menv_horario || '—', bold: true },
+      { label: 'Tiempo preparación',key: d => d.manuales?.menv_prep || '—' },
+    ]},
+  ];
+
+  // Table HTML
+  const thStyle = 'padding:7px 10px;font-size:12px;font-weight:600;text-align:center;white-space:nowrap;border:1px solid var(--border)';
+  const tdStyle = 'padding:6px 10px;font-size:12px;text-align:center;border:1px solid var(--border)';
+  const tdLbl  = 'padding:6px 10px;font-size:12px;color:var(--muted);border:1px solid var(--border);white-space:nowrap';
+
+  let tableHTML = `<div style="overflow-x:auto;margin-bottom:24px">
+  <table style="border-collapse:collapse;width:100%;min-width:600px">
+    <thead><tr>
+      <th style="${thStyle};min-width:200px;text-align:left">Métrica</th>
+      ${cols.map(m => `<th style="${thStyle}">${nomMes(m.mes)}</th>`).join('')}
+    </tr></thead><tbody>`;
+
+  secciones.forEach(sec => {
+    tableHTML += `<tr><td colspan="${cols.length+1}" style="padding:8px 10px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;background:${sec.color};border:1px solid var(--border);color:#555">${sec.titulo}</td></tr>`;
+    sec.rows.forEach(row => {
+      tableHTML += `<tr>
+        <td style="${tdLbl}">${row.label}</td>
+        ${cols.map(m => `<td style="${tdStyle}${row.bold?';font-weight:700':''}${m.mes && mesFmt && m.mes.slice(0,7)===mesFmt.slice(0,7)?';background:rgba(99,102,241,0.06)':''}">${row.key(m)}</td>`).join('')}
+      </tr>`;
+    });
+  });
+
+  tableHTML += `</tbody></table></div>`;
+
+  // Manual data form for selected month
+  const siNo = (id, val) => `<select id="${id}" style="width:100%;padding:5px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px">
+    <option value="SI" ${val==='SI'?'selected':''}>SI</option>
+    <option value="NO" ${val==='NO'||!val?'selected':''}>NO</option>
+  </select>`;
+  const inp = (id, val, ph='') => `<input id="${id}" value="${val||''}" placeholder="${ph}" style="width:100%;padding:5px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px">`;
+
+  const formHTML = `
+  <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:20px;margin-bottom:20px">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
+      <h3 style="margin:0;font-size:14px;font-family:var(--font-b)">📝 Datos manuales — ${mesSel ? nomMes(mesSel) : 'mes seleccionado'}</h3>
+      <button id="diagSaveBtn" onclick="diagGuardarManuales('${clientId}','${mesSel}')" style="padding:7px 16px;background:var(--accent);color:#fff;border:none;border-radius:8px;font-size:13px;cursor:pointer">💾 Guardar datos manuales</button>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:20px">
+
+      <div>
+        <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);margin-bottom:10px;padding-bottom:4px;border-bottom:1px solid var(--border)">Tiempos de respuesta</div>
+        <label style="font-size:12px;color:var(--muted)">L-V 9 a 18hs</label>
+        ${inp('dm_rep_resp_lv', man.rep_resp_lv, 'ej: 1hs')}
+        <label style="font-size:12px;color:var(--muted);margin-top:8px;display:block">L-V 18 a 24hs</label>
+        ${inp('dm_rep_resp_noche', man.rep_resp_noche, 'ej: 8hs')}
+        <label style="font-size:12px;color:var(--muted);margin-top:8px;display:block">Sáb y Dom</label>
+        ${inp('dm_rep_resp_finde', man.rep_resp_finde, 'ej: 10hs')}
+      </div>
+
+      <div>
+        <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);margin-bottom:10px;padding-bottom:4px;border-bottom:1px solid var(--border)">FLEX</div>
+        <label style="font-size:12px;color:var(--muted)">Activo</label>
+        ${siNo('dm_flex_activo', man.flex_activo)}
+        <label style="font-size:12px;color:var(--muted);margin-top:8px;display:block">Horario corte L-V</label>
+        ${inp('dm_flex_horario_lv', man.flex_horario_lv, 'ej: 13hs')}
+        <label style="font-size:12px;color:var(--muted);margin-top:8px;display:block">Horario corte Sáb</label>
+        ${inp('dm_flex_horario_sab', man.flex_horario_sab, 'ej: 13hs')}
+        <label style="font-size:12px;color:var(--muted);margin-top:8px;display:block">Turbo</label>
+        ${siNo('dm_flex_turbo', man.flex_turbo)}
+        <label style="font-size:12px;color:var(--muted);margin-top:8px;display:block">Km turbo</label>
+        ${inp('dm_flex_km', man.flex_km, 'ej: 1km')}
+      </div>
+
+      <div>
+        <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);margin-bottom:10px;padding-bottom:4px;border-bottom:1px solid var(--border)">FULL</div>
+        <label style="font-size:12px;color:var(--muted)">Activo</label>
+        ${siNo('dm_full_activo', man.full_activo)}
+        <label style="font-size:12px;color:var(--muted);margin-top:8px;display:block">Espacio asignado</label>
+        ${inp('dm_full_espacio', man.full_espacio, 'ej: 1000u')}
+        <label style="font-size:12px;color:var(--muted);margin-top:8px;display:block">Puntaje</label>
+        ${inp('dm_full_puntaje', man.full_puntaje, 'ej: 85')}
+        <label style="font-size:12px;color:var(--muted);margin-top:8px;display:block">Colecta M.Envíos</label>
+        ${siNo('dm_menv_colecta', man.menv_colecta)}
+        <label style="font-size:12px;color:var(--muted);margin-top:8px;display:block">Horario corte</label>
+        ${inp('dm_menv_horario', man.menv_horario, 'ej: 14 a 14.30hs')}
+        <label style="font-size:12px;color:var(--muted);margin-top:8px;display:block">Tiempo preparación</label>
+        ${inp('dm_menv_prep', man.menv_prep, 'ej: 2:30 a 3hs')}
+      </div>
+
+      <div>
+        <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);margin-bottom:10px;padding-bottom:4px;border-bottom:1px solid var(--border)">Marca</div>
+        <label style="font-size:12px;color:var(--muted)">Tienda Oficial</label>
+        ${siNo('dm_marca_tienda_of', man.marca_tienda_of)}
+        <label style="font-size:12px;color:var(--muted);margin-top:8px;display:block">Marca Registrada</label>
+        ${siNo('dm_marca_registrada', man.marca_registrada)}
+        <label style="font-size:12px;color:var(--muted);margin-top:8px;display:block">Página Optimizada</label>
+        ${siNo('dm_marca_optimizada', man.marca_optimizada)}
+        <label style="font-size:12px;color:var(--muted);margin-top:8px;display:block">Sitio Web</label>
+        ${inp('dm_marca_web', man.marca_web, 'URL o NO')}
+      </div>
+
+      <div>
+        <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);margin-bottom:10px;padding-bottom:4px;border-bottom:1px solid var(--border)">Marketing</div>
+        <label style="font-size:12px;color:var(--muted)">Hace descuentos</label>
+        ${siNo('dm_mkt_descuentos', man.mkt_descuentos)}
+        <label style="font-size:12px;color:var(--muted);margin-top:8px;display:block">Estrategia de precios</label>
+        ${siNo('dm_mkt_estrategia', man.mkt_estrategia)}
+        <label style="font-size:12px;color:var(--muted);margin-top:8px;display:block">Cupones nuevos seg.</label>
+        ${siNo('dm_mkt_cupones_nuevos', man.mkt_cupones_nuevos)}
+        <label style="font-size:12px;color:var(--muted);margin-top:8px;display:block">Cupones seguidores</label>
+        ${siNo('dm_mkt_cupones_seg', man.mkt_cupones_seg)}
+        <label style="font-size:12px;color:var(--muted);margin-top:8px;display:block">Difusiones</label>
+        ${siNo('dm_mkt_difusiones', man.mkt_difusiones)}
+        <label style="font-size:12px;color:var(--muted);margin-top:8px;display:block">Carritos abandonados</label>
+        ${siNo('dm_mkt_carritos', man.mkt_carritos)}
+      </div>
+
+      <div>
+        <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);margin-bottom:10px;padding-bottom:4px;border-bottom:1px solid var(--border)">Publicaciones</div>
+        <label style="font-size:12px;color:var(--muted)">Catálogo</label>
+        ${siNo('dm_pub_catalogo', man.pub_catalogo)}
+        <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);margin:14px 0 10px;padding-bottom:4px;border-bottom:1px solid var(--border)">Brand Ads</div>
+        <label style="font-size:12px;color:var(--muted)">Inversión Brand</label>
+        ${inp('dm_brand_inversion', man.brand_inversion, '$0')}
+        <label style="font-size:12px;color:var(--muted);margin-top:8px;display:block">Ingresos Brand</label>
+        ${inp('dm_brand_ingresos', man.brand_ingresos, '$0')}
+        <label style="font-size:12px;color:var(--muted);margin-top:8px;display:block">Inversión Display</label>
+        ${inp('dm_display_inversion', man.display_inversion, '$0')}
+      </div>
+
+    </div>
+    <div style="margin-top:16px">
+      <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">Notas del mes</label>
+      <textarea id="dm_notas" style="width:100%;padding:8px;border-radius:6px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px;resize:vertical;min-height:60px">${man.notas||''}</textarea>
+    </div>
+  </div>`;
+
+  el.innerHTML = formHTML + tableHTML;
+}
+
+// ── DIAGNÓSTICO MENSUAL ───────────────────────────────────────────────────────
 
 // ── BOOT ──────────────────────────────────────────────────────────────────────
 window.addEventListener('DOMContentLoaded', () => {
