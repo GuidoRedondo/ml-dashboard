@@ -1625,6 +1625,7 @@ function buildEvolutionChart() {
   chartEl.style.height = H + 'px';
   chartEl.style.display = 'block';
   chartEl.style.position = 'relative';
+  chartEl.style.overflow = 'hidden';
   chartEl.innerHTML = `
     <div id="chartTooltip" style="
       display:none;position:absolute;pointer-events:none;z-index:10;
@@ -1632,7 +1633,7 @@ function buildEvolutionChart() {
       border-radius:8px;padding:8px 12px;font-size:12px;
       box-shadow:0 4px 16px rgba(0,0,0,0.12);min-width:130px;white-space:nowrap">
     </div>
-    <svg id="chartSvg" width="100%" height="${H}" viewBox="0 0 ${W} ${H}" style="overflow:visible;display:block">
+    <svg id="chartSvg" width="100%" height="${H}" viewBox="0 0 ${W} ${H}" style="overflow:hidden;display:block">
       <defs>
         <linearGradient id="gFac" x1="0" y1="0" x2="0" y2="1">
           <stop offset="0%" stop-color="#FFD700" stop-opacity="0.3"/>
