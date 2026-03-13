@@ -283,9 +283,9 @@ body {
 }
 .range-btn:hover { background: rgba(255,255,255,0.15); border-color: rgba(255,255,255,0.35); }
 .range-btn.active {
-  background: var(--text);
-  border-color: var(--text);
-  color: #111;
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
   font-weight: 600;
 }
 input[type="date"]::-webkit-calendar-picker-indicator {
@@ -2895,7 +2895,7 @@ async function loadAds() {
   }
 
   let allCampaigns = [], totalSpend = 0, totalSales = 0, totalClicks = 0, totalImpr = 0;
-  let hasError = false;
+  let hasError = false, errorMsg = '';
 
   await Promise.all(connected.map(async acc => {
     try {
@@ -2903,9 +2903,9 @@ async function loadAds() {
       const timeout = setTimeout(() => controller.abort(), 20000);
       const res = await fetch(SERVER_URL + '/api/ads?client_id=' + acc.id + dateParam + '&session_id=' + (getSession()||''), { signal: controller.signal });
       clearTimeout(timeout);
-      if (!res.ok) { hasError = true; console.error('Ads HTTP error:', res.status); return; }
+      if (!res.ok) { hasError = true; errorMsg = 'HTTP ' + res.status; console.error('Ads HTTP error:', res.status); return; }
       const data = await res.json();
-      if (data.error) { hasError = true; console.error('Ads API error:', data.error); return; }
+      if (data.error) { hasError = true; errorMsg = data.error; console.error('Ads API error:', data.error); return; }
       if (data.summary) {
         totalSpend  += data.summary.spend || 0;
         totalSales  += data.summary.sales || 0;
@@ -2915,12 +2915,16 @@ async function loadAds() {
       (data.campaigns || []).forEach(c => allCampaigns.push({ ...c, cuenta: acc.name, color: acc.color }));
     } catch(e) {
       hasError = true;
-      console.error('Ads fetch error:', e.name === 'AbortError' ? 'Timeout (20s)' : e);
+      errorMsg = e.name === 'AbortError' ? 'Timeout (20s) — el servidor no responde' : e.message;
+      console.error('Ads fetch error:', errorMsg);
     }
   }));
 
   if (hasError && !allCampaigns.length) {
-    el.innerHTML = '<div style="color:#ff5252;font-size:13px;padding:20px;text-align:center">❌ Error cargando Ads. Revisá los logs en Railway o intentá con otro rango de fechas.</div>';
+    el.innerHTML = `<div style="color:#ff5252;font-size:13px;padding:20px;text-align:center">
+      ❌ Error cargando Ads: <code style="background:rgba(255,0,0,.1);padding:2px 6px;border-radius:4px">${errorMsg}</code><br>
+      <span style="color:var(--muted);font-size:11px;margin-top:6px;display:block">Revisá Railway Logs para más detalle</span>
+    </div>`;
     return;
   }
 
