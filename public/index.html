@@ -538,6 +538,20 @@ tbody td {
         <div class="page-title" id="pageTitle">Dashboard General</div>
         <div class="page-subtitle" id="pageSubtitle">Resumen consolidado · <span id="currentDate"></span></div>
       </div>
+      <!-- DATE RANGE PICKER — global, visible en todas las secciones -->
+      <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap" id="globalRangePicker">
+        <input type="date" id="globalDateFrom" onchange="applyGlobalRange()"
+          style="padding:5px 8px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:11px">
+        <span style="font-size:11px;color:var(--muted)">→</span>
+        <input type="date" id="globalDateTo" onchange="applyGlobalRange()"
+          style="padding:5px 8px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:11px">
+        <div style="display:flex;gap:3px">
+          <button class="range-btn active" id="qr-7"  onclick="setQuickRange(7)"  style="padding:4px 8px;font-size:11px">7d</button>
+          <button class="range-btn"        id="qr-30" onclick="setQuickRange(30)" style="padding:4px 8px;font-size:11px">30d</button>
+          <button class="range-btn"        id="qr-60" onclick="setQuickRange(60)" style="padding:4px 8px;font-size:11px">60d</button>
+          <button class="range-btn"        id="qr-90" onclick="setQuickRange(90)" style="padding:4px 8px;font-size:11px">90d</button>
+        </div>
+      </div>
       <div class="header-user" style="display:flex;align-items:center;gap:10px">
         <div id="accountSelectorWrap" style="display:none">
           <select id="accountSelectorDropdown" onchange="onAccountSelect(this.value)"
@@ -556,20 +570,6 @@ tbody td {
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:20px;flex-wrap:wrap">
         <div id="accountTabs" style="display:flex;gap:8px;flex-wrap:wrap;flex:1">
           <button class="acc-tab active" onclick="filterAccount(null,this)">● Todas las cuentas</button>
-        </div>
-        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
-          <span style="font-size:12px;color:var(--muted)">Período:</span>
-          <input type="date" id="globalDateFrom" onchange="applyGlobalRange()"
-            style="padding:5px 8px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:12px">
-          <span style="font-size:12px;color:var(--muted)">→</span>
-          <input type="date" id="globalDateTo" onchange="applyGlobalRange()"
-            style="padding:5px 8px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:12px">
-          <div style="display:flex;gap:4px">
-            <button class="range-btn active" id="qr-7"  onclick="setQuickRange(7)"  >7d</button>
-            <button class="range-btn"        id="qr-30" onclick="setQuickRange(30)" >30d</button>
-            <button class="range-btn"        id="qr-60" onclick="setQuickRange(60)" >60d</button>
-            <button class="range-btn"        id="qr-90" onclick="setQuickRange(90)" >90d</button>
-          </div>
         </div>
       </div>
 
@@ -1015,6 +1015,10 @@ function showPage(id, el) {
   document.getElementById('page-' + id).classList.add('active');
   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
   if (el) el.classList.add('active');
+  // Show date picker only on data pages
+  const noPicker = ['login','setup','clientes'];
+  const picker = document.getElementById('globalRangePicker');
+  if (picker) picker.style.display = noPicker.includes(id) ? 'none' : 'flex';
 }
 
 function setDashTab(el, accId) {
