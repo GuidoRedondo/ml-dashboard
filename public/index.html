@@ -3564,10 +3564,11 @@ function diagRender(meses, clientId) {
     </div>
     <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:16px">
       <div>
-        <div style="font-size:11px;font-weight:600;text-transform:uppercase;color:var(--muted);margin-bottom:8px;border-bottom:1px solid var(--border);padding-bottom:4px">\u23f1 Tiempos de respuesta</div>
-        <label style="font-size:12px;color:var(--muted)">L-V 9-18hs</label>${inp('dm_resp_lv',man.rep_resp_lv,'ej: 2hs')}
-        <label style="font-size:12px;color:var(--muted);margin-top:6px;display:block">L-V noche</label>${inp('dm_resp_noche',man.rep_resp_noche,'ej: 8hs')}
-        <label style="font-size:12px;color:var(--muted);margin-top:6px;display:block">S\u00e1b y Dom</label>${inp('dm_resp_finde',man.rep_resp_finde,'ej: 12hs')}
+        <div style="font-size:11px;font-weight:600;text-transform:uppercase;color:var(--muted);margin-bottom:8px;border-bottom:1px solid var(--border);padding-bottom:4px">\u23f1 Tiempos de respuesta <span style=\"font-size:9px;color:#6366f1;font-weight:400\">AUTO</span></div>
+        <div style="font-size:11px;color:var(--muted);margin-bottom:8px">Calculados autom\u00e1ticamente al calcular el mes. Edit\u00e1 solo si quer\u00e9s corregir.</div>
+        <label style="font-size:12px;color:var(--muted)">L-V 9-18hs</label>${inp('dm_resp_lv',man.rep_resp_lv,'calculando...')}
+        <label style="font-size:12px;color:var(--muted);margin-top:6px;display:block">L-V noche</label>${inp('dm_resp_noche',man.rep_resp_noche,'calculando...')}
+        <label style="font-size:12px;color:var(--muted);margin-top:6px;display:block">S\u00e1b y Dom</label>${inp('dm_resp_finde',man.rep_resp_finde,'calculando...')}
       </div>
       <div>
         <div style="font-size:11px;font-weight:600;text-transform:uppercase;color:var(--muted);margin-bottom:8px;border-bottom:1px solid var(--border);padding-bottom:4px">\U0001f69a Log\u00edstica</div>
