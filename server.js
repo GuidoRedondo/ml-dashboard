@@ -196,7 +196,7 @@ app.get('/api/clients/:id/auth-link', requireAuth, async (req, res) => {
     if (!result.rows.length) return res.status(404).json({ error: 'Cliente no encontrado' });
     const client = result.rows[0];
     const redirectUri = process.env.REDIRECT_URI || 'https://ml-dashboard-production.up.railway.app/oauth/callback';
-    const link = `https://auth.mercadolibre.com.ar/authorization?response_type=code&client_id=${client.app_id}&redirect_uri=${encodeURIComponent(redirectUri)}&state=${client.id}&scope=offline_access&prompt=consent`;
+    const link = `https://auth.mercadolibre.com.ar/authorization?response_type=code&client_id=${client.app_id}&redirect_uri=${encodeURIComponent(redirectUri)}&state=${client.id}&scope=offline_access&prompt=consent&approval_prompt=force`;
     res.json({ link });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
@@ -218,7 +218,16 @@ app.get('/oauth/callback', async (req, res) => {
       body: new URLSearchParams({ grant_type: 'authorization_code', client_id: client.app_id, client_secret: client.client_secret, code, redirect_uri: redirectUri }).toString()
     });
     const tokens = await tokenRes.json();
-    console.log('OAuth tokens received:', JSON.stringify({ has_access: !!tokens.access_token, has_refresh: !!tokens.refresh_token, scope: tokens.scope, error: tokens.error }));
+    console.log('OAuth tokens received:', JSON.stringify({
+      has_access: !!tokens.access_token,
+      has_refresh: !!tokens.refresh_token,
+      refresh_token_value: tokens.refresh_token ? tokens.refresh_token.slice(0,20)+'...' : 'NULL',
+      scope: tokens.scope,
+      expires_in: tokens.expires_in,
+      token_type: tokens.token_type,
+      error: tokens.error,
+      error_description: tokens.error_description
+    }));
     if (tokens.error) return res.send(`<h2>Error: ${tokens.message}</h2>`);
 
     const userRes = await fetch(`${ML_API}/users/me`, { headers: { 'Authorization': `Bearer ${tokens.access_token}` } });
