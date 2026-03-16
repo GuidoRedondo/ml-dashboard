@@ -251,18 +251,18 @@ app.get('/oauth/callback', async (req, res) => {
   }
 });
 
-// Refresh token using refresh_token (if available)
+// Refresh token — uses refresh_token if available, otherwise tries access_token (works while still valid)
 async function refreshClientToken(client) {
   try {
-    if (!client.refresh_token) {
-      console.warn(`Client ${client.id} (${client.name}) has no refresh_token — needs re-authorization`);
-      return false;
-    }
+    // Use refresh_token if available, otherwise use access_token (ML accepts this while token is still valid)
+    const tokenToRefresh = client.refresh_token || client.access_token;
+    if (!tokenToRefresh) return false;
+
     const body = new URLSearchParams({
       grant_type: 'refresh_token',
       client_id: client.app_id,
       client_secret: client.client_secret,
-      refresh_token: client.refresh_token
+      refresh_token: tokenToRefresh
     });
     const tokenRes = await fetch(`${ML_API}/oauth/token`, {
       method: 'POST',
@@ -271,7 +271,7 @@ async function refreshClientToken(client) {
     });
     const tokens = await tokenRes.json();
     if (tokens.error) {
-      console.error(`Refresh failed for client ${client.id} (${client.name}):`, tokens.message);
+      console.error(`Refresh failed for client ${client.id} (${client.name}): ${tokens.error} - ${tokens.message}`);
       return false;
     }
     const expiresAt = new Date(Date.now() + (tokens.expires_in || 21600) * 1000);
@@ -279,7 +279,7 @@ async function refreshClientToken(client) {
       `UPDATE clients SET access_token = $1, refresh_token = $2, token_expires_at = $3, updated_at = NOW() WHERE id = $4`,
       [tokens.access_token, tokens.refresh_token || client.refresh_token, expiresAt, client.id]
     );
-    console.log(`✅ Token refreshed for client ${client.id} (${client.name}), expires: ${expiresAt.toISOString()}`);
+    console.log(`✅ Token refreshed for client ${client.id} (${client.name}), new expiry: ${expiresAt.toISOString()}, has_refresh: ${!!tokens.refresh_token}`);
     return tokens.access_token;
   } catch(e) {
     console.error(`Refresh error for client ${client.id}:`, e.message);
@@ -287,14 +287,37 @@ async function refreshClientToken(client) {
   }
 }
 
-// Auto-refresh all tokens every hour - works with or without refresh_token
+// Auto-refresh tokens every 30 min — refresh 3 hours before expiry to stay ahead of the 6hs window
 setInterval(async () => {
   try {
-    const result = await pool.query(`SELECT * FROM clients WHERE active = true AND access_token IS NOT NULL AND token_expires_at < NOW() + INTERVAL '2 hours'`);
-    console.log(`Auto-refresh check: ${result.rows.length} tokens need refresh`);
-    for (const client of result.rows) { await refreshClientToken(client); }
+    const result = await pool.query(
+      `SELECT * FROM clients WHERE active = true AND access_token IS NOT NULL AND token_expires_at < NOW() + INTERVAL '3 hours'`
+    );
+    if (result.rows.length) {
+      console.log(`Auto-refresh: ${result.rows.length} tokens expiring soon — refreshing now`);
+      for (const client of result.rows) { await refreshClientToken(client); }
+    }
   } catch(e) { console.error('Auto-refresh error:', e.message); }
-}, 1 * 60 * 60 * 1000);
+}, 30 * 60 * 1000); // every 30 minutes
+
+// Also run immediately on startup to fix any already-expired tokens
+setTimeout(async () => {
+  try {
+    const result = await pool.query(
+      `SELECT * FROM clients WHERE active = true AND access_token IS NOT NULL`
+    );
+    console.log(`Startup token check: ${result.rows.length} clients`);
+    for (const client of result.rows) {
+      const exp = client.token_expires_at ? new Date(client.token_expires_at) : null;
+      const hoursLeft = exp ? (exp - new Date()) / (1000*60*60) : -1;
+      console.log(`  ${client.name}: expires in ${hoursLeft.toFixed(1)}hs`);
+      if (hoursLeft < 3) {
+        console.log(`  → Refreshing ${client.name}...`);
+        await refreshClientToken(client);
+      }
+    }
+  } catch(e) { console.error('Startup refresh error:', e.message); }
+}, 5000); // 5 seconds after startup
 
 // Get valid token for a client (refreshing if needed)
 async function getClientToken(clientId) {
