@@ -3418,7 +3418,7 @@ async function diagCargarDatos() {
   const clientId = document.getElementById('diagClientSel')?.value;
   if (!clientId) return;
   const el = document.getElementById('diagContent');
-  el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">\u23f3 Cargando diagn\u00f3stico...</div>';
+  el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">⏳ Cargando diagnóstico...</div>';
   try {
     const r = await apiCall('GET', `/api/diagnostico?client_id=${clientId}`);
     const meses = (r && r.meses) || [];
@@ -3432,20 +3432,20 @@ async function diagCalcularTodo() {
   const clientId = document.getElementById('diagClientSel')?.value;
   if (!clientId) return;
   const btn = document.getElementById('diagCalcBtn');
-  btn.disabled = true; btn.textContent = '\u23f3 Calculando 3 meses...';
+  btn.disabled = true; btn.textContent = '⏳ Calculando 3 meses...';
   const meses = diagGetLast3Months();
   const el = document.getElementById('diagContent');
-  el.innerHTML = `<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">\u23f3 Calculando ${meses.map(m=>m.label).join(', ')}...<br><span style="font-size:11px;margin-top:8px;display:block">Esto puede tardar 1-2 minutos</span></div>`;
+  el.innerHTML = `<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">⏳ Calculando ${meses.map(m=>m.label).join(', ')}...<br><span style="font-size:11px;margin-top:8px;display:block">Esto puede tardar 1-2 minutos</span></div>`;
   try {
     for (const mes of meses) {
-      el.innerHTML = `<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">\u23f3 Calculando ${mes.label}...</div>`;
+      el.innerHTML = `<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">⏳ Calculando ${mes.label}...</div>`;
       await apiCall('POST', '/api/diagnostico/calcular', { client_id: clientId, mes: mes.mes });
     }
     await diagCargarDatos();
   } catch(e) {
     el.innerHTML = `<div style="color:var(--muted);padding:40px">Error: ${e.message}</div>`;
   } finally {
-    btn.disabled = false; btn.textContent = '\u26a1 Calcular 3 meses';
+    btn.disabled = false; btn.textContent = '⚡ Calcular 3 meses';
   }
 }
 
@@ -3459,14 +3459,14 @@ async function diagGuardarManuales(clientId, mes) {
     notas: get('dm_notas_generales'),
   };
   const btn = document.getElementById('diagSaveManBtn');
-  if (btn) { btn.disabled = true; btn.textContent = '\u23f3 Guardando...'; }
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Guardando...'; }
   try {
     await apiCall('POST', '/api/diagnostico/manuales', { client_id: clientId, mes, manuales });
-    if (btn) { btn.textContent = '\u2713 Guardado'; setTimeout(() => { btn.disabled=false; btn.textContent='\U0001f4be Guardar'; }, 2000); }
+    if (btn) { btn.textContent = '✓ Guardado'; setTimeout(() => { btn.disabled=false; btn.textContent='💾 Guardar'; }, 2000); }
     await diagCargarDatos();
   } catch(e) {
     alert('Error: ' + e.message);
-    if (btn) { btn.disabled=false; btn.textContent='\U0001f4be Guardar'; }
+    if (btn) { btn.disabled=false; btn.textContent='💾 Guardar'; }
   }
 }
 
@@ -3479,19 +3479,19 @@ function diagRender(meses, clientId) {
   });
   const hasAny = cols.some(c => c.data);
   if (!hasAny) {
-    el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">No hay datos calculados a\u00fan.<br>Hac\u00e9 click en <strong>\u26a1 Calcular 3 meses</strong> para empezar.</div>';
+    el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">No hay datos calculados aún.<br>Hacé click en <strong>⚡ Calcular 3 meses</strong> para empezar.</div>';
     return;
   }
-  const fmtM = v => v != null ? '$' + parseFloat(v).toLocaleString('es-AR', {maximumFractionDigits:0}) : '\u2014';
-  const fmtN = v => v != null ? parseFloat(v).toLocaleString('es-AR') : '\u2014';
-  const fmtP = v => v != null ? parseFloat(v).toFixed(1) + '%' : '\u2014';
-  const fmtT = v => v || '\u2014';
+  const fmtM = v => v != null ? '$' + parseFloat(v).toLocaleString('es-AR', {maximumFractionDigits:0}) : '—';
+  const fmtN = v => v != null ? parseFloat(v).toLocaleString('es-AR') : '—';
+  const fmtP = v => v != null ? parseFloat(v).toFixed(1) + '%' : '—';
+  const fmtT = v => v || '—';
   const trend = (prev, curr, hib=true) => {
     if (prev==null||curr==null) return '';
     const d = parseFloat(curr)-parseFloat(prev);
-    if (Math.abs(d)<0.01) return '<span style="color:#888;font-size:11px"> \u2192</span>';
+    if (Math.abs(d)<0.01) return '<span style="color:#888;font-size:11px"> →</span>';
     const up=d>0; const good=hib?up:!up;
-    return `<span style="color:${good?'#16a34a':'#dc2626'};font-size:11px"> ${up?'\u2191':'\u2193'}</span>`;
+    return `<span style="color:${good?'#16a34a':'#dc2626'};font-size:11px"> ${up?'↑':'↓'}</span>`;
   };
   const thS = 'padding:10px 14px;font-size:12px;font-weight:700;text-align:center;border:1px solid var(--border);background:var(--surface2)';
   const tdL = 'padding:8px 12px;font-size:12px;color:var(--muted);border:1px solid var(--border);white-space:nowrap;background:var(--surface)';
@@ -3508,49 +3508,49 @@ function diagRender(meses, clientId) {
   const man = lastCol.data?.manuales || {};
   const tableHTML = `<div style="overflow-x:auto;margin-bottom:24px"><table style="border-collapse:collapse;width:100%;min-width:600px">
     <thead><tr>
-      <th style="${thS};text-align:left;min-width:220px">M\u00e9trica</th>
+      <th style="${thS};text-align:left;min-width:220px">Métrica</th>
       ${cols.map(c=>`<th style="${thS};min-width:190px">${c.label}${c.data?'':' <span style="color:#aaa;font-size:10px;font-weight:400">(sin datos)</span>'}</th>`).join('')}
     </tr></thead><tbody>
-    ${sec('\U0001f4ca M\u00e9tricas Generales','#ede9fe')}
-    ${row('Facturaci\u00f3n', d=>d.facturacion, fmtM)}
+    ${sec('📊 Métricas Generales','#ede9fe')}
+    ${row('Facturación', d=>d.facturacion, fmtM)}
     ${row('Ventas', d=>d.ventas, fmtN)}
     ${row('Visitas', d=>d.visitas, fmtN)}
-    ${row('Conversi\u00f3n', d=>d.conversion, fmtP)}
+    ${row('Conversión', d=>d.conversion, fmtP)}
     ${row('Ticket promedio', d=>d.ticket_promedio, fmtM)}
-    ${row('Carritos (u/venta)', d=>d.carritos, v=>v!=null?parseFloat(v).toFixed(2):'\u2014')}
-    ${sec('\u2b50 Reputaci\u00f3n','#e0e7ff')}
-    ${row('Medalla', d=>d.rep_medalla, v=>v||'\u2014')}
-    ${row('Ventas 60 d\u00edas', d=>d.rep_ventas_60, fmtN)}
+    ${row('Carritos (u/venta)', d=>d.carritos, v=>v!=null?parseFloat(v).toFixed(2):'—')}
+    ${sec('⭐ Reputación','#e0e7ff')}
+    ${row('Medalla', d=>d.rep_medalla, v=>v||'—')}
+    ${row('Ventas 60 días', d=>d.rep_ventas_60, fmtN)}
     ${row('Concretadas', d=>d.rep_concretadas, fmtN)}
-    ${row('% Reclamos', d=>d.rep_reclamos, v=>v!=null?(parseFloat(v)*100).toFixed(2)+'%':'\u2014', false)}
-    ${row('% Cancelaciones', d=>d.rep_cancelaciones, v=>v!=null?(parseFloat(v)*100).toFixed(2)+'%':'\u2014', false)}
-    ${row('% Demoras', d=>d.rep_demoras, v=>v!=null?(parseFloat(v)*100).toFixed(2)+'%':'\u2014', false)}
+    ${row('% Reclamos', d=>d.rep_reclamos, v=>v!=null?(parseFloat(v)*100).toFixed(2)+'%':'—', false)}
+    ${row('% Cancelaciones', d=>d.rep_cancelaciones, v=>v!=null?(parseFloat(v)*100).toFixed(2)+'%':'—', false)}
+    ${row('% Demoras', d=>d.rep_demoras, v=>v!=null?(parseFloat(v)*100).toFixed(2)+'%':'—', false)}
     ${row('Mediaciones', d=>d.rep_mediaciones, fmtN, false)}
     ${row('No concretadas $', d=>d.rep_no_conc_monto, fmtM, false)}
     ${row('% No concretadas', d=>d.rep_no_conc_pct, fmtP, false)}
-    ${sec('\u23f1 Tiempos de Respuesta','#fce7f3')}
+    ${sec('⏱ Tiempos de Respuesta','#fce7f3')}
     ${row('L-V 9 a 18hs', d=>d.manuales?.rep_resp_lv, fmtT)}
     ${row('L-V 18hs a madrugada', d=>d.manuales?.rep_resp_noche, fmtT)}
-    ${row('S\u00e1b y Dom', d=>d.manuales?.rep_resp_finde, fmtT)}
-    ${sec('\U0001f4cb Publicaciones','#dcfce7')}
+    ${row('Sáb y Dom', d=>d.manuales?.rep_resp_finde, fmtT)}
+    ${sec('📋 Publicaciones','#dcfce7')}
     ${row('Total publicaciones', d=>d.pub_total, fmtN)}
     ${row('Activas', d=>d.pub_activas, fmtN)}
     ${row('% Activas', d=>d.pub_activas&&d.pub_total?(d.pub_activas/d.pub_total*100):null, fmtP)}
     ${row('Con ventas (relevantes)', d=>d.pub_exitosas, fmtN)}
     ${row('% Relevancia', d=>d.pub_exitosas&&d.pub_activas?(d.pub_exitosas/d.pub_activas*100):null, fmtP)}
-    ${row('Pareto (pubs\u219280% fact)', d=>d.pub_pareto_pct, fmtP, false)}
-    ${sec('\U0001f69a Log\u00edstica','#fef3c7')}
+    ${row('Pareto (pubs→80% fact)', d=>d.pub_pareto_pct, fmtP, false)}
+    ${sec('🚚 Logística','#fef3c7')}
     ${row('FULL activo', d=>d.manuales?.full_activo, fmtT)}
     ${row('% Fact por FULL', d=>d.manuales?.full_fact_pct||null, fmtP)}
     ${row('FLEX activo', d=>d.manuales?.flex_activo, fmtT)}
     ${row('% Fact por FLEX', d=>d.manuales?.flex_fact_pct||null, fmtP)}
-    ${sec('\U0001f4e3 Central de Marketing','#fff7ed')}
+    ${sec('📣 Central de Marketing','#fff7ed')}
     ${row('Descuentos activos', d=>d.manuales?.mkt_descuentos, fmtT)}
     ${row('Cupones', d=>d.manuales?.mkt_cupones, fmtT)}
     ${row('Difusiones', d=>d.manuales?.mkt_difusiones, fmtT)}
-    ${sec('\U0001f3f7 Publicidad','#fce7e7')}
-    ${row('Inversi\u00f3n PADS', d=>d.pads_inversion, fmtM, false)}
-    ${row('Facturaci\u00f3n PADS', d=>d.pads_ingresos, fmtM)}
+    ${sec('🏷 Publicidad','#fce7e7')}
+    ${row('Inversión PADS', d=>d.pads_inversion, fmtM, false)}
+    ${row('Facturación PADS', d=>d.pads_ingresos, fmtM)}
     ${row('ACOS', d=>d.pads_acos, fmtP, false)}
     ${row('TACOS', d=>d.pads_tacos, fmtP, false)}
     ${row('% Fact por publicidad', d=>d.pads_aporte_pct, fmtP)}
@@ -3559,26 +3559,26 @@ function diagRender(meses, clientId) {
   const siNo = (id,val) => `<select id="${id}" style="width:100%;padding:5px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px"><option value="SI" ${val==='SI'?'selected':''}>SI</option><option value="NO" ${(!val||val==='NO')?'selected':''}>NO</option></select>`;
   const formHTML = `<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:18px;margin-bottom:24px">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:8px">
-      <div style="font-size:13px;font-weight:600;font-family:var(--font-b)">\U0001f4dd Datos manuales \u2014 ${lastCol.label}</div>
-      <button id="diagSaveManBtn" onclick="diagGuardarManuales('${clientId}','${lastCol.mes}')" style="padding:6px 16px;background:var(--accent);color:#fff;border:none;border-radius:8px;font-size:13px;cursor:pointer">\U0001f4be Guardar</button>
+      <div style="font-size:13px;font-weight:600;font-family:var(--font-b)">📝 Datos manuales — ${lastCol.label}</div>
+      <button id="diagSaveManBtn" onclick="diagGuardarManuales('${clientId}','${lastCol.mes}')" style="padding:6px 16px;background:var(--accent);color:#fff;border:none;border-radius:8px;font-size:13px;cursor:pointer">💾 Guardar</button>
     </div>
     <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:16px">
       <div>
-        <div style="font-size:11px;font-weight:600;text-transform:uppercase;color:var(--muted);margin-bottom:8px;border-bottom:1px solid var(--border);padding-bottom:4px">\u23f1 Tiempos de respuesta <span style=\"font-size:9px;color:#6366f1;font-weight:400\">AUTO</span></div>
-        <div style="font-size:11px;color:var(--muted);margin-bottom:8px">Calculados autom\u00e1ticamente al calcular el mes. Edit\u00e1 solo si quer\u00e9s corregir.</div>
+        <div style="font-size:11px;font-weight:600;text-transform:uppercase;color:var(--muted);margin-bottom:8px;border-bottom:1px solid var(--border);padding-bottom:4px">⏱ Tiempos de respuesta <span style=\"font-size:9px;color:#6366f1;font-weight:400\">AUTO</span></div>
+        <div style="font-size:11px;color:var(--muted);margin-bottom:8px">Calculados automáticamente al calcular el mes. Editá solo si querés corregir.</div>
         <label style="font-size:12px;color:var(--muted)">L-V 9-18hs</label>${inp('dm_resp_lv',man.rep_resp_lv,'calculando...')}
         <label style="font-size:12px;color:var(--muted);margin-top:6px;display:block">L-V noche</label>${inp('dm_resp_noche',man.rep_resp_noche,'calculando...')}
-        <label style="font-size:12px;color:var(--muted);margin-top:6px;display:block">S\u00e1b y Dom</label>${inp('dm_resp_finde',man.rep_resp_finde,'calculando...')}
+        <label style="font-size:12px;color:var(--muted);margin-top:6px;display:block">Sáb y Dom</label>${inp('dm_resp_finde',man.rep_resp_finde,'calculando...')}
       </div>
       <div>
-        <div style="font-size:11px;font-weight:600;text-transform:uppercase;color:var(--muted);margin-bottom:8px;border-bottom:1px solid var(--border);padding-bottom:4px">\U0001f69a Log\u00edstica</div>
+        <div style="font-size:11px;font-weight:600;text-transform:uppercase;color:var(--muted);margin-bottom:8px;border-bottom:1px solid var(--border);padding-bottom:4px">🚚 Logística</div>
         <label style="font-size:12px;color:var(--muted)">FULL activo</label>${siNo('dm_full_activo',man.full_activo)}
         <label style="font-size:12px;color:var(--muted);margin-top:6px;display:block">% Fact por FULL</label>${inp('dm_full_fact_pct',man.full_fact_pct,'ej: 35')}
         <label style="font-size:12px;color:var(--muted);margin-top:6px;display:block">FLEX activo</label>${siNo('dm_flex_activo',man.flex_activo)}
         <label style="font-size:12px;color:var(--muted);margin-top:6px;display:block">% Fact por FLEX</label>${inp('dm_flex_fact_pct',man.flex_fact_pct,'ej: 33')}
       </div>
       <div>
-        <div style="font-size:11px;font-weight:600;text-transform:uppercase;color:var(--muted);margin-bottom:8px;border-bottom:1px solid var(--border);padding-bottom:4px">\U0001f4e3 Central de Mkt</div>
+        <div style="font-size:11px;font-weight:600;text-transform:uppercase;color:var(--muted);margin-bottom:8px;border-bottom:1px solid var(--border);padding-bottom:4px">📣 Central de Mkt</div>
         <label style="font-size:12px;color:var(--muted)">Descuentos activos</label>${siNo('dm_descuentos',man.mkt_descuentos)}
         <label style="font-size:12px;color:var(--muted);margin-top:6px;display:block">Cupones</label>${siNo('dm_cupones',man.mkt_cupones)}
         <label style="font-size:12px;color:var(--muted);margin-top:6px;display:block">Difusiones</label>${siNo('dm_difusiones',man.mkt_difusiones)}
@@ -3586,7 +3586,7 @@ function diagRender(meses, clientId) {
         <textarea id="dm_mkt_notas" style="width:100%;padding:5px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:12px;resize:vertical;min-height:50px">${man.mkt_notas||''}</textarea>
       </div>
       <div>
-        <div style="font-size:11px;font-weight:600;text-transform:uppercase;color:var(--muted);margin-bottom:8px;border-bottom:1px solid var(--border);padding-bottom:4px">\U0001f4dd Notas generales</div>
+        <div style="font-size:11px;font-weight:600;text-transform:uppercase;color:var(--muted);margin-bottom:8px;border-bottom:1px solid var(--border);padding-bottom:4px">📝 Notas generales</div>
         <textarea id="dm_notas_generales" style="width:100%;padding:5px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:12px;resize:vertical;min-height:100px">${man.notas||''}</textarea>
       </div>
     </div>
