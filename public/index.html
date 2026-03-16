@@ -1026,14 +1026,34 @@ function renderClientsList() {
     return;
   }
 
+  // Warning banner for clients without refresh_token
+  const sinRefresh = allClients.filter(c => c.ml_user_id && !c.refresh_token);
+  const warningBanner = sinRefresh.length ? `
+    <div style="background:#fef3c7;border:1px solid #fcd34d;border-radius:10px;padding:14px 16px;margin-bottom:16px;display:flex;align-items:center;gap:12px">
+      <span style="font-size:20px">⚠️</span>
+      <div>
+        <div style="font-size:13px;font-weight:600;color:#92400e">Token de larga duración faltante</div>
+        <div style="font-size:12px;color:#b45309;margin-top:2px">
+          ${sinRefresh.map(c => `<strong>${c.name}</strong>`).join(', ')} 
+          ${sinRefresh.length === 1 ? 'no tiene' : 'no tienen'} refresh_token — el token expira cada 6hs y hay que reconectar manualmente.
+          Hacé click en <strong>🔄 Reconectar</strong> y autorizá la app de nuevo para obtener el token permanente.
+        </div>
+      </div>
+    </div>` : '';
+
   const rows = allClients.map(c => {
     const connected = c.ml_user_id ? `<span class="status s-ok">● Conectado</span>` : `<span class="status s-off">● Sin conectar</span>`;
     const expires = c.token_expires_at ? new Date(c.token_expires_at).toLocaleString('es-AR') : '—';
+    const tokenStatus = !c.ml_user_id ? '—'
+      : c.refresh_token
+        ? `<span style="color:#16a34a;font-size:11px;font-weight:600">✓ Permanente</span>`
+        : `<span style="color:#dc2626;font-size:11px;font-weight:600">⚠ Expira 6hs</span>`;
     return `<tr>
       <td style="font-weight:600">${c.name}</td>
       <td>${connected}</td>
       <td style="color:var(--muted);font-size:11px">${c.ml_user_id || '—'}</td>
       <td style="color:var(--muted);font-size:11px">${expires}</td>
+      <td>${tokenStatus}</td>
       <td style="display:flex;gap:8px">
         ${!c.ml_user_id ? `<button class="sync-btn" onclick="generateAuthLink(${c.id})">🔗 Generar Link</button>` : `<button class="sync-btn" onclick="generateAuthLink(${c.id})">🔄 Reconectar</button>`}
         <button class="sync-btn" style="color:#ff4d4d;border-color:#ff4d4d" onclick="deleteClient(${c.id}, '${c.name}')">🗑</button>
@@ -1041,8 +1061,8 @@ function renderClientsList() {
     </tr>`;
   }).join('');
 
-  el.innerHTML = `<div style="overflow-x:auto"><table>
-    <thead><tr><th>Cliente</th><th>Estado</th><th>ML User ID</th><th>Token expira</th><th>Acciones</th></tr></thead>
+  el.innerHTML = warningBanner + `<div style="overflow-x:auto"><table>
+    <thead><tr><th>Cliente</th><th>Estado</th><th>ML User ID</th><th>Token expira</th><th>Renovación</th><th>Acciones</th></tr></thead>
     <tbody>${rows}</tbody>
   </table></div>`;
 }
