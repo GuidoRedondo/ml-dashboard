@@ -1443,9 +1443,16 @@ app.get('/api/preguntas', requireAuth, async (req, res) => {
     if (!token) return res.status(403).json({ error: 'Sin token' });
     const headers = { 'Authorization': `Bearer ${token}` };
     const uid = req.query.uid;
-    const { fromDate, toDate } = getDateRange(req);
-    const dateFrom = new Date(fromDate);
-    const dateTo   = new Date(toDate);
+    const now = new Date();
+    let dateFrom, dateTo;
+    if (req.query.date_from && req.query.date_to) {
+      dateFrom = new Date(req.query.date_from + 'T00:00:00');
+      dateTo   = new Date(req.query.date_to   + 'T23:59:59');
+    } else {
+      const days = parseInt(req.query.days) || 30;
+      dateFrom = new Date(now.getTime() - days * 24*60*60*1000);
+      dateTo   = now;
+    }
 
     // ── 1. Fetch all answered questions in period ─────────────────────────────
     let allQuestions = [];
@@ -1550,7 +1557,16 @@ app.get('/api/devoluciones', requireAuth, async (req, res) => {
     const token = await getClientToken(parseInt(req.query.client_id));
     if (!token) return res.status(403).json({ error: 'Sin token' });
     const headers = { 'Authorization': `Bearer ${token}` };
-    const { fromDate, toDate } = getDateRange(req);
+    const now2 = new Date();
+    let fromDate, toDate;
+    if (req.query.date_from && req.query.date_to) {
+      fromDate = req.query.date_from + 'T00:00:00';
+      toDate   = req.query.date_to   + 'T23:59:59';
+    } else {
+      const days = parseInt(req.query.days) || 30;
+      fromDate = new Date(now2.getTime() - days*24*60*60*1000).toISOString().slice(0,19);
+      toDate   = now2.toISOString().slice(0,19);
+    }
     const fmt = d => new Date(d).toISOString().slice(0,19) + '.000-00:00';
 
     // Fetch refunded orders
