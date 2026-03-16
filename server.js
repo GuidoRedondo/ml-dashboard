@@ -1513,10 +1513,17 @@ app.get('/api/preguntas', requireAuth, async (req, res) => {
     };
     const fmtTime = mins => {
       if (mins === null) return null;
+      if (mins === 0) return '< 1min';
       if (mins < 60) return mins + 'min';
       if (mins < 1440) return (mins/60).toFixed(1).replace('.0','') + 'hs';
       return (mins/1440).toFixed(1).replace('.0','') + 'd';
     };
+
+    const avgBusiness = avg(byHour.lv_business);
+    const avgNight    = avg(byHour.lv_night);
+    const avgWeekend  = avg(byHour.weekend);
+    const medianAll   = median(responseTimes);
+    console.log(`[PREGUNTAS] total=${allQuestions.length} lv_business=${byHour.lv_business.length}(avg=${avgBusiness}min) lv_night=${byHour.lv_night.length}(avg=${avgNight}min) weekend=${byHour.weekend.length}(avg=${avgWeekend}min)`);
 
     // ── 4. Cross buyers: questions → orders ───────────────────────────────────
     const questionBuyerIds = new Set(allQuestions.map(q => q.from && String(q.from.id)).filter(Boolean));
@@ -1540,10 +1547,15 @@ app.get('/api/preguntas', requireAuth, async (req, res) => {
       sin_responder:      unanswered,
       compradores_unicos: uniqueAskers,
       tiempo_promedio:    fmtTime(avg(responseTimes)),
-      tiempo_mediana:     fmtTime(median(responseTimes)),
-      tiempo_lv_business: fmtTime(avg(byHour.lv_business)),
-      tiempo_lv_noche:    fmtTime(avg(byHour.lv_night)),
-      tiempo_finde:       fmtTime(avg(byHour.weekend)),
+      tiempo_mediana:     fmtTime(medianAll),
+      tiempo_lv_business: fmtTime(avgBusiness),
+      tiempo_lv_noche:    fmtTime(avgNight),
+      tiempo_finde:       fmtTime(avgWeekend),
+      // raw minutes for frontend color coding
+      mins_lv_business:   avgBusiness,
+      mins_lv_noche:      avgNight,
+      mins_finde:         avgWeekend,
+      mins_mediana:       medianAll,
       ventas_post_pregunta: ventasPostPregunta,
       tasa_conversion:    tasaConversion,
       total_compradores_periodo: orderBuyerIds.size,
