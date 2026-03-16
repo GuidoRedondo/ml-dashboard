@@ -321,14 +321,14 @@ async function refreshClientToken(client) {
 setInterval(async () => {
   try {
     const result = await pool.query(
-      `SELECT * FROM clients WHERE active = true AND access_token IS NOT NULL AND token_expires_at < NOW() + INTERVAL '3 hours'`
+      `SELECT * FROM clients WHERE active = true AND access_token IS NOT NULL AND token_expires_at < NOW() + INTERVAL '4 hours'`
     );
     if (result.rows.length) {
       console.log(`Auto-refresh: ${result.rows.length} tokens expiring soon — refreshing now`);
       for (const client of result.rows) { await refreshClientToken(client); }
     }
   } catch(e) { console.error('Auto-refresh error:', e.message); }
-}, 30 * 60 * 1000); // every 30 minutes
+}, 10 * 60 * 1000); // every 10 minutes
 
 // Also run immediately on startup to fix any already-expired tokens
 setTimeout(async () => {
@@ -341,7 +341,7 @@ setTimeout(async () => {
       const exp = client.token_expires_at ? new Date(client.token_expires_at) : null;
       const hoursLeft = exp ? (exp - new Date()) / (1000*60*60) : -1;
       console.log(`  ${client.name}: expires in ${hoursLeft.toFixed(1)}hs`);
-      if (hoursLeft < 3) {
+      if (hoursLeft < 4) {
         console.log(`  → Refreshing ${client.name}...`);
         await refreshClientToken(client);
       }
