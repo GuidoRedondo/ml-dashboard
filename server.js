@@ -1289,10 +1289,65 @@ app.post('/api/diagnostico/calcular', requireAuth, async (req, res) => {
     const padsConversion = padsClicks > 0 ? parseFloat(((padsVentas/padsClicks)*100).toFixed(2)) : 0;
     const padsAportePct = ventas > 0 ? parseFloat(((padsVentas/ventas)*100).toFixed(2)) : 0;
 
-    // ── 7. Guardar en DB ──────────────────────────────────────────────────────
+    // ── 7. Tiempos de respuesta (desde preguntas) ─────────────────────────────
+    let tiempos = { lv_business: null, lv_noche: null, finde: null, mediana: null };
+    try {
+      const dateFromStr = `${year}-${String(month+1).padStart(2,'0')}-01`;
+      const dateToStr   = `${year}-${String(month+1).padStart(2,'0')}-${new Date(year, month+1, 0).getDate()}`;
+      let allQ = [], offset = 0;
+      while (true) {
+        const qUrl = `${ML_API}/questions/search?seller_id=${uid}&status=ANSWERED&sort_fields=date_created&sort_types=DESC&limit=50&offset=${offset}`;
+        const qRes = await fetch(qUrl, { headers }).then(r => r.json()).catch(() => ({}));
+        const qs = qRes.questions || qRes.data || [];
+        if (!qs.length) break;
+        const inRange = qs.filter(q => {
+          const d = new Date(q.date_created);
+          return d >= dateFrom && d <= dateTo;
+        });
+        allQ = allQ.concat(inRange);
+        const oldest = new Date(qs[qs.length-1].date_created);
+        if (oldest < dateFrom || qs.length < 50) break;
+        offset += 50;
+        if (offset > 500) break;
+      }
+      const respMins = [], bySlot = { lv_b: [], lv_n: [], fin: [] };
+      allQ.forEach(q => {
+        if (!q.answer?.date_created) return;
+        const asked = new Date(q.date_created);
+        const ans   = new Date(q.answer.date_created);
+        const mins  = Math.round((ans - asked) / 60000);
+        if (mins < 0 || mins > 43200) return;
+        respMins.push(mins);
+        const day = asked.getDay(), hour = asked.getHours();
+        const isWE = day === 0 || day === 6;
+        if (isWE)                              bySlot.fin.push(mins);
+        else if (hour >= 9 && hour < 18)       bySlot.lv_b.push(mins);
+        else                                   bySlot.lv_n.push(mins);
+      });
+      const avg = arr => arr.length ? Math.round(arr.reduce((a,b)=>a+b,0)/arr.length) : null;
+      const med = arr => { if (!arr.length) return null; const s=[...arr].sort((a,b)=>a-b); return s[Math.floor(s.length/2)]; };
+      const fmtT = m => { if (m===null) return null; if (m===0) return '<1min'; if (m<60) return m+'min'; if (m<1440) return (m/60).toFixed(1).replace('.0','')+'hs'; return (m/1440).toFixed(1).replace('.0','')+'d'; };
+      tiempos = {
+        lv_business: fmtT(avg(bySlot.lv_b)),
+        lv_noche:    fmtT(avg(bySlot.lv_n)),
+        finde:       fmtT(avg(bySlot.fin)),
+        mediana:     fmtT(med(respMins)),
+      };
+      console.log(`[DIAG TIEMPOS] ${mesStr} lv=${avg(bySlot.lv_b)}min noche=${avg(bySlot.lv_n)}min finde=${avg(bySlot.fin)}min total_q=${allQ.length}`);
+    } catch(e) { console.error('[DIAG TIEMPOS]', e.message); }
+
+    // ── 8. Guardar en DB ──────────────────────────────────────────────────────
     const mesStr = `${year}-${String(month+1).padStart(2,'0')}-01`;
     const existing = await pool.query('SELECT id, manuales FROM diagnostico_mensual WHERE client_id=$1 AND mes=$2', [client_id, mesStr]);
-    const manualesExistentes = existing.rows.length > 0 ? existing.rows[0].manuales : {};
+    const manualesExistentes = existing.rows.length > 0 ? (existing.rows[0].manuales || {}) : {};
+
+    // Merge auto-calculated tiempos (preserve manual overrides if user already saved them)
+    const manualesFinal = {
+      ...manualesExistentes,
+      rep_resp_lv:    tiempos.lv_business || manualesExistentes.rep_resp_lv,
+      rep_resp_noche: tiempos.lv_noche    || manualesExistentes.rep_resp_noche,
+      rep_resp_finde: tiempos.finde       || manualesExistentes.rep_resp_finde,
+    };
 
     await pool.query(`
       INSERT INTO diagnostico_mensual
@@ -1322,7 +1377,7 @@ app.post('/api/diagnostico/calcular', requireAuth, async (req, res) => {
       repReclamos, repDemoras, repCancelaciones, repMediaciones,
       repNoConcMonto, repNoConcPct,
       pubTotal, totalActive, totalInactive, pubExitosas, pubParetoP, pubInteres,
-      JSON.stringify(manualesExistentes)
+      JSON.stringify(manualesFinal)
     ]);
 
     const saved = await pool.query('SELECT * FROM diagnostico_mensual WHERE client_id=$1 AND mes=$2', [client_id, mesStr]);
