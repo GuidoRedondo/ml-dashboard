@@ -1436,6 +1436,114 @@ app.get('/api/competencia', requireAuth, async (req, res) => {
 });
 
 // ── DEVOLUCIONES ──────────────────────────────────────────────────────────────
+// ── PREGUNTAS ─────────────────────────────────────────────────────────────────
+app.get('/api/preguntas', requireAuth, async (req, res) => {
+  try {
+    const token = await getClientToken(parseInt(req.query.client_id));
+    if (!token) return res.status(403).json({ error: 'Sin token' });
+    const headers = { 'Authorization': `Bearer ${token}` };
+    const uid = req.query.uid;
+    const { fromDate, toDate } = getDateRange(req);
+    const dateFrom = new Date(fromDate);
+    const dateTo   = new Date(toDate);
+
+    // ── 1. Fetch all answered questions in period ─────────────────────────────
+    let allQuestions = [];
+    let offset = 0;
+    while (true) {
+      const url = `${ML_API}/questions/search?seller_id=${uid}&status=ANSWERED&sort_fields=date_created&sort_types=DESC&limit=50&offset=${offset}`;
+      const r = await fetch(url, { headers }).then(r => r.json()).catch(() => ({}));
+      const qs = r.questions || r.data || [];
+      if (!qs.length) break;
+      // filter by period
+      const inRange = qs.filter(q => {
+        const d = new Date(q.date_created);
+        return d >= dateFrom && d <= dateTo;
+      });
+      allQuestions = allQuestions.concat(inRange);
+      // if all results are before dateFrom, stop
+      const oldest = new Date(qs[qs.length-1].date_created);
+      if (oldest < dateFrom || qs.length < 50) break;
+      offset += 50;
+      if (offset > 1000) break;
+    }
+
+    // ── 2. Fetch unanswered questions ─────────────────────────────────────────
+    let unanswered = 0;
+    try {
+      const ur = await fetch(`${ML_API}/questions/search?seller_id=${uid}&status=UNANSWERED&limit=1`, { headers }).then(r => r.json());
+      unanswered = (ur.paging && ur.paging.total) || 0;
+    } catch(e) {}
+
+    // ── 3. Calculate response times ───────────────────────────────────────────
+    const responseTimes = []; // in minutes
+    const byHour = { lv_business: [], lv_night: [], weekend: [] }; // arrays of minutes
+
+    allQuestions.forEach(q => {
+      if (!q.answer || !q.answer.date_created) return;
+      const asked  = new Date(q.date_created);
+      const answered = new Date(q.answer.date_created);
+      const mins = Math.round((answered - asked) / 60000);
+      if (mins < 0 || mins > 43200) return; // ignore >30 days (stale answers)
+      responseTimes.push(mins);
+
+      const day  = asked.getDay(); // 0=Sun, 6=Sat
+      const hour = asked.getHours();
+      const isWeekend = day === 0 || day === 6;
+      const isBusinessHours = !isWeekend && hour >= 9 && hour < 18;
+      const isNight = !isWeekend && (hour >= 18 || hour < 9);
+
+      if (isBusinessHours) byHour.lv_business.push(mins);
+      else if (isNight)    byHour.lv_night.push(mins);
+      else                 byHour.weekend.push(mins);
+    });
+
+    const avg = arr => arr.length ? Math.round(arr.reduce((a,b)=>a+b,0)/arr.length) : null;
+    const median = arr => {
+      if (!arr.length) return null;
+      const s = [...arr].sort((a,b)=>a-b);
+      return s[Math.floor(s.length/2)];
+    };
+    const fmtTime = mins => {
+      if (mins === null) return null;
+      if (mins < 60) return mins + 'min';
+      if (mins < 1440) return (mins/60).toFixed(1).replace('.0','') + 'hs';
+      return (mins/1440).toFixed(1).replace('.0','') + 'd';
+    };
+
+    // ── 4. Cross buyers: questions → orders ───────────────────────────────────
+    const questionBuyerIds = new Set(allQuestions.map(q => q.from && String(q.from.id)).filter(Boolean));
+
+    // Fetch orders in period
+    const fmt = d => new Date(d).toISOString().slice(0,19) + '.000-00:00';
+    const { orders } = await fetchAllOrders(uid, headers, fmt(dateFrom), fmt(dateTo));
+    const orderBuyerIds = new Set(orders.map(o => o.buyer && String(o.buyer.id)).filter(Boolean));
+
+    // Buyers who asked AND bought
+    const convertedBuyers = [...questionBuyerIds].filter(id => orderBuyerIds.has(id));
+    const ventasPostPregunta = convertedBuyers.length;
+
+    // Unique buyers who asked
+    const uniqueAskers = questionBuyerIds.size;
+    const tasaConversion = uniqueAskers > 0 ? parseFloat(((ventasPostPregunta / uniqueAskers) * 100).toFixed(1)) : 0;
+
+    res.json({
+      total_preguntas:    allQuestions.length,
+      respondidas:        allQuestions.filter(q => q.answer).length,
+      sin_responder:      unanswered,
+      compradores_unicos: uniqueAskers,
+      tiempo_promedio:    fmtTime(avg(responseTimes)),
+      tiempo_mediana:     fmtTime(median(responseTimes)),
+      tiempo_lv_business: fmtTime(avg(byHour.lv_business)),
+      tiempo_lv_noche:    fmtTime(avg(byHour.lv_night)),
+      tiempo_finde:       fmtTime(avg(byHour.weekend)),
+      ventas_post_pregunta: ventasPostPregunta,
+      tasa_conversion:    tasaConversion,
+      total_compradores_periodo: orderBuyerIds.size,
+    });
+  } catch(e) { console.error('[PREGUNTAS]', e.message, e.stack); res.status(500).json({ error: e.message }); }
+});
+
 app.get('/api/devoluciones', requireAuth, async (req, res) => {
   try {
     const uid = req.query.uid;
