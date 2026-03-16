@@ -2825,7 +2825,12 @@ function loadPerformance() {
       </div>
     </div>
 
-    <!-- ROW 2: Horario full width -->
+    <!-- ROW 2: Preguntas -->
+    <div id="preguntasCard" style="margin-bottom:12px">
+      <div style="color:var(--muted);font-size:12px;padding:14px;text-align:center">⏳ Cargando datos de preguntas...</div>
+    </div>
+
+    <!-- ROW 3: Horario full width -->
     <div class="kpi-card" style="padding:18px;margin-bottom:12px">
       <div class="kpi-label" style="margin-bottom:14px">🕐 Ventas por horario</div>
       ${hourChart(byHour)}
@@ -2843,10 +2848,68 @@ function loadPerformance() {
       </div>
     </div>
   `;
+
+  // Load preguntas async after render
+  setTimeout(loadPreguntasCard, 50);
+}
+
+async function loadPreguntasCard() {
+  const el = document.getElementById('preguntasCard');
+  if (!el) return;
+  const client = getActiveClient();
+  if (!client || !client.ml_user_id) {
+    el.innerHTML = '';
+    return;
+  }
+  try {
+    const { date_from, date_to } = getDateRange();
+    const d = await apiCall('GET', `/api/preguntas?uid=${client.ml_user_id}&client_id=${client.id}&date_from=${date_from}&date_to=${date_to}`);
+    if (!d) { el.innerHTML = ''; return; }
+
+    const kpi = (label, value, sub, color) => `
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px 16px;min-width:0">
+        <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:6px">${label}</div>
+        <div style="font-size:22px;font-weight:700;font-family:var(--font-b);color:${color||'var(--text)'};">${value ?? '—'}</div>
+        ${sub ? `<div style="font-size:11px;color:var(--muted);margin-top:3px">${sub}</div>` : ''}
+      </div>`;
+
+    const tasaColor = d.tasa_conversion >= 30 ? '#22c55e' : d.tasa_conversion >= 15 ? '#f59e0b' : '#ef4444';
+    const respColor = d.sin_responder > 0 ? '#ef4444' : '#22c55e';
+
+    el.innerHTML = `<div class="kpi-card" style="padding:18px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:8px">
+        <div class="kpi-label">💬 Preguntas del período</div>
+        ${d.sin_responder > 0 ? `<span style="background:#fee2e2;color:#dc2626;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:600">⚠ ${d.sin_responder} sin responder</span>` : '<span style="background:#dcfce7;color:#16a34a;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:600">✓ Sin pendientes</span>'}
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px;margin-bottom:16px">
+        ${kpi('Preguntas recibidas', d.total_preguntas.toLocaleString('es-AR'), null, '')}
+        ${kpi('Compradores únicos', d.compradores_unicos.toLocaleString('es-AR'), 'que preguntaron', '')}
+        ${kpi('Respondidas', d.respondidas.toLocaleString('es-AR'), `${d.total_preguntas > 0 ? Math.round(d.respondidas/d.total_preguntas*100) : 0}% del total`, '#22c55e')}
+        ${kpi('Sin responder', d.sin_responder.toLocaleString('es-AR'), 'pendientes hoy', respColor)}
+        ${kpi('Ventas post-pregunta', d.ventas_post_pregunta.toLocaleString('es-AR'), 'compradores que preguntaron y compraron', '#6366f1')}
+        ${kpi('Tasa de conversión', d.tasa_conversion + '%', 'preguntas → compra', tasaColor)}
+      </div>
+      <div style="border-top:1px solid var(--border);padding-top:14px">
+        <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);margin-bottom:10px">⏱ Tiempo de respuesta promedio</div>
+        <div style="display:flex;gap:20px;flex-wrap:wrap">
+          ${[
+            ['L-V 9 a 18hs', d.tiempo_lv_business],
+            ['L-V 18 a 24hs / madrugada', d.tiempo_lv_noche],
+            ['Sáb y Dom', d.tiempo_finde],
+            ['General (mediana)', d.tiempo_mediana],
+          ].map(([l,v]) => `<div>
+            <div style="font-size:11px;color:var(--muted)">${l}</div>
+            <div style="font-size:16px;font-weight:700;font-family:var(--font-b);color:var(--text)">${v || '—'}</div>
+          </div>`).join('')}
+        </div>
+      </div>
+    </div>`;
+  } catch(e) {
+    el.innerHTML = `<div style="color:var(--muted);font-size:12px;padding:10px">Error cargando preguntas: ${e.message}</div>`;
+  }
 }
 
 function filterPerformance(val) {
-  const q = val.toLowerCase();
   document.querySelectorAll('.perf-row').forEach(row => {
     row.style.display = row.dataset.search.includes(q) ? '' : 'none';
   });
