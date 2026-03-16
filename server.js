@@ -160,8 +160,14 @@ app.post('/api/change-password', requireAuth, async (req, res) => {
 // ── CLIENT MANAGEMENT ─────────────────────────────────────────────────────────
 app.get('/api/clients', requireAuth, async (req, res) => {
   try {
-    const result = await pool.query('SELECT id, name, ml_user_id, site_id, active, token_expires_at, updated_at FROM clients ORDER BY name');
-    res.json(result.rows);
+    const result = await pool.query(
+      `SELECT id, name, ml_user_id, site_id, active, token_expires_at, updated_at,
+       (refresh_token IS NOT NULL AND refresh_token != '') AS has_refresh_token
+       FROM clients ORDER BY name`
+    );
+    // Map has_refresh_token → refresh_token boolean for frontend
+    const rows = result.rows.map(r => ({ ...r, refresh_token: r.has_refresh_token }));
+    res.json(rows);
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -236,33 +242,40 @@ app.get('/oauth/callback', async (req, res) => {
   }
 });
 
-// Refresh token using refresh_token (if available) or re-authorize using access_token
+// Refresh token using refresh_token (if available)
 async function refreshClientToken(client) {
   try {
-    let body;
-    if (client.refresh_token) {
-      // Standard refresh flow
-      body = new URLSearchParams({ grant_type: 'refresh_token', client_id: client.app_id, client_secret: client.client_secret, refresh_token: client.refresh_token });
-    } else if (client.access_token) {
-      // Fallback: use authorization_code flow won't work, but we can try re-using access_token
-      // to get a new one via the token introspection / re-issue endpoint
-      body = new URLSearchParams({ grant_type: 'refresh_token', client_id: client.app_id, client_secret: client.client_secret, refresh_token: client.access_token });
-    } else {
+    if (!client.refresh_token) {
+      console.warn(`Client ${client.id} (${client.name}) has no refresh_token — needs re-authorization`);
       return false;
     }
+    const body = new URLSearchParams({
+      grant_type: 'refresh_token',
+      client_id: client.app_id,
+      client_secret: client.client_secret,
+      refresh_token: client.refresh_token
+    });
     const tokenRes = await fetch(`${ML_API}/oauth/token`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: body.toString()
     });
     const tokens = await tokenRes.json();
-    if (tokens.error) { console.error(`Refresh failed for client ${client.id}:`, tokens.message); return false; }
+    if (tokens.error) {
+      console.error(`Refresh failed for client ${client.id} (${client.name}):`, tokens.message);
+      return false;
+    }
     const expiresAt = new Date(Date.now() + (tokens.expires_in || 21600) * 1000);
-    await pool.query(`UPDATE clients SET access_token = $1, refresh_token = $2, token_expires_at = $3, updated_at = NOW() WHERE id = $4`,
-      [tokens.access_token, tokens.refresh_token || client.refresh_token, expiresAt, client.id]);
-    console.log(`Token refreshed for client ${client.id}, expires: ${expiresAt.toISOString()}`);
+    await pool.query(
+      `UPDATE clients SET access_token = $1, refresh_token = $2, token_expires_at = $3, updated_at = NOW() WHERE id = $4`,
+      [tokens.access_token, tokens.refresh_token || client.refresh_token, expiresAt, client.id]
+    );
+    console.log(`✅ Token refreshed for client ${client.id} (${client.name}), expires: ${expiresAt.toISOString()}`);
     return tokens.access_token;
-  } catch(e) { console.error(`Refresh error for client ${client.id}:`, e.message); return false; }
+  } catch(e) {
+    console.error(`Refresh error for client ${client.id}:`, e.message);
+    return false;
+  }
 }
 
 // Auto-refresh all tokens every hour - works with or without refresh_token
