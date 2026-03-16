@@ -2878,6 +2878,10 @@ async function loadPreguntasCard() {
       tiempo_lv_noche: d.tiempo_lv_noche || null,
       tiempo_finde: d.tiempo_finde || null,
       tiempo_mediana: d.tiempo_mediana || null,
+      mins_lv_business: d.mins_lv_business ?? null,
+      mins_lv_noche: d.mins_lv_noche ?? null,
+      mins_finde: d.mins_finde ?? null,
+      mins_mediana: d.mins_mediana ?? null,
     };
 
     const kpi = (label, value, sub, color) => `
@@ -2887,34 +2891,69 @@ async function loadPreguntasCard() {
         ${sub ? `<div style="font-size:11px;color:var(--muted);margin-top:3px">${sub}</div>` : ''}
       </div>`;
 
+    const timeColor = mins => {
+      if (mins === null) return '#888';
+      if (mins < 30) return '#16a34a';
+      if (mins < 60) return '#d97706';
+      return '#dc2626';
+    };
+    const timeBg = mins => {
+      if (mins === null) return 'var(--surface2)';
+      if (mins < 30) return '#f0fdf4';
+      if (mins < 60) return '#fffbeb';
+      return '#fef2f2';
+    };
+    const timeBorder = mins => {
+      if (mins === null) return 'var(--border)';
+      if (mins < 30) return '#86efac';
+      if (mins < 60) return '#fcd34d';
+      return '#fca5a5';
+    };
+    const timeLabel = mins => {
+      if (mins === null) return '<span style="font-size:10px;color:#aaa">Sin datos</span>';
+      if (mins < 30) return '<span style="font-size:10px;color:#16a34a;font-weight:600">✓ Excelente</span>';
+      if (mins < 60) return '<span style="font-size:10px;color:#d97706;font-weight:600">⚠ Mejorable</span>';
+      return '<span style="font-size:10px;color:#dc2626;font-weight:600">✗ Lento</span>';
+    };
+    const timeBlock = (label, texto, mins) => `
+      <div style="flex:1;min-width:130px;background:${timeBg(mins)};border:1.5px solid ${timeBorder(mins)};border-radius:10px;padding:12px 14px">
+        <div style="font-size:11px;color:#666;margin-bottom:8px;line-height:1.4">${label}</div>
+        <div style="font-size:22px;font-weight:700;font-family:var(--font-b);color:${timeColor(mins)}">${texto || '—'}</div>
+        <div style="margin-top:4px">${timeLabel(mins)}</div>
+      </div>`;
+
     const tasaColor = safe.tasa_conversion >= 30 ? '#22c55e' : safe.tasa_conversion >= 15 ? '#f59e0b' : '#ef4444';
     const respColor = safe.sin_responder > 0 ? '#ef4444' : '#22c55e';
 
     el.innerHTML = `<div class="kpi-card" style="padding:18px">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:8px">
         <div class="kpi-label">💬 Preguntas del período</div>
-        ${safe.sin_responder > 0 ? `<span style="background:#fee2e2;color:#dc2626;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:600">⚠ ${safe.sin_responder} sin responder</span>` : '<span style="background:#dcfce7;color:#16a34a;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:600">✓ Sin pendientes</span>'}
+        ${safe.sin_responder > 0
+          ? `<span style="background:#fee2e2;color:#dc2626;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:600">⚠ ${safe.sin_responder} sin responder</span>`
+          : '<span style="background:#dcfce7;color:#16a34a;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:600">✓ Sin pendientes</span>'}
       </div>
-      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px;margin-bottom:16px">
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px;margin-bottom:20px">
         ${kpi('Preguntas recibidas', safe.total_preguntas.toLocaleString('es-AR'), null, '')}
         ${kpi('Compradores únicos', safe.compradores_unicos.toLocaleString('es-AR'), 'que preguntaron', '')}
         ${kpi('Respondidas', safe.respondidas.toLocaleString('es-AR'), `${safe.total_preguntas > 0 ? Math.round(safe.respondidas/safe.total_preguntas*100) : 0}% del total`, '#22c55e')}
         ${kpi('Sin responder', safe.sin_responder.toLocaleString('es-AR'), 'pendientes hoy', respColor)}
-        ${kpi('Ventas post-pregunta', safe.ventas_post_pregunta.toLocaleString('es-AR'), 'compradores que preguntaron y compraron', '#6366f1')}
+        ${kpi('Ventas post-pregunta', safe.ventas_post_pregunta.toLocaleString('es-AR'), 'preguntaron y compraron', '#6366f1')}
         ${kpi('Tasa de conversión', safe.tasa_conversion + '%', 'preguntas → compra', tasaColor)}
       </div>
-      <div style="border-top:1px solid var(--border);padding-top:14px">
-        <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted);margin-bottom:10px">⏱ Tiempo de respuesta promedio</div>
-        <div style="display:flex;gap:20px;flex-wrap:wrap">
-          ${[
-            ['L-V 9 a 18hs', safe.tiempo_lv_business],
-            ['L-V 18 a 24hs / madrugada', safe.tiempo_lv_noche],
-            ['Sáb y Dom', safe.tiempo_finde],
-            ['General (mediana)', safe.tiempo_mediana],
-          ].map(([l,v]) => `<div>
-            <div style="font-size:11px;color:var(--muted)">${l}</div>
-            <div style="font-size:16px;font-weight:700;font-family:var(--font-b);color:var(--text)">${v || '—'}</div>
-          </div>`).join('')}
+      <div style="border-top:1px solid var(--border);padding-top:16px">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px">
+          <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted)">⏱ Tiempo de respuesta por franja</div>
+          <div style="display:flex;gap:12px;font-size:11px;color:var(--muted)">
+            <span><span style="color:#16a34a;font-weight:700">●</span> &lt;30min</span>
+            <span><span style="color:#d97706;font-weight:700">●</span> 30-60min</span>
+            <span><span style="color:#dc2626;font-weight:700">●</span> &gt;1hs</span>
+          </div>
+        </div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap">
+          ${timeBlock('L-V<br>9 a 18hs', safe.tiempo_lv_business, safe.mins_lv_business)}
+          ${timeBlock('L-V<br>18hs a madrugada', safe.tiempo_lv_noche, safe.mins_lv_noche)}
+          ${timeBlock('Sábado<br>y Domingo', safe.tiempo_finde, safe.mins_finde)}
+          ${timeBlock('General<br>(mediana)', safe.tiempo_mediana, safe.mins_mediana)}
         </div>
       </div>
     </div>`;
