@@ -530,6 +530,9 @@ tbody td {
       <div class="nav-item" data-page="competencia" onclick="showPage('competencia',this);loadCompetencia()">
         <span class="nav-icon">🏆</span> Competencia
       </div>
+      <div class="nav-item" data-page="promociones" onclick="showPage('promociones',this);loadPromociones()">
+        <span class="nav-icon">🏷️</span> Promociones
+      </div>
 
       <div style="height:1px;background:var(--border);margin:12px 0"></div>
 
@@ -707,6 +710,15 @@ tbody td {
         <button class="sync-btn" id="diagCalcBtn" onclick="diagCalcular()" style="background:var(--accent);color:#fff;border:none">⚡ Calcular mes</button>
       </div>
       <div id="diagContent"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Seleccioná un cliente y calculá el diagnóstico del mes</div></div>
+    </div>
+
+    <!-- PROMOCIONES -->
+    <div class="page" id="page-promociones">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px;flex-wrap:wrap">
+        <h2 style="margin:0;font-family:var(--font-b);flex:1">🏷️ Promociones</h2>
+        <button class="sync-btn" onclick="loadPromociones()">🔄 Actualizar</button>
+      </div>
+      <div id="promoContent"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Cargando...</div></div>
     </div>
 
     <!-- FOTOS -->
@@ -3971,6 +3983,90 @@ function renderCompetenciaDetalle(data, uid) {
 }
 
 // ── DIAGNÓSTICO MENSUAL ───────────────────────────────────────────────────────
+
+// ── PROMOCIONES ───────────────────────────────────────────────────────────────
+async function loadPromociones() {
+  const el = document.getElementById('promoContent');
+  el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">⏳ Consultando promociones...</div>';
+  try {
+    const client = getActiveClient();
+    if (!client || !client.ml_user_id) {
+      el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">Sin cuenta conectada — seleccioná una cuenta en el topbar</div>';
+      return;
+    }
+    const data = await apiCall('GET', `/api/promociones?uid=${client.ml_user_id}&client_id=${client.id}`);
+    if (!data) { el.innerHTML = '<div style="color:var(--muted);padding:40px">Error al cargar</div>'; return; }
+    renderPromociones(data);
+  } catch(e) {
+    el.innerHTML = `<div style="color:var(--muted);font-size:13px;padding:40px">Error: ${e.message}</div>`;
+  }
+}
+
+function renderPromociones(data) {
+  const el = document.getElementById('promoContent');
+  const { promos, raw } = data;
+
+  const statusBadge = s => {
+    const map = { active: ['#dcfce7','#16a34a','Activa'], started: ['#dcfce7','#16a34a','Activa'],
+                  paused: ['#fef3c7','#d97706','Pausada'], finished: ['#f3f4f6','#6b7280','Finalizada'],
+                  expired: ['#f3f4f6','#6b7280','Expirada'] };
+    const [bg, fg, label] = map[s] || ['#f3f4f6','#6b7280', s||'—'];
+    return `<span style="background:${bg};color:${fg};padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600">${label}</span>`;
+  };
+
+  const fmtDate = d => d ? new Date(d).toLocaleDateString('es-AR', {day:'2-digit',month:'short',year:'numeric'}) : '—';
+
+  if (!promos || !promos.length) {
+    // Show raw response for debugging
+    el.innerHTML = `
+      <div style="background:#fef3c7;border:1px solid #fcd34d;border-radius:10px;padding:16px;margin-bottom:20px">
+        <div style="font-size:13px;font-weight:600;margin-bottom:6px">⚠ No se encontraron promociones activas</div>
+        <div style="font-size:12px;color:#92400e">Puede ser que esta cuenta no tenga promociones, o que la app no tenga permisos suficientes para verlas.</div>
+      </div>
+      <div style="font-size:12px;font-weight:600;color:var(--muted);margin-bottom:8px;text-transform:uppercase;letter-spacing:0.05em">Respuesta raw de la API (para diagnóstico)</div>
+      <pre style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:14px;font-size:11px;overflow-x:auto;white-space:pre-wrap;color:var(--text)">${JSON.stringify(raw, null, 2).slice(0, 3000)}</pre>`;
+    return;
+  }
+
+  const rows = promos.map(p => `
+    <tr>
+      <td style="padding:10px 12px;border-bottom:1px solid var(--border);font-size:12px;font-weight:600;color:var(--accent)">${p.id||'—'}</td>
+      <td style="padding:10px 12px;border-bottom:1px solid var(--border);font-size:12px">${p.name}</td>
+      <td style="padding:10px 12px;border-bottom:1px solid var(--border);font-size:12px">${p.type}</td>
+      <td style="padding:10px 12px;border-bottom:1px solid var(--border)">${statusBadge(p.status)}</td>
+      <td style="padding:10px 12px;border-bottom:1px solid var(--border);font-size:12px;text-align:center">
+        ${p.discount_pct != null ? `<span style="font-size:16px;font-weight:700;color:#dc2626">-${p.discount_pct}%</span>` : '—'}
+      </td>
+      <td style="padding:10px 12px;border-bottom:1px solid var(--border);font-size:12px;text-align:center">${p.item_count || '—'}</td>
+      <td style="padding:10px 12px;border-bottom:1px solid var(--border);font-size:12px;color:var(--muted)">${fmtDate(p.date_from)}</td>
+      <td style="padding:10px 12px;border-bottom:1px solid var(--border);font-size:12px;color:var(--muted)">${fmtDate(p.date_to)}</td>
+    </tr>`).join('');
+
+  const active = promos.filter(p => p.status === 'active' || p.status === 'started').length;
+
+  el.innerHTML = `
+    <div style="display:flex;gap:12px;margin-bottom:20px;flex-wrap:wrap">
+      ${[['Total', promos.length, ''],['Activas', active, '#22c55e'],['Pausadas/expiradas', promos.length - active, '#6b7280']]
+        .map(([l,v,c]) => `<div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px 18px">
+          <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em">${l}</div>
+          <div style="font-size:22px;font-weight:700;font-family:var(--font-b);color:${c||'var(--text)'};margin-top:4px">${v}</div>
+        </div>`).join('')}
+    </div>
+    <div style="overflow-x:auto">
+    <table style="width:100%;border-collapse:collapse">
+      <thead><tr style="background:var(--surface2)">
+        <th style="padding:8px 12px;text-align:left;font-size:11px;font-weight:600;color:var(--muted);border-bottom:1px solid var(--border)">ID</th>
+        <th style="padding:8px 12px;text-align:left;font-size:11px;font-weight:600;color:var(--muted);border-bottom:1px solid var(--border)">Nombre</th>
+        <th style="padding:8px 12px;text-align:left;font-size:11px;font-weight:600;color:var(--muted);border-bottom:1px solid var(--border)">Tipo</th>
+        <th style="padding:8px 12px;text-align:left;font-size:11px;font-weight:600;color:var(--muted);border-bottom:1px solid var(--border)">Estado</th>
+        <th style="padding:8px 12px;text-align:center;font-size:11px;font-weight:600;color:var(--muted);border-bottom:1px solid var(--border)">Descuento</th>
+        <th style="padding:8px 12px;text-align:center;font-size:11px;font-weight:600;color:var(--muted);border-bottom:1px solid var(--border)">Ítems</th>
+        <th style="padding:8px 12px;text-align:left;font-size:11px;font-weight:600;color:var(--muted);border-bottom:1px solid var(--border)">Inicio</th>
+        <th style="padding:8px 12px;text-align:left;font-size:11px;font-weight:600;color:var(--muted);border-bottom:1px solid var(--border)">Fin</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>`;
+}
 
 // ── BOOT ──────────────────────────────────────────────────────────────────────
 window.addEventListener('DOMContentLoaded', () => {
