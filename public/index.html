@@ -4199,7 +4199,7 @@ function renderTokenStatus(data) {
       <div style="font-size:11px;color:#888;display:flex;flex-direction:column;gap:3px">
         <span>ML ID: ${c.ml_user_id || '—'}</span>
         <span>Última renovación: ${lastUp}</span>
-        <span>Refresh token: ${c.has_refresh_token ? '<span style="color:#16a34a;font-weight:600">✓ Permanente</span>' : '<span style="color:#d97706;font-weight:600">⚠ Manual (6hs)</span>'}</span>
+        <span>Refresh token: ${c.has_refresh_token ? '<span style="color:#16a34a;font-weight:600">✓ Permanente</span>' : '<span style="color:#6366f1;font-weight:600">↻ Auto-renovación cada 6hs</span>'}</span>
       </div>
       ${c.status === 'expired' || c.status === 'critical' ? `
         <button onclick="quickReconnect(${c.id},'${c.name}')"
