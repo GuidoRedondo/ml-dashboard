@@ -544,6 +544,9 @@ tbody td {
       <div class="nav-item" data-page="clientes" onclick="showPage('clientes',this);renderClientsList()">
         <span class="nav-icon">👥</span> Clientes
       </div>
+      <div class="nav-item" data-page="tokens" onclick="showPage('tokens',this);loadTokenStatus()">
+        <span class="nav-icon">🔑</span> Tokens
+      </div>
       <div class="nav-item" data-page="reputacion" onclick="showPage('reputacion',this)">
         <span class="nav-icon">⭐</span> Reputación
       </div>
@@ -750,6 +753,16 @@ tbody td {
         <h2 style="margin:0;font-family:var(--font-b);flex:1">🏆 Competencia</h2>
       </div>
       <div id="competenciaContent"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Cargando categorías...</div></div>
+    </div>
+
+    <!-- TOKENS -->
+    <div class="page" id="page-tokens">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px">
+        <h2 style="margin:0;font-family:var(--font-b);flex:1">🔑 Estado de Tokens</h2>
+        <span id="tokenStatusTime" style="font-size:12px;color:var(--muted)"></span>
+        <button class="sync-btn" onclick="loadTokenStatus()">🔄 Actualizar</button>
+      </div>
+      <div id="tokenStatusContent"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Cargando...</div></div>
     </div>
 
     <!-- CLIENTES ADMIN -->
@@ -4119,6 +4132,99 @@ function renderPromociones(data) {
       </tr></thead>
       <tbody>${rows}</tbody>
     </table></div>`;
+}
+
+// ── TOKEN STATUS ──────────────────────────────────────────────────────────────
+let _tokenStatusInterval = null;
+
+async function loadTokenStatus() {
+  const el = document.getElementById('tokenStatusContent');
+  if (!el) return;
+  try {
+    const data = await apiCall('GET', '/api/token-status');
+    if (!data) return;
+    renderTokenStatus(data);
+    // Auto-refresh every 60s while on this page
+    if (!_tokenStatusInterval) {
+      _tokenStatusInterval = setInterval(() => {
+        if (document.getElementById('page-tokens').classList.contains('active')) {
+          loadTokenStatus();
+        } else {
+          clearInterval(_tokenStatusInterval);
+          _tokenStatusInterval = null;
+        }
+      }, 60000);
+    }
+  } catch(e) {
+    el.innerHTML = `<div style="color:var(--muted);padding:40px">Error: ${e.message}</div>`;
+  }
+}
+
+function renderTokenStatus(data) {
+  const el = document.getElementById('tokenStatusContent');
+  const timeEl = document.getElementById('tokenStatusTime');
+  if (timeEl) timeEl.textContent = 'Actualizado: ' + new Date(data.server_time).toLocaleTimeString('es-AR');
+
+  const fmtTime = mins => {
+    if (mins === null) return '—';
+    if (mins < 0) return `Expirado hace ${Math.abs(mins) < 60 ? Math.abs(mins)+'min' : (Math.abs(mins)/60).toFixed(1)+'hs'}`;
+    if (mins < 60) return `${mins} min`;
+    return `${(mins/60).toFixed(1)} hs`;
+  };
+
+  const statusCfg = {
+    ok:           { bg: '#f0fdf4', border: '#86efac', color: '#16a34a', label: '✓ OK',       barColor: '#22c55e' },
+    warning:      { bg: '#fffbeb', border: '#fcd34d', color: '#d97706', label: '⚠ Pronto',   barColor: '#f59e0b' },
+    critical:     { bg: '#fef2f2', border: '#fca5a5', color: '#dc2626', label: '🚨 Crítico', barColor: '#ef4444' },
+    expired:      { bg: '#fef2f2', border: '#fca5a5', color: '#dc2626', label: '✗ Expirado', barColor: '#dc2626' },
+    no_connected: { bg: 'var(--surface2)', border: 'var(--border)', color: 'var(--muted)', label: '— Sin conectar', barColor: '#ccc' },
+    unknown:      { bg: 'var(--surface2)', border: 'var(--border)', color: 'var(--muted)', label: '? Desconocido',  barColor: '#ccc' },
+  };
+
+  const cards = data.clients.map(c => {
+    const cfg = statusCfg[c.status] || statusCfg.unknown;
+    const maxMins = 360; // 6hs
+    const pct = c.mins_left === null ? 0 : Math.max(0, Math.min(100, (c.mins_left / maxMins) * 100));
+    const lastUp = c.last_updated ? new Date(c.last_updated).toLocaleString('es-AR', {day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}) : '—';
+
+    return `<div style="background:${cfg.bg};border:1.5px solid ${cfg.border};border-radius:12px;padding:16px 18px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+        <div style="font-size:14px;font-weight:600;font-family:var(--font-b)">${c.name}</div>
+        <span style="font-size:11px;font-weight:600;color:${cfg.color};background:white;padding:2px 8px;border-radius:4px;border:1px solid ${cfg.border}">${cfg.label}</span>
+      </div>
+      <div style="background:#e5e7eb;border-radius:4px;height:6px;margin-bottom:10px;overflow:hidden">
+        <div style="background:${cfg.barColor};height:100%;width:${pct}%;border-radius:4px;transition:width 0.5s"></div>
+      </div>
+      <div style="font-size:22px;font-weight:700;font-family:var(--font-b);color:${cfg.color};margin-bottom:6px">${fmtTime(c.mins_left)}</div>
+      <div style="font-size:11px;color:#888;display:flex;flex-direction:column;gap:3px">
+        <span>ML ID: ${c.ml_user_id || '—'}</span>
+        <span>Última renovación: ${lastUp}</span>
+        <span>Refresh token: ${c.has_refresh_token ? '<span style="color:#16a34a;font-weight:600">✓ Permanente</span>' : '<span style="color:#d97706;font-weight:600">⚠ Manual (6hs)</span>'}</span>
+      </div>
+      ${c.status === 'expired' || c.status === 'critical' ? `
+        <button onclick="quickReconnect(${c.id},'${c.name}')"
+          style="margin-top:10px;width:100%;padding:6px;background:#dc2626;color:#fff;border:none;border-radius:7px;font-size:12px;font-weight:600;cursor:pointer">
+          🔗 Renovar ahora
+        </button>` : ''}
+    </div>`;
+  }).join('');
+
+  const expired = data.clients.filter(c => c.status === 'expired' || c.status === 'critical').length;
+  const ok = data.clients.filter(c => c.status === 'ok').length;
+
+  el.innerHTML = `
+    <div style="display:flex;gap:12px;margin-bottom:20px;flex-wrap:wrap">
+      ${[
+        ['Total cuentas', data.clients.length, ''],
+        ['OK', ok, '#22c55e'],
+        ['Requieren atención', expired, expired > 0 ? '#dc2626' : '#22c55e'],
+      ].map(([l,v,c]) => `<div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px 18px">
+        <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em">${l}</div>
+        <div style="font-size:22px;font-weight:700;font-family:var(--font-b);color:${c||'var(--text)'};margin-top:4px">${v}</div>
+      </div>`).join('')}
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px">${cards}</div>
+    <div style="margin-top:16px;font-size:11px;color:var(--muted);text-align:center">Se actualiza automáticamente cada 60 segundos · El servidor renueva tokens automáticamente cuando quedan menos de 3hs</div>`;
 }
 
 // ── BOOT ──────────────────────────────────────────────────────────────────────
