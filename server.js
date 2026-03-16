@@ -1453,7 +1453,8 @@ app.post('/api/diagnostico/calcular', requireAuth, async (req, res) => {
         rep_medalla=$21, rep_ventas_60=$22, rep_concretadas=$23, rep_no_concretadas=$24,
         rep_reclamos=$25, rep_demoras=$26, rep_cancelaciones=$27, rep_mediaciones=$28,
         rep_no_conc_monto=$29, rep_no_conc_pct=$30,
-        pub_total=$31, pub_activas=$32, pub_inactivas=$33, pub_exitosas=$34, pub_pareto_pct=$35, pub_interes=$36
+        pub_total=$31, pub_activas=$32, pub_inactivas=$33, pub_exitosas=$34, pub_pareto_pct=$35, pub_interes=$36,
+        manuales=$37
     `, [
       client_id, mesStr,
       facturacion, ventas, unidades, visitas, conversion, ticket_promedio, carritos,
