@@ -1270,17 +1270,40 @@ app.post('/api/diagnostico/calcular', requireAuth, async (req, res) => {
     // ── 6. Publicidad (PADS) ──────────────────────────────────────────────────
     let padsInversion=0, padsIngresos=0, padsClicks=0, padsVentas=0, padsImpresiones=0;
     try {
-      const adsUrl = `${ML_API}/advertising/advertisers/${uid}/campaigns?app_version=v2&date_from=${dateFrom.toISOString().slice(0,10)}&date_to=${dateTo.toISOString().slice(0,10)}`;
-      const adsRes = await fetch(adsUrl, {
-        headers: { 'Authorization': `Bearer ${token}`, 'Api-Version': '2' }
-      }).then(r => r.json());
-      (adsRes.results || adsRes.campaigns || []).forEach(c => {
-        padsInversion   += parseFloat(c.cost||c.spend||0);
-        padsIngresos    += parseFloat(c.revenue||c.attributed_revenue||0);
-        padsClicks      += parseInt(c.clicks||0);
-        padsVentas      += parseInt(c.units_sold||c.attributed_units||0);
-        padsImpresiones += parseInt(c.prints||c.impressions||0);
-      });
+      const siteId = user.site_id || 'MLA';
+      const h2 = { 'Authorization': `Bearer ${token}`, 'Api-Version': '2' };
+      const fromStr = dateFrom.toISOString().slice(0,10);
+      const toStr   = dateTo.toISOString().slice(0,10);
+      const metrics = 'cost,clicks,prints,total_amount,units_quantity';
+
+      // Step 1: get advertiser id
+      const advRes = await fetch(`${ML_API}/advertising/advertisers?product_id=PADS`, { headers: h2 }).then(r=>r.json()).catch(()=>({}));
+      const advList = advRes.results || advRes.advertisers || (Array.isArray(advRes) ? advRes : []);
+      const advId = advList[0]?.advertiser_id || advList[0]?.id || uid;
+
+      // Step 2: fetch campaigns with metrics
+      const campUrl = `${ML_API}/advertising/${siteId}/advertisers/${advId}/product_ads/campaigns/search?limit=50&offset=0&date_from=${fromStr}&date_to=${toStr}&metrics=${metrics}&metrics_summary=true`;
+      const campRes = await fetch(campUrl, { headers: h2 }).then(r=>r.json()).catch(()=>({}));
+      console.log(`[DIAG ADS] ${mesStr} advId=${advId} campaigns=${(campRes.results||[]).length} summary=${JSON.stringify(campRes.summary||{})}`);
+
+      // Use summary if available, otherwise sum campaigns
+      if (campRes.summary) {
+        const s = campRes.summary;
+        padsInversion   = parseFloat(s.cost||s.spend||0);
+        padsIngresos    = parseFloat(s.total_amount||s.revenue||0);
+        padsClicks      = parseInt(s.clicks||0);
+        padsVentas      = parseInt(s.units_quantity||s.units_sold||0);
+        padsImpresiones = parseInt(s.prints||s.impressions||0);
+      } else {
+        (campRes.results || []).forEach(c => {
+          const m = c.metrics || c;
+          padsInversion   += parseFloat(m.cost||m.spend||0);
+          padsIngresos    += parseFloat(m.total_amount||m.revenue||0);
+          padsClicks      += parseInt(m.clicks||0);
+          padsVentas      += parseInt(m.units_quantity||m.units_sold||0);
+          padsImpresiones += parseInt(m.prints||m.impressions||0);
+        });
+      }
     } catch(e) { console.error('[DIAG ADS]', e.message); }
     const padsAcos = padsIngresos > 0 ? parseFloat(((padsInversion/padsIngresos)*100).toFixed(2)) : 0;
     const padsTacos = facturacion > 0 ? parseFloat(((padsInversion/facturacion)*100).toFixed(2)) : 0;
