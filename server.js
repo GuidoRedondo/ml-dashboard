@@ -1267,7 +1267,7 @@ app.post('/api/diagnostico/calcular', requireAuth, async (req, res) => {
     const repNoConcPct = (facturacion + repNoConcMonto) > 0
       ? parseFloat(((repNoConcMonto / (facturacion + repNoConcMonto))*100).toFixed(2)) : 0;
 
-    // ── 6. Publicidad (PADS) ──────────────────────────────────────────────────
+    // ── 6. Publicidad (PADS) — same approach as working /api/ads ─────────────
     let padsInversion=0, padsIngresos=0, padsClicks=0, padsVentas=0, padsImpresiones=0;
     try {
       const siteId = user.site_id || 'MLA';
@@ -1276,41 +1276,85 @@ app.post('/api/diagnostico/calcular', requireAuth, async (req, res) => {
       const toStr   = dateTo.toISOString().slice(0,10);
       const metrics = 'cost,clicks,prints,total_amount,units_quantity';
 
-      // Step 1: get advertiser id
+      // Get advertiser id
       const advRes = await fetch(`${ML_API}/advertising/advertisers?product_id=PADS`, { headers: h2 }).then(r=>r.json()).catch(()=>({}));
       const advList = advRes.results || advRes.advertisers || (Array.isArray(advRes) ? advRes : []);
       const advId = advList[0]?.advertiser_id || advList[0]?.id || uid;
 
-      // Step 2: fetch campaigns with metrics
-      const campUrl = `${ML_API}/advertising/${siteId}/advertisers/${advId}/product_ads/campaigns/search?limit=50&offset=0&date_from=${fromStr}&date_to=${toStr}&metrics=${metrics}&metrics_summary=true`;
-      const campRes = await fetch(campUrl, { headers: h2 }).then(r=>r.json()).catch(()=>({}));
-      console.log(`[DIAG ADS] ${mesStr} advId=${advId} campaigns=${(campRes.results||[]).length} summary=${JSON.stringify(campRes.summary||{})}`);
-
-      // Use summary if available, otherwise sum campaigns
-      if (campRes.summary) {
-        const s = campRes.summary;
-        padsInversion   = parseFloat(s.cost||s.spend||0);
-        padsIngresos    = parseFloat(s.total_amount||s.revenue||0);
-        padsClicks      = parseInt(s.clicks||0);
-        padsVentas      = parseInt(s.units_quantity||s.units_sold||0);
-        padsImpresiones = parseInt(s.prints||s.impressions||0);
-      } else {
-        (campRes.results || []).forEach(c => {
-          const m = c.metrics || c;
-          padsInversion   += parseFloat(m.cost||m.spend||0);
-          padsIngresos    += parseFloat(m.total_amount||m.revenue||0);
+      // Use ads/search (same as working ads section) — paginate all
+      let offset = 0, keepFetching = true;
+      while (keepFetching) {
+        const url = `${ML_API}/advertising/${siteId}/advertisers/${advId}/product_ads/ads/search?limit=100&offset=${offset}&date_from=${fromStr}&date_to=${toStr}&metrics=${metrics}`;
+        const res = await fetch(url, { headers: h2 }).then(r=>r.json()).catch(()=>({}));
+        const results = res.results || [];
+        results.forEach(ad => {
+          const m = ad.metrics || {};
+          padsInversion   += parseFloat(m.cost||0);
+          padsIngresos    += parseFloat(m.total_amount||0);
           padsClicks      += parseInt(m.clicks||0);
-          padsVentas      += parseInt(m.units_quantity||m.units_sold||0);
-          padsImpresiones += parseInt(m.prints||m.impressions||0);
+          padsVentas      += parseInt(m.units_quantity||0);
+          padsImpresiones += parseInt(m.prints||0);
         });
+        const total = res.paging?.total || 0;
+        offset += 100;
+        keepFetching = results.length === 100 && offset < total;
+        if (offset > 2000) break;
       }
-    } catch(e) { console.error('[DIAG ADS]', e.message); }
+      console.log(`[DIAG ADS] ${mesStr} advId=${advId} inversion=${padsInversion} ingresos=${padsIngresos} clicks=${padsClicks}`);
+    } catch(e) { console.error('[DIAG ADS ERROR]', e.message); }
     const padsAcos = padsIngresos > 0 ? parseFloat(((padsInversion/padsIngresos)*100).toFixed(2)) : 0;
     const padsTacos = facturacion > 0 ? parseFloat(((padsInversion/facturacion)*100).toFixed(2)) : 0;
     const padsRoas = padsInversion > 0 ? parseFloat((padsIngresos/padsInversion).toFixed(2)) : 0;
     const padsCtr = padsImpresiones > 0 ? parseFloat(((padsClicks/padsImpresiones)*100).toFixed(2)) : 0;
     const padsConversion = padsClicks > 0 ? parseFloat(((padsVentas/padsClicks)*100).toFixed(2)) : 0;
     const padsAportePct = ventas > 0 ? parseFloat(((padsVentas/ventas)*100).toFixed(2)) : 0;
+
+    // ── 6b. Logística — % facturación por modo desde shipments ───────────────
+    let logFullFact=0, logFlexFact=0, logCorreoFact=0, logFullActive=false, logFlexActive=false;
+    try {
+      const shipIds = [...new Set(orders.map(o=>o.shipping?.id).filter(Boolean))];
+      // Sample up to 50 shipments to determine modes
+      const sampleIds = shipIds.slice(0, 50);
+      const shipMap = {};
+      for (let i=0; i<sampleIds.length; i+=10) {
+        const batch = sampleIds.slice(i,i+10);
+        await Promise.all(batch.map(async sid => {
+          try {
+            const s = await fetch(`${ML_API}/shipments/${sid}`, {headers}).then(r=>r.json());
+            const lt = (s.logistic_type||'').toLowerCase();
+            let mode;
+            if (lt==='fulfillment') mode='FULL';
+            else if (lt==='flex'||lt==='self_service') mode='FLEX';
+            else mode='Correo';
+            shipMap[sid] = mode;
+          } catch(e){}
+        }));
+      }
+      // Map orders to modes and sum revenue
+      orders.forEach(o => {
+        const sid = o.shipping?.id;
+        const mode = sid ? (shipMap[sid]||'Correo') : 'Correo';
+        const rev = parseFloat(o.total_amount)||0;
+        if (mode==='FULL') { logFullFact+=rev; logFullActive=true; }
+        else if (mode==='FLEX') { logFlexFact+=rev; logFlexActive=true; }
+        else logCorreoFact+=rev;
+      });
+    } catch(e) { console.error('[DIAG LOG]', e.message); }
+    const logFullPct  = facturacion>0 ? parseFloat(((logFullFact/facturacion)*100).toFixed(1))  : 0;
+    const logFlexPct  = facturacion>0 ? parseFloat(((logFlexFact/facturacion)*100).toFixed(1))  : 0;
+
+    // ── 6c. Marketing — descuentos y cupones desde órdenes ────────────────────
+    let mktOrdenesConDescuento=0, mktOrdenesConCupon=0;
+    try {
+      orders.forEach(o => {
+        const hasDiscount = (o.order_items||[]).some(oi => oi.discounts && oi.discounts.length > 0);
+        const hasCoupon   = o.coupon && (o.coupon.amount > 0 || o.coupon.id);
+        if (hasDiscount) mktOrdenesConDescuento++;
+        if (hasCoupon)   mktOrdenesConCupon++;
+      });
+    } catch(e) {}
+    const mktPctDescuento = ventas>0 ? parseFloat(((mktOrdenesConDescuento/ventas)*100).toFixed(1)) : 0;
+    const mktPctCupon     = ventas>0 ? parseFloat(((mktOrdenesConCupon/ventas)*100).toFixed(1))     : 0;
 
     // ── 7. Tiempos de respuesta (desde preguntas) ─────────────────────────────
     let tiempos = { lv_business: null, lv_noche: null, finde: null, mediana: null };
@@ -1364,12 +1408,31 @@ app.post('/api/diagnostico/calcular', requireAuth, async (req, res) => {
     const existing = await pool.query('SELECT id, manuales FROM diagnostico_mensual WHERE client_id=$1 AND mes=$2', [client_id, mesStr]);
     const manualesExistentes = existing.rows.length > 0 ? (existing.rows[0].manuales || {}) : {};
 
-    // Merge auto-calculated tiempos (preserve manual overrides if user already saved them)
+    // Merge auto-calculated data (preserve manual overrides)
     const manualesFinal = {
       ...manualesExistentes,
+      // Tiempos de respuesta (auto, override with manual if set)
       rep_resp_lv:    tiempos.lv_business || manualesExistentes.rep_resp_lv,
       rep_resp_noche: tiempos.lv_noche    || manualesExistentes.rep_resp_noche,
       rep_resp_finde: tiempos.finde       || manualesExistentes.rep_resp_finde,
+      // Logística (auto)
+      full_activo:    logFullActive ? 'SI' : 'NO',
+      flex_activo:    logFlexActive ? 'SI' : 'NO',
+      full_fact_pct:  logFullPct,
+      flex_fact_pct:  logFlexPct,
+      full_fact_monto: Math.round(logFullFact),
+      flex_fact_monto: Math.round(logFlexFact),
+      // Marketing (auto)
+      mkt_ordenes_con_descuento: mktOrdenesConDescuento,
+      mkt_pct_descuento: mktPctDescuento,
+      mkt_ordenes_con_cupon: mktOrdenesConCupon,
+      mkt_pct_cupon: mktPctCupon,
+      // Preserve manual fields
+      mkt_descuentos: mktOrdenesConDescuento > 0 ? 'SI' : (manualesExistentes.mkt_descuentos || 'NO'),
+      mkt_cupones:    mktOrdenesConCupon > 0     ? 'SI' : (manualesExistentes.mkt_cupones    || 'NO'),
+      mkt_difusiones: manualesExistentes.mkt_difusiones || '',
+      mkt_notas:      manualesExistentes.mkt_notas || '',
+      notas:          manualesExistentes.notas || '',
     };
 
     await pool.query(`
