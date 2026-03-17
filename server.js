@@ -430,7 +430,7 @@ async function fetchAllOrders(uid, headers, fromStr, toStr) {
     let amount = 0;
     all.forEach(o => { amount += parseFloat(o.total_amount) || 0; });
     if (total > 50) {
-      const maxPages = Math.min(Math.ceil(total / 50), 40);
+      const maxPages = Math.min(Math.ceil(total / 50), 100); // up to 5000 orders
       for (let b = 1; b < maxPages; b += 5) {
         const end = Math.min(b + 5, maxPages);
         const batch = await Promise.all(Array.from({length: end - b}, (_, i) =>
@@ -1196,12 +1196,21 @@ app.post('/api/diagnostico/calcular', requireAuth, async (req, res) => {
     const carritos = ventas > 0 ? parseFloat((unidades / ventas).toFixed(2)) : 0;
 
     // ── 3. Visitas y publicaciones ────────────────────────────────────────────
-    const days30 = 30;
-    const itemsRes = await fetch(
-      `${ML_API}/users/${uid}/items/search?status=active&limit=100`, { headers }
-    ).then(r => r.json());
-    const activeIds = itemsRes.results || [];
-    const totalActive = (itemsRes.paging && itemsRes.paging.total) || activeIds.length;
+    const daysInMonth = new Date(year, month+1, 0).getDate();
+
+    // Fetch ALL active item IDs (paginated)
+    let allActiveIdsFull = [];
+    let itemOffset = 0;
+    while (true) {
+      const r = await fetch(`${ML_API}/users/${uid}/items/search?status=active&limit=100&offset=${itemOffset}`, { headers }).then(r => r.json());
+      const ids = r.results || [];
+      allActiveIdsFull = allActiveIdsFull.concat(ids);
+      const total = r.paging?.total || 0;
+      if (ids.length < 100 || allActiveIdsFull.length >= total) break;
+      itemOffset += 100;
+      if (itemOffset > 5000) break;
+    }
+    const totalActive = allActiveIdsFull.length;
 
     const itemsInactRes = await fetch(
       `${ML_API}/users/${uid}/items/search?status=inactive&limit=1`, { headers }
@@ -1209,12 +1218,11 @@ app.post('/api/diagnostico/calcular', requireAuth, async (req, res) => {
     const totalInactive = (itemsInactRes.paging && itemsInactRes.paging.total) || 0;
     const pubTotal = totalActive + totalInactive;
 
-    // Visitas del mes (sumamos visitas de items activos, batch de 20)
+    // Visitas del mes — fetch for all active items using month days
     let visitas = 0;
-    const allActiveIds = activeIds.slice(0, 200);
-    for (let i = 0; i < allActiveIds.length; i += 20) {
-      const batch = allActiveIds.slice(i, i+20);
-      const vMap = await fetchVisits(batch, days30, headers);
+    for (let i = 0; i < allActiveIdsFull.length; i += 20) {
+      const batch = allActiveIdsFull.slice(i, i+20);
+      const vMap = await fetchVisits(batch, daysInMonth, headers);
       Object.values(vMap).forEach(v => { visitas += v; });
     }
 
@@ -1313,46 +1321,59 @@ app.post('/api/diagnostico/calcular', requireAuth, async (req, res) => {
     let logFullFact=0, logFlexFact=0, logCorreoFact=0, logFullActive=false, logFlexActive=false;
     try {
       const shipIds = [...new Set(orders.map(o=>o.shipping?.id).filter(Boolean))];
-      // Sample up to 50 shipments to determine modes
-      const sampleIds = shipIds.slice(0, 50);
+      // Fetch ALL shipments (up to 500)
       const shipMap = {};
-      for (let i=0; i<sampleIds.length; i+=10) {
-        const batch = sampleIds.slice(i,i+10);
+      const maxShip = Math.min(shipIds.length, 500);
+      for (let i=0; i<maxShip; i+=10) {
+        const batch = shipIds.slice(i, i+10);
         await Promise.all(batch.map(async sid => {
           try {
             const s = await fetch(`${ML_API}/shipments/${sid}`, {headers}).then(r=>r.json());
             const lt = (s.logistic_type||'').toLowerCase();
             let mode;
             if (lt==='fulfillment') mode='FULL';
-            else if (lt==='flex'||lt==='self_service') mode='FLEX';
+            else if (lt==='flex'||lt==='self_service'||lt.includes('flex')) mode='FLEX';
             else mode='Correo';
             shipMap[sid] = mode;
           } catch(e){}
         }));
       }
-      // Map orders to modes and sum revenue
+      // Map ALL orders to modes and sum revenue
       orders.forEach(o => {
         const sid = o.shipping?.id;
-        const mode = sid ? (shipMap[sid]||'Correo') : 'Correo';
+        const mode = sid ? (shipMap[sid]||'Correo') : 'SinEnvio';
         const rev = parseFloat(o.total_amount)||0;
-        if (mode==='FULL') { logFullFact+=rev; logFullActive=true; }
+        if (mode==='FULL')      { logFullFact+=rev; logFullActive=true; }
         else if (mode==='FLEX') { logFlexFact+=rev; logFlexActive=true; }
-        else logCorreoFact+=rev;
+        else if (mode!=='SinEnvio') logCorreoFact+=rev;
       });
+      console.log(`[DIAG LOG] ${mesStr} orders=${orders.length} shipmentsMap=${Object.keys(shipMap).length} FULL=$${Math.round(logFullFact)} FLEX=$${Math.round(logFlexFact)} Correo=$${Math.round(logCorreoFact)}`);
     } catch(e) { console.error('[DIAG LOG]', e.message); }
-    const logFullPct  = facturacion>0 ? parseFloat(((logFullFact/facturacion)*100).toFixed(1))  : 0;
-    const logFlexPct  = facturacion>0 ? parseFloat(((logFlexFact/facturacion)*100).toFixed(1))  : 0;
+    const logFullPct  = facturacion>0 ? parseFloat(((logFullFact/facturacion)*100).toFixed(1)) : 0;
+    const logFlexPct  = facturacion>0 ? parseFloat(((logFlexFact/facturacion)*100).toFixed(1)) : 0;
 
     // ── 6c. Marketing — descuentos y cupones desde órdenes ────────────────────
     let mktOrdenesConDescuento=0, mktOrdenesConCupon=0;
     try {
       orders.forEach(o => {
-        const hasDiscount = (o.order_items||[]).some(oi => oi.discounts && oi.discounts.length > 0);
-        const hasCoupon   = o.coupon && (o.coupon.amount > 0 || o.coupon.id);
+        // Check discount in multiple places ML can store it
+        const hasDiscount =
+          (o.order_items||[]).some(oi =>
+            (oi.discounts && oi.discounts.length > 0) ||
+            (oi.sale_fee && oi.original_price && oi.unit_price < oi.original_price)
+          ) ||
+          (o.discount_amount && parseFloat(o.discount_amount) > 0) ||
+          (o.payments||[]).some(p => p.coupon_amount > 0 || p.coupon_id);
+
+        const hasCoupon =
+          (o.coupon && (o.coupon.amount > 0 || o.coupon.id)) ||
+          (o.payments||[]).some(p => p.coupon_amount > 0 || p.coupon_id);
+
         if (hasDiscount) mktOrdenesConDescuento++;
         if (hasCoupon)   mktOrdenesConCupon++;
       });
-    } catch(e) {}
+      console.log(`[DIAG MKT] ${mesStr} descuentos=${mktOrdenesConDescuento}/${ventas} cupones=${mktOrdenesConCupon}/${ventas}`);
+    } catch(e) { console.error('[DIAG MKT]', e.message); }
     const mktPctDescuento = ventas>0 ? parseFloat(((mktOrdenesConDescuento/ventas)*100).toFixed(1)) : 0;
     const mktPctCupon     = ventas>0 ? parseFloat(((mktOrdenesConCupon/ventas)*100).toFixed(1))     : 0;
 
