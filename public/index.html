@@ -3548,10 +3548,8 @@ function diagRender(meses, clientId) {
     ${sec('📣 Central de Marketing','#fff7ed')}
     ${row('Ventas con descuento', d=>d.manuales?.mkt_ordenes_con_descuento||null, fmtN)}
     ${row('% ventas con descuento', d=>d.manuales?.mkt_pct_descuento||null, fmtP)}
-    ${row('Descuentos activos', d=>d.manuales?.mkt_descuentos, fmtT)}
     ${row('Ventas con cupón', d=>d.manuales?.mkt_ordenes_con_cupon||null, fmtN)}
     ${row('% ventas con cupón', d=>d.manuales?.mkt_pct_cupon||null, fmtP)}
-    ${row('Cupones', d=>d.manuales?.mkt_cupones, fmtT)}
     ${row('Difusiones', d=>d.manuales?.mkt_difusiones, fmtT)}
     ${sec('🏷 Publicidad','#fce7e7')}
     ${row('Inversión PADS', d=>d.pads_inversion, fmtM, false)}
@@ -3560,52 +3558,18 @@ function diagRender(meses, clientId) {
     ${row('TACOS', d=>d.pads_tacos, fmtP, false)}
     ${row('% Fact por publicidad', d=>d.pads_aporte_pct, fmtP)}
     </tbody></table></div>`;
-  const inp = (id,val,ph='') => `<input id="${id}" value="${val||''}" placeholder="${ph}" style="width:100%;padding:5px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px">`;
-  const siNo = (id,val) => `<select id="${id}" style="width:100%;padding:5px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px"><option value="SI" ${val==='SI'?'selected':''}>SI</option><option value="NO" ${(!val||val==='NO')?'selected':''}>NO</option></select>`;
-  const formHTML = `<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:18px;margin-bottom:24px">
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:8px">
-      <div style="font-size:13px;font-weight:600;font-family:var(--font-b)">📝 Datos manuales — ${lastCol.label}</div>
-      <button id="diagSaveManBtn" onclick="diagGuardarManuales('${clientId}','${lastCol.mes}')" style="padding:6px 16px;background:var(--accent);color:#fff;border:none;border-radius:8px;font-size:13px;cursor:pointer">💾 Guardar</button>
-    </div>
-    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:16px">
-      <div>
-        <div style="font-size:11px;font-weight:600;text-transform:uppercase;color:var(--muted);margin-bottom:8px;border-bottom:1px solid var(--border);padding-bottom:4px">⏱ Tiempos de respuesta <span style=\"font-size:9px;color:#6366f1;font-weight:400\">AUTO</span></div>
-        <div style="font-size:11px;color:var(--muted);margin-bottom:8px">Calculados automáticamente al calcular el mes. Editá solo si querés corregir.</div>
-        <label style="font-size:12px;color:var(--muted)">L-V 9-18hs</label>${inp('dm_resp_lv',man.rep_resp_lv,'calculando...')}
-        <label style="font-size:12px;color:var(--muted);margin-top:6px;display:block">L-V noche</label>${inp('dm_resp_noche',man.rep_resp_noche,'calculando...')}
-        <label style="font-size:12px;color:var(--muted);margin-top:6px;display:block">Sáb y Dom</label>${inp('dm_resp_finde',man.rep_resp_finde,'calculando...')}
+  const siNo = (id,val) => `<select id="${id}" style="padding:5px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px"><option value="SI" ${val==='SI'?'selected':''}>SI</option><option value="NO" ${(!val||val==='NO')?'selected':''}>NO</option></select>`;
+  const formHTML = `<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px 18px;margin-bottom:20px;display:flex;align-items:center;gap:16px;flex-wrap:wrap">
+    <span style="font-size:13px;font-weight:600;font-family:var(--font-b)">📝 ${lastCol.label}</span>
+    <div style="display:flex;align-items:center;gap:10px;flex:1;flex-wrap:wrap">
+      <div style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)">
+        Difusiones: ${siNo('dm_difusiones', man.mkt_difusiones)}
       </div>
-      <div>
-        <div style="font-size:11px;font-weight:600;text-transform:uppercase;color:var(--muted);margin-bottom:8px;border-bottom:1px solid var(--border);padding-bottom:4px">🚚 Logística <span style="font-size:9px;color:#6366f1;font-weight:400">AUTO</span></div>
-        <div style="font-size:11px;color:var(--muted);margin-bottom:8px">Calculado desde los envíos del mes.</div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:6px">
-          <div style="background:var(--surface2);border-radius:6px;padding:8px;text-align:center">
-            <div style="font-size:10px;color:var(--muted)">FULL</div>
-            <div style="font-size:15px;font-weight:700;color:${man.full_activo==='SI'?'#6366f1':'var(--muted)'}">${man.full_activo||'—'}</div>
-            <div style="font-size:11px;color:var(--muted)">${man.full_fact_pct!=null?man.full_fact_pct+'%':'—'}</div>
-          </div>
-          <div style="background:var(--surface2);border-radius:6px;padding:8px;text-align:center">
-            <div style="font-size:10px;color:var(--muted)">FLEX</div>
-            <div style="font-size:15px;font-weight:700;color:${man.flex_activo==='SI'?'#10b981':'var(--muted)'}">${man.flex_activo||'—'}</div>
-            <div style="font-size:11px;color:var(--muted)">${man.flex_fact_pct!=null?man.flex_fact_pct+'%':'—'}</div>
-          </div>
-        </div>
-      </div>
-      <div>
-        <div style="font-size:11px;font-weight:600;text-transform:uppercase;color:var(--muted);margin-bottom:8px;border-bottom:1px solid var(--border);padding-bottom:4px">📣 Central de Mkt <span style="font-size:9px;color:#6366f1;font-weight:400">PARCIAL AUTO</span></div>
-        <div style="background:var(--surface2);border-radius:6px;padding:8px;margin-bottom:8px;font-size:12px">
-          <div style="display:flex;justify-content:space-between"><span style="color:var(--muted)">Ventas con descuento</span><strong>${man.mkt_ordenes_con_descuento||0} (${man.mkt_pct_descuento||0}%)</strong></div>
-          <div style="display:flex;justify-content:space-between;margin-top:4px"><span style="color:var(--muted)">Ventas con cupón</span><strong>${man.mkt_ordenes_con_cupon||0} (${man.mkt_pct_cupon||0}%)</strong></div>
-        </div>
-        <label style="font-size:12px;color:var(--muted)">Difusiones</label>${siNo('dm_difusiones',man.mkt_difusiones)}
-        <label style="font-size:12px;color:var(--muted);margin-top:6px;display:block">Notas Mkt</label>
-        <textarea id="dm_mkt_notas" style="width:100%;padding:5px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:12px;resize:vertical;min-height:50px">${man.mkt_notas||''}</textarea>
-      </div>
-      <div>
-        <div style="font-size:11px;font-weight:600;text-transform:uppercase;color:var(--muted);margin-bottom:8px;border-bottom:1px solid var(--border);padding-bottom:4px">📝 Notas generales</div>
-        <textarea id="dm_notas_generales" style="width:100%;padding:5px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:12px;resize:vertical;min-height:100px">${man.notas||''}</textarea>
+      <div style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);flex:1">
+        Notas: <input id="dm_notas_generales" value="${man.notas||''}" placeholder="Observaciones del mes..." style="flex:1;min-width:200px;padding:5px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:12px">
       </div>
     </div>
+    <button id="diagSaveManBtn" onclick="diagGuardarManuales('${clientId}','${lastCol.mes}')" style="padding:6px 16px;background:var(--accent);color:#fff;border:none;border-radius:8px;font-size:13px;cursor:pointer;white-space:nowrap">💾 Guardar</button>
   </div>`;
   el.innerHTML = formHTML + tableHTML;
 }
