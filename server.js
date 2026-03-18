@@ -1624,9 +1624,13 @@ app.get('/api/debug/order', requireAuth, async (req, res) => {
     if (!token) return res.status(403).json({ error: 'Sin token' });
     const headers = { 'Authorization': `Bearer ${token}` };
 
-    // Fetch order
+    // Fetch order + payments
     const order = await fetch(`${ML_API}/orders/${order_id}`, { headers }).then(r=>r.json());
     const shipId = order.shipping?.id;
+
+    // Fetch payments for this order — they contain the full financial breakdown
+    const paymentsRes = await fetch(`${ML_API}/orders/${order_id}/payments`, { headers }).then(r=>r.json()).catch(()=>({}));
+    const payments = paymentsRes.results || paymentsRes || [];
 
     let shipment = null;
     if (shipId) {
@@ -1648,7 +1652,11 @@ app.get('/api/debug/order', requireAuth, async (req, res) => {
       })),
       taxes: order.taxes,
       coupon: order.coupon,
-      // Shipment fields
+      payments: payments.slice ? payments.slice(0,3).map(p => ({
+        id: p.id, status: p.status, total_paid_amount: p.total_paid_amount,
+        shipping_cost: p.shipping_cost, overpaid_amount: p.overpaid_amount,
+        marketplace_fee: p.marketplace_fee, coupon_amount: p.coupon_amount,
+      })) : [],
       shipment: shipment ? {
         id: shipment.id,
         logistic_type: shipment.logistic_type,
