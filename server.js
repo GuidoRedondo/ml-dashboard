@@ -642,8 +642,18 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
       const orderItemsRevenue = (order.order_items || []).reduce((s, oi) =>
         s + (parseFloat(oi.unit_price) || 0) * (oi.quantity || 0), 0) || 1;
 
-      const orderTax        = parseFloat((order.taxes || {}).amount) || 0;
-      const orderSellerShip = shipData ? (shipData.sellerCost || 0) : 0;
+      const orderTax = parseFloat((order.taxes || {}).amount) || 0;
+
+      // Use payments for accurate seller shipping cost
+      let orderSellerShip = 0;
+      const pmts = order.payments || [];
+      if (pmts.length > 0) {
+        pmts.forEach(p => { orderSellerShip += parseFloat(p.shipping_cost) || 0; });
+      }
+      // Fallback to shipment API
+      if (orderSellerShip === 0 && shipData) {
+        orderSellerShip = shipData.sellerCost || 0;
+      }
 
       (order.order_items || []).forEach(oi => {
         const id    = oi.item && oi.item.id;
@@ -801,15 +811,37 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
 
     // ── ORDERS DETAIL (for Ventas section) ───────────────────────────────────
     const orders_detail = curData.orders.map(order => {
-      const shipId      = order.shipping && order.shipping.id;
-      const shipData    = shipId ? shippingCostMap[shipId] : null;
+      const shipId  = order.shipping && order.shipping.id;
+      const shipData = shipId ? shippingCostMap[shipId] : null;
       const facturacion = (order.order_items||[]).reduce((s,oi) => s+(parseFloat(oi.unit_price)||0)*(oi.quantity||0), 0);
       const comision    = (order.order_items||[]).reduce((s,oi) => s+(parseFloat(oi.sale_fee)||0), 0);
       const impuestos   = parseFloat((order.taxes||{}).amount) || 0;
-      const envio_vendedor  = shipData ? (shipData.sellerCost||0) : 0;
-      const envio_comprador = shipData ? (shipData.buyerCost||0)  : 0;
-      const neto        = facturacion - comision - impuestos - envio_vendedor;
-      const pct_neto    = facturacion > 0 ? ((neto/facturacion)*100).toFixed(1) : '0';
+
+      // Use payments for accurate shipping breakdown
+      // ML payments include: shipping_cost (seller pays), buyer_shipping_cost (buyer pays)
+      let envio_vendedor = 0, envio_comprador = 0;
+
+      const payments = order.payments || [];
+      if (payments.length > 0) {
+        // Sum across all payments (usually 1)
+        payments.forEach(p => {
+          // shipping_cost in payment = what seller pays for shipping (negative impact)
+          const sc = parseFloat(p.shipping_cost) || 0;
+          // overpaid_amount can indicate buyer-paid shipping
+          const buyerShip = parseFloat(p.overpaid_amount) || 0;
+          if (sc > 0) envio_vendedor += sc;
+          if (buyerShip > 0) envio_comprador += buyerShip;
+        });
+      }
+
+      // Fallback to shipment API data if payments didn't give us shipping info
+      if (envio_vendedor === 0 && envio_comprador === 0 && shipData) {
+        envio_vendedor  = shipData.sellerCost  || 0;
+        envio_comprador = shipData.buyerCost   || 0;
+      }
+
+      const neto     = facturacion - comision - impuestos - envio_vendedor;
+      const pct_neto = facturacion > 0 ? ((neto/facturacion)*100).toFixed(1) : '0';
       const productos   = (order.order_items||[]).map(oi => ({
         id: oi.item&&oi.item.id, title: oi.item&&oi.item.title,
         qty: oi.quantity||1, price: parseFloat(oi.unit_price)||0
@@ -1584,6 +1616,74 @@ app.post('/api/diagnostico/manuales', requireAuth, async (req, res) => {
 });
 
 // ── LOGÍSTICA ─────────────────────────────────────────────────────────────────
+// ── DEBUG: inspect a specific order's shipment ───────────────────────────────
+app.get('/api/debug/order', requireAuth, async (req, res) => {
+  try {
+    const { order_id, client_id } = req.query;
+    const token = await getClientToken(parseInt(client_id));
+    if (!token) return res.status(403).json({ error: 'Sin token' });
+    const headers = { 'Authorization': `Bearer ${token}` };
+
+    // Fetch order
+    const order = await fetch(`${ML_API}/orders/${order_id}`, { headers }).then(r=>r.json());
+    const shipId = order.shipping?.id;
+
+    let shipment = null;
+    if (shipId) {
+      shipment = await fetch(`${ML_API}/shipments/${shipId}`, { headers }).then(r=>r.json());
+    }
+
+    const analysis = {
+      order_id: order.id,
+      total_amount: order.total_amount,
+      paid_amount: order.paid_amount,
+      shipping_id: shipId,
+      // Key financial fields
+      order_items: (order.order_items||[]).map(oi => ({
+        title: oi.item?.title,
+        unit_price: oi.unit_price,
+        quantity: oi.quantity,
+        sale_fee: oi.sale_fee,
+        original_price: oi.original_price,
+      })),
+      taxes: order.taxes,
+      coupon: order.coupon,
+      // Shipment fields
+      shipment: shipment ? {
+        id: shipment.id,
+        logistic_type: shipment.logistic_type,
+        base_cost: shipment.base_cost,
+        receiver_cost: shipment.receiver_cost,
+        cost: shipment.cost,
+        shipping_option: shipment.shipping_option?.name,
+        status: shipment.status,
+      } : null,
+      // What our code calculates
+      calculated: (() => {
+        if (!shipment) return null;
+        const baseCost     = parseFloat(shipment.base_cost) || 0;
+        const costGross    = parseFloat(shipment.cost?.gross) || 0;
+        const costNet      = parseFloat(shipment.cost?.net) || 0;
+        const costSpec     = parseFloat(shipment.cost?.special) || 0;
+        const costDiscount = parseFloat(shipment.cost?.discount) || 0;
+        const receiverCost = parseFloat(shipment.receiver_cost) || 0;
+        let sellerCost;
+        if (receiverCost >= baseCost && baseCost > 0) sellerCost = 0;
+        else if (costNet > 0) sellerCost = costNet;
+        else if (costGross > 0) sellerCost = Math.max(0, costGross - costSpec - costDiscount - receiverCost);
+        else sellerCost = 0;
+        const facturacion = (order.order_items||[]).reduce((s,oi)=>s+(parseFloat(oi.unit_price)||0)*(oi.quantity||0),0);
+        const comision = (order.order_items||[]).reduce((s,oi)=>s+(parseFloat(oi.sale_fee)||0),0);
+        const impuestos = parseFloat(order.taxes?.amount)||0;
+        const neto = facturacion - comision - impuestos - sellerCost;
+        return { baseCost, costGross, costNet, costSpec, costDiscount, receiverCost, sellerCost, facturacion, comision, impuestos, neto };
+      })()
+    };
+
+    res.json(analysis);
+  } catch(e) { res.status(500).json({ error: e.message, stack: e.stack }); }
+});
+
 app.get('/api/logistica', requireAuth, async (req, res) => {
   try {
     const uid = req.query.uid;
