@@ -1666,7 +1666,7 @@ app.get('/api/debug/order', requireAuth, async (req, res) => {
         shipping_option: shipment.shipping_option?.name,
         status: shipment.status,
       } : null,
-      // What our code calculates
+      shipment_full: shipment,
       calculated: (() => {
         if (!shipment) return null;
         const baseCost     = parseFloat(shipment.base_cost) || 0;
