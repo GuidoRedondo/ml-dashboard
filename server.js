@@ -384,13 +384,43 @@ async function fetchShippingCosts(orders, headers) {
     ));
     results.forEach((s, idx) => {
       if (!s) return;
-      const baseCost  = parseFloat(s.base_cost) || 0;
-      const buyerCost = parseFloat(s.cost && s.cost.gross) || 0;
-      const sellerCost = Math.max(0, baseCost - buyerCost);
 
-      // DEBUG — log cost fields for first 5 shipments
-      if (idx < 2 && i < 20) {
-        console.log(`[SHIPMENT] id=${batch[idx]} base_cost=${s.base_cost} cost.gross=${s.cost?.gross} cost.special=${s.cost?.special} cost.net=${s.cost?.net} cost.discount=${s.cost?.discount} sellerCost=${sellerCost} logistic=${s.logistic_type}`);
+      // ML Shipping cost structure:
+      // base_cost = full shipping cost
+      // cost.gross = gross cost charged to seller
+      // cost.special = discount on seller cost
+      // cost.net = cost.gross - cost.special = actual seller cost
+      // receiver_cost = what buyer paid for shipping (separate from seller cost)
+
+      const baseCost     = parseFloat(s.base_cost) || 0;
+      const costGross    = parseFloat(s.cost?.gross) || 0;
+      const costNet      = parseFloat(s.cost?.net)   || 0;
+      const costSpec     = parseFloat(s.cost?.special) || 0;
+      const costDiscount = parseFloat(s.cost?.discount) || 0;
+      const receiverCost = parseFloat(s.receiver_cost) || 0;
+
+      // Logic:
+      // cost.net = actual seller cost after all discounts (most reliable)
+      // If receiver_cost >= base_cost → buyer covers all shipping → seller pays 0
+      // If cost.net is available and > 0 → use it
+      // Otherwise fallback to gross - special - discount
+      let sellerCost;
+      if (receiverCost >= baseCost && baseCost > 0) {
+        // Buyer fully covers shipping (e.g. buyer-paid correo)
+        sellerCost = 0;
+      } else if (costNet > 0) {
+        sellerCost = costNet;
+      } else if (costGross > 0) {
+        sellerCost = Math.max(0, costGross - costSpec - costDiscount - receiverCost);
+      } else {
+        sellerCost = 0;
+      }
+
+      // buyerCost = what the buyer paid
+      const buyerCost = receiverCost;
+
+      if (idx < 5 && i < 50) {
+        console.log(`[SHIPMENT] id=${batch[idx]} base=${s.base_cost} gross=${s.cost?.gross} special=${s.cost?.special} net=${s.cost?.net} receiver_cost=${s.receiver_cost} discount=${s.cost?.discount} -> sellerCost=${sellerCost.toFixed(0)} buyerCost=${buyerCost.toFixed(0)} logistic=${s.logistic_type} cost_keys=${JSON.stringify(Object.keys(s.cost||{}))}`);
       }
 
       // Province: receiver address state
@@ -1317,40 +1347,82 @@ app.post('/api/diagnostico/calcular', requireAuth, async (req, res) => {
     const padsConversion = padsClicks > 0 ? parseFloat(((padsVentas/padsClicks)*100).toFixed(2)) : 0;
     const padsAportePct = ventas > 0 ? parseFloat(((padsVentas/ventas)*100).toFixed(2)) : 0;
 
-    // ── 6b. Logística — % facturación por modo desde shipments ───────────────
+    // ── 6b. Logística — % facturación por modo desde las órdenes ─────────────
+    // ML includes logistic_type directly in order.shipping — no need to fetch each shipment
     let logFullFact=0, logFlexFact=0, logCorreoFact=0, logFullActive=false, logFlexActive=false;
+    let logUnknownCount=0;
     try {
-      const shipIds = [...new Set(orders.map(o=>o.shipping?.id).filter(Boolean))];
-      // Fetch ALL shipments (up to 500)
-      const shipMap = {};
-      const maxShip = Math.min(shipIds.length, 500);
-      for (let i=0; i<maxShip; i+=10) {
-        const batch = shipIds.slice(i, i+10);
-        await Promise.all(batch.map(async sid => {
-          try {
-            const s = await fetch(`${ML_API}/shipments/${sid}`, {headers}).then(r=>r.json());
-            const lt = (s.logistic_type||'').toLowerCase();
-            let mode;
-            if (lt==='fulfillment') mode='FULL';
-            else if (lt==='flex'||lt==='self_service'||lt.includes('flex')) mode='FLEX';
-            else mode='Correo';
-            shipMap[sid] = mode;
-          } catch(e){}
-        }));
-      }
-      // Map ALL orders to modes and sum revenue
       orders.forEach(o => {
-        const sid = o.shipping?.id;
-        const mode = sid ? (shipMap[sid]||'Correo') : 'SinEnvio';
         const rev = parseFloat(o.total_amount)||0;
-        if (mode==='FULL')      { logFullFact+=rev; logFullActive=true; }
-        else if (mode==='FLEX') { logFlexFact+=rev; logFlexActive=true; }
-        else if (mode!=='SinEnvio') logCorreoFact+=rev;
+        // Try to get logistic_type from the order itself first
+        const lt = (
+          o.shipping?.logistic_type ||
+          o.shipping?.shipping_option?.logistic_type ||
+          ''
+        ).toLowerCase();
+
+        let mode;
+        if (lt === 'fulfillment' || lt.includes('fulfillment')) {
+          mode = 'FULL';
+        } else if (lt === 'flex' || lt === 'self_service' || lt.includes('flex')) {
+          mode = 'FLEX';
+        } else if (lt) {
+          mode = 'Correo';
+        } else {
+          // No logistic_type in order — mark as unknown for sampling
+          mode = 'Unknown';
+          logUnknownCount++;
+        }
+
+        if (mode === 'FULL')      { logFullFact += rev; logFullActive = true; }
+        else if (mode === 'FLEX') { logFlexFact += rev; logFlexActive = true; }
+        else if (mode === 'Correo') logCorreoFact += rev;
+        // Unknown: will be resolved via shipment sampling below
       });
-      console.log(`[DIAG LOG] ${mesStr} orders=${orders.length} shipmentsMap=${Object.keys(shipMap).length} FULL=$${Math.round(logFullFact)} FLEX=$${Math.round(logFlexFact)} Correo=$${Math.round(logCorreoFact)}`);
+
+      // If too many unknowns, sample shipments to resolve the distribution
+      if (logUnknownCount > orders.length * 0.3) {
+        console.log(`[DIAG LOG] ${mesStr} Many unknowns (${logUnknownCount}/${orders.length}) — sampling shipments to determine mode distribution`);
+        const unknownOrders = orders.filter(o => {
+          const lt = (o.shipping?.logistic_type || '').toLowerCase();
+          return !lt;
+        });
+        const sampleSize = Math.min(unknownOrders.length, 100);
+        const sampleIds = unknownOrders.slice(0, sampleSize).map(o => o.shipping?.id).filter(Boolean);
+        const shipMap = {};
+        for (let i = 0; i < sampleIds.length; i += 10) {
+          const batch = sampleIds.slice(i, i+10);
+          await Promise.all(batch.map(async sid => {
+            try {
+              const s = await fetch(`${ML_API}/shipments/${sid}`, {headers}).then(r=>r.json());
+              const slt = (s.logistic_type||'').toLowerCase();
+              if (slt === 'fulfillment') shipMap[sid] = 'FULL';
+              else if (slt === 'flex' || slt === 'self_service' || slt.includes('flex')) shipMap[sid] = 'FLEX';
+              else shipMap[sid] = 'Correo';
+            } catch(e) {}
+          }));
+        }
+        // Apply distribution from sample to all unknowns
+        const sampleFull = Object.values(shipMap).filter(m=>m==='FULL').length;
+        const sampleFlex = Object.values(shipMap).filter(m=>m==='FLEX').length;
+        const sampleTotal = Object.keys(shipMap).length;
+        if (sampleTotal > 0) {
+          const fullRatio = sampleFull / sampleTotal;
+          const flexRatio = sampleFlex / sampleTotal;
+          const unknownRevenue = unknownOrders.reduce((s,o) => s + (parseFloat(o.total_amount)||0), 0);
+          logFullFact += unknownRevenue * fullRatio;
+          logFlexFact += unknownRevenue * flexRatio;
+          logCorreoFact += unknownRevenue * (1 - fullRatio - flexRatio);
+          if (fullRatio > 0) logFullActive = true;
+          if (flexRatio > 0) logFlexActive = true;
+          console.log(`[DIAG LOG] Sample: full=${(fullRatio*100).toFixed(0)}% flex=${(flexRatio*100).toFixed(0)}% correo=${((1-fullRatio-flexRatio)*100).toFixed(0)}% applied to $${Math.round(unknownRevenue)}`);
+        }
+      }
+
+      console.log(`[DIAG LOG] ${mesStr} orders=${orders.length} unknowns=${logUnknownCount} FULL=$${Math.round(logFullFact)}(${facturacion>0?(logFullFact/facturacion*100).toFixed(1):0}%) FLEX=$${Math.round(logFlexFact)}(${facturacion>0?(logFlexFact/facturacion*100).toFixed(1):0}%) Correo=$${Math.round(logCorreoFact)}`);
     } catch(e) { console.error('[DIAG LOG]', e.message); }
-    const logFullPct  = facturacion>0 ? parseFloat(((logFullFact/facturacion)*100).toFixed(1)) : 0;
-    const logFlexPct  = facturacion>0 ? parseFloat(((logFlexFact/facturacion)*100).toFixed(1)) : 0;
+    const logFullPct = facturacion>0 ? parseFloat(((logFullFact/facturacion)*100).toFixed(1)) : 0;
+    const logFlexPct = facturacion>0 ? parseFloat(((logFlexFact/facturacion)*100).toFixed(1)) : 0;
 
     // ── 6c. Marketing — descuentos y cupones desde órdenes ────────────────────
     let mktOrdenesConDescuento=0, mktOrdenesConCupon=0;
