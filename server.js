@@ -1773,11 +1773,11 @@ app.get('/api/competencia/item', requireAuth, async (req, res) => {
 
     // ── 1. Item details ───────────────────────────────────────────────────────
     const item = await fetch(
-      `${ML_API}/items/${item_id}?attributes=id,title,price,original_price,currency_id,available_quantity,sold_quantity,condition,listing_type_id,status,category_id,seller_id,permalink,pictures,shipping,catalog_listing,catalog_product_id,sale_terms`,
+      `${ML_API}/items/${item_id}`,
       { headers }
     ).then(r => r.json());
 
-    if (item.error) return res.status(404).json({ error: `Item no encontrado: ${item.message}` });
+    console.log(`[COMP ITEM] ${item_id} keys=${Object.keys(item||{}).join(',')} error=${item.error} title="${item.title}" seller=${item.seller_id}`);
 
     // ── 2. Visits ─────────────────────────────────────────────────────────────
     const visitsRes = await fetch(
