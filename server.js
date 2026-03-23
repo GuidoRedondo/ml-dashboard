@@ -1772,12 +1772,21 @@ app.get('/api/competencia/item', requireAuth, async (req, res) => {
     const headers = { 'Authorization': `Bearer ${token}` };
 
     // ── 1. Item details ───────────────────────────────────────────────────────
-    const item = await fetch(
+    const rawItem = await fetch(
       `${ML_API}/items/${item_id}`,
       { headers }
     ).then(r => r.json());
 
-    console.log(`[COMP ITEM] ${item_id} keys=${Object.keys(item||{}).join(',')} error=${item.error} title="${item.title}" seller=${item.seller_id}`);
+    console.log(`[COMP ITEM] ${item_id} keys=${Object.keys(rawItem||{}).join(',')} code=${rawItem.code} error=${rawItem.error} title="${rawItem.title}"`);
+
+    // Handle different response formats
+    const item = rawItem.body || rawItem; // sometimes wrapped in {code, body}
+    if (rawItem.code && rawItem.code !== 200) {
+      return res.status(404).json({ error: `Publicación no encontrada (${rawItem.code}): ${rawItem.message || 'ID inválido o inexistente'}` });
+    }
+    if (rawItem.error || !item.id) {
+      return res.status(404).json({ error: `Publicación no encontrada: ${rawItem.message || rawItem.error || 'ID inválido'}` });
+    }
 
     // ── 2. Visits ─────────────────────────────────────────────────────────────
     const visitsRes = await fetch(
