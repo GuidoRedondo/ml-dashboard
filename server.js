@@ -1761,6 +1761,113 @@ app.get('/api/logistica', requireAuth, async (req, res) => {
 });
 
 // ── COMPETENCIA ───────────────────────────────────────────────────────────────
+// ── ANÁLISIS DE PUBLICACIÓN COMPETIDOR ───────────────────────────────────────
+app.get('/api/competencia/item', requireAuth, async (req, res) => {
+  try {
+    const { item_id, client_id } = req.query;
+    if (!item_id) return res.status(400).json({ error: 'Falta item_id' });
+
+    const token = await getClientToken(parseInt(client_id));
+    if (!token) return res.status(403).json({ error: 'Sin token' });
+    const headers = { 'Authorization': `Bearer ${token}` };
+
+    // ── 1. Item details ───────────────────────────────────────────────────────
+    const item = await fetch(
+      `${ML_API}/items/${item_id}?attributes=id,title,price,original_price,currency_id,available_quantity,sold_quantity,condition,listing_type_id,status,category_id,seller_id,permalink,pictures,shipping,catalog_listing,catalog_product_id,sale_terms`,
+      { headers }
+    ).then(r => r.json());
+
+    if (item.error) return res.status(404).json({ error: `Item no encontrado: ${item.message}` });
+
+    // ── 2. Visits ─────────────────────────────────────────────────────────────
+    const visitsRes = await fetch(
+      `${ML_API}/items/${item_id}/visits/time_window?last=30&unit=day`, { headers }
+    ).then(r => r.json()).catch(() => ({}));
+
+    // ── 3. Category name ──────────────────────────────────────────────────────
+    const catRes = await fetch(
+      `${ML_API}/categories/${item.category_id}`, { headers }
+    ).then(r => r.json()).catch(() => ({}));
+
+    // ── 4. Seller info + reputation ───────────────────────────────────────────
+    const sellerRes = await fetch(
+      `${ML_API}/users/${item.seller_id}`, { headers }
+    ).then(r => r.json()).catch(() => ({}));
+
+    // ── 5. Other items from same seller (top 10 by sold) ─────────────────────
+    const sellerItemsRes = await fetch(
+      `${ML_API}/users/${item.seller_id}/items/search?status=active&limit=50`, { headers }
+    ).then(r => r.json()).catch(() => ({ results: [] }));
+
+    let otherItems = [];
+    const otherIds = (sellerItemsRes.results || []).filter(id => id !== item_id).slice(0, 20);
+    if (otherIds.length) {
+      const batchRes = await fetch(
+        `${ML_API}/items?ids=${otherIds.join(',')}&attributes=id,title,price,sold_quantity,available_quantity,listing_type_id,status`,
+        { headers }
+      ).then(r => r.json()).catch(() => []);
+      otherItems = (Array.isArray(batchRes) ? batchRes : [])
+        .filter(r => r.code === 200 && r.body)
+        .map(r => r.body)
+        .sort((a, b) => (b.sold_quantity || 0) - (a.sold_quantity || 0))
+        .slice(0, 10);
+    }
+
+    // ── 6. Description ────────────────────────────────────────────────────────
+    const descRes = await fetch(
+      `${ML_API}/items/${item_id}/description`, { headers }
+    ).then(r => r.json()).catch(() => ({}));
+
+    const rep = sellerRes.seller_reputation || {};
+    const repMetrics = rep.metrics || {};
+
+    res.json({
+      item: {
+        id: item.id,
+        title: item.title,
+        price: item.price,
+        original_price: item.original_price,
+        discount_pct: item.original_price && item.price < item.original_price
+          ? Math.round((1 - item.price / item.original_price) * 100) : 0,
+        currency: item.currency_id,
+        condition: item.condition,
+        listing_type: item.listing_type_id,
+        status: item.status,
+        available_quantity: item.available_quantity,
+        sold_quantity: item.sold_quantity,
+        category_id: item.category_id,
+        category_name: catRes.name || item.category_id,
+        catalog_listing: item.catalog_listing,
+        permalink: item.permalink,
+        photo_count: (item.pictures || []).length,
+        photo_urls: (item.pictures || []).slice(0, 5).map(p => p.secure_url || p.url),
+        free_shipping: item.shipping?.free_shipping,
+        logistic_type: item.shipping?.logistic_type,
+        description: descRes.plain_text ? descRes.plain_text.slice(0, 500) : null,
+      },
+      visits_30d: visitsRes.total_visits || 0,
+      conversion_30d: visitsRes.total_visits > 0 && item.sold_quantity > 0
+        ? parseFloat(((item.sold_quantity / visitsRes.total_visits) * 100).toFixed(2)) : null,
+      seller: {
+        id: sellerRes.id,
+        nickname: sellerRes.nickname,
+        registration_date: sellerRes.registration_date,
+        medal: rep.power_seller_status || rep.level_id,
+        total_sales: rep.transactions?.total || 0,
+        completed_sales: rep.transactions?.completed || 0,
+        claims_rate: repMetrics.claims?.rate,
+        cancellations_rate: repMetrics.cancellations?.rate,
+        delays_rate: repMetrics.delayed_handling_time?.rate,
+        total_active_items: sellerItemsRes.paging?.total || otherIds.length,
+      },
+      other_items: otherItems,
+    });
+  } catch(e) {
+    console.error('[COMP ITEM]', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.get('/api/competencia', requireAuth, async (req, res) => {
   try {
     const uid = req.query.uid;
