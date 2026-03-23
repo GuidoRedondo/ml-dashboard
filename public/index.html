@@ -3776,12 +3776,17 @@ function renderLogistica(data) {
 // ── COMPETENCIA ───────────────────────────────────────────────────────────────
 
 function extractMlaFromUrl(input) {
-  // Accept: full URL or just MLA id
   const clean = input.trim();
-  // Try to extract MLA from URL: /MLA-1234567 or /MLA1234567
-  const match = clean.match(/MLA-?(\d+)/i);
-  if (match) return 'MLA' + match[1];
-  // Try direct ID
+  // Priority 1: wid= parameter (actual listing ID)
+  const widMatch = clean.match(/[?&]wid=(MLA\d+)/i);
+  if (widMatch) return widMatch[1].toUpperCase();
+  // Priority 2: direct MLA ID (not preceded by /p/)
+  const directMatch = clean.match(/(?<!\/p\/)MLA-?(\d+)/i);
+  if (directMatch) return 'MLA' + directMatch[1];
+  // Priority 3: any MLA (fallback including catalog)
+  const anyMatch = clean.match(/MLA-?(\d+)/i);
+  if (anyMatch) return 'MLA' + anyMatch[1];
+  // Direct ID input
   if (/^MLA\d+$/i.test(clean)) return clean.toUpperCase();
   return null;
 }
@@ -3800,7 +3805,8 @@ async function analizarCompetidor() {
   const client = getActiveClient();
   if (!client) { el.innerHTML = '<div style="color:#dc2626;font-size:12px;margin-top:8px">Seleccioná una cuenta primero</div>'; return; }
 
-  el.innerHTML = '<div style="color:var(--muted);font-size:12px;margin-top:12px">⏳ Analizando publicación...</div>';
+  el.innerHTML = `<div style="color:var(--muted);font-size:12px;margin-top:12px">⏳ Analizando ${itemId}...</div>`;
+  console.log('[COMP] itemId extracted:', itemId, 'from:', input.trim().slice(0,80));
 
   try {
     const data = await apiCall('GET', `/api/competencia/item?item_id=${itemId}&client_id=${client.id}`);
