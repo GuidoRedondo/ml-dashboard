@@ -749,8 +749,21 @@ tbody td {
 
     <!-- COMPETENCIA -->
     <div class="page" id="page-competencia">
-      <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px;flex-wrap:wrap">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap">
         <h2 style="margin:0;font-family:var(--font-b);flex:1">🏆 Competencia</h2>
+      </div>
+      <!-- Buscador por URL -->
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px 18px;margin-bottom:20px">
+        <div style="font-size:13px;font-weight:600;margin-bottom:10px">🔍 Analizar publicación de competidor</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <input id="compUrlInput" type="text" placeholder="Pegá la URL de ML (ej: https://www.mercadolibre.com.ar/...)"
+            style="flex:1;min-width:280px;padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px"
+            onkeydown="if(event.key==='Enter') analizarCompetidor()">
+          <button onclick="analizarCompetidor()" style="padding:8px 18px;background:var(--accent);color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap">
+            ⚡ Analizar
+          </button>
+        </div>
+        <div id="compAnalisisResult"></div>
       </div>
       <div id="competenciaContent"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Cargando categorías...</div></div>
     </div>
@@ -3761,6 +3774,157 @@ function renderLogistica(data) {
 }
 
 // ── COMPETENCIA ───────────────────────────────────────────────────────────────
+
+function extractMlaFromUrl(input) {
+  // Accept: full URL or just MLA id
+  const clean = input.trim();
+  // Try to extract MLA from URL: /MLA-1234567 or /MLA1234567
+  const match = clean.match(/MLA-?(\d+)/i);
+  if (match) return 'MLA' + match[1];
+  // Try direct ID
+  if (/^MLA\d+$/i.test(clean)) return clean.toUpperCase();
+  return null;
+}
+
+async function analizarCompetidor() {
+  const input = document.getElementById('compUrlInput')?.value || '';
+  const el = document.getElementById('compAnalisisResult');
+  if (!input.trim()) { el.innerHTML = '<div style="color:#dc2626;font-size:12px;margin-top:8px">Pegá una URL de ML</div>'; return; }
+
+  const itemId = extractMlaFromUrl(input);
+  if (!itemId) {
+    el.innerHTML = '<div style="color:#dc2626;font-size:12px;margin-top:8px">No se reconoce el formato. Usá una URL de ML o un ID tipo MLA123456789</div>';
+    return;
+  }
+
+  const client = getActiveClient();
+  if (!client) { el.innerHTML = '<div style="color:#dc2626;font-size:12px;margin-top:8px">Seleccioná una cuenta primero</div>'; return; }
+
+  el.innerHTML = '<div style="color:var(--muted);font-size:12px;margin-top:12px">⏳ Analizando publicación...</div>';
+
+  try {
+    const data = await apiCall('GET', `/api/competencia/item?item_id=${itemId}&client_id=${client.id}`);
+    if (!data || data.error) {
+      el.innerHTML = `<div style="color:#dc2626;font-size:12px;margin-top:8px">Error: ${data?.error || 'No se pudo cargar'}</div>`;
+      return;
+    }
+    renderCompetidorFicha(data, el);
+  } catch(e) {
+    el.innerHTML = `<div style="color:#dc2626;font-size:12px;margin-top:8px">Error: ${e.message}</div>`;
+  }
+}
+
+function renderCompetidorFicha(data, el) {
+  const { item, visits_30d, conversion_30d, seller, other_items } = data;
+
+  const fmtM = v => v != null ? '$' + parseFloat(v).toLocaleString('es-AR', {maximumFractionDigits:0}) : '—';
+  const fmtN = v => v != null ? parseFloat(v).toLocaleString('es-AR') : '—';
+  const fmtP = v => v != null ? (parseFloat(v)*100).toFixed(2)+'%' : '—';
+
+  const listingBadge = {
+    'gold_special': ['#fef3c7','#d97706','Gold Special'],
+    'gold_pro':     ['#fef9c3','#ca8a04','Gold Pro'],
+    'silver':       ['#f1f5f9','#64748b','Silver'],
+    'free':         ['#f3f4f6','#9ca3af','Gratuita'],
+  };
+  const [lbg, lfc, llbl] = listingBadge[item.listing_type] || ['#f3f4f6','#6b7280', item.listing_type||'—'];
+
+  const logisticBadge = {
+    'fulfillment': ['#e0e7ff','#4338ca','FULL'],
+    'flex':        ['#dcfce7','#16a34a','FLEX'],
+    'self_service':['#dcfce7','#16a34a','FLEX'],
+  };
+  const [ltbg, ltfc, ltlbl] = logisticBadge[item.logistic_type] || ['#f3f4f6','#6b7280', item.logistic_type||'Correo'];
+
+  const medalColors = { platinum: '#e0e7ff:#4338ca', gold: '#fef3c7:#d97706', silver: '#f1f5f9:#64748b' };
+  const [mbg, mfc] = (medalColors[seller.medal?.toLowerCase()] || '#f3f4f6:#6b7280').split(':');
+
+  // Photos strip
+  const photos = (item.photo_urls || []).map(url =>
+    `<img src="${url}" style="width:60px;height:60px;object-fit:cover;border-radius:6px;border:1px solid var(--border)" onerror="this.style.display='none'">`
+  ).join('');
+
+  // Other items table
+  const otherRows = (other_items || []).map(i => `
+    <tr>
+      <td style="padding:6px 8px;border-bottom:1px solid var(--border);font-size:12px;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${i.title}</td>
+      <td style="padding:6px 8px;border-bottom:1px solid var(--border);font-size:12px;text-align:right;font-weight:600">${fmtM(i.price)}</td>
+      <td style="padding:6px 8px;border-bottom:1px solid var(--border);font-size:12px;text-align:center">${fmtN(i.sold_quantity)}</td>
+      <td style="padding:6px 8px;border-bottom:1px solid var(--border);font-size:12px;text-align:center">${i.available_quantity ?? '—'}</td>
+    </tr>`).join('');
+
+  el.innerHTML = `
+  <div style="margin-top:16px;border-top:1px solid var(--border);padding-top:16px">
+
+    <!-- Header -->
+    <div style="display:flex;gap:14px;margin-bottom:16px;flex-wrap:wrap">
+      ${item.photo_urls?.[0] ? `<img src="${item.photo_urls[0]}" style="width:90px;height:90px;object-fit:cover;border-radius:10px;border:1px solid var(--border);flex-shrink:0">` : ''}
+      <div style="flex:1;min-width:0">
+        <a href="${item.permalink}" target="_blank" style="font-size:15px;font-weight:700;color:var(--text);text-decoration:none;display:block;margin-bottom:6px;line-height:1.3">${item.title}</a>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">
+          <span style="background:${lbg};color:${lfc};padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600">${llbl}</span>
+          <span style="background:${ltbg};color:${ltfc};padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600">${ltlbl}</span>
+          ${item.free_shipping ? '<span style="background:#dcfce7;color:#16a34a;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600">Envío gratis</span>' : ''}
+          ${item.catalog_listing ? '<span style="background:#ede9fe;color:#6d28d9;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600">Catálogo</span>' : ''}
+          ${item.discount_pct > 0 ? `<span style="background:#fee2e2;color:#dc2626;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600">-${item.discount_pct}% OFF</span>` : ''}
+        </div>
+        <div style="font-size:11px;color:var(--muted)">${item.category_name} · ${item.photo_count} foto${item.photo_count!==1?'s':''}</div>
+      </div>
+      <div style="text-align:right;flex-shrink:0">
+        <div style="font-size:26px;font-weight:700;font-family:var(--font-b);color:var(--text)">${fmtM(item.price)}</div>
+        ${item.original_price && item.discount_pct > 0 ? `<div style="font-size:12px;color:var(--muted);text-decoration:line-through">${fmtM(item.original_price)}</div>` : ''}
+      </div>
+    </div>
+
+    <!-- KPIs -->
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:10px;margin-bottom:16px">
+      ${[
+        ['Vendidos total', fmtN(item.sold_quantity), '#6366f1'],
+        ['Stock disponible', item.available_quantity ?? '—', ''],
+        ['Visitas 30d', fmtN(visits_30d), ''],
+        ['Conversión 30d', conversion_30d != null ? conversion_30d+'%' : '—', ''],
+      ].map(([l,v,c]) => `<div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:10px 12px">
+        <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em">${l}</div>
+        <div style="font-size:18px;font-weight:700;font-family:var(--font-b);color:${c||'var(--text)'};margin-top:4px">${v}</div>
+      </div>`).join('')}
+    </div>
+
+    <!-- Seller + otras pubs -->
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;flex-wrap:wrap">
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px">
+        <div style="font-size:12px;font-weight:600;margin-bottom:10px">👤 Vendedor</div>
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+          <span style="font-size:14px;font-weight:700">${seller.nickname}</span>
+          <span style="background:${mbg};color:${mfc};padding:2px 8px;border-radius:4px;font-size:10px;font-weight:600">${(seller.medal||'—').toUpperCase()}</span>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:12px">
+          ${[
+            ['Ventas totales', fmtN(seller.total_sales)],
+            ['Pubs activas', fmtN(seller.total_active_items)],
+            ['% Reclamos', fmtP(seller.claims_rate)],
+            ['% Cancelaciones', fmtP(seller.cancellations_rate)],
+            ['% Demoras', fmtP(seller.delays_rate)],
+          ].map(([l,v]) => `<div><div style="color:var(--muted);font-size:10px">${l}</div><div style="font-weight:600">${v}</div></div>`).join('')}
+        </div>
+      </div>
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px">
+        <div style="font-size:12px;font-weight:600;margin-bottom:10px">📋 Otras publicaciones del vendedor (top por ventas)</div>
+        ${otherRows ? `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse">
+          <thead><tr style="background:var(--surface2)">
+            <th style="padding:6px 8px;font-size:10px;color:var(--muted);text-align:left;border-bottom:1px solid var(--border)">Producto</th>
+            <th style="padding:6px 8px;font-size:10px;color:var(--muted);text-align:right;border-bottom:1px solid var(--border)">Precio</th>
+            <th style="padding:6px 8px;font-size:10px;color:var(--muted);text-align:center;border-bottom:1px solid var(--border)">Vendidos</th>
+            <th style="padding:6px 8px;font-size:10px;color:var(--muted);text-align:center;border-bottom:1px solid var(--border)">Stock</th>
+          </tr></thead>
+          <tbody>${otherRows}</tbody>
+        </table></div>` : '<div style="color:var(--muted);font-size:12px">Sin otras publicaciones</div>'}
+      </div>
+    </div>
+
+    ${item.description ? `<div style="margin-top:12px;background:var(--surface2);border-radius:8px;padding:12px;font-size:12px;color:var(--muted);max-height:80px;overflow:hidden">${item.description}...</div>` : ''}
+
+  </div>`;
+}
 async function loadCompetencia() {
   const el = document.getElementById('competenciaContent');
   el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">⏳ Cargando categorías...</div>';
