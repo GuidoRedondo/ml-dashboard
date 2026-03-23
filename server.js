@@ -1771,49 +1771,49 @@ app.get('/api/competencia/item', requireAuth, async (req, res) => {
     if (!token) return res.status(403).json({ error: 'Sin token' });
     const headers = { 'Authorization': `Bearer ${token}` };
 
-    // ── 1. Item details ───────────────────────────────────────────────────────
+    // ── 1. Item details — use public API (no auth needed for public items) ────
     const rawItem = await fetch(
-      `${ML_API}/items/${item_id}`,
-      { headers }
+      `${ML_API}/items/${item_id}`
+      // No Authorization header — public items don't need it
     ).then(r => r.json());
 
-    console.log(`[COMP ITEM] ${item_id} keys=${Object.keys(rawItem||{}).join(',')} code=${rawItem.code} error=${rawItem.error} title="${rawItem.title}"`);
+    console.log(`[COMP ITEM] ${item_id} keys=${Object.keys(rawItem||{}).join(',')} code=${rawItem.code} error=${rawItem.error} title="${rawItem.title?.slice(0,40)}"`);
 
-    // Handle different response formats
-    const item = rawItem.body || rawItem; // sometimes wrapped in {code, body}
+    const item = rawItem.body || rawItem;
     if (rawItem.code && rawItem.code !== 200) {
-      return res.status(404).json({ error: `Publicación no encontrada (${rawItem.code}): ${rawItem.message || 'ID inválido o inexistente'}` });
+      return res.status(404).json({ error: `Publicación no encontrada (${rawItem.code}): ${rawItem.message || 'ID inválido'}` });
     }
     if (rawItem.error || !item.id) {
       return res.status(404).json({ error: `Publicación no encontrada: ${rawItem.message || rawItem.error || 'ID inválido'}` });
     }
 
-    // ── 2. Visits ─────────────────────────────────────────────────────────────
+    // ── 2. Visits — also public ───────────────────────────────────────────────
     const visitsRes = await fetch(
-      `${ML_API}/items/${item_id}/visits/time_window?last=30&unit=day`, { headers }
+      `${ML_API}/items/${item_id}/visits/time_window?last=30&unit=day`
     ).then(r => r.json()).catch(() => ({}));
 
-    // ── 3. Category name ──────────────────────────────────────────────────────
+    // ── 3. Category name — public ─────────────────────────────────────────────
     const catRes = await fetch(
-      `${ML_API}/categories/${item.category_id}`, { headers }
+      `${ML_API}/categories/${item.category_id}`
     ).then(r => r.json()).catch(() => ({}));
 
-    // ── 4. Seller info + reputation ───────────────────────────────────────────
+    // ── 4. Seller info — public ───────────────────────────────────────────────
     const sellerRes = await fetch(
-      `${ML_API}/users/${item.seller_id}`, { headers }
+      `${ML_API}/users/${item.seller_id}`
     ).then(r => r.json()).catch(() => ({}));
 
-    // ── 5. Other items from same seller (top 10 by sold) ─────────────────────
+    // ── 5. Other items from same seller — needs auth ──────────────────────────
     const sellerItemsRes = await fetch(
-      `${ML_API}/users/${item.seller_id}/items/search?status=active&limit=50`, { headers }
+      `${ML_API}/users/${item.seller_id}/items/search?status=active&limit=50`,
+      { headers }
     ).then(r => r.json()).catch(() => ({ results: [] }));
 
     let otherItems = [];
     const otherIds = (sellerItemsRes.results || []).filter(id => id !== item_id).slice(0, 20);
     if (otherIds.length) {
       const batchRes = await fetch(
-        `${ML_API}/items?ids=${otherIds.join(',')}&attributes=id,title,price,sold_quantity,available_quantity,listing_type_id,status`,
-        { headers }
+        `${ML_API}/items?ids=${otherIds.join(',')}&attributes=id,title,price,sold_quantity,available_quantity,listing_type_id,status`
+        // public endpoint
       ).then(r => r.json()).catch(() => []);
       otherItems = (Array.isArray(batchRes) ? batchRes : [])
         .filter(r => r.code === 200 && r.body)
@@ -1822,9 +1822,9 @@ app.get('/api/competencia/item', requireAuth, async (req, res) => {
         .slice(0, 10);
     }
 
-    // ── 6. Description ────────────────────────────────────────────────────────
+    // ── 6. Description — public ───────────────────────────────────────────────
     const descRes = await fetch(
-      `${ML_API}/items/${item_id}/description`, { headers }
+      `${ML_API}/items/${item_id}/description`
     ).then(r => r.json()).catch(() => ({}));
 
     const rep = sellerRes.seller_reputation || {};
