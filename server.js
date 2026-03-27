@@ -1677,6 +1677,155 @@ app.post('/api/diagnostico/manuales', requireAuth, async (req, res) => {
 // ── LOGÍSTICA ─────────────────────────────────────────────────────────────────
 // ── REPORTE FINANCIERO ────────────────────────────────────────────────────────
 
+// GET /api/reporte/template-excel — descarga template con productos del mes
+app.get('/api/reporte/template-excel', requireAuth, async (req, res) => {
+  try {
+    const { client_id, date_from, date_to } = req.query;
+    const token = await getClientToken(parseInt(client_id));
+    if (!token) return res.status(403).json({ error: 'Sin token' });
+    const headers = { 'Authorization': `Bearer ${token}` };
+
+    const clientRes = await pool.query('SELECT ml_user_id, name FROM clients WHERE id=$1', [client_id]);
+    const { ml_user_id: uid, name: clientName } = clientRes.rows[0] || {};
+    if (!uid) return res.status(400).json({ error: 'Sin ML User ID' });
+
+    const fmt = d => new Date(d).toISOString().slice(0,19) + '.000-00:00';
+    const { orders } = await fetchAllOrders(uid, headers, fmt(date_from + 'T00:00:00'), fmt(date_to + 'T23:59:59'));
+
+    // Group by MLA
+    const byMla = {};
+    orders.forEach(o => {
+      (o.order_items||[]).forEach(oi => {
+        const id = oi.item?.id;
+        const title = oi.item?.title || id;
+        if (!id) return;
+        if (!byMla[id]) byMla[id] = { mla_id: id, title, units: 0, revenue: 0 };
+        byMla[id].units   += oi.quantity||0;
+        byMla[id].revenue += (parseFloat(oi.unit_price)||0)*(oi.quantity||0);
+      });
+    });
+
+    // Load saved costs
+    const costsRes = await pool.query('SELECT mla_id, costo_unit, notas FROM product_costs WHERE client_id=$1', [client_id]);
+    const costsMap = {};
+    costsRes.rows.forEach(r => { costsMap[r.mla_id] = { costo_unit: parseFloat(r.costo_unit)||0, notas: r.notas||'' }; });
+
+    const items = Object.values(byMla).sort((a,b) => b.revenue - a.revenue);
+
+    // Build Excel with ExcelJS-style using raw xlsx binary via node
+    // Use simple CSV-based approach that client can open in Excel
+    // Actually build proper xlsx using Buffer
+    const XLSX = require('xlsx');
+
+    const wsData = [
+      [`PLANILLA DE COSTOS — ${clientName} | ${date_from} → ${date_to}`],
+      ["⚠  Completá la columna 'Costo Unitario (ARS)' — celdas en amarillo. Guardá y subí el archivo al dashboard."],
+      ['MLA', 'Descripción', 'Costo Unitario (ARS)', 'Unidades vendidas', 'Facturación (ARS)', 'Notas'],
+      ...items.map(i => [
+        i.mla_id,
+        i.title,
+        costsMap[i.mla_id]?.costo_unit || '',
+        i.units,
+        Math.round(i.revenue),
+        costsMap[i.mla_id]?.notas || '',
+      ])
+    ];
+
+    const wb = XLSX.utils.book_new();
+    const ws = XLSX.utils.aoa_to_sheet(wsData);
+
+    // Column widths
+    ws['!cols'] = [
+      { wch: 18 }, { wch: 50 }, { wch: 22 }, { wch: 18 }, { wch: 20 }, { wch: 25 }
+    ];
+
+    // Freeze row 3 (after headers)
+    ws['!freeze'] = { xSplit: 0, ySplit: 3 };
+
+    XLSX.utils.book_append_sheet(wb, ws, 'Costos');
+    const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+
+    const filename = `Costos_${clientName.replace(/\s+/g,'_')}_${date_from.slice(0,7)}.xlsx`;
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.send(buf);
+  } catch(e) { console.error('[TEMPLATE EXCEL]', e.message); res.status(500).json({ error: e.message }); }
+});
+
+// POST /api/reporte/importar-costos — importa Excel con costos completados
+app.post('/api/reporte/importar-costos', requireAuth, async (req, res) => {
+  try {
+    const XLSX = require('xlsx');
+    const multer = require('multer');
+
+    // Parse multipart manually
+    let body = Buffer.alloc(0);
+    req.on('data', chunk => { body = Buffer.concat([body, chunk]); });
+    req.on('end', async () => {
+      try {
+        // Extract file from multipart
+        const boundary = req.headers['content-type'].split('boundary=')[1];
+        if (!boundary) return res.status(400).json({ error: 'No boundary' });
+
+        const parts = body.toString('binary').split('--' + boundary);
+        let fileBuffer = null, clientId = null;
+
+        parts.forEach(part => {
+          if (part.includes('filename=')) {
+            const dataStart = part.indexOf('\r\n\r\n') + 4;
+            const dataEnd = part.lastIndexOf('\r\n');
+            fileBuffer = Buffer.from(part.slice(dataStart, dataEnd), 'binary');
+          }
+          if (part.includes('name="client_id"')) {
+            const dataStart = part.indexOf('\r\n\r\n') + 4;
+            clientId = part.slice(dataStart).trim().replace(/\r\n--$/, '').trim();
+          }
+        });
+
+        if (!fileBuffer || !clientId) return res.status(400).json({ error: 'Faltan datos' });
+
+        const wb = XLSX.read(fileBuffer, { type: 'buffer' });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+
+        // Find header row (has 'MLA' in first col)
+        let headerRow = -1;
+        for (let i = 0; i < Math.min(rows.length, 5); i++) {
+          if (String(rows[i][0]).toUpperCase().includes('MLA') && rows[i].length > 2) {
+            headerRow = i; break;
+          }
+        }
+        if (headerRow === -1) return res.status(400).json({ error: 'No se encontró la fila de encabezados' });
+
+        const dataRows = rows.slice(headerRow + 1);
+        const costos = [];
+        dataRows.forEach(row => {
+          const mla_id = String(row[0]||'').trim();
+          const title  = String(row[1]||'').trim();
+          const costo  = parseFloat(String(row[2]||'').replace(/[,$\s]/g,''))||0;
+          const notas  = String(row[5]||'').trim();
+          if (mla_id && mla_id.startsWith('MLA') && costo > 0) {
+            costos.push({ mla_id, title, costo_unit: costo, notas });
+          }
+        });
+
+        if (!costos.length) return res.status(400).json({ error: 'No se encontraron costos válidos en el archivo' });
+
+        for (const c of costos) {
+          await pool.query(`
+            INSERT INTO product_costs (client_id, mla_id, title, costo_unit, notas, updated_at)
+            VALUES ($1,$2,$3,$4,$5,NOW())
+            ON CONFLICT (client_id, mla_id) DO UPDATE SET
+              title=$3, costo_unit=$4, notas=$5, updated_at=NOW()
+          `, [clientId, c.mla_id, c.title, c.costo_unit, c.notas]);
+        }
+
+        res.json({ ok: true, imported: costos.length });
+      } catch(e) { res.status(500).json({ error: e.message }); }
+    });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
 // GET /api/reporte/items-vendidos — MLAs vendidos del período con costos guardados
 app.get('/api/reporte/items-vendidos', requireAuth, async (req, res) => {
   try {
