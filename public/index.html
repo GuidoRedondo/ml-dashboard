@@ -3826,6 +3826,8 @@ function renderLogistica(data) {
 // ── STOCK FULL ────────────────────────────────────────────────────────────────
 let _logisticaActiveTab = 'general';
 let _fullStockData = null;
+let _fsSort = { col: null, dir: 1 };
+let _fsFilter = 'todos';
 
 function switchLogisticaTab(tab) {
   _logisticaActiveTab = tab;
@@ -3834,7 +3836,7 @@ function switchLogisticaTab(tab) {
     document.getElementById(tabs[t]).style.display = t === tab ? '' : 'none';
     const btn = document.getElementById(`tab-logistica-${t}`);
     if (btn) {
-      btn.style.color       = t === tab ? 'var(--accent)' : 'var(--muted)';
+      btn.style.color        = t === tab ? 'var(--accent)' : 'var(--muted)';
       btn.style.borderBottom = t === tab ? '2px solid var(--accent)' : '2px solid transparent';
     }
   });
@@ -3844,6 +3846,8 @@ function switchLogisticaTab(tab) {
 function refreshLogisticaTab() {
   if (_logisticaActiveTab === 'fullstock') {
     _fullStockData = null;
+    _fsSort = { col: null, dir: 1 };
+    _fsFilter = 'todos';
     loadFullStock();
   } else {
     loadLogistica();
@@ -3859,8 +3863,7 @@ async function loadFullStock() {
       el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">Sin cuenta conectada</div>';
       return;
     }
-    const days = 30;
-    const data = await apiCall('GET', `/api/logistica/full-stock?uid=${client.ml_user_id}&client_id=${client.id}&days=${days}`);
+    const data = await apiCall('GET', `/api/logistica/full-stock?uid=${client.ml_user_id}&client_id=${client.id}&days=30`);
     if (!data) { el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">Error al cargar datos</div>'; return; }
     _fullStockData = data;
     renderFullStock(data, client);
@@ -3878,26 +3881,83 @@ function renderFullStock(data, client) {
     return;
   }
 
-  // ── KPIs resumen ───────────────────────────────────────────────────────────
+  // ── KPIs (clickeables para filtrar) ───────────────────────────────────────
   const totalStock   = items.reduce((s, i) => s + (i.stock_available || 0), 0);
   const totalReserv  = items.reduce((s, i) => s + (i.stock_reserved  || 0), 0);
   const totalTransit = items.reduce((s, i) => s + (i.stock_in_transit|| 0), 0);
-  const lowStock     = items.filter(i => i.coverage_days != null && i.coverage_days < 15).length;
+  const critico      = items.filter(i => i.coverage_days != null && i.coverage_days < 7).length;
+  const bajo         = items.filter(i => i.coverage_days != null && i.coverage_days >= 7 && i.coverage_days < 15).length;
+  const ok           = items.filter(i => i.coverage_days == null || i.coverage_days >= 15).length;
 
-  const kpis = `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:12px;margin-bottom:24px">
-    ${[
-      ['Ítems FULL', items.length, 'var(--text)'],
-      ['Stock disponible', totalStock, '#6366f1'],
-      ['Reservado', totalReserv, '#d97706'],
-      ['En tránsito', totalTransit, '#10b981'],
-      ['Cobertura < 15d', lowStock, lowStock > 0 ? '#dc2626' : 'var(--muted)'],
-    ].map(([l,v,c]) => `<div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px 14px">
-      <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em">${l}</div>
-      <div style="font-size:22px;font-weight:700;font-family:var(--font-b);color:${c};margin-top:4px">${v}</div>
+  const kpiDefs = [
+    { key: 'todos',    label: 'Todos',           value: items.length,  color: 'var(--text)',  bg: 'var(--surface)', border: 'var(--border)' },
+    { key: 'critico',  label: '🔴 Crítico <7d',  value: critico,       color: '#dc2626',      bg: critico  > 0 ? '#fef2f2' : 'var(--surface)', border: critico  > 0 ? '#fca5a5' : 'var(--border)' },
+    { key: 'bajo',     label: '🟠 Bajo 7–14d',   value: bajo,          color: '#d97706',      bg: bajo     > 0 ? '#fffbeb' : 'var(--surface)', border: bajo     > 0 ? '#fcd34d' : 'var(--border)' },
+    { key: 'ok',       label: '🟢 OK ≥15d',      value: ok,            color: '#16a34a',      bg: 'var(--surface)', border: 'var(--border)' },
+    { key: 'stock',    label: 'Stock disponible', value: totalStock,    color: '#6366f1',      bg: 'var(--surface)', border: 'var(--border)' },
+    { key: 'transito', label: 'En tránsito',      value: totalTransit,  color: '#10b981',      bg: 'var(--surface)', border: 'var(--border)' },
+  ];
+
+  const kpis = `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:12px;margin-bottom:20px" id="fsKpiRow">
+    ${kpiDefs.map(k => `<div
+      onclick="setFsFilter('${k.key}')"
+      id="fskpi-${k.key}"
+      style="background:${k.bg};border:2px solid ${_fsFilter===k.key ? 'var(--accent)' : k.border};border-radius:10px;padding:12px 14px;cursor:pointer;transition:border .15s"
+      onmouseover="this.style.borderColor='var(--accent)'" onmouseout="this.style.borderColor='${_fsFilter===k.key ? 'var(--accent)' : k.border}'">
+      <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em">${k.label}</div>
+      <div style="font-size:22px;font-weight:700;font-family:var(--font-b);color:${k.color};margin-top:4px">${k.value}</div>
     </div>`).join('')}
   </div>`;
 
-  // ── Tabla ──────────────────────────────────────────────────────────────────
+  el.innerHTML = kpis + `<div id="fsTableWrap"></div>`;
+  renderFsTable();
+}
+
+function setFsFilter(key) {
+  _fsFilter = key;
+  // Actualizar bordes de KPIs sin re-renderizar todo
+  ['todos','critico','bajo','ok','stock','transito'].forEach(k => {
+    const el = document.getElementById(`fskpi-${k}`);
+    if (el) el.style.borderColor = k === key ? 'var(--accent)' : '';
+  });
+  renderFsTable();
+}
+
+function fsSortBy(col) {
+  if (_fsSort.col === col) _fsSort.dir *= -1;
+  else { _fsSort.col = col; _fsSort.dir = 1; }
+  renderFsTable();
+}
+
+function renderFsTable() {
+  const wrap = document.getElementById('fsTableWrap');
+  if (!wrap || !_fullStockData) return;
+  const { items, period_days } = _fullStockData;
+
+  // ── Filtro ─────────────────────────────────────────────────────────────────
+  let filtered = items;
+  if (_fsFilter === 'critico') filtered = items.filter(i => i.coverage_days != null && i.coverage_days < 7);
+  else if (_fsFilter === 'bajo') filtered = items.filter(i => i.coverage_days != null && i.coverage_days >= 7 && i.coverage_days < 15);
+  else if (_fsFilter === 'ok')   filtered = items.filter(i => i.coverage_days == null || i.coverage_days >= 15);
+
+  // ── Orden ──────────────────────────────────────────────────────────────────
+  const colMap = {
+    title:     i => (i.title || '').toLowerCase(),
+    available: i => i.stock_available ?? -1,
+    reserved:  i => i.stock_reserved  ?? -1,
+    transit:   i => i.stock_in_transit ?? -1,
+    sold:      i => i.units_sold_period ?? -1,
+    coverage:  i => i.coverage_days ?? 9999,
+    suggested: i => i.suggested_quantity ?? -1,
+  };
+  if (_fsSort.col && colMap[_fsSort.col]) {
+    filtered = [...filtered].sort((a, b) => {
+      const va = colMap[_fsSort.col](a), vb = colMap[_fsSort.col](b);
+      return va < vb ? -_fsSort.dir : va > vb ? _fsSort.dir : 0;
+    });
+  }
+
+  // ── Semáforo ───────────────────────────────────────────────────────────────
   const coverageColor = d => {
     if (d == null) return 'var(--muted)';
     if (d < 7)  return '#dc2626';
@@ -3906,92 +3966,122 @@ function renderFullStock(data, client) {
     return '#16a34a';
   };
 
-  const rows = items.map(item => {
-    const cov = item.coverage_days;
-    const covColor = coverageColor(cov);
-    const covText  = cov != null ? `${cov}d` : '—';
-    const sugQty   = item.suggested_quantity;
+  const thStyle = (col, align) => {
+    const active = _fsSort.col === col;
+    const arrow  = active ? (_fsSort.dir === 1 ? ' ↑' : ' ↓') : ' ↕';
+    return `padding:8px 10px;text-align:${align||'center'};font-size:11px;font-weight:600;color:${active ? 'var(--accent)' : 'var(--muted)'};border-bottom:1px solid var(--border);cursor:pointer;user-select:none;white-space:nowrap`;
+  };
+  const thLabel = (col, label, align) => `<th style="${thStyle(col, align)}" onclick="fsSortBy('${col}')">${label}${_fsSort.col===col ? (_fsSort.dir===1?' ↑':' ↓'):' <span style=\'opacity:.35\'>↕</span>'}</th>`;
 
-    return `<tr id="row-${item.id}${item.variation_id ? '-'+item.variation_id : ''}">
-      <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px">
+  const rows = filtered.map(item => {
+    const rowKey   = `${item.id}${item.variation_id ? '-'+item.variation_id : ''}`;
+    const cov      = item.coverage_days;
+    const covColor = coverageColor(cov);
+    const varBadge = item.variation_id
+      ? `<span style="font-size:10px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;padding:1px 5px;margin-left:5px;color:var(--muted)">SKU</span>`
+      : '';
+
+    return `<tr>
+      <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;white-space:nowrap">
         <a href="https://articulo.mercadolibre.com.ar/${item.id}" target="_blank" style="color:var(--accent);text-decoration:none">${item.id}</a>
+        ${varBadge}
       </td>
-      <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${item.title}">${item.title}</td>
+      <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${item.title}">${item.title}</td>
       <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:13px;text-align:center;font-weight:700;color:#6366f1">${item.stock_available ?? '—'}</td>
       <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;text-align:center;color:var(--muted)">${item.stock_reserved || 0}</td>
       <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;text-align:center;color:#10b981">${item.stock_in_transit || 0}</td>
       <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;text-align:center">${item.units_sold_period}</td>
-      <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:13px;text-align:center;font-weight:700;color:${covColor}">${covText}</td>
+      <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:13px;text-align:center;font-weight:700;color:${covColor}">${cov != null ? cov+'d' : '—'}</td>
       <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;text-align:center">
-        <div style="display:flex;align-items:center;gap:6px;justify-content:center">
-          <input type="number" min="0"
-            id="sug-${item.id}${item.variation_id ? '-'+item.variation_id : ''}"
-            value="${sugQty ?? ''}"
-            placeholder="auto"
-            style="width:64px;padding:4px 6px;border:1px solid var(--border);border-radius:6px;background:var(--surface2);color:var(--text);font-size:12px;text-align:center"
+        <div style="display:flex;align-items:center;gap:4px;justify-content:center">
+          <input type="number" min="1" id="cov-${rowKey}" value="${item.coverage_days_target || 30}"
+            style="width:48px;padding:3px 5px;border:1px solid var(--border);border-radius:6px;background:var(--surface2);color:var(--text);font-size:12px;text-align:center"
+            title="Días de cobertura objetivo"
             onkeydown="if(event.key==='Enter') saveFullStockSuggested('${item.id}', ${item.variation_id ? "'"+item.variation_id+"'" : 'null'})"
           />
-          <button onclick="saveFullStockSuggested('${item.id}', ${item.variation_id ? "'"+item.variation_id+"'" : 'null'})"
-            style="padding:4px 8px;border:none;border-radius:6px;background:var(--accent);color:#fff;font-size:11px;cursor:pointer;font-weight:600">✓</button>
+          <span style="font-size:10px;color:var(--muted)">d</span>
+        </div>
+      </td>
+      <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;text-align:center">
+        <div style="display:flex;align-items:center;gap:4px;justify-content:center">
+          <input type="number" min="0" id="sug-${rowKey}" value="${item.suggested_quantity ?? ''}" placeholder="auto"
+            style="width:56px;padding:3px 5px;border:1px solid var(--border);border-radius:6px;background:var(--surface2);color:var(--text);font-size:12px;text-align:center"
+            onkeydown="if(event.key==='Enter') saveFullStockSuggested('${item.id}', ${item.variation_id ? "'"+item.variation_id+"'" : 'null'})"
+          />
+          <button id="btn-${rowKey}" onclick="saveFullStockSuggested('${item.id}', ${item.variation_id ? "'"+item.variation_id+"'" : 'null'})"
+            style="padding:3px 8px;border:none;border-radius:6px;background:var(--accent);color:#fff;font-size:11px;cursor:pointer;font-weight:600">✓</button>
         </div>
       </td>
     </tr>`;
   }).join('');
 
-  const table = `<div style="overflow-x:auto">
+  wrap.innerHTML = `<div style="overflow-x:auto">
     <table style="width:100%;border-collapse:collapse">
       <thead><tr style="background:var(--surface2)">
-        <th style="padding:8px 10px;text-align:left;font-size:11px;font-weight:600;color:var(--muted);border-bottom:1px solid var(--border)">MLA</th>
-        <th style="padding:8px 10px;text-align:left;font-size:11px;font-weight:600;color:var(--muted);border-bottom:1px solid var(--border)">Título</th>
-        <th style="padding:8px 10px;text-align:center;font-size:11px;font-weight:600;color:var(--muted);border-bottom:1px solid var(--border)">Disponible</th>
-        <th style="padding:8px 10px;text-align:center;font-size:11px;font-weight:600;color:var(--muted);border-bottom:1px solid var(--border)">Reservado</th>
-        <th style="padding:8px 10px;text-align:center;font-size:11px;font-weight:600;color:var(--muted);border-bottom:1px solid var(--border)">En tránsito</th>
-        <th style="padding:8px 10px;text-align:center;font-size:11px;font-weight:600;color:var(--muted);border-bottom:1px solid var(--border)">Vendidos ${period_days}d</th>
-        <th style="padding:8px 10px;text-align:center;font-size:11px;font-weight:600;color:var(--muted);border-bottom:1px solid var(--border)">Cobertura</th>
-        <th style="padding:8px 10px;text-align:center;font-size:11px;font-weight:600;color:var(--muted);border-bottom:1px solid var(--border)">Sugerido a enviar</th>
+        ${thLabel('title',    'MLA / Título', 'left')}
+        <th style="padding:8px 10px;border-bottom:1px solid var(--border)"></th>
+        ${thLabel('available','Disponible')}
+        ${thLabel('reserved', 'Reservado')}
+        ${thLabel('transit',  'En tránsito')}
+        ${thLabel('sold',     'Vendidos ${period_days}d')}
+        ${thLabel('coverage', 'Cobertura')}
+        <th style="padding:8px 10px;text-align:center;font-size:11px;font-weight:600;color:var(--muted);border-bottom:1px solid var(--border)">Días objetivo</th>
+        ${thLabel('suggested','Sugerido a enviar')}
       </tr></thead>
-      <tbody>${rows}</tbody>
+      <tbody>${rows || '<tr><td colspan="9" style="padding:30px;text-align:center;color:var(--muted)">Sin ítems para el filtro seleccionado</td></tr>'}</tbody>
     </table>
   </div>
   <div style="font-size:11px;color:var(--muted);margin-top:10px;padding:0 2px">
-    🟢 Cobertura &ge;30d &nbsp;|&nbsp; 🟡 15–29d &nbsp;|&nbsp; 🟠 7–14d &nbsp;|&nbsp; 🔴 &lt;7d &nbsp;&nbsp;·&nbsp;&nbsp; "Sugerido" = unidades para llegar a 30d de cobertura. Editá el valor y presioná ✓ para guardar.
+    🟢 Cobertura ≥30d &nbsp;|&nbsp; 🟡 15–29d &nbsp;|&nbsp; 🟠 7–14d &nbsp;|&nbsp; 🔴 &lt;7d &nbsp;·&nbsp;
+    Hacé click en los KPIs para filtrar · Click en columnas para ordenar · "Días objetivo" y "Sugerido" son editables → ✓ para guardar
   </div>`;
-
-  el.innerHTML = kpis + table;
 }
 
 async function saveFullStockSuggested(itemId, variationId) {
-  const key = `sug-${itemId}${variationId ? '-'+variationId : ''}`;
-  const input = document.getElementById(key);
-  if (!input) return;
-  const val = input.value.trim();
+  const rowKey = `${itemId}${variationId ? '-'+variationId : ''}`;
+  const sugInput = document.getElementById(`sug-${rowKey}`);
+  const covInput = document.getElementById(`cov-${rowKey}`);
+  const btn      = document.getElementById(`btn-${rowKey}`);
+  if (!sugInput || !btn) return;
+
   const client = getActiveClient();
   if (!client) return;
 
-  const btn = input.nextElementSibling;
-  const origText = btn.textContent;
+  const sugVal  = sugInput.value.trim();
+  const covVal  = covInput ? parseInt(covInput.value) || 30 : 30;
+  const origTxt = btn.textContent;
   btn.textContent = '...'; btn.disabled = true;
 
   try {
     const r = await apiCall('PUT', `/api/logistica/full-stock/${itemId}`, {
-      client_id: client.id,
-      suggested_quantity: val !== '' ? parseInt(val) : null,
-      coverage_days_target: 30,
-      notes: ''
+      client_id:            client.id,
+      suggested_quantity:   sugVal !== '' ? parseInt(sugVal) : null,
+      coverage_days_target: covVal,
+      notes:                ''
     });
     if (r?.ok) {
       btn.textContent = '✅'; btn.style.background = '#16a34a';
-      setTimeout(() => { btn.textContent = origText; btn.style.background = 'var(--accent)'; btn.disabled = false; }, 1500);
-      // Actualizar dato local
+      // Actualizar dato local para no perder el valor si se re-renderiza
       if (_fullStockData) {
-        const item = _fullStockData.items.find(i => i.id === itemId);
-        if (item) item.suggested_quantity = val !== '' ? parseInt(val) : null;
+        const item = _fullStockData.items.find(i => i.id === itemId && (variationId ? i.variation_id == variationId : !i.variation_id));
+        if (item) {
+          item.suggested_quantity    = sugVal !== '' ? parseInt(sugVal) : null;
+          item.coverage_days_target  = covVal;
+          // Recalcular días de cobertura objetivo → sugerido automático
+          if (sugVal === '' && item.daily_rate > 0) {
+            item.suggested_quantity = Math.max(0, Math.round(item.daily_rate * covVal - (item.stock_available || 0)));
+            sugInput.placeholder = item.suggested_quantity;
+          }
+        }
       }
+      setTimeout(() => { btn.textContent = origTxt; btn.style.background = 'var(--accent)'; btn.disabled = false; }, 1500);
     } else {
-      btn.textContent = '❌'; setTimeout(() => { btn.textContent = origText; btn.disabled = false; }, 1500);
+      btn.textContent = '❌';
+      setTimeout(() => { btn.textContent = origTxt; btn.disabled = false; }, 1500);
     }
   } catch(e) {
-    btn.textContent = '❌'; setTimeout(() => { btn.textContent = origText; btn.disabled = false; }, 1500);
+    btn.textContent = '❌';
+    setTimeout(() => { btn.textContent = origTxt; btn.disabled = false; }, 1500);
   }
 }
 
@@ -4972,3 +5062,4 @@ window.addEventListener('DOMContentLoaded', () => {
 </script>
 </body>
 </html>
+
