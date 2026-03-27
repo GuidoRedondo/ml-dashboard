@@ -781,6 +781,11 @@ tbody td {
         <select id="reporteClientSel" style="padding:6px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px;min-width:160px"></select>
         <select id="reporteMesSel" style="padding:6px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px"></select>
         <button onclick="loadReporteItems()" style="padding:7px 16px;background:var(--accent);color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer">📋 Cargar productos</button>
+        <button onclick="descargarTemplateExcel()" style="padding:7px 16px;background:#6366f1;color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer">📥 Descargar Excel</button>
+        <label style="padding:7px 16px;background:#0ea5e9;color:#fff;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer">
+          📤 Importar Excel
+          <input type="file" accept=".xlsx" style="display:none" onchange="importarCostosExcel(this)">
+        </label>
         <button id="reportePylBtn" onclick="generarPyL()" style="padding:7px 16px;background:#16a34a;color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;display:none">⚡ Generar P&L</button>
         <button id="reporteExcelBtn" onclick="exportarReporteExcel()" style="padding:7px 16px;background:#6366f1;color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;display:none">📥 Descargar Excel</button>
       </div>
@@ -3808,6 +3813,43 @@ function renderLogistica(data) {
 
 // ── REPORTE FINANCIERO ────────────────────────────────────────────────────────
 let _reporteItems = [], _reportePyl = null;
+
+async function descargarTemplateExcel() {
+  const clientId = document.getElementById('reporteClientSel')?.value;
+  const period = getReportePeriod();
+  if (!clientId || !period) { showToast('⚠ Seleccioná cliente y mes primero'); return; }
+  const sid = getSession() || '';
+  const url = `${SERVER_URL}/api/reporte/template-excel?client_id=${clientId}&date_from=${period.date_from}&date_to=${period.date_to}&session_id=${sid}`;
+  window.location.href = url;
+}
+
+async function importarCostosExcel(input) {
+  const clientId = document.getElementById('reporteClientSel')?.value;
+  if (!clientId) { showToast('⚠ Seleccioná un cliente primero'); input.value=''; return; }
+  const file = input.files[0];
+  if (!file) return;
+  showToast('⏳ Importando costos...');
+  const formData = new FormData();
+  formData.append('file', file);
+  formData.append('client_id', clientId);
+  try {
+    const sid = getSession() || '';
+    const r = await fetch(`${SERVER_URL}/api/reporte/importar-costos?session_id=${sid}`, {
+      method: 'POST',
+      headers: { 'x-session-id': sid },
+      body: formData,
+      credentials: 'include'
+    });
+    const data = await r.json();
+    if (data.ok) {
+      showToast(`✅ ${data.imported} costos importados`);
+      await loadReporteItems();
+    } else {
+      showToast(`❌ Error: ${data.error}`);
+    }
+  } catch(e) { showToast(`❌ Error: ${e.message}`); }
+  input.value = '';
+}
 
 function initReporte() {
   // Populate client selector
