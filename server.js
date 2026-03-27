@@ -2177,17 +2177,20 @@ app.get('/api/logistica/full-stock', requireAuth, async (req, res) => {
       })
     );
 
-    // ── 4. Ventas últimos N días ─────────────────────────────────────────────
+    // ── 4. Ventas últimos N días — por variation_id si existe, si no por item_id ──
     const now = new Date();
     const dateFrom = new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
     const fmt = d => d.toISOString().slice(0, 19) + '.000-00:00';
     const { orders } = await fetchAllOrders(uid, headers, fmt(dateFrom), fmt(now));
-    const salesByItem = {};
+    // clave: "itemId" o "itemId_variationId"
+    const salesByKey = {};
     orders.forEach(order => {
       (order.order_items || []).forEach(oi => {
-        const id = oi.item?.id;
+        const id  = oi.item?.id;
+        const vid = oi.item?.variation_id;
         if (!id) return;
-        salesByItem[id] = (salesByItem[id] || 0) + (oi.quantity || 0);
+        const key = vid ? `${id}_${vid}` : id;
+        salesByKey[key] = (salesByKey[key] || 0) + (oi.quantity || 0);
       });
     });
 
@@ -2199,18 +2202,26 @@ app.get('/api/logistica/full-stock', requireAuth, async (req, res) => {
     const configMap = {};
     configs.forEach(c => { configMap[c.item_id] = c; });
 
+    // Config global de días de cobertura (guardada con item_id = '__global__')
+    const globalCfg = configMap['__global__'] || {};
+    const globalTargetDays = globalCfg.coverage_days_target || 30;
+
     // ── 6. Armar respuesta ───────────────────────────────────────────────────
     const result = stockResults.map(item => {
-      const unitsSold  = salesByItem[item.id] || 0;
+      const salesKey   = item.variation_id ? `${item.id}_${item.variation_id}` : item.id;
+      const unitsSold  = salesByKey[salesKey] || 0;
+      const stockTotal = (item.stock_available || 0) + (item.stock_reserved || 0) + (item.stock_in_transit || 0);
       const dailyRate  = unitsSold / days;
-      const coverage   = dailyRate > 0 && item.stock_available != null ? Math.round(item.stock_available / dailyRate) : null;
+      const coverage   = dailyRate > 0 ? Math.round((item.stock_available || 0) / dailyRate) : null;
+      // config por item tiene prioridad sobre global
       const cfg        = configMap[item.id] || {};
-      const targetDays = cfg.coverage_days_target || 30;
+      const targetDays = cfg.coverage_days_target || globalTargetDays;
       const suggested  = cfg.suggested_quantity != null
         ? cfg.suggested_quantity
         : (dailyRate > 0 ? Math.max(0, Math.round(dailyRate * targetDays - (item.stock_available || 0))) : null);
       return {
         ...item,
+        stock_total:       stockTotal,
         units_sold_period: unitsSold,
         daily_rate:        parseFloat(dailyRate.toFixed(2)),
         coverage_days:     coverage,
@@ -2220,9 +2231,27 @@ app.get('/api/logistica/full-stock', requireAuth, async (req, res) => {
       };
     });
 
-    res.json({ items: result, period_days: days });
+    res.json({ items: result, period_days: days, global_target_days: globalTargetDays });
   } catch(e) {
     console.error('[FULL_STOCK]', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.put('/api/logistica/full-stock-global', requireAuth, async (req, res) => {
+  try {
+    const { client_id, coverage_days_target } = req.body;
+    if (!client_id) return res.status(400).json({ error: 'client_id requerido' });
+    await pool.query(`
+      INSERT INTO full_stock_config (client_id, item_id, coverage_days_target, updated_at)
+      VALUES ($1, '__global__', $2, NOW())
+      ON CONFLICT (client_id, item_id) DO UPDATE
+        SET coverage_days_target = EXCLUDED.coverage_days_target,
+            updated_at           = NOW()
+    `, [client_id, coverage_days_target || 30]);
+    res.json({ ok: true });
+  } catch(e) {
+    console.error('[FULL_STOCK_GLOBAL]', e.message);
     res.status(500).json({ error: e.message });
   }
 });
