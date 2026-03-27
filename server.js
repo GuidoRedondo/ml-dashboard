@@ -1927,6 +1927,37 @@ app.get('/api/reporte/pyl', requireAuth, async (req, res) => {
 });
 
 // ── DEBUG: inspect a specific order's shipment ───────────────────────────────
+app.get('/api/debug/billing', requireAuth, async (req, res) => {
+  try {
+    const { client_id, date_from, date_to } = req.query;
+    const token = await getClientToken(parseInt(client_id));
+    if (!token) return res.status(403).json({ error: 'Sin token' });
+    const headers = { 'Authorization': `Bearer ${token}` };
+    const clientRes = await pool.query('SELECT ml_user_id FROM clients WHERE id=$1', [client_id]);
+    const uid = clientRes.rows[0]?.ml_user_id;
+
+    const results = {};
+
+    // Try different billing endpoints
+    const endpoints = [
+      `/users/${uid}/expenses?date_from=${date_from}&date_to=${date_to}`,
+      `/billing/integration/periods?user_id=${uid}`,
+      `/users/${uid}/billing?date_from=${date_from}&date_to=${date_to}`,
+      `/logistics/fulfillment/billing/charges?seller_id=${uid}&date_from=${date_from}&date_to=${date_to}`,
+      `/users/${uid}/mercadoenvios/shipment_costs?date_from=${date_from}&date_to=${date_to}`,
+    ];
+
+    for (const ep of endpoints) {
+      try {
+        const r = await fetch(`${ML_API}${ep}`, { headers }).then(r => r.json());
+        results[ep] = { status: r.error || r.code || 'ok', keys: Object.keys(r||{}).slice(0,10), sample: JSON.stringify(r).slice(0,200) };
+      } catch(e) { results[ep] = { error: e.message }; }
+    }
+
+    res.json(results);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
 app.get('/api/debug/order', requireAuth, async (req, res) => {
   try {
     const { order_id, client_id } = req.query;
