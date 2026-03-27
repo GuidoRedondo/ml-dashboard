@@ -3874,7 +3874,7 @@ async function loadFullStock() {
 
 function renderFullStock(data, client) {
   const el = document.getElementById('fullStockContent');
-  const { items, period_days } = data;
+  const { items, period_days, global_target_days } = data;
 
   if (!items || items.length === 0) {
     el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">No hay publicaciones en Envíos FULL activas.</div>';
@@ -3882,23 +3882,22 @@ function renderFullStock(data, client) {
   }
 
   // ── KPIs (clickeables para filtrar) ───────────────────────────────────────
-  const totalStock   = items.reduce((s, i) => s + (i.stock_available || 0), 0);
-  const totalReserv  = items.reduce((s, i) => s + (i.stock_reserved  || 0), 0);
-  const totalTransit = items.reduce((s, i) => s + (i.stock_in_transit|| 0), 0);
-  const critico      = items.filter(i => i.coverage_days != null && i.coverage_days < 7).length;
-  const bajo         = items.filter(i => i.coverage_days != null && i.coverage_days >= 7 && i.coverage_days < 15).length;
-  const ok           = items.filter(i => i.coverage_days == null || i.coverage_days >= 15).length;
+  const totalStockDisp  = items.reduce((s, i) => s + (i.stock_available || 0), 0);
+  const totalStockTotal = items.reduce((s, i) => s + (i.stock_total     || 0), 0);
+  const critico = items.filter(i => i.coverage_days != null && i.coverage_days < 7).length;
+  const bajo    = items.filter(i => i.coverage_days != null && i.coverage_days >= 7 && i.coverage_days < 15).length;
+  const ok      = items.filter(i => i.coverage_days == null || i.coverage_days >= 15).length;
 
   const kpiDefs = [
-    { key: 'todos',    label: 'Todos',           value: items.length,  color: 'var(--text)',  bg: 'var(--surface)', border: 'var(--border)' },
-    { key: 'critico',  label: '🔴 Crítico <7d',  value: critico,       color: '#dc2626',      bg: critico  > 0 ? '#fef2f2' : 'var(--surface)', border: critico  > 0 ? '#fca5a5' : 'var(--border)' },
-    { key: 'bajo',     label: '🟠 Bajo 7–14d',   value: bajo,          color: '#d97706',      bg: bajo     > 0 ? '#fffbeb' : 'var(--surface)', border: bajo     > 0 ? '#fcd34d' : 'var(--border)' },
-    { key: 'ok',       label: '🟢 OK ≥15d',      value: ok,            color: '#16a34a',      bg: 'var(--surface)', border: 'var(--border)' },
-    { key: 'stock',    label: 'Stock disponible', value: totalStock,    color: '#6366f1',      bg: 'var(--surface)', border: 'var(--border)' },
-    { key: 'transito', label: 'En tránsito',      value: totalTransit,  color: '#10b981',      bg: 'var(--surface)', border: 'var(--border)' },
+    { key: 'todos',   label: 'SKUs FULL',       value: items.length,     color: 'var(--text)', bg: 'var(--surface)', border: 'var(--border)' },
+    { key: 'critico', label: '🔴 Crítico <7d',  value: critico,          color: '#dc2626',     bg: critico > 0 ? '#fef2f2' : 'var(--surface)', border: critico > 0 ? '#fca5a5' : 'var(--border)' },
+    { key: 'bajo',    label: '🟠 Bajo 7–14d',   value: bajo,             color: '#d97706',     bg: bajo    > 0 ? '#fffbeb' : 'var(--surface)', border: bajo    > 0 ? '#fcd34d' : 'var(--border)' },
+    { key: 'ok',      label: '🟢 OK ≥15d',      value: ok,               color: '#16a34a',     bg: 'var(--surface)', border: 'var(--border)' },
+    { key: 'stock',   label: 'Stock disponible', value: totalStockDisp,   color: '#6366f1',     bg: 'var(--surface)', border: 'var(--border)' },
+    { key: 'total',   label: 'Stock total',      value: totalStockTotal,  color: '#8b5cf6',     bg: 'var(--surface)', border: 'var(--border)' },
   ];
 
-  const kpis = `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:12px;margin-bottom:20px" id="fsKpiRow">
+  const kpis = `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:12px;margin-bottom:16px" id="fsKpiRow">
     ${kpiDefs.map(k => `<div
       onclick="setFsFilter('${k.key}')"
       id="fskpi-${k.key}"
@@ -3909,7 +3908,22 @@ function renderFullStock(data, client) {
     </div>`).join('')}
   </div>`;
 
-  el.innerHTML = kpis + `<div id="fsTableWrap"></div>`;
+  // ── Control global de días de cobertura ───────────────────────────────────
+  const globalCtrl = `<div style="display:flex;align-items:center;gap:10px;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px 16px;margin-bottom:16px">
+    <span style="font-size:13px;font-weight:600;font-family:var(--font-b)">📅 Días de cobertura objetivo (toda la cuenta):</span>
+    <input type="number" min="1" max="365" id="fsGlobalDays" value="${global_target_days || 30}"
+      style="width:60px;padding:5px 8px;border:1px solid var(--border);border-radius:6px;background:var(--surface2);color:var(--text);font-size:14px;font-weight:700;text-align:center"
+    />
+    <span style="font-size:12px;color:var(--muted)">días</span>
+    <button onclick="saveGlobalTargetDays()"
+      style="padding:5px 14px;border:none;border-radius:6px;background:var(--accent);color:#fff;font-size:12px;font-weight:600;cursor:pointer">
+      Guardar
+    </button>
+    <span id="fsGlobalSaveMsg" style="font-size:12px;color:var(--muted)"></span>
+    <span style="font-size:11px;color:var(--muted);margin-left:auto">Podés sobreescribir por SKU en la tabla →</span>
+  </div>`;
+
+  el.innerHTML = kpis + globalCtrl + `<div id="fsTableWrap"></div>`;
   renderFsTable();
 }
 
@@ -3940,23 +3954,6 @@ function renderFsTable() {
   else if (_fsFilter === 'bajo') filtered = items.filter(i => i.coverage_days != null && i.coverage_days >= 7 && i.coverage_days < 15);
   else if (_fsFilter === 'ok')   filtered = items.filter(i => i.coverage_days == null || i.coverage_days >= 15);
 
-  // ── Orden ──────────────────────────────────────────────────────────────────
-  const colMap = {
-    title:     i => (i.title || '').toLowerCase(),
-    available: i => i.stock_available ?? -1,
-    reserved:  i => i.stock_reserved  ?? -1,
-    transit:   i => i.stock_in_transit ?? -1,
-    sold:      i => i.units_sold_period ?? -1,
-    coverage:  i => i.coverage_days ?? 9999,
-    suggested: i => i.suggested_quantity ?? -1,
-  };
-  if (_fsSort.col && colMap[_fsSort.col]) {
-    filtered = [...filtered].sort((a, b) => {
-      const va = colMap[_fsSort.col](a), vb = colMap[_fsSort.col](b);
-      return va < vb ? -_fsSort.dir : va > vb ? _fsSort.dir : 0;
-    });
-  }
-
   // ── Semáforo ───────────────────────────────────────────────────────────────
   const coverageColor = d => {
     if (d == null) return 'var(--muted)';
@@ -3973,39 +3970,50 @@ function renderFsTable() {
   };
   const thLabel = (col, label, align) => `<th style="${thStyle(col, align)}" onclick="fsSortBy('${col}')">${label}${_fsSort.col===col ? (_fsSort.dir===1?' ↑':' ↓'):' <span style=\'opacity:.35\'>↕</span>'}</th>`;
 
+  const colMap = {
+    mla:       i => i.id,
+    title:     i => (i.title || '').toLowerCase(),
+    available: i => i.stock_available ?? -1,
+    total:     i => i.stock_total     ?? -1,
+    sold:      i => i.units_sold_period ?? -1,
+    coverage:  i => i.coverage_days ?? 9999,
+    suggested: i => i.suggested_quantity ?? -1,
+  };
+  if (_fsSort.col && colMap[_fsSort.col]) {
+    filtered = [...filtered].sort((a, b) => {
+      const va = colMap[_fsSort.col](a), vb = colMap[_fsSort.col](b);
+      return va < vb ? -_fsSort.dir : va > vb ? _fsSort.dir : 0;
+    });
+  }
+
   const rows = filtered.map(item => {
     const rowKey   = `${item.id}${item.variation_id ? '-'+item.variation_id : ''}`;
     const cov      = item.coverage_days;
     const covColor = coverageColor(cov);
-    const varBadge = item.variation_id
-      ? `<span style="font-size:10px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;padding:1px 5px;margin-left:5px;color:var(--muted)">SKU</span>`
-      : '';
+    const skuLabel = item.variation_id
+      ? (item.title.includes(' — ') ? item.title.split(' — ').slice(1).join(' — ') : String(item.variation_id))
+      : '—';
+    const cleanTitle = item.variation_id && item.title.includes(' — ')
+      ? item.title.split(' — ')[0]
+      : item.title;
 
     return `<tr>
       <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;white-space:nowrap">
-        <a href="https://articulo.mercadolibre.com.ar/${item.id}" target="_blank" style="color:var(--accent);text-decoration:none">${item.id}</a>
-        ${varBadge}
+        <a href="https://articulo.mercadolibre.com.ar/${item.id}" target="_blank" style="color:var(--accent);text-decoration:none;font-weight:600">${item.id}</a>
       </td>
-      <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${item.title}">${item.title}</td>
-      <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:13px;text-align:center;font-weight:700;color:#6366f1">${item.stock_available ?? '—'}</td>
-      <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;text-align:center;color:var(--muted)">${item.stock_reserved || 0}</td>
-      <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;text-align:center;color:#10b981">${item.stock_in_transit || 0}</td>
+      <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${cleanTitle}">${cleanTitle}</td>
+      <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:11px;color:var(--muted);max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${skuLabel}">${skuLabel}</td>
+      <td style="padding:8px 10px;border-bottom:1px solid var(--border);text-align:center">
+        <div style="font-size:13px;font-weight:700;color:#6366f1">${item.stock_available ?? '—'}</div>
+        <div style="font-size:10px;color:var(--muted);line-height:1.4">${item.stock_reserved ? item.stock_reserved+' res.' : ''}${item.stock_reserved && item.stock_in_transit ? ' · ' : ''}${item.stock_in_transit ? item.stock_in_transit+' trán.' : ''}</div>
+      </td>
+      <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:13px;text-align:center;font-weight:700;color:#8b5cf6">${item.stock_total ?? '—'}</td>
       <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;text-align:center">${item.units_sold_period}</td>
       <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:13px;text-align:center;font-weight:700;color:${covColor}">${cov != null ? cov+'d' : '—'}</td>
       <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;text-align:center">
         <div style="display:flex;align-items:center;gap:4px;justify-content:center">
-          <input type="number" min="1" id="cov-${rowKey}" value="${item.coverage_days_target || 30}"
-            style="width:48px;padding:3px 5px;border:1px solid var(--border);border-radius:6px;background:var(--surface2);color:var(--text);font-size:12px;text-align:center"
-            title="Días de cobertura objetivo"
-            onkeydown="if(event.key==='Enter') saveFullStockSuggested('${item.id}', '${item.variation_id || ''}')"
-          />
-          <span style="font-size:10px;color:var(--muted)">d</span>
-        </div>
-      </td>
-      <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;text-align:center">
-        <div style="display:flex;align-items:center;gap:4px;justify-content:center">
           <input type="number" min="0" id="sug-${rowKey}" value="${item.suggested_quantity ?? ''}" placeholder="auto"
-            style="width:56px;padding:3px 5px;border:1px solid var(--border);border-radius:6px;background:var(--surface2);color:var(--text);font-size:12px;text-align:center"
+            style="width:60px;padding:3px 6px;border:1px solid var(--border);border-radius:6px;background:var(--surface2);color:var(--text);font-size:12px;text-align:center"
             onkeydown="if(event.key==='Enter') saveFullStockSuggested('${item.id}', '${item.variation_id || ''}')"
           />
           <button id="btn-${rowKey}" onclick="saveFullStockSuggested('${item.id}', '${item.variation_id || ''}')"
@@ -4018,23 +4026,47 @@ function renderFsTable() {
   wrap.innerHTML = `<div style="overflow-x:auto">
     <table style="width:100%;border-collapse:collapse">
       <thead><tr style="background:var(--surface2)">
-        ${thLabel('title',    'MLA / Título', 'left')}
-        <th style="padding:8px 10px;border-bottom:1px solid var(--border)"></th>
+        ${thLabel('mla',      'MLA',           'left')}
+        ${thLabel('title',    'Título',        'left')}
+        <th style="padding:8px 10px;text-align:left;font-size:11px;font-weight:600;color:var(--muted);border-bottom:1px solid var(--border)">SKU / Variante</th>
         ${thLabel('available','Disponible')}
-        ${thLabel('reserved', 'Reservado')}
-        ${thLabel('transit',  'En tránsito')}
-        ${thLabel('sold',     'Vendidos ${period_days}d')}
+        ${thLabel('total',    'Stock total')}
+        ${thLabel('sold',     'Ventas ${period_days}d')}
         ${thLabel('coverage', 'Cobertura')}
-        <th style="padding:8px 10px;text-align:center;font-size:11px;font-weight:600;color:var(--muted);border-bottom:1px solid var(--border)">Días objetivo</th>
         ${thLabel('suggested','Sugerido a enviar')}
       </tr></thead>
-      <tbody>${rows || '<tr><td colspan="9" style="padding:30px;text-align:center;color:var(--muted)">Sin ítems para el filtro seleccionado</td></tr>'}</tbody>
+      <tbody>${rows || '<tr><td colspan="8" style="padding:30px;text-align:center;color:var(--muted)">Sin ítems para el filtro seleccionado</td></tr>'}</tbody>
     </table>
   </div>
   <div style="font-size:11px;color:var(--muted);margin-top:10px;padding:0 2px">
     🟢 Cobertura ≥30d &nbsp;|&nbsp; 🟡 15–29d &nbsp;|&nbsp; 🟠 7–14d &nbsp;|&nbsp; 🔴 &lt;7d &nbsp;·&nbsp;
-    Hacé click en los KPIs para filtrar · Click en columnas para ordenar · "Días objetivo" y "Sugerido" son editables → ✓ para guardar
+    Ventas y cobertura calculadas por SKU · KPIs clickeables para filtrar · Headers clickeables para ordenar
   </div>`;
+}
+async function saveGlobalTargetDays() {
+  const input = document.getElementById('fsGlobalDays');
+  const msg   = document.getElementById('fsGlobalSaveMsg');
+  if (!input) return;
+  const val = parseInt(input.value) || 30;
+  const client = getActiveClient();
+  if (!client) return;
+  msg.textContent = '...';
+  try {
+    const r = await apiCall('PUT', '/api/logistica/full-stock-global', {
+      client_id: client.id,
+      coverage_days_target: val
+    });
+    if (r?.ok) {
+      msg.textContent = '✅ Guardado';
+      // Actualizar todos los items con el nuevo global si no tienen override propio
+      if (_fullStockData) {
+        _fullStockData.global_target_days = val;
+        _fullStockData.items.forEach(i => { i.coverage_days_target = val; });
+        renderFsTable();
+      }
+      setTimeout(() => { msg.textContent = ''; }, 2000);
+    } else { msg.textContent = '❌ Error'; }
+  } catch(e) { msg.textContent = '❌ Error'; }
 }
 
 async function saveFullStockSuggested(itemId, variationId) {
