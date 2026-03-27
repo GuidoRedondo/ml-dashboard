@@ -3818,9 +3818,38 @@ async function descargarTemplateExcel() {
   const clientId = document.getElementById('reporteClientSel')?.value;
   const period = getReportePeriod();
   if (!clientId || !period) { showToast('⚠ Seleccioná cliente y mes primero'); return; }
-  const sid = getSession() || '';
-  const url = `${SERVER_URL}/api/reporte/template-excel?client_id=${clientId}&date_from=${period.date_from}&date_to=${period.date_to}&session_id=${sid}`;
-  window.location.href = url;
+
+  showToast('⏳ Generando template...');
+  try {
+    const data = await apiCall('GET', `/api/reporte/items-vendidos?client_id=${clientId}&date_from=${period.date_from}&date_to=${period.date_to}`);
+    if (!data) return;
+
+    const client = allClients.find(c => String(c.id) === String(clientId));
+    const clientName = client?.name || 'Cliente';
+    const XLSX = window.XLSX;
+
+    const wsData = [
+      [`PLANILLA DE COSTOS — ${clientName} | ${period.date_from} → ${period.date_to}`],
+      ["⚠  Completá la columna 'Costo Unitario (ARS)' — celdas en amarillo. Guardá y subí el archivo al dashboard."],
+      ['MLA', 'Descripción', 'Costo Unitario (ARS)', 'Unidades vendidas', 'Facturación (ARS)', 'Notas'],
+      ...(data.items || []).map(i => [
+        i.mla_id,
+        i.title,
+        i.costo_unit || '',
+        i.units,
+        Math.round(i.revenue),
+        i.notas || '',
+      ])
+    ];
+
+    const wb = XLSX.utils.book_new();
+    const ws = XLSX.utils.aoa_to_sheet(wsData);
+    ws['!cols'] = [{ wch: 18 }, { wch: 50 }, { wch: 22 }, { wch: 18 }, { wch: 20 }, { wch: 25 }];
+    ws['!freeze'] = { xSplit: 0, ySplit: 3 };
+    XLSX.utils.book_append_sheet(wb, ws, 'Costos');
+    XLSX.writeFile(wb, `Costos_${clientName.replace(/\s+/g,'_')}_${period.mes}.xlsx`);
+    showToast('✅ Template descargado');
+  } catch(e) { showToast(`❌ Error: ${e.message}`); }
 }
 
 async function importarCostosExcel(input) {
@@ -3828,24 +3857,43 @@ async function importarCostosExcel(input) {
   if (!clientId) { showToast('⚠ Seleccioná un cliente primero'); input.value=''; return; }
   const file = input.files[0];
   if (!file) return;
-  showToast('⏳ Importando costos...');
-  const formData = new FormData();
-  formData.append('file', file);
-  formData.append('client_id', clientId);
+
+  showToast('⏳ Leyendo archivo...');
   try {
-    const sid = getSession() || '';
-    const r = await fetch(`${SERVER_URL}/api/reporte/importar-costos?session_id=${sid}`, {
-      method: 'POST',
-      headers: { 'x-session-id': sid },
-      body: formData,
-      credentials: 'include'
+    const buffer = await file.arrayBuffer();
+    const XLSX = window.XLSX;
+    const wb = XLSX.read(buffer, { type: 'array' });
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+
+    // Find header row (contains 'MLA')
+    let headerRow = -1;
+    for (let i = 0; i < Math.min(rows.length, 5); i++) {
+      if (String(rows[i][0]).toUpperCase().includes('MLA') && rows[i].length > 2) {
+        headerRow = i; break;
+      }
+    }
+    if (headerRow === -1) { showToast('❌ No se encontró la fila de encabezados'); input.value=''; return; }
+
+    const costos = [];
+    rows.slice(headerRow + 1).forEach(row => {
+      const mla_id = String(row[0]||'').trim();
+      const title  = String(row[1]||'').trim();
+      const costo  = parseFloat(String(row[2]||'').replace(/[,$\s]/g,''))||0;
+      const notas  = String(row[5]||'').trim();
+      if (mla_id.startsWith('MLA') && costo > 0) {
+        costos.push({ mla_id, title, costo_unit: costo, notas });
+      }
     });
-    const data = await r.json();
-    if (data.ok) {
-      showToast(`✅ ${data.imported} costos importados`);
+
+    if (!costos.length) { showToast('❌ No se encontraron costos válidos'); input.value=''; return; }
+
+    const r = await apiCall('POST', '/api/reporte/costos', { client_id: clientId, costos });
+    if (r?.ok) {
+      showToast(`✅ ${r.saved} costos importados`);
       await loadReporteItems();
     } else {
-      showToast(`❌ Error: ${data.error}`);
+      showToast(`❌ Error al guardar`);
     }
   } catch(e) { showToast(`❌ Error: ${e.message}`); }
   input.value = '';
