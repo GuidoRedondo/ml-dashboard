@@ -3828,6 +3828,7 @@ let _logisticaActiveTab = 'general';
 let _fullStockData = null;
 let _fsSort = { col: null, dir: 1 };
 let _fsFilter = 'todos';
+let _fsDays = 30;
 
 function switchLogisticaTab(tab) {
   _logisticaActiveTab = tab;
@@ -3848,6 +3849,7 @@ function refreshLogisticaTab() {
     _fullStockData = null;
     _fsSort = { col: null, dir: 1 };
     _fsFilter = 'todos';
+    _fsDays = 30;
     loadFullStock();
   } else {
     loadLogistica();
@@ -3863,7 +3865,8 @@ async function loadFullStock() {
       el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">Sin cuenta conectada</div>';
       return;
     }
-    const data = await apiCall('GET', `/api/logistica/full-stock?uid=${client.ml_user_id}&client_id=${client.id}&days=30`);
+    const days = _fsDays || 30;
+    const data = await apiCall('GET', `/api/logistica/full-stock?uid=${client.ml_user_id}&client_id=${client.id}&days=${days}`);
     if (!data) { el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">Error al cargar datos</div>'; return; }
     _fullStockData = data;
     renderFullStock(data, client);
@@ -3908,19 +3911,26 @@ function renderFullStock(data, client) {
     </div>`).join('')}
   </div>`;
 
-  // ── Control global de días de cobertura ───────────────────────────────────
-  const globalCtrl = `<div style="display:flex;align-items:center;gap:10px;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px 16px;margin-bottom:16px">
-    <span style="font-size:13px;font-weight:600;font-family:var(--font-b)">📅 Días de cobertura objetivo (toda la cuenta):</span>
+  // ── Barra de controles: período de ventas + días de cobertura objetivo ──────
+  const periodBtns = [7, 14, 30, 60].map(d =>
+    `<button onclick="setFsDays(${d})"
+      style="padding:5px 12px;border:1px solid ${_fsDays===d ? 'var(--accent)' : 'var(--border)'};border-radius:6px;
+             background:${_fsDays===d ? 'var(--accent)' : 'var(--surface2)'};color:${_fsDays===d ? '#fff' : 'var(--text)'};
+             font-size:12px;font-weight:${_fsDays===d ? '700' : '400'};cursor:pointer">${d}d</button>`
+  ).join('');
+
+  const globalCtrl = `<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px 16px;margin-bottom:16px">
+    <span style="font-size:12px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em">Período ventas:</span>
+    <div style="display:flex;gap:6px">${periodBtns}</div>
+    <div style="width:1px;height:24px;background:var(--border);margin:0 4px"></div>
+    <span style="font-size:12px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em">📅 Días objetivo:</span>
     <input type="number" min="1" max="365" id="fsGlobalDays" value="${global_target_days || 30}"
-      style="width:60px;padding:5px 8px;border:1px solid var(--border);border-radius:6px;background:var(--surface2);color:var(--text);font-size:14px;font-weight:700;text-align:center"
+      style="width:56px;padding:4px 8px;border:1px solid var(--border);border-radius:6px;background:var(--surface2);color:var(--text);font-size:14px;font-weight:700;text-align:center"
     />
     <span style="font-size:12px;color:var(--muted)">días</span>
     <button onclick="saveGlobalTargetDays()"
-      style="padding:5px 14px;border:none;border-radius:6px;background:var(--accent);color:#fff;font-size:12px;font-weight:600;cursor:pointer">
-      Guardar
-    </button>
+      style="padding:5px 14px;border:none;border-radius:6px;background:var(--accent);color:#fff;font-size:12px;font-weight:600;cursor:pointer">Guardar</button>
     <span id="fsGlobalSaveMsg" style="font-size:12px;color:var(--muted)"></span>
-    <span style="font-size:11px;color:var(--muted);margin-left:auto">Podés sobreescribir por SKU en la tabla →</span>
   </div>`;
 
   el.innerHTML = kpis + globalCtrl + `<div id="fsTableWrap"></div>`;
@@ -3976,6 +3986,7 @@ function renderFsTable() {
     available: i => i.stock_available ?? -1,
     total:     i => i.stock_total     ?? -1,
     sold:      i => i.units_sold_period ?? -1,
+    ritmo:     i => i.daily_rate ?? -1,
     coverage:  i => i.coverage_days ?? 9999,
     suggested: i => i.suggested_quantity ?? -1,
   };
@@ -3986,10 +3997,19 @@ function renderFsTable() {
     });
   }
 
+  const globalTarget = _fullStockData?.global_target_days || 30;
+
   const rows = filtered.map(item => {
-    const rowKey   = `${item.id}${item.variation_id ? '-'+item.variation_id : ''}`;
-    const cov      = item.coverage_days;
-    const covColor = coverageColor(cov);
+    const rowKey     = `${item.id}${item.variation_id ? '-'+item.variation_id : ''}`;
+    const cov        = item.coverage_days;
+    const covColor   = coverageColor(cov);
+    const ritmo      = item.daily_rate || 0;
+    const ritmoText  = ritmo > 0 ? ritmo.toFixed(2) : '—';
+    // Sugerido = ritmo × días_objetivo − stock_disponible (mínimo 0)
+    const targetDays = globalTarget;
+    const autoSug    = ritmo > 0 ? Math.max(0, Math.round(ritmo * targetDays - (item.stock_available || 0))) : null;
+    const sugVal     = item.suggested_quantity != null ? item.suggested_quantity : autoSug;
+
     const skuLabel = item.variation_id
       ? (item.title.includes(' — ') ? item.title.split(' — ').slice(1).join(' — ') : String(item.variation_id))
       : '—';
@@ -4001,18 +4021,21 @@ function renderFsTable() {
       <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;white-space:nowrap">
         <a href="https://articulo.mercadolibre.com.ar/${item.id}" target="_blank" style="color:var(--accent);text-decoration:none;font-weight:600">${item.id}</a>
       </td>
-      <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${cleanTitle}">${cleanTitle}</td>
-      <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:11px;color:var(--muted);max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${skuLabel}">${skuLabel}</td>
+      <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${cleanTitle}">${cleanTitle}</td>
+      <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:11px;color:var(--muted);max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${skuLabel}">${skuLabel}</td>
       <td style="padding:8px 10px;border-bottom:1px solid var(--border);text-align:center">
         <div style="font-size:13px;font-weight:700;color:#6366f1">${item.stock_available ?? '—'}</div>
         <div style="font-size:10px;color:var(--muted);line-height:1.4">${item.stock_reserved ? item.stock_reserved+' res.' : ''}${item.stock_reserved && item.stock_in_transit ? ' · ' : ''}${item.stock_in_transit ? item.stock_in_transit+' trán.' : ''}</div>
       </td>
       <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:13px;text-align:center;font-weight:700;color:#8b5cf6">${item.stock_total ?? '—'}</td>
       <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;text-align:center">${item.units_sold_period}</td>
+      <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:13px;text-align:center;font-weight:600;color:var(--text)">${ritmoText}</td>
       <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:13px;text-align:center;font-weight:700;color:${covColor}">${cov != null ? cov+'d' : '—'}</td>
       <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;text-align:center">
         <div style="display:flex;align-items:center;gap:4px;justify-content:center">
-          <input type="number" min="0" id="sug-${rowKey}" value="${item.suggested_quantity ?? ''}" placeholder="auto"
+          <input type="number" min="0" id="sug-${rowKey}"
+            value="${item.suggested_quantity != null ? item.suggested_quantity : ''}"
+            placeholder="${autoSug != null ? autoSug : '—'}"
             style="width:60px;padding:3px 6px;border:1px solid var(--border);border-radius:6px;background:var(--surface2);color:var(--text);font-size:12px;text-align:center"
             onkeydown="if(event.key==='Enter') saveFullStockSuggested('${item.id}', '${item.variation_id || ''}')"
           />
@@ -4026,23 +4049,30 @@ function renderFsTable() {
   wrap.innerHTML = `<div style="overflow-x:auto">
     <table style="width:100%;border-collapse:collapse">
       <thead><tr style="background:var(--surface2)">
-        ${thLabel('mla',      'MLA',           'left')}
-        ${thLabel('title',    'Título',        'left')}
+        ${thLabel('mla',      'MLA',              'left')}
+        ${thLabel('title',    'Título',           'left')}
         <th style="padding:8px 10px;text-align:left;font-size:11px;font-weight:600;color:var(--muted);border-bottom:1px solid var(--border)">SKU / Variante</th>
         ${thLabel('available','Disponible')}
         ${thLabel('total',    'Stock total')}
         ${thLabel('sold',     'Ventas ${period_days}d')}
+        ${thLabel('ritmo',    'Ritmo/día')}
         ${thLabel('coverage', 'Cobertura')}
         ${thLabel('suggested','Sugerido a enviar')}
       </tr></thead>
-      <tbody>${rows || '<tr><td colspan="8" style="padding:30px;text-align:center;color:var(--muted)">Sin ítems para el filtro seleccionado</td></tr>'}</tbody>
+      <tbody>${rows || '<tr><td colspan="9" style="padding:30px;text-align:center;color:var(--muted)">Sin ítems para el filtro seleccionado</td></tr>'}</tbody>
     </table>
   </div>
   <div style="font-size:11px;color:var(--muted);margin-top:10px;padding:0 2px">
     🟢 Cobertura ≥30d &nbsp;|&nbsp; 🟡 15–29d &nbsp;|&nbsp; 🟠 7–14d &nbsp;|&nbsp; 🔴 &lt;7d &nbsp;·&nbsp;
-    Ventas y cobertura calculadas por SKU · KPIs clickeables para filtrar · Headers clickeables para ordenar
+    Sugerido = ritmo/día × días objetivo − stock disponible &nbsp;·&nbsp; Editá el campo para override manual
   </div>`;
 }
+async function setFsDays(days) {
+  _fsDays = days;
+  _fullStockData = null;
+  loadFullStock();
+}
+
 async function saveGlobalTargetDays() {
   const input = document.getElementById('fsGlobalDays');
   const msg   = document.getElementById('fsGlobalSaveMsg');
@@ -5095,4 +5125,3 @@ window.addEventListener('DOMContentLoaded', () => {
 </script>
 </body>
 </html>
-
