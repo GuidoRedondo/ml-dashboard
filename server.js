@@ -1937,20 +1937,24 @@ app.get('/api/debug/billing', requireAuth, async (req, res) => {
     const uid = clientRes.rows[0]?.ml_user_id;
 
     const results = {};
-
-    // Try different billing endpoints
     const endpoints = [
-      `/users/${uid}/expenses?date_from=${date_from}&date_to=${date_to}`,
-      `/billing/integration/periods?user_id=${uid}`,
-      `/users/${uid}/billing?date_from=${date_from}&date_to=${date_to}`,
-      `/logistics/fulfillment/billing/charges?seller_id=${uid}&date_from=${date_from}&date_to=${date_to}`,
-      `/users/${uid}/mercadoenvios/shipment_costs?date_from=${date_from}&date_to=${date_to}`,
+      `/billing/integration/periods?user_id=${uid}&group=fulfillment`,
+      `/billing/integration/periods?user_id=${uid}&group=shipping`,
+      `/billing/integration/periods?user_id=${uid}&group=marketplace`,
+      `/users/${uid}/account/balance/operations?type=shipping&date_from=${date_from}&date_to=${date_to}&limit=10`,
+      `/users/${uid}/account/balance/operations?date_from=${date_from}&date_to=${date_to}&limit=10`,
+      `/logistics/fulfillment/users/${uid}/billing/charges?date_from=${date_from}&date_to=${date_to}&limit=5`,
+      `/users/${uid}/activities?type=shipping&date_from=${date_from}&date_to=${date_to}&limit=5`,
     ];
 
     for (const ep of endpoints) {
       try {
         const r = await fetch(`${ML_API}${ep}`, { headers }).then(r => r.json());
-        results[ep] = { status: r.error || r.code || 'ok', keys: Object.keys(r||{}).slice(0,10), sample: JSON.stringify(r).slice(0,200) };
+        results[ep] = { 
+          status: r.error || r.status || 'ok', 
+          keys: Object.keys(r||{}).slice(0,10), 
+          sample: JSON.stringify(r).slice(0,300) 
+        };
       } catch(e) { results[ep] = { error: e.message }; }
     }
 
