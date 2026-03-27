@@ -743,11 +743,23 @@ tbody td {
 
     <!-- LOGÍSTICA -->
     <div class="page" id="page-logistica">
-      <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px;flex-wrap:wrap">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap">
         <h2 style="margin:0;font-family:var(--font-b);flex:1">🚚 Logística</h2>
-        <button class="sync-btn" onclick="loadLogistica()">🔄 Actualizar</button>
+        <button class="sync-btn" id="logisticaRefreshBtn" onclick="refreshLogisticaTab()">🔄 Actualizar</button>
+      </div>
+      <!-- Tabs -->
+      <div style="display:flex;gap:0;border-bottom:2px solid var(--border);margin-bottom:20px">
+        <button id="tab-logistica-general" onclick="switchLogisticaTab('general')"
+          style="padding:8px 18px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--accent);border-bottom:2px solid var(--accent);margin-bottom:-2px;font-family:var(--font-b)">
+          📦 General
+        </button>
+        <button id="tab-logistica-fullstock" onclick="switchLogisticaTab('fullstock')"
+          style="padding:8px 18px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-2px;font-family:var(--font-b)">
+          🏭 Stock FULL
+        </button>
       </div>
       <div id="logisticaContent"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Cargando...</div></div>
+      <div id="fullStockContent" style="display:none"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Seleccioná la pestaña Stock FULL para cargar</div></div>
     </div>
 
     <!-- COMPETENCIA -->
@@ -3810,6 +3822,179 @@ function renderLogistica(data) {
 
   el.innerHTML = kpis + flexCard + fullCard + prepCard + table;
 }
+
+// ── STOCK FULL ────────────────────────────────────────────────────────────────
+let _logisticaActiveTab = 'general';
+let _fullStockData = null;
+
+function switchLogisticaTab(tab) {
+  _logisticaActiveTab = tab;
+  const tabs = { general: 'logisticaContent', fullstock: 'fullStockContent' };
+  Object.keys(tabs).forEach(t => {
+    document.getElementById(tabs[t]).style.display = t === tab ? '' : 'none';
+    const btn = document.getElementById(`tab-logistica-${t}`);
+    if (btn) {
+      btn.style.color       = t === tab ? 'var(--accent)' : 'var(--muted)';
+      btn.style.borderBottom = t === tab ? '2px solid var(--accent)' : '2px solid transparent';
+    }
+  });
+  if (tab === 'fullstock' && !_fullStockData) loadFullStock();
+}
+
+function refreshLogisticaTab() {
+  if (_logisticaActiveTab === 'fullstock') {
+    _fullStockData = null;
+    loadFullStock();
+  } else {
+    loadLogistica();
+  }
+}
+
+async function loadFullStock() {
+  const el = document.getElementById('fullStockContent');
+  el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">⏳ Consultando stock FULL en ML...</div>';
+  try {
+    const client = getActiveClient();
+    if (!client || !client.ml_user_id) {
+      el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">Sin cuenta conectada</div>';
+      return;
+    }
+    const days = 30;
+    const data = await apiCall('GET', `/api/logistica/full-stock?uid=${client.ml_user_id}&client_id=${client.id}&days=${days}`);
+    if (!data) { el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">Error al cargar datos</div>'; return; }
+    _fullStockData = data;
+    renderFullStock(data, client);
+  } catch(e) {
+    el.innerHTML = `<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Error: ${e.message}</div>`;
+  }
+}
+
+function renderFullStock(data, client) {
+  const el = document.getElementById('fullStockContent');
+  const { items, period_days } = data;
+
+  if (!items || items.length === 0) {
+    el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">No hay publicaciones en Envíos FULL activas.</div>';
+    return;
+  }
+
+  // ── KPIs resumen ───────────────────────────────────────────────────────────
+  const totalStock   = items.reduce((s, i) => s + (i.stock_available || 0), 0);
+  const totalReserv  = items.reduce((s, i) => s + (i.stock_reserved  || 0), 0);
+  const totalTransit = items.reduce((s, i) => s + (i.stock_in_transit|| 0), 0);
+  const lowStock     = items.filter(i => i.coverage_days != null && i.coverage_days < 15).length;
+
+  const kpis = `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:12px;margin-bottom:24px">
+    ${[
+      ['Ítems FULL', items.length, 'var(--text)'],
+      ['Stock disponible', totalStock, '#6366f1'],
+      ['Reservado', totalReserv, '#d97706'],
+      ['En tránsito', totalTransit, '#10b981'],
+      ['Cobertura < 15d', lowStock, lowStock > 0 ? '#dc2626' : 'var(--muted)'],
+    ].map(([l,v,c]) => `<div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px 14px">
+      <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em">${l}</div>
+      <div style="font-size:22px;font-weight:700;font-family:var(--font-b);color:${c};margin-top:4px">${v}</div>
+    </div>`).join('')}
+  </div>`;
+
+  // ── Tabla ──────────────────────────────────────────────────────────────────
+  const coverageColor = d => {
+    if (d == null) return 'var(--muted)';
+    if (d < 7)  return '#dc2626';
+    if (d < 15) return '#d97706';
+    if (d < 30) return '#ca8a04';
+    return '#16a34a';
+  };
+
+  const rows = items.map(item => {
+    const cov = item.coverage_days;
+    const covColor = coverageColor(cov);
+    const covText  = cov != null ? `${cov}d` : '—';
+    const sugQty   = item.suggested_quantity;
+
+    return `<tr id="row-${item.id}${item.variation_id ? '-'+item.variation_id : ''}">
+      <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px">
+        <a href="https://articulo.mercadolibre.com.ar/${item.id}" target="_blank" style="color:var(--accent);text-decoration:none">${item.id}</a>
+      </td>
+      <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${item.title}">${item.title}</td>
+      <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:13px;text-align:center;font-weight:700;color:#6366f1">${item.stock_available ?? '—'}</td>
+      <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;text-align:center;color:var(--muted)">${item.stock_reserved || 0}</td>
+      <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;text-align:center;color:#10b981">${item.stock_in_transit || 0}</td>
+      <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;text-align:center">${item.units_sold_period}</td>
+      <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:13px;text-align:center;font-weight:700;color:${covColor}">${covText}</td>
+      <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;text-align:center">
+        <div style="display:flex;align-items:center;gap:6px;justify-content:center">
+          <input type="number" min="0"
+            id="sug-${item.id}${item.variation_id ? '-'+item.variation_id : ''}"
+            value="${sugQty ?? ''}"
+            placeholder="auto"
+            style="width:64px;padding:4px 6px;border:1px solid var(--border);border-radius:6px;background:var(--surface2);color:var(--text);font-size:12px;text-align:center"
+            onkeydown="if(event.key==='Enter') saveFullStockSuggested('${item.id}', ${item.variation_id ? "'"+item.variation_id+"'" : 'null'})"
+          />
+          <button onclick="saveFullStockSuggested('${item.id}', ${item.variation_id ? "'"+item.variation_id+"'" : 'null'})"
+            style="padding:4px 8px;border:none;border-radius:6px;background:var(--accent);color:#fff;font-size:11px;cursor:pointer;font-weight:600">✓</button>
+        </div>
+      </td>
+    </tr>`;
+  }).join('');
+
+  const table = `<div style="overflow-x:auto">
+    <table style="width:100%;border-collapse:collapse">
+      <thead><tr style="background:var(--surface2)">
+        <th style="padding:8px 10px;text-align:left;font-size:11px;font-weight:600;color:var(--muted);border-bottom:1px solid var(--border)">MLA</th>
+        <th style="padding:8px 10px;text-align:left;font-size:11px;font-weight:600;color:var(--muted);border-bottom:1px solid var(--border)">Título</th>
+        <th style="padding:8px 10px;text-align:center;font-size:11px;font-weight:600;color:var(--muted);border-bottom:1px solid var(--border)">Disponible</th>
+        <th style="padding:8px 10px;text-align:center;font-size:11px;font-weight:600;color:var(--muted);border-bottom:1px solid var(--border)">Reservado</th>
+        <th style="padding:8px 10px;text-align:center;font-size:11px;font-weight:600;color:var(--muted);border-bottom:1px solid var(--border)">En tránsito</th>
+        <th style="padding:8px 10px;text-align:center;font-size:11px;font-weight:600;color:var(--muted);border-bottom:1px solid var(--border)">Vendidos ${period_days}d</th>
+        <th style="padding:8px 10px;text-align:center;font-size:11px;font-weight:600;color:var(--muted);border-bottom:1px solid var(--border)">Cobertura</th>
+        <th style="padding:8px 10px;text-align:center;font-size:11px;font-weight:600;color:var(--muted);border-bottom:1px solid var(--border)">Sugerido a enviar</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+  </div>
+  <div style="font-size:11px;color:var(--muted);margin-top:10px;padding:0 2px">
+    🟢 Cobertura &ge;30d &nbsp;|&nbsp; 🟡 15–29d &nbsp;|&nbsp; 🟠 7–14d &nbsp;|&nbsp; 🔴 &lt;7d &nbsp;&nbsp;·&nbsp;&nbsp; "Sugerido" = unidades para llegar a 30d de cobertura. Editá el valor y presioná ✓ para guardar.
+  </div>`;
+
+  el.innerHTML = kpis + table;
+}
+
+async function saveFullStockSuggested(itemId, variationId) {
+  const key = `sug-${itemId}${variationId ? '-'+variationId : ''}`;
+  const input = document.getElementById(key);
+  if (!input) return;
+  const val = input.value.trim();
+  const client = getActiveClient();
+  if (!client) return;
+
+  const btn = input.nextElementSibling;
+  const origText = btn.textContent;
+  btn.textContent = '...'; btn.disabled = true;
+
+  try {
+    const r = await apiCall('PUT', `/api/logistica/full-stock/${itemId}`, {
+      client_id: client.id,
+      suggested_quantity: val !== '' ? parseInt(val) : null,
+      coverage_days_target: 30,
+      notes: ''
+    });
+    if (r?.ok) {
+      btn.textContent = '✅'; btn.style.background = '#16a34a';
+      setTimeout(() => { btn.textContent = origText; btn.style.background = 'var(--accent)'; btn.disabled = false; }, 1500);
+      // Actualizar dato local
+      if (_fullStockData) {
+        const item = _fullStockData.items.find(i => i.id === itemId);
+        if (item) item.suggested_quantity = val !== '' ? parseInt(val) : null;
+      }
+    } else {
+      btn.textContent = '❌'; setTimeout(() => { btn.textContent = origText; btn.disabled = false; }, 1500);
+    }
+  } catch(e) {
+    btn.textContent = '❌'; setTimeout(() => { btn.textContent = origText; btn.disabled = false; }, 1500);
+  }
+}
+
 
 // ── REPORTE FINANCIERO ────────────────────────────────────────────────────────
 let _reporteItems = [], _reportePyl = null;
