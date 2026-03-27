@@ -116,6 +116,16 @@ async function initDB() {
       generated_at TIMESTAMP DEFAULT NOW(),
       UNIQUE(client_id, mes)
     );
+    CREATE TABLE IF NOT EXISTS full_stock_config (
+      id                SERIAL PRIMARY KEY,
+      client_id         INTEGER NOT NULL REFERENCES clients(id),
+      item_id           VARCHAR(30) NOT NULL,
+      suggested_quantity INTEGER DEFAULT NULL,
+      coverage_days_target INTEGER DEFAULT 30,
+      notes             TEXT DEFAULT '',
+      updated_at        TIMESTAMP DEFAULT NOW(),
+      UNIQUE(client_id, item_id)
+    );
   `);
 
   // Create default admin if not exists (password: admin123 - change after first login)
@@ -2104,6 +2114,140 @@ app.get('/api/logistica', requireAuth, async (req, res) => {
     });
   } catch(e) { console.error('[LOGISTICA]', e.message); res.status(500).json({ error: e.message }); }
 });
+
+// ── STOCK FULL ────────────────────────────────────────────────────────────────
+app.get('/api/logistica/full-stock', requireAuth, async (req, res) => {
+  try {
+    const clientId = parseInt(req.query.client_id);
+    const uid      = req.query.uid;
+    const days     = parseInt(req.query.days) || 30;
+    const token    = await getClientToken(clientId);
+    if (!token) return res.status(403).json({ error: 'Sin token' });
+    const headers  = { 'Authorization': `Bearer ${token}` };
+
+    // ── 1. Ítems FULL activos ────────────────────────────────────────────────
+    let allIds = [], offset = 0;
+    while (true) {
+      const r = await fetch(`${ML_API}/users/${uid}/items/search?status=active&limit=100&offset=${offset}`, { headers }).then(r => r.json());
+      const ids = r.results || [];
+      allIds = allIds.concat(ids);
+      if (ids.length < 100 || allIds.length >= (r.paging?.total || 0)) break;
+      offset += 100;
+      if (offset > 2000) break;
+    }
+
+    // ── 2. Filtrar solo FULL y obtener inventory_id ──────────────────────────
+    const fullItems = [];
+    for (let i = 0; i < allIds.length; i += 20) {
+      const batch = allIds.slice(i, i + 20);
+      try {
+        const data = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,title,price,shipping,inventory_id,variations`, { headers }).then(r => r.json());
+        (Array.isArray(data) ? data : []).forEach(r => {
+          if (r.code !== 200 || !r.body) return;
+          const b = r.body;
+          if ((b.shipping?.logistic_type || '') !== 'fulfillment') return;
+          if (b.inventory_id) {
+            fullItems.push({ id: b.id, title: b.title, price: b.price, inventory_id: b.inventory_id, variation_id: null });
+          } else if (b.variations?.length) {
+            b.variations.forEach(v => {
+              if (!v.inventory_id) return;
+              const varName = (v.attribute_combinations || []).map(a => a.value_name).join(' / ') || `Var ${v.id}`;
+              fullItems.push({ id: b.id, title: `${b.title} — ${varName}`, price: v.price || b.price, inventory_id: v.inventory_id, variation_id: v.id });
+            });
+          }
+        });
+      } catch(e) {}
+    }
+
+    // ── 3. Stock FULL por inventory_id ───────────────────────────────────────
+    const stockResults = await Promise.all(
+      fullItems.map(async item => {
+        try {
+          const s = await fetch(`${ML_API}/inventories/${item.inventory_id}/stock/fulfillment`, { headers }).then(r => r.json());
+          return {
+            ...item,
+            stock_available:  s.available_quantity ?? 0,
+            stock_reserved:   s.not_available_quantity?.reserved ?? 0,
+            stock_damaged:    s.not_available_quantity?.damaged  ?? 0,
+            stock_in_transit: s.in_transit?.quantity ?? 0,
+          };
+        } catch(e) {
+          return { ...item, stock_available: null, stock_reserved: 0, stock_damaged: 0, stock_in_transit: 0 };
+        }
+      })
+    );
+
+    // ── 4. Ventas últimos N días ─────────────────────────────────────────────
+    const now = new Date();
+    const dateFrom = new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
+    const fmt = d => d.toISOString().slice(0, 19) + '.000-00:00';
+    const { orders } = await fetchAllOrders(uid, headers, fmt(dateFrom), fmt(now));
+    const salesByItem = {};
+    orders.forEach(order => {
+      (order.order_items || []).forEach(oi => {
+        const id = oi.item?.id;
+        if (!id) return;
+        salesByItem[id] = (salesByItem[id] || 0) + (oi.quantity || 0);
+      });
+    });
+
+    // ── 5. Config guardada ───────────────────────────────────────────────────
+    const { rows: configs } = await pool.query(
+      'SELECT item_id, suggested_quantity, coverage_days_target, notes FROM full_stock_config WHERE client_id = $1',
+      [clientId]
+    );
+    const configMap = {};
+    configs.forEach(c => { configMap[c.item_id] = c; });
+
+    // ── 6. Armar respuesta ───────────────────────────────────────────────────
+    const result = stockResults.map(item => {
+      const unitsSold  = salesByItem[item.id] || 0;
+      const dailyRate  = unitsSold / days;
+      const coverage   = dailyRate > 0 && item.stock_available != null ? Math.round(item.stock_available / dailyRate) : null;
+      const cfg        = configMap[item.id] || {};
+      const targetDays = cfg.coverage_days_target || 30;
+      const suggested  = cfg.suggested_quantity != null
+        ? cfg.suggested_quantity
+        : (dailyRate > 0 ? Math.max(0, Math.round(dailyRate * targetDays - (item.stock_available || 0))) : null);
+      return {
+        ...item,
+        units_sold_period: unitsSold,
+        daily_rate:        parseFloat(dailyRate.toFixed(2)),
+        coverage_days:     coverage,
+        coverage_days_target: targetDays,
+        suggested_quantity: suggested,
+        notes:             cfg.notes || '',
+      };
+    });
+
+    res.json({ items: result, period_days: days });
+  } catch(e) {
+    console.error('[FULL_STOCK]', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.put('/api/logistica/full-stock/:item_id', requireAuth, async (req, res) => {
+  try {
+    const { item_id } = req.params;
+    const { client_id, suggested_quantity, coverage_days_target, notes } = req.body;
+    if (!client_id) return res.status(400).json({ error: 'client_id requerido' });
+    await pool.query(`
+      INSERT INTO full_stock_config (client_id, item_id, suggested_quantity, coverage_days_target, notes, updated_at)
+      VALUES ($1, $2, $3, $4, $5, NOW())
+      ON CONFLICT (client_id, item_id) DO UPDATE
+        SET suggested_quantity   = EXCLUDED.suggested_quantity,
+            coverage_days_target = EXCLUDED.coverage_days_target,
+            notes                = EXCLUDED.notes,
+            updated_at           = NOW()
+    `, [client_id, item_id, suggested_quantity ?? null, coverage_days_target ?? 30, notes ?? '']);
+    res.json({ ok: true });
+  } catch(e) {
+    console.error('[FULL_STOCK_PUT]', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 
 // ── COMPETENCIA ───────────────────────────────────────────────────────────────
 // ── ANÁLISIS DE PUBLICACIÓN COMPETIDOR ───────────────────────────────────────
