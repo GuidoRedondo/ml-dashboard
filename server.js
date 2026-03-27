@@ -87,6 +87,37 @@ async function initDB() {
     );
   `);
 
+  // Product costs table
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS product_costs (
+      id          SERIAL PRIMARY KEY,
+      client_id   INTEGER NOT NULL REFERENCES clients(id),
+      mla_id      VARCHAR(20) NOT NULL,
+      title       TEXT,
+      costo_unit  NUMERIC(14,2) NOT NULL DEFAULT 0,
+      notas       TEXT,
+      updated_at  TIMESTAMP DEFAULT NOW(),
+      UNIQUE(client_id, mla_id)
+    );
+    CREATE TABLE IF NOT EXISTS gastos_fijos (
+      id          SERIAL PRIMARY KEY,
+      client_id   INTEGER NOT NULL REFERENCES clients(id),
+      mes         DATE NOT NULL,
+      concepto    VARCHAR(200) NOT NULL,
+      monto       NUMERIC(14,2) NOT NULL DEFAULT 0,
+      categoria   VARCHAR(50) DEFAULT 'general',
+      UNIQUE(client_id, mes, concepto)
+    );
+    CREATE TABLE IF NOT EXISTS reporte_financiero (
+      id          SERIAL PRIMARY KEY,
+      client_id   INTEGER NOT NULL REFERENCES clients(id),
+      mes         DATE NOT NULL,
+      data        JSONB DEFAULT '{}',
+      generated_at TIMESTAMP DEFAULT NOW(),
+      UNIQUE(client_id, mes)
+    );
+  `);
+
   // Create default admin if not exists (password: admin123 - change after first login)
   const hash = crypto.createHash('sha256').update('admin123').digest('hex');
   await pool.query(`
@@ -361,6 +392,34 @@ async function getClientToken(clientId) {
     return newToken || client.access_token;
   }
   return client.access_token;
+}
+
+// Get app-level token (client_credentials) — for reading public items without user context
+const _appTokenCache = {};
+async function getAppToken(clientId) {
+  const cached = _appTokenCache[clientId];
+  if (cached && cached.expires > Date.now()) return cached.token;
+  try {
+    const result = await pool.query('SELECT app_id, client_secret FROM clients WHERE id = $1', [clientId]);
+    if (!result.rows.length) return null;
+    const { app_id, client_secret } = result.rows[0];
+    const r = await fetch(`${ML_API}/oauth/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ grant_type: 'client_credentials', client_id: app_id, client_secret }).toString()
+    });
+    const data = await r.json();
+    if (data.access_token) {
+      _appTokenCache[clientId] = { token: data.access_token, expires: Date.now() + (data.expires_in || 21600) * 1000 - 60000 };
+      console.log(`[APP TOKEN] Got app token for client ${clientId}`);
+      return data.access_token;
+    }
+    console.error('[APP TOKEN] Failed:', data.error, data.message);
+    return null;
+  } catch(e) {
+    console.error('[APP TOKEN] Error:', e.message);
+    return null;
+  }
 }
 
 // ── SHIPPING COSTS + METADATA ─────────────────────────────────────────────────
@@ -1616,6 +1675,257 @@ app.post('/api/diagnostico/manuales', requireAuth, async (req, res) => {
 });
 
 // ── LOGÍSTICA ─────────────────────────────────────────────────────────────────
+// ── REPORTE FINANCIERO ────────────────────────────────────────────────────────
+
+// GET /api/reporte/items-vendidos — MLAs vendidos del período con costos guardados
+app.get('/api/reporte/items-vendidos', requireAuth, async (req, res) => {
+  try {
+    const { client_id, date_from, date_to } = req.query;
+    const token = await getClientToken(parseInt(client_id));
+    if (!token) return res.status(403).json({ error: 'Sin token' });
+    const headers = { 'Authorization': `Bearer ${token}` };
+
+    const clientRes = await pool.query('SELECT ml_user_id FROM clients WHERE id=$1', [client_id]);
+    const uid = clientRes.rows[0]?.ml_user_id;
+    if (!uid) return res.status(400).json({ error: 'Cliente sin ML User ID' });
+
+    const fmt = d => new Date(d).toISOString().slice(0,19) + '.000-00:00';
+    const { orders } = await fetchAllOrders(uid, headers, fmt(date_from + 'T00:00:00'), fmt(date_to + 'T23:59:59'));
+
+    // Group by MLA
+    const byMla = {};
+    orders.forEach(o => {
+      (o.order_items||[]).forEach(oi => {
+        const id = oi.item?.id;
+        const title = oi.item?.title || id;
+        if (!id) return;
+        if (!byMla[id]) byMla[id] = { mla_id: id, title, units: 0, revenue: 0, sale_fee: 0 };
+        byMla[id].units   += oi.quantity || 0;
+        byMla[id].revenue += (parseFloat(oi.unit_price)||0) * (oi.quantity||0);
+        byMla[id].sale_fee += parseFloat(oi.sale_fee)||0;
+      });
+    });
+
+    // Load saved costs
+    const costsRes = await pool.query(
+      'SELECT mla_id, costo_unit, notas FROM product_costs WHERE client_id=$1',
+      [client_id]
+    );
+    const costsMap = {};
+    costsRes.rows.forEach(r => { costsMap[r.mla_id] = { costo_unit: parseFloat(r.costo_unit)||0, notas: r.notas }; });
+
+    const items = Object.values(byMla)
+      .sort((a,b) => b.revenue - a.revenue)
+      .map(i => ({
+        ...i,
+        costo_unit: costsMap[i.mla_id]?.costo_unit ?? null,
+        notas: costsMap[i.mla_id]?.notas || '',
+        cmv_total: costsMap[i.mla_id]?.costo_unit != null
+          ? costsMap[i.mla_id].costo_unit * i.units : null,
+        has_cost: costsMap[i.mla_id] != null,
+      }));
+
+    const total_orders = orders.length;
+    const completeness = items.length > 0
+      ? Math.round(items.filter(i=>i.has_cost).length / items.length * 100) : 0;
+
+    res.json({ items, total_orders, completeness });
+  } catch(e) { console.error('[REPORTE ITEMS]', e.message); res.status(500).json({ error: e.message }); }
+});
+
+// POST /api/reporte/costos — guardar costos de productos
+app.post('/api/reporte/costos', requireAuth, async (req, res) => {
+  try {
+    const { client_id, costos } = req.body; // costos: [{mla_id, title, costo_unit, notas}]
+    if (!client_id || !costos?.length) return res.status(400).json({ error: 'Faltan datos' });
+    for (const c of costos) {
+      await pool.query(`
+        INSERT INTO product_costs (client_id, mla_id, title, costo_unit, notas, updated_at)
+        VALUES ($1,$2,$3,$4,$5,NOW())
+        ON CONFLICT (client_id, mla_id) DO UPDATE SET
+          title=$3, costo_unit=$4, notas=$5, updated_at=NOW()
+      `, [client_id, c.mla_id, c.title, c.costo_unit||0, c.notas||'']);
+    }
+    res.json({ ok: true, saved: costos.length });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// GET/POST /api/reporte/gastos — gastos fijos del mes
+app.get('/api/reporte/gastos', requireAuth, async (req, res) => {
+  try {
+    const { client_id, mes } = req.query;
+    const mesStr = mes?.slice(0,7) + '-01';
+    const r = await pool.query(
+      'SELECT * FROM gastos_fijos WHERE client_id=$1 AND mes=$2 ORDER BY categoria, concepto',
+      [client_id, mesStr]
+    );
+    res.json({ gastos: r.rows });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/reporte/gastos', requireAuth, async (req, res) => {
+  try {
+    const { client_id, mes, gastos } = req.body;
+    const mesStr = mes?.slice(0,7) + '-01';
+    // Delete existing and re-insert
+    await pool.query('DELETE FROM gastos_fijos WHERE client_id=$1 AND mes=$2', [client_id, mesStr]);
+    for (const g of (gastos||[])) {
+      if (!g.concepto || !g.monto) continue;
+      await pool.query(
+        'INSERT INTO gastos_fijos (client_id, mes, concepto, monto, categoria) VALUES ($1,$2,$3,$4,$5)',
+        [client_id, mesStr, g.concepto, g.monto, g.categoria||'general']
+      );
+    }
+    res.json({ ok: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// GET /api/reporte/pyl — genera el P&L completo del mes
+app.get('/api/reporte/pyl', requireAuth, async (req, res) => {
+  try {
+    const { client_id, date_from, date_to } = req.query;
+    const token = await getClientToken(parseInt(client_id));
+    if (!token) return res.status(403).json({ error: 'Sin token' });
+    const headers = { 'Authorization': `Bearer ${token}` };
+
+    const clientRes = await pool.query('SELECT ml_user_id, name FROM clients WHERE id=$1', [client_id]);
+    const { ml_user_id: uid, name: clientName } = clientRes.rows[0] || {};
+    if (!uid) return res.status(400).json({ error: 'Cliente sin ML User ID' });
+
+    const fmt = d => new Date(d).toISOString().slice(0,19) + '.000-00:00';
+    const { orders } = await fetchAllOrders(uid, headers, fmt(date_from + 'T00:00:00'), fmt(date_to + 'T23:59:59'));
+
+    // ── Ingresos ──────────────────────────────────────────────────────────────
+    let facturacion = 0, ingreso_envio_comprador = 0;
+    let egreso_comision = 0, egreso_impuestos = 0, egreso_reembolsos = 0;
+    const byMla = {};
+
+    orders.forEach(o => {
+      facturacion += parseFloat(o.total_amount)||0;
+      (o.order_items||[]).forEach(oi => {
+        egreso_comision += parseFloat(oi.sale_fee)||0;
+        const id = oi.item?.id;
+        if (!id) return;
+        if (!byMla[id]) byMla[id] = { mla_id: id, title: oi.item?.title || id, units: 0, revenue: 0 };
+        byMla[id].units   += oi.quantity||0;
+        byMla[id].revenue += (parseFloat(oi.unit_price)||0)*(oi.quantity||0);
+      });
+      egreso_impuestos += parseFloat(o.taxes?.amount)||0;
+    });
+
+    // Shipping costs
+    const shipIds = [...new Set(orders.map(o=>o.shipping?.id).filter(Boolean))];
+    let egreso_envio_vendedor = 0;
+    const sampleSize = Math.min(shipIds.length, 200);
+    for (let i=0; i<sampleSize; i+=10) {
+      const batch = shipIds.slice(i,i+10);
+      await Promise.all(batch.map(async sid => {
+        try {
+          const s = await fetch(`${ML_API}/shipments/${sid}`, {headers}).then(r=>r.json());
+          const baseCost = parseFloat(s.base_cost)||0;
+          const costNet  = parseFloat(s.cost?.net)||0;
+          const costGross= parseFloat(s.cost?.gross)||0;
+          const costSpec = parseFloat(s.cost?.special)||0;
+          const costDisc = parseFloat(s.cost?.discount)||0;
+          const recvCost = parseFloat(s.receiver_cost)||0;
+          ingreso_envio_comprador += recvCost;
+          let sellerCost = 0;
+          if (recvCost >= baseCost && baseCost > 0) sellerCost = 0;
+          else if (costNet > 0) sellerCost = costNet;
+          else if (costGross > 0) sellerCost = Math.max(0, costGross - costSpec - costDisc - recvCost);
+          egreso_envio_vendedor += sellerCost;
+        } catch(e){}
+      }));
+    }
+    // Scale if sampled
+    if (shipIds.length > sampleSize && sampleSize > 0) {
+      const scale = shipIds.length / sampleSize;
+      egreso_envio_vendedor *= scale;
+      ingreso_envio_comprador *= scale;
+    }
+
+    // PADS
+    let egreso_publicidad = 0;
+    try {
+      const siteId = 'MLA';
+      const h2 = { 'Authorization': `Bearer ${token}`, 'Api-Version': '2' };
+      const advRes = await fetch(`${ML_API}/advertising/advertisers?product_id=PADS`, {headers:h2}).then(r=>r.json()).catch(()=>({}));
+      const advList = advRes.results || advRes.advertisers || (Array.isArray(advRes)?advRes:[]);
+      const advId = advList[0]?.advertiser_id || advList[0]?.id || uid;
+      let offset=0, keep=true;
+      while(keep) {
+        const url = `${ML_API}/advertising/${siteId}/advertisers/${advId}/product_ads/ads/search?limit=100&offset=${offset}&date_from=${date_from}&date_to=${date_to}&metrics=cost`;
+        const r = await fetch(url,{headers:h2}).then(r=>r.json()).catch(()=>({}));
+        (r.results||[]).forEach(ad => { egreso_publicidad += parseFloat(ad.metrics?.cost||0); });
+        const total = r.paging?.total||0;
+        offset+=100;
+        keep = (r.results||[]).length===100 && offset<total && offset<2000;
+      }
+    } catch(e){}
+
+    // ── CMV ───────────────────────────────────────────────────────────────────
+    const costsRes = await pool.query('SELECT mla_id, costo_unit FROM product_costs WHERE client_id=$1', [client_id]);
+    const costsMap = {};
+    costsRes.rows.forEach(r => { costsMap[r.mla_id] = parseFloat(r.costo_unit)||0; });
+
+    let cmv_total = 0, cmv_cubierto = 0, cmv_estimado = false;
+    const items_detalle = Object.values(byMla).map(i => {
+      const costo = costsMap[i.mla_id];
+      const cmv = costo != null ? costo * i.units : null;
+      if (cmv != null) { cmv_total += cmv; cmv_cubierto++; }
+      return { ...i, costo_unit: costo ?? null, cmv };
+    }).sort((a,b) => b.revenue - a.revenue);
+
+    if (cmv_cubierto < items_detalle.length) cmv_estimado = true;
+
+    // ── Gastos Fijos ──────────────────────────────────────────────────────────
+    const mesStr = date_from.slice(0,7) + '-01';
+    const gastosRes = await pool.query(
+      'SELECT concepto, monto, categoria FROM gastos_fijos WHERE client_id=$1 AND mes=$2',
+      [client_id, mesStr]
+    );
+    const gastos = gastosRes.rows;
+    const total_gastos_fijos = gastos.reduce((s,g)=>s+parseFloat(g.monto),0);
+
+    // ── P&L ───────────────────────────────────────────────────────────────────
+    const total_ingresos   = facturacion + ingreso_envio_comprador;
+    const total_egresos_ml = egreso_comision + egreso_impuestos + egreso_envio_vendedor + egreso_publicidad + egreso_reembolsos;
+    const resultado_neto_ml = total_ingresos - total_egresos_ml;
+    const utilidad_antes_gf = resultado_neto_ml - cmv_total;
+    const utilidad_final    = utilidad_antes_gf - total_gastos_fijos;
+
+    const pyl = {
+      cliente: clientName, periodo: { from: date_from, to: date_to },
+      ordenes: orders.length,
+      ingresos: {
+        facturacion,
+        envio_comprador: ingreso_envio_comprador,
+        total: total_ingresos
+      },
+      egresos_ml: {
+        comision: egreso_comision,
+        impuestos: egreso_impuestos,
+        envio_vendedor: egreso_envio_vendedor,
+        publicidad: egreso_publicidad,
+        reembolsos: egreso_reembolsos,
+        total: total_egresos_ml
+      },
+      resultado_neto_ml,
+      cmv: { total: cmv_total, estimado: cmv_estimado, cubierto: cmv_cubierto, total_items: items_detalle.length },
+      utilidad_antes_gf,
+      gastos_fijos: { items: gastos, total: total_gastos_fijos },
+      utilidad_final,
+      margenes: {
+        neto_ml: facturacion>0 ? (resultado_neto_ml/facturacion*100).toFixed(1) : 0,
+        utilidad_final: facturacion>0 ? (utilidad_final/facturacion*100).toFixed(1) : 0,
+      },
+      items_detalle,
+    };
+
+    res.json(pyl);
+  } catch(e) { console.error('[REPORTE PYL]', e.message, e.stack); res.status(500).json({ error: e.message }); }
+});
+
 // ── DEBUG: inspect a specific order's shipment ───────────────────────────────
 app.get('/api/debug/order', requireAuth, async (req, res) => {
   try {
@@ -1771,10 +2081,16 @@ app.get('/api/competencia/item', requireAuth, async (req, res) => {
     if (!token) return res.status(403).json({ error: 'Sin token' });
     const headers = { 'Authorization': `Bearer ${token}` };
 
-    // ── 1. Item details — use public API (no auth needed for public items) ────
+    // Get app-level token for reading public competitor items
+    const appToken = await getAppToken(parseInt(client_id));
+    const pubHeaders = appToken
+      ? { 'Authorization': `Bearer ${appToken}` }
+      : {}; // fallback: no auth (may fail for some items)
+
+    // ── 1. Item details — use app token to read public items ─────────────────
     const rawItem = await fetch(
-      `${ML_API}/items/${item_id}`
-      // No Authorization header — public items don't need it
+      `${ML_API}/items/${item_id}`,
+      { headers: pubHeaders }
     ).then(r => r.json());
 
     console.log(`[COMP ITEM] ${item_id} keys=${Object.keys(rawItem||{}).join(',')} code=${rawItem.code} error=${rawItem.error} title="${rawItem.title?.slice(0,40)}"`);
@@ -1787,33 +2103,36 @@ app.get('/api/competencia/item', requireAuth, async (req, res) => {
       return res.status(404).json({ error: `Publicación no encontrada: ${rawItem.message || rawItem.error || 'ID inválido'}` });
     }
 
-    // ── 2. Visits — also public ───────────────────────────────────────────────
+    // ── 2. Visits ─────────────────────────────────────────────────────────────
     const visitsRes = await fetch(
-      `${ML_API}/items/${item_id}/visits/time_window?last=30&unit=day`
+      `${ML_API}/items/${item_id}/visits/time_window?last=30&unit=day`,
+      { headers: pubHeaders }
     ).then(r => r.json()).catch(() => ({}));
 
-    // ── 3. Category name — public ─────────────────────────────────────────────
+    // ── 3. Category name ──────────────────────────────────────────────────────
     const catRes = await fetch(
-      `${ML_API}/categories/${item.category_id}`
+      `${ML_API}/categories/${item.category_id}`,
+      { headers: pubHeaders }
     ).then(r => r.json()).catch(() => ({}));
 
-    // ── 4. Seller info — public ───────────────────────────────────────────────
+    // ── 4. Seller info ────────────────────────────────────────────────────────
     const sellerRes = await fetch(
-      `${ML_API}/users/${item.seller_id}`
+      `${ML_API}/users/${item.seller_id}`,
+      { headers: pubHeaders }
     ).then(r => r.json()).catch(() => ({}));
 
-    // ── 5. Other items from same seller — needs auth ──────────────────────────
+    // ── 5. Other items from same seller ──────────────────────────────────────
     const sellerItemsRes = await fetch(
       `${ML_API}/users/${item.seller_id}/items/search?status=active&limit=50`,
-      { headers }
+      { headers: pubHeaders }
     ).then(r => r.json()).catch(() => ({ results: [] }));
 
     let otherItems = [];
     const otherIds = (sellerItemsRes.results || []).filter(id => id !== item_id).slice(0, 20);
     if (otherIds.length) {
       const batchRes = await fetch(
-        `${ML_API}/items?ids=${otherIds.join(',')}&attributes=id,title,price,sold_quantity,available_quantity,listing_type_id,status`
-        // public endpoint
+        `${ML_API}/items?ids=${otherIds.join(',')}&attributes=id,title,price,sold_quantity,available_quantity,listing_type_id,status`,
+        { headers: pubHeaders }
       ).then(r => r.json()).catch(() => []);
       otherItems = (Array.isArray(batchRes) ? batchRes : [])
         .filter(r => r.code === 200 && r.body)
@@ -1822,9 +2141,10 @@ app.get('/api/competencia/item', requireAuth, async (req, res) => {
         .slice(0, 10);
     }
 
-    // ── 6. Description — public ───────────────────────────────────────────────
+    // ── 6. Description ────────────────────────────────────────────────────────
     const descRes = await fetch(
-      `${ML_API}/items/${item_id}/description`
+      `${ML_API}/items/${item_id}/description`,
+      { headers: pubHeaders }
     ).then(r => r.json()).catch(() => ({}));
 
     const rep = sellerRes.seller_reputation || {};
