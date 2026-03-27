@@ -3997,7 +3997,7 @@ function renderFsTable() {
           <input type="number" min="1" id="cov-${rowKey}" value="${item.coverage_days_target || 30}"
             style="width:48px;padding:3px 5px;border:1px solid var(--border);border-radius:6px;background:var(--surface2);color:var(--text);font-size:12px;text-align:center"
             title="Días de cobertura objetivo"
-            onkeydown="if(event.key==='Enter') saveFullStockSuggested('${item.id}', ${item.variation_id ? "'"+item.variation_id+"'" : 'null'})"
+            onkeydown="if(event.key==='Enter') saveFullStockSuggested('${item.id}', '${item.variation_id || ''}')"
           />
           <span style="font-size:10px;color:var(--muted)">d</span>
         </div>
@@ -4006,9 +4006,9 @@ function renderFsTable() {
         <div style="display:flex;align-items:center;gap:4px;justify-content:center">
           <input type="number" min="0" id="sug-${rowKey}" value="${item.suggested_quantity ?? ''}" placeholder="auto"
             style="width:56px;padding:3px 5px;border:1px solid var(--border);border-radius:6px;background:var(--surface2);color:var(--text);font-size:12px;text-align:center"
-            onkeydown="if(event.key==='Enter') saveFullStockSuggested('${item.id}', ${item.variation_id ? "'"+item.variation_id+"'" : 'null'})"
+            onkeydown="if(event.key==='Enter') saveFullStockSuggested('${item.id}', '${item.variation_id || ''}')"
           />
-          <button id="btn-${rowKey}" onclick="saveFullStockSuggested('${item.id}', ${item.variation_id ? "'"+item.variation_id+"'" : 'null'})"
+          <button id="btn-${rowKey}" onclick="saveFullStockSuggested('${item.id}', '${item.variation_id || ''}')"
             style="padding:3px 8px;border:none;border-radius:6px;background:var(--accent);color:#fff;font-size:11px;cursor:pointer;font-weight:600">✓</button>
         </div>
       </td>
@@ -4038,6 +4038,7 @@ function renderFsTable() {
 }
 
 async function saveFullStockSuggested(itemId, variationId) {
+  if (variationId === '' || variationId === 'null') variationId = null;
   const rowKey = `${itemId}${variationId ? '-'+variationId : ''}`;
   const sugInput = document.getElementById(`sug-${rowKey}`);
   const covInput = document.getElementById(`cov-${rowKey}`);
