@@ -530,6 +530,9 @@ tbody td {
       <div class="nav-item" data-page="competencia" onclick="showPage('competencia',this);loadCompetencia()">
         <span class="nav-icon">🏆</span> Competencia
       </div>
+      <div class="nav-item" data-page="reporte" onclick="showPage('reporte',this);initReporte()">
+        <span class="nav-icon">📊</span> Reporte Financiero
+      </div>
 
       <div style="height:1px;background:var(--border);margin:12px 0"></div>
 
@@ -766,6 +769,36 @@ tbody td {
         <div id="compAnalisisResult"></div>
       </div>
       <div id="competenciaContent"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Cargando categorías...</div></div>
+    </div>
+
+    <!-- REPORTE FINANCIERO -->
+    <div class="page" id="page-reporte">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px;flex-wrap:wrap">
+        <h2 style="margin:0;font-family:var(--font-b);flex:1">📊 Reporte Financiero</h2>
+      </div>
+      <!-- Config bar -->
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:14px 18px;margin-bottom:16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+        <select id="reporteClientSel" style="padding:6px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px;min-width:160px"></select>
+        <select id="reporteMesSel" style="padding:6px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px"></select>
+        <button onclick="loadReporteItems()" style="padding:7px 16px;background:var(--accent);color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer">📋 Cargar productos</button>
+        <button id="reportePylBtn" onclick="generarPyL()" style="padding:7px 16px;background:#16a34a;color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;display:none">⚡ Generar P&L</button>
+        <button id="reporteExcelBtn" onclick="exportarReporteExcel()" style="padding:7px 16px;background:#6366f1;color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;display:none">📥 Descargar Excel</button>
+      </div>
+      <!-- Tabs -->
+      <div style="display:flex;gap:4px;margin-bottom:16px">
+        <button class="reporte-tab active" onclick="setReporteTab('costos',this)" id="tab-costos" style="padding:7px 16px;border-radius:8px;border:1px solid var(--border);background:var(--accent);color:#fff;font-size:13px;cursor:pointer">💰 Costos de productos</button>
+        <button class="reporte-tab" onclick="setReporteTab('gastos',this)" id="tab-gastos" style="padding:7px 16px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px;cursor:pointer">🏢 Gastos fijos</button>
+        <button class="reporte-tab" onclick="setReporteTab('pyl',this)" id="tab-pyl" style="padding:7px 16px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px;cursor:pointer">📈 P&L</button>
+      </div>
+      <div id="reporte-costos-panel">
+        <div id="reporteCostosContent"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Seleccioná un cliente y mes, luego hacé click en "Cargar productos"</div></div>
+      </div>
+      <div id="reporte-gastos-panel" style="display:none">
+        <div id="reporteGastosContent"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Seleccioná un cliente y mes primero</div></div>
+      </div>
+      <div id="reporte-pyl-panel" style="display:none">
+        <div id="reportePylContent"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Completá costos y gastos, luego generá el P&L</div></div>
+      </div>
     </div>
 
     <!-- TOKENS -->
@@ -3771,6 +3804,400 @@ function renderLogistica(data) {
   </table></div>`;
 
   el.innerHTML = kpis + flexCard + fullCard + prepCard + table;
+}
+
+// ── REPORTE FINANCIERO ────────────────────────────────────────────────────────
+let _reporteItems = [], _reportePyl = null;
+
+function initReporte() {
+  // Populate client selector
+  const sel = document.getElementById('reporteClientSel');
+  if (sel) {
+    sel.innerHTML = '';
+    allClients.filter(c => c.ml_user_id && c.active).forEach(c => {
+      const o = document.createElement('option');
+      o.value = c.id; o.textContent = c.name;
+      sel.appendChild(o);
+    });
+  }
+  // Populate month selector — last 6 months
+  const msel = document.getElementById('reporteMesSel');
+  if (msel) {
+    msel.innerHTML = '';
+    const now = new Date();
+    for (let i = 1; i <= 6; i++) {
+      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      const label = d.toLocaleDateString('es-AR', { month: 'long', year: 'numeric' });
+      const val = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+      const o = document.createElement('option');
+      o.value = val; o.textContent = label.charAt(0).toUpperCase() + label.slice(1);
+      msel.appendChild(o);
+    }
+  }
+}
+
+function setReporteTab(tab, el) {
+  ['costos','gastos','pyl'].forEach(t => {
+    document.getElementById(`reporte-${t}-panel`).style.display = t === tab ? '' : 'none';
+    const btn = document.getElementById(`tab-${t}`);
+    if (btn) { btn.style.background = t === tab ? 'var(--accent)' : 'var(--surface)'; btn.style.color = t === tab ? '#fff' : 'var(--text)'; }
+  });
+}
+
+function getReportePeriod() {
+  const mes = document.getElementById('reporteMesSel')?.value; // "2026-02"
+  if (!mes) return null;
+  const [y, m] = mes.split('-').map(Number);
+  const lastDay = new Date(y, m, 0).getDate();
+  return {
+    date_from: `${y}-${String(m).padStart(2,'0')}-01`,
+    date_to:   `${y}-${String(m).padStart(2,'0')}-${lastDay}`,
+    mes:       `${y}-${String(m).padStart(2,'0')}`
+  };
+}
+
+async function loadReporteItems() {
+  const clientId = document.getElementById('reporteClientSel')?.value;
+  const period = getReportePeriod();
+  if (!clientId || !period) return;
+  const el = document.getElementById('reporteCostosContent');
+  el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">⏳ Cargando productos vendidos...</div>';
+  try {
+    const data = await apiCall('GET', `/api/reporte/items-vendidos?client_id=${clientId}&date_from=${period.date_from}&date_to=${period.date_to}`);
+    if (!data) return;
+    _reporteItems = data.items || [];
+    renderReporteCostos(data, clientId);
+    // Load gastos too
+    loadReporteGastos(clientId, period.mes);
+    document.getElementById('reportePylBtn').style.display = '';
+  } catch(e) {
+    el.innerHTML = `<div style="color:var(--muted);padding:40px">Error: ${e.message}</div>`;
+  }
+}
+
+function renderReporteCostos(data, clientId) {
+  const el = document.getElementById('reporteCostosContent');
+  const items = data.items || [];
+  const faltanCosto = items.filter(i => !i.has_cost).length;
+
+  const completenessColor = data.completeness === 100 ? '#16a34a' : data.completeness > 70 ? '#d97706' : '#dc2626';
+
+  const rows = items.map((item, idx) => `
+    <tr>
+      <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;color:var(--accent)">${item.mla_id}</td>
+      <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${item.title}</td>
+      <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;text-align:center;font-weight:600">${item.units.toLocaleString('es-AR')}</td>
+      <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;text-align:right">$${Math.round(item.revenue).toLocaleString('es-AR')}</td>
+      <td style="padding:8px 10px;border-bottom:1px solid var(--border);text-align:right">
+        <input type="number" id="costo_${item.mla_id}" value="${item.costo_unit ?? ''}" placeholder="0"
+          style="width:110px;padding:5px 8px;border-radius:6px;border:1px solid ${item.has_cost?'var(--border)':'#fca5a5'};background:${item.has_cost?'var(--surface2)':'#fef2f2'};color:var(--text);font-size:13px;text-align:right"
+          oninput="updateCmvRow('${item.mla_id}',${item.units})">
+      </td>
+      <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;text-align:right" id="cmv_${item.mla_id}">
+        ${item.cmv_total != null ? '$'+Math.round(item.cmv_total).toLocaleString('es-AR') : '<span style="color:#dc2626">—</span>'}
+      </td>
+      <td style="padding:8px 10px;border-bottom:1px solid var(--border)">
+        <input type="text" id="notas_${item.mla_id}" value="${item.notas||''}" placeholder="Notas..."
+          style="width:100%;padding:4px 7px;border-radius:6px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:12px">
+      </td>
+    </tr>`).join('');
+
+  el.innerHTML = `
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:8px">
+      <div style="font-size:13px;color:var(--muted)">${items.length} productos · ${data.total_orders} órdenes</div>
+      <div style="display:flex;align-items:center;gap:10px">
+        <span style="font-size:12px;color:${completenessColor};font-weight:600">${data.completeness}% con costo cargado${faltanCosto>0?' · '+faltanCosto+' sin costo':''}</span>
+        <button onclick="guardarCostos('${clientId}')" style="padding:6px 16px;background:var(--accent);color:#fff;border:none;border-radius:8px;font-size:13px;cursor:pointer">💾 Guardar costos</button>
+      </div>
+    </div>
+    <div style="overflow-x:auto">
+    <table style="width:100%;border-collapse:collapse">
+      <thead><tr style="background:var(--surface2)">
+        <th style="padding:8px 10px;font-size:11px;color:var(--muted);text-align:left;border-bottom:1px solid var(--border)">MLA</th>
+        <th style="padding:8px 10px;font-size:11px;color:var(--muted);text-align:left;border-bottom:1px solid var(--border)">Producto</th>
+        <th style="padding:8px 10px;font-size:11px;color:var(--muted);text-align:center;border-bottom:1px solid var(--border)">Unidades</th>
+        <th style="padding:8px 10px;font-size:11px;color:var(--muted);text-align:right;border-bottom:1px solid var(--border)">Facturación</th>
+        <th style="padding:8px 10px;font-size:11px;color:var(--muted);text-align:right;border-bottom:1px solid var(--border)">Costo unitario $</th>
+        <th style="padding:8px 10px;font-size:11px;color:var(--muted);text-align:right;border-bottom:1px solid var(--border)">CMV total</th>
+        <th style="padding:8px 10px;font-size:11px;color:var(--muted);text-align:left;border-bottom:1px solid var(--border)">Notas</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>`;
+}
+
+function updateCmvRow(mlaId, units) {
+  const val = parseFloat(document.getElementById(`costo_${mlaId}`)?.value) || 0;
+  const cmvEl = document.getElementById(`cmv_${mlaId}`);
+  if (cmvEl) cmvEl.innerHTML = val > 0 ? '$'+Math.round(val*units).toLocaleString('es-AR') : '<span style="color:#dc2626">—</span>';
+}
+
+async function guardarCostos(clientId) {
+  const costos = _reporteItems.map(item => ({
+    mla_id: item.mla_id,
+    title: item.title,
+    costo_unit: parseFloat(document.getElementById(`costo_${item.mla_id}`)?.value)||0,
+    notas: document.getElementById(`notas_${item.mla_id}`)?.value||'',
+  })).filter(c => c.costo_unit > 0);
+
+  if (!costos.length) { showToast('⚠ No hay costos para guardar'); return; }
+  const r = await apiCall('POST', '/api/reporte/costos', { client_id: clientId, costos });
+  if (r?.ok) showToast(`✅ ${r.saved} costos guardados`);
+}
+
+async function loadReporteGastos(clientId, mes) {
+  const el = document.getElementById('reporteGastosContent');
+  el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:20px">⏳ Cargando gastos...</div>';
+  try {
+    const data = await apiCall('GET', `/api/reporte/gastos?client_id=${clientId}&mes=${mes}`);
+    renderReporteGastos(data?.gastos || [], clientId, mes);
+  } catch(e) { el.innerHTML = `<div style="color:var(--muted);padding:20px">Error: ${e.message}</div>`; }
+}
+
+function renderReporteGastos(gastos, clientId, mes) {
+  const el = document.getElementById('reporteGastosContent');
+  const categorias = ['personal','alquiler','marketing','logistica','servicios','impuestos','otros'];
+
+  const rows = gastos.map((g, i) => `
+    <tr id="gasto-row-${i}">
+      <td style="padding:7px 8px;border-bottom:1px solid var(--border)">
+        <input value="${g.concepto}" style="width:100%;padding:4px 7px;border-radius:6px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px" class="gasto-concepto">
+      </td>
+      <td style="padding:7px 8px;border-bottom:1px solid var(--border)">
+        <select class="gasto-cat" style="padding:4px 7px;border-radius:6px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px">
+          ${categorias.map(c=>`<option value="${c}" ${g.categoria===c?'selected':''}>${c}</option>`).join('')}
+        </select>
+      </td>
+      <td style="padding:7px 8px;border-bottom:1px solid var(--border)">
+        <input type="number" value="${g.monto}" style="width:130px;padding:4px 7px;border-radius:6px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px;text-align:right" class="gasto-monto">
+      </td>
+      <td style="padding:7px 8px;border-bottom:1px solid var(--border)">
+        <button onclick="this.closest('tr').remove()" style="padding:3px 8px;border-radius:6px;border:1px solid #fca5a5;background:#fef2f2;color:#dc2626;font-size:12px;cursor:pointer">✕</button>
+      </td>
+    </tr>`).join('');
+
+  el.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">
+      <div style="font-size:13px;color:var(--muted)">Gastos fijos — <strong>${mes}</strong></div>
+      <div style="display:flex;gap:8px">
+        <button onclick="agregarGasto()" style="padding:6px 14px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px;cursor:pointer">+ Agregar</button>
+        <button onclick="guardarGastos('${clientId}','${mes}')" style="padding:6px 16px;background:var(--accent);color:#fff;border:none;border-radius:8px;font-size:13px;cursor:pointer">💾 Guardar gastos</button>
+      </div>
+    </div>
+    <div style="overflow-x:auto">
+    <table style="width:100%;border-collapse:collapse" id="gastosTable">
+      <thead><tr style="background:var(--surface2)">
+        <th style="padding:7px 8px;font-size:11px;color:var(--muted);text-align:left;border-bottom:1px solid var(--border)">Concepto</th>
+        <th style="padding:7px 8px;font-size:11px;color:var(--muted);text-align:left;border-bottom:1px solid var(--border)">Categoría</th>
+        <th style="padding:7px 8px;font-size:11px;color:var(--muted);text-align:right;border-bottom:1px solid var(--border)">Monto $</th>
+        <th style="padding:7px 8px;border-bottom:1px solid var(--border)"></th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>`;
+}
+
+function agregarGasto() {
+  const tbody = document.querySelector('#gastosTable tbody');
+  if (!tbody) return;
+  const tr = document.createElement('tr');
+  const categorias = ['personal','alquiler','marketing','logistica','servicios','impuestos','otros'];
+  tr.innerHTML = `
+    <td style="padding:7px 8px;border-bottom:1px solid var(--border)">
+      <input placeholder="Ej: Sueldo empleado" style="width:100%;padding:4px 7px;border-radius:6px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px" class="gasto-concepto">
+    </td>
+    <td style="padding:7px 8px;border-bottom:1px solid var(--border)">
+      <select class="gasto-cat" style="padding:4px 7px;border-radius:6px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px">
+        ${categorias.map(c=>`<option value="${c}">${c}</option>`).join('')}
+      </select>
+    </td>
+    <td style="padding:7px 8px;border-bottom:1px solid var(--border)">
+      <input type="number" placeholder="0" style="width:130px;padding:4px 7px;border-radius:6px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px;text-align:right" class="gasto-monto">
+    </td>
+    <td style="padding:7px 8px;border-bottom:1px solid var(--border)">
+      <button onclick="this.closest('tr').remove()" style="padding:3px 8px;border-radius:6px;border:1px solid #fca5a5;background:#fef2f2;color:#dc2626;font-size:12px;cursor:pointer">✕</button>
+    </td>`;
+  tbody.appendChild(tr);
+}
+
+async function guardarGastos(clientId, mes) {
+  const rows = document.querySelectorAll('#gastosTable tbody tr');
+  const gastos = [];
+  rows.forEach(tr => {
+    const concepto = tr.querySelector('.gasto-concepto')?.value?.trim();
+    const monto = parseFloat(tr.querySelector('.gasto-monto')?.value)||0;
+    const categoria = tr.querySelector('.gasto-cat')?.value || 'otros';
+    if (concepto && monto > 0) gastos.push({ concepto, monto, categoria });
+  });
+  const r = await apiCall('POST', '/api/reporte/gastos', { client_id: clientId, mes, gastos });
+  if (r?.ok) showToast('✅ Gastos guardados');
+}
+
+async function generarPyL() {
+  const clientId = document.getElementById('reporteClientSel')?.value;
+  const period = getReportePeriod();
+  if (!clientId || !period) return;
+
+  const btn = document.getElementById('reportePylBtn');
+  btn.disabled = true; btn.textContent = '⏳ Generando...';
+  const el = document.getElementById('reportePylContent');
+  el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">⏳ Calculando P&L... puede tardar un momento</div>';
+  setReporteTab('pyl', document.getElementById('tab-pyl'));
+
+  try {
+    const pyl = await apiCall('GET', `/api/reporte/pyl?client_id=${clientId}&date_from=${period.date_from}&date_to=${period.date_to}`);
+    if (!pyl || pyl.error) { el.innerHTML = `<div style="color:var(--muted);padding:40px">Error: ${pyl?.error}</div>`; return; }
+    _reportePyl = pyl;
+    renderPyL(pyl);
+    document.getElementById('reporteExcelBtn').style.display = '';
+  } catch(e) {
+    el.innerHTML = `<div style="color:var(--muted);padding:40px">Error: ${e.message}</div>`;
+  } finally {
+    btn.disabled = false; btn.textContent = '⚡ Generar P&L';
+  }
+}
+
+function renderPyL(pyl) {
+  const el = document.getElementById('reportePylContent');
+  const fmtM = v => v!=null ? '$'+Math.round(v).toLocaleString('es-AR') : '—';
+  const fmtP = v => v!=null ? parseFloat(v).toFixed(1)+'%' : '—';
+  const row = (label, value, color, bold, indent) => `
+    <tr>
+      <td style="padding:8px 14px 8px ${indent?'32px':'14px'};font-size:13px;border-bottom:1px solid var(--border);${bold?'font-weight:700':''};color:${color||'var(--text)'}">${label}</td>
+      <td style="padding:8px 14px;font-size:13px;text-align:right;border-bottom:1px solid var(--border);${bold?'font-weight:700':''};color:${color||'var(--text)'}">${fmtM(value)}</td>
+      <td style="padding:8px 14px;font-size:13px;text-align:right;border-bottom:1px solid var(--border);color:var(--muted)">${pyl.ingresos.facturacion>0?fmtP(value/pyl.ingresos.facturacion*100):''}</td>
+    </tr>`;
+  const sec = (label, color) => `
+    <tr><td colspan="3" style="padding:8px 14px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;background:${color};border:1px solid var(--border);color:#444">${label}</td></tr>`;
+
+  const cmvWarning = pyl.cmv.estimado
+    ? `<div style="background:#fef3c7;border:1px solid #fcd34d;border-radius:8px;padding:10px 14px;margin-bottom:14px;font-size:12px;color:#92400e">
+        ⚠ CMV parcial — ${pyl.cmv.cubierto} de ${pyl.cmv.total_items} productos tienen costo cargado. El CMV puede estar subestimado.
+      </div>` : '';
+
+  el.innerHTML = cmvWarning + `
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:20px">
+    <!-- P&L Table -->
+    <div style="overflow-x:auto">
+      <table style="width:100%;border-collapse:collapse">
+        <thead><tr style="background:var(--surface2)">
+          <th style="padding:8px 14px;font-size:11px;color:var(--muted);text-align:left;border-bottom:1px solid var(--border)">Concepto</th>
+          <th style="padding:8px 14px;font-size:11px;color:var(--muted);text-align:right;border-bottom:1px solid var(--border)">Monto</th>
+          <th style="padding:8px 14px;font-size:11px;color:var(--muted);text-align:right;border-bottom:1px solid var(--border)">% Fact</th>
+        </tr></thead>
+        <tbody>
+          ${sec('📥 Ingresos','#ede9fe')}
+          ${row('Facturación productos', pyl.ingresos.facturacion, '', false, true)}
+          ${row('Ingreso por envío (comprador)', pyl.ingresos.envio_comprador, '', false, true)}
+          ${row('TOTAL INGRESOS', pyl.ingresos.total, '#6366f1', true, false)}
+          ${sec('📤 Egresos Mercado Libre','#fee2e2')}
+          ${row('Comisión ML', -pyl.egresos_ml.comision, '#dc2626', false, true)}
+          ${row('Impuestos', -pyl.egresos_ml.impuestos, '#dc2626', false, true)}
+          ${row('Costo envío vendedor', -pyl.egresos_ml.envio_vendedor, '#dc2626', false, true)}
+          ${row('Publicidad (PADS)', -pyl.egresos_ml.publicidad, '#dc2626', false, true)}
+          ${pyl.egresos_ml.reembolsos ? row('Reembolsos', -pyl.egresos_ml.reembolsos, '#dc2626', false, true) : ''}
+          ${row('TOTAL EGRESOS ML', -pyl.egresos_ml.total, '#dc2626', true, false)}
+          ${sec('💰 Resultado','#dcfce7')}
+          ${row('RESULTADO NETO ML', pyl.resultado_neto_ml, pyl.resultado_neto_ml>=0?'#16a34a':'#dc2626', true, false)}
+          ${sec('🏭 CMV','#fef3c7')}
+          ${row('Costo de mercancía vendida', -pyl.cmv.total, '#d97706', true, false)}
+          ${row('UTILIDAD ANTES GASTOS FIJOS', pyl.utilidad_antes_gf, pyl.utilidad_antes_gf>=0?'#16a34a':'#dc2626', true, false)}
+          ${sec('🏢 Gastos Fijos','#f0f4ff')}
+          ${(pyl.gastos_fijos.items||[]).map(g => row(g.concepto, -g.monto, '#6366f1', false, true)).join('')}
+          ${row('TOTAL GASTOS FIJOS', -pyl.gastos_fijos.total, '#6366f1', true, false)}
+          ${sec('📊 Resultado Final','#f0fdf4')}
+          ${row('UTILIDAD FINAL', pyl.utilidad_final, pyl.utilidad_final>=0?'#16a34a':'#dc2626', true, false)}
+        </tbody>
+      </table>
+    </div>
+    <!-- KPIs -->
+    <div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px">
+        ${[
+          ['Facturación', fmtM(pyl.ingresos.facturacion), ''],
+          ['Órdenes', pyl.ordenes.toLocaleString('es-AR'), ''],
+          ['Margen Neto ML', fmtP(pyl.margenes.neto_ml), pyl.resultado_neto_ml>=0?'#16a34a':'#dc2626'],
+          ['Margen Final', fmtP(pyl.margenes.utilidad_final), pyl.utilidad_final>=0?'#16a34a':'#dc2626'],
+          ['CMV', fmtM(pyl.cmv.total), '#d97706'],
+          ['Gastos Fijos', fmtM(pyl.gastos_fijos.total), '#6366f1'],
+          ['Utilidad Final', fmtM(pyl.utilidad_final), pyl.utilidad_final>=0?'#16a34a':'#dc2626'],
+        ].map(([l,v,c]) => `<div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px 14px">
+          <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em">${l}</div>
+          <div style="font-size:18px;font-weight:700;font-family:var(--font-b);color:${c||'var(--text)'};margin-top:4px">${v}</div>
+        </div>`).join('')}
+      </div>
+      <!-- Gastos por categoría -->
+      ${pyl.gastos_fijos.items?.length ? `<div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px">
+        <div style="font-size:12px;font-weight:600;margin-bottom:10px">Gastos fijos por categoría</div>
+        ${Object.entries(pyl.gastos_fijos.items.reduce((acc,g)=>{acc[g.categoria]=(acc[g.categoria]||0)+parseFloat(g.monto);return acc},{}))
+          .sort(([,a],[,b])=>b-a)
+          .map(([cat,monto])=>`<div style="display:flex;justify-content:space-between;font-size:12px;padding:4px 0;border-bottom:1px solid var(--border)">
+            <span style="color:var(--muted)">${cat}</span><strong>${fmtM(monto)}</strong>
+          </div>`).join('')}
+      </div>` : ''}
+    </div>
+  </div>`;
+}
+
+async function exportarReporteExcel() {
+  if (!_reportePyl) return;
+  const pyl = _reportePyl;
+  const XLSX = window.XLSX;
+  if (!XLSX) { showToast('⚠ XLSX no disponible'); return; }
+
+  const wb = XLSX.utils.book_new();
+
+  // Sheet 1: P&L
+  const pylData = [
+    ['REPORTE FINANCIERO', pyl.cliente, '', pyl.periodo.from + ' → ' + pyl.periodo.to],
+    [],
+    ['INGRESOS', '', ''],
+    ['Facturación productos', pyl.ingresos.facturacion],
+    ['Ingreso por envío (comprador)', pyl.ingresos.envio_comprador],
+    ['TOTAL INGRESOS', pyl.ingresos.total],
+    [],
+    ['EGRESOS MERCADO LIBRE', ''],
+    ['Comisión ML', -pyl.egresos_ml.comision],
+    ['Impuestos', -pyl.egresos_ml.impuestos],
+    ['Costo envío vendedor', -pyl.egresos_ml.envio_vendedor],
+    ['Publicidad (PADS)', -pyl.egresos_ml.publicidad],
+    ['Reembolsos', -pyl.egresos_ml.reembolsos],
+    ['TOTAL EGRESOS ML', -pyl.egresos_ml.total],
+    [],
+    ['RESULTADO NETO ML', pyl.resultado_neto_ml],
+    [],
+    ['CMV (Costo Mercancía Vendida)', -pyl.cmv.total],
+    ['UTILIDAD ANTES GASTOS FIJOS', pyl.utilidad_antes_gf],
+    [],
+    ['GASTOS FIJOS', ''],
+    ...(pyl.gastos_fijos.items||[]).map(g => [g.concepto, -g.monto]),
+    ['TOTAL GASTOS FIJOS', -pyl.gastos_fijos.total],
+    [],
+    ['UTILIDAD FINAL', pyl.utilidad_final],
+    ['Margen Neto ML %', pyl.margenes.neto_ml + '%'],
+    ['Margen Utilidad Final %', pyl.margenes.utilidad_final + '%'],
+  ];
+  const ws1 = XLSX.utils.aoa_to_sheet(pylData);
+  XLSX.utils.book_append_sheet(wb, ws1, 'P&L');
+
+  // Sheet 2: Detalle por producto
+  const detalle = [
+    ['MLA', 'Producto', 'Unidades', 'Facturación', 'Costo Unitario', 'CMV Total'],
+    ...(pyl.items_detalle||[]).map(i => [
+      i.mla_id, i.title, i.units, Math.round(i.revenue),
+      i.costo_unit ?? '', i.cmv != null ? Math.round(i.cmv) : ''
+    ])
+  ];
+  const ws2 = XLSX.utils.aoa_to_sheet(detalle);
+  XLSX.utils.book_append_sheet(wb, ws2, 'Detalle por producto');
+
+  // Sheet 3: Gastos fijos
+  const gastosData = [
+    ['Concepto', 'Categoría', 'Monto'],
+    ...(pyl.gastos_fijos.items||[]).map(g => [g.concepto, g.categoria, g.monto])
+  ];
+  const ws3 = XLSX.utils.aoa_to_sheet(gastosData);
+  XLSX.utils.book_append_sheet(wb, ws3, 'Gastos Fijos');
+
+  XLSX.writeFile(wb, `Reporte_${pyl.cliente}_${pyl.periodo.from.slice(0,7)}.xlsx`);
 }
 
 // ── COMPETENCIA ───────────────────────────────────────────────────────────────
