@@ -3927,6 +3927,7 @@ function renderFullStock(data, client) {
     <div style="width:1px;height:24px;background:var(--border);margin:0 4px"></div>
     <span style="font-size:12px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em">📅 Días objetivo:</span>
     <input type="number" min="1" max="365" id="fsGlobalDays" value="${global_target_days || 30}"
+      oninput="renderFsTable()"
       style="width:56px;padding:4px 8px;border:1px solid var(--border);border-radius:6px;background:var(--surface2);color:var(--text);font-size:14px;font-weight:700;text-align:center"
     />
     <span style="font-size:12px;color:var(--muted)">días</span>
@@ -4022,7 +4023,8 @@ function renderFsTable() {
     });
   }
 
-  const globalTarget = _fullStockData?.global_target_days || 30;
+  // Leer días objetivo SIEMPRE del input en vivo (no del dato cacheado)
+  const liveTarget = parseInt(document.getElementById('fsGlobalDays')?.value) || _fullStockData?.global_target_days || 30;
   const pd = _fullStockData?.period_days || _fsDays || 30;
 
   const rows = filtered.map(item => {
@@ -4031,10 +4033,13 @@ function renderFsTable() {
     const covColor  = coverageColor(cov);
     const ritmo     = item.daily_rate || 0;
     const ritmoText = ritmo > 0 ? ritmo.toFixed(2) : '—';
-    // Sugerido: ritmo=0 → 0; ritmo>0 → ritmo × días_objetivo − stock_full (mín. 0)
-    const autoSug   = ritmo > 0
-      ? Math.max(0, Math.round(ritmo * globalTarget - (item.stock_full || 0)))
+    // autoSug: siempre calculado en vivo con liveTarget
+    // ritmo=0 → 0; ritmo>0 → max(0, ritmo × días_objetivo − stock_full)
+    const autoSug = ritmo > 0
+      ? Math.max(0, Math.round(ritmo * liveTarget - (item.stock_full || 0)))
       : 0;
+    // hasOverride: el usuario guardó un valor manual en DB
+    const hasOverride = item.suggested_quantity != null;
     const skuLabel   = item.variation_id
       ? (item.title.includes(' — ') ? item.title.split(' — ').slice(1).join(' — ') : String(item.variation_id))
       : '—';
@@ -4056,11 +4061,16 @@ function renderFsTable() {
       <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;text-align:center">
         <div style="display:flex;align-items:center;gap:4px;justify-content:center">
           <input type="number" min="0" id="sug-${rowKey}"
-            value="${item.suggested_quantity != null ? item.suggested_quantity : ''}"
+            value="${hasOverride ? item.suggested_quantity : ''}"
             placeholder="${autoSug}"
-            style="width:60px;padding:3px 6px;border:1px solid var(--border);border-radius:6px;background:var(--surface2);color:var(--text);font-size:12px;text-align:center"
+            style="width:60px;padding:3px 6px;border:1px solid ${hasOverride ? 'var(--accent)' : 'var(--border)'};border-radius:6px;background:var(--surface2);color:var(--text);font-size:12px;text-align:center"
+            title="${hasOverride ? 'Valor manual guardado. Borrar y ✓ para volver a automático.' : 'Auto: ' + autoSug}"
             onkeydown="if(event.key==='Enter') saveFullStockSuggested('${item.id}', '${item.variation_id || ''}')"
           />
+          ${hasOverride
+            ? `<button onclick="clearFullStockSuggested('${item.id}', '${item.variation_id || ''}')" title="Volver a automático"
+                style="padding:3px 6px;border:none;border-radius:6px;background:#e5e7eb;color:#6b7280;font-size:11px;cursor:pointer">✕</button>`
+            : ''}
           <button id="btn-${rowKey}" onclick="saveFullStockSuggested('${item.id}', '${item.variation_id || ''}')"
             style="padding:3px 8px;border:none;border-radius:6px;background:var(--accent);color:#fff;font-size:11px;cursor:pointer;font-weight:600">✓</button>
         </div>
@@ -4124,6 +4134,27 @@ function exportFullStockExcel() {
   const fecha = new Date().toISOString().slice(0,10);
   XLSX.writeFile(wb, `StockFULL_${clientName.replace(/\s+/g,'_')}_${fecha}.xlsx`);
   showToast('✅ Excel descargado');
+}
+
+async function clearFullStockSuggested(itemId, variationId) {
+  if (variationId === '' || variationId === 'null') variationId = null;
+  const client = getActiveClient();
+  if (!client) return;
+  try {
+    const r = await apiCall('PUT', `/api/logistica/full-stock/${itemId}`, {
+      client_id:            client.id,
+      suggested_quantity:   null,
+      coverage_days_target: parseInt(document.getElementById('fsGlobalDays')?.value) || 30,
+      notes:                ''
+    });
+    if (r?.ok) {
+      if (_fullStockData) {
+        const item = _fullStockData.items.find(i => i.id === itemId && (variationId ? i.variation_id == variationId : !i.variation_id));
+        if (item) item.suggested_quantity = null;
+      }
+      renderFsTable();
+    }
+  } catch(e) { showToast('❌ Error al limpiar'); }
 }
 
 async function setFsDays(days) {
