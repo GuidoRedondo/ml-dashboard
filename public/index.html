@@ -4015,8 +4015,6 @@ function renderFsTable() {
     mla:       i => i.id,
     title:     i => (i.title || '').toLowerCase(),
     full:      i => i.stock_full      ?? -1,
-    reserved:  i => i.stock_reserved  ?? -1,
-    transit:   i => i.stock_in_transit ?? -1,
     sold:      i => i.units_sold_period ?? -1,
     ritmo:     i => i.daily_rate      ?? -1,
     coverage:  i => i.coverage_days   ?? 9999,
@@ -4056,10 +4054,16 @@ function renderFsTable() {
         <a href="https://articulo.mercadolibre.com.ar/${item.id}" target="_blank" style="color:var(--text);text-decoration:none;font-weight:600">${item.id}</a>
       </td>
       <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${cleanTitle}">${cleanTitle}</td>
-      <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:11px;color:var(--muted);max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${skuLabel}">${skuLabel}</td>
-      <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:13px;text-align:center;font-weight:700;color:#6366f1">${item.stock_full ?? '—'}</td>
-      <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;text-align:center;color:#d97706">${item.stock_reserved || 0}</td>
-      <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;text-align:center;color:#10b981">${item.stock_in_transit || 0}</td>
+      <td style="padding:8px 10px;border-bottom:1px solid var(--border);max-width:130px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+        ${item.sku
+          ? `<span style="font-size:11px;font-weight:600;color:var(--text)">${item.sku}</span>${skuLabel !== '—' ? '<br><span style='font-size:10px;color:var(--muted)'>' + skuLabel + '</span>' : ''}`
+          : `<span style="font-size:11px;color:var(--muted)">${skuLabel}</span>`
+        }
+      </td>
+      <td style="padding:8px 10px;border-bottom:1px solid var(--border);text-align:center">
+        <div style="font-size:13px;font-weight:700;color:#6366f1">${item.stock_full ?? '—'}</div>
+        <div style="font-size:10px;color:var(--muted);margin-top:2px">${[item.stock_reserved ? item.stock_reserved+'res' : '', item.stock_in_transit ? item.stock_in_transit+'trán' : ''].filter(Boolean).join(' · ') || ''}</div>
+      </td>
       <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;text-align:center">${item.units_sold_period}</td>
       <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:13px;text-align:center;font-weight:600;color:var(--text)">${ritmoText}</td>
       <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:13px;text-align:center;font-weight:700;color:${covColor}">${cov != null ? cov+'d' : '—'}</td>
@@ -4076,14 +4080,12 @@ function renderFsTable() {
         ${thLabel('title',     'Título',         'left')}
         <th style="padding:8px 10px;text-align:left;font-size:11px;font-weight:600;color:var(--muted);border-bottom:1px solid var(--border)">SKU / Variante</th>
         ${thLabel('full',      'Stock FULL')}
-        ${thLabel('reserved',  'Reservado')}
-        ${thLabel('transit',   'En tránsito')}
         ${thLabel('sold',      'Ventas ' + pd + 'd')}
         ${thLabel('ritmo',     'Ritmo/día')}
         ${thLabel('coverage',  'Cobertura')}
         ${thLabel('suggested', 'Sugerido a enviar')}
       </tr></thead>
-      <tbody>${rows || '<tr><td colspan="10" style="padding:30px;text-align:center;color:var(--muted)">Sin ítems para el filtro seleccionado</td></tr>'}</tbody>
+      <tbody>${rows || '<tr><td colspan="9" style="padding:30px;text-align:center;color:var(--muted)">Sin ítems para el filtro seleccionado</td></tr>'}</tbody>
     </table>
   </div>
   <div style="font-size:11px;color:var(--muted);margin-top:10px;padding:0 2px">
@@ -4136,6 +4138,7 @@ function exportFullStockExcel() {
       'MLA':               i.id,
       'Título':            cleanTitle,
       'SKU / Variante':    skuLabel,
+      'SKU (código)':      i.sku || '',
       'Stock FULL':        i.stock_full       ?? 0,
       'Reservado':         i.stock_reserved   ?? 0,
       'En tránsito':       i.stock_in_transit ?? 0,
@@ -4149,7 +4152,7 @@ function exportFullStockExcel() {
 
   const wb = XLSX.utils.book_new();
   const ws = XLSX.utils.json_to_sheet(rows);
-  ws['!cols'] = [18,40,22,12,11,12,13,11,16,13,16].map(w => ({ wch: w }));
+  ws['!cols'] = [18,40,22,16,12,11,12,13,11,16,13,16].map(w => ({ wch: w }));
   XLSX.utils.book_append_sheet(wb, ws, 'Stock FULL');
   const fecha = new Date().toISOString().slice(0,10);
   XLSX.writeFile(wb, `StockFULL_${clientName.replace(/\s+/g,'_')}_${fecha}.xlsx`);
