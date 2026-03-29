@@ -699,6 +699,12 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
 
     curData.orders.forEach(order => {
       totalPaidAmount += parseFloat(order.paid_amount) || 0;
+      // Debug orden específica
+      if (order.id == '2000012255952125') {
+        const shipId = order.shipping?.id;
+        const shipData = shipId ? shippingCostMap[shipId] : null;
+        console.log(`[ORDER_TARGET] id=${order.id} shipping_id=${shipId} paid=${order.paid_amount} shipData=${JSON.stringify(shipData)}`);
+      }
 
       (order.order_items || []).forEach(oi => {
         totalSaleFee += parseFloat(oi.sale_fee) || 0;
