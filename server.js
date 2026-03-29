@@ -15,6 +15,15 @@ const pool = new Pool({
   ssl: { rejectUnauthorized: false }
 });
 
+// ── Credenciales ML: DB si existen, sino env var ─────────────────────────────
+function getMLCredentials(client) {
+  return {
+    app_id:        client?.app_id        || process.env.ML_APP_ID,
+    client_secret: client?.client_secret || process.env.ML_CLIENT_SECRET,
+  };
+}
+
+
 async function initDB() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS users (
@@ -244,10 +253,10 @@ app.get('/api/clients', requireAuth, async (req, res) => {
 
 app.post('/api/clients', requireAuth, async (req, res) => {
   try {
-    const { name, app_id, client_secret } = req.body;
+    const { name } = req.body;
     const result = await pool.query(
-      'INSERT INTO clients (name, app_id, client_secret) VALUES ($1, $2, $3) RETURNING id, name',
-      [name, app_id, client_secret]
+      'INSERT INTO clients (name) VALUES ($1) RETURNING id, name',
+      [name]
     );
     res.json(result.rows[0]);
   } catch(e) { res.status(500).json({ error: e.message }); }
@@ -267,7 +276,8 @@ app.get('/api/clients/:id/auth-link', requireAuth, async (req, res) => {
     if (!result.rows.length) return res.status(404).json({ error: 'Cliente no encontrado' });
     const client = result.rows[0];
     const redirectUri = process.env.REDIRECT_URI || 'https://ml-dashboard-production.up.railway.app/oauth/callback';
-    const link = `https://auth.mercadolibre.com.ar/authorization?response_type=code&client_id=${client.app_id}&redirect_uri=${encodeURIComponent(redirectUri)}&state=${client.id}&scope=offline_access&prompt=consent&approval_prompt=force`;
+    const { app_id } = getMLCredentials(client);
+    const link = `https://auth.mercadolibre.com.ar/authorization?response_type=code&client_id=${app_id}&redirect_uri=${encodeURIComponent(redirectUri)}&state=${client.id}&scope=offline_access&prompt=consent&approval_prompt=force`;
     res.json({ link });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
@@ -286,7 +296,7 @@ app.get('/oauth/callback', async (req, res) => {
     const tokenRes = await fetch(`${ML_API}/oauth/token`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({ grant_type: 'authorization_code', client_id: client.app_id, client_secret: client.client_secret, code, redirect_uri: redirectUri }).toString()
+      body: new URLSearchParams({ grant_type: 'authorization_code', ...getMLCredentials(client), code, redirect_uri: redirectUri }).toString()
     });
     const tokens = await tokenRes.json();
     console.log('OAuth tokens received:', JSON.stringify({
@@ -329,10 +339,11 @@ async function refreshClientToken(client) {
     const tokenToRefresh = client.refresh_token || client.access_token;
     if (!tokenToRefresh) return false;
 
+    const { app_id, client_secret } = getMLCredentials(client);
     const body = new URLSearchParams({
       grant_type: 'refresh_token',
-      client_id: client.app_id,
-      client_secret: client.client_secret,
+      client_id: app_id,
+      client_secret,
       refresh_token: tokenToRefresh
     });
     const tokenRes = await fetch(`${ML_API}/oauth/token`, {
