@@ -328,6 +328,7 @@ app.get('/oauth/callback', async (req, res) => {
     });
     console.log('[OAUTH_CALLBACK] client_id usado:', getMLCredentials(client).app_id, '| ML_APP_ID env:', process.env.ML_APP_ID ? 'SET' : 'NOT SET');
     const tokens = await tokenRes.json();
+    console.log('[OAUTH_CALLBACK] respuesta completa ML:', JSON.stringify(tokens));
     console.log('OAuth tokens received:', JSON.stringify({
       has_access: !!tokens.access_token,
       has_refresh: !!tokens.refresh_token,
