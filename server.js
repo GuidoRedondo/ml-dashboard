@@ -501,11 +501,20 @@ async function fetchShippingCosts(orders, headers) {
       fetch(`${ML_API}/shipments/${id}`, { headers })
         .then(r => r.json())
         .then(data => { 
-          if (batch.indexOf(id) < 2 && i < 10) console.log(`[SHIPMENT_RAW] id=${id} keys=${Object.keys(data||{}).join(',')} base_cost=${data?.base_cost} logistic=${data?.logistic_type} cost=${JSON.stringify(data?.cost)}`);
+          if (batch.indexOf(id) < 2 && i < 10) console.log(`[SHIPMENT_RAW] id=${id} base_cost=${data?.base_cost} logistic=${data?.logistic_type} cost=${JSON.stringify(data?.cost)} receiver_cost=${data?.receiver_cost}`);
           return data;
         })
         .catch(e => { console.log(`[SHIPMENT_ERR] id=${id} err=${e.message}`); return null; })
     ));
+    // Fetch /costs para los primeros 3 shipments del primer batch para comparar
+    if (i === 0) {
+      for (const id of batch.slice(0, 3)) {
+        try {
+          const costs = await fetch(`${ML_API}/shipments/${id}/costs`, { headers }).then(r => r.json());
+          console.log(`[SHIPMENT_COSTS] id=${id} ${JSON.stringify(costs)}`);
+        } catch(e) {}
+      }
+    }
     results.forEach((s, idx) => {
       if (!s) return;
 
@@ -704,6 +713,14 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
         const shipId = order.shipping?.id;
         const shipData = shipId ? shippingCostMap[shipId] : null;
         console.log(`[ORDER_TARGET] id=${order.id} shipping_id=${shipId} paid=${order.paid_amount} shipData=${JSON.stringify(shipData)}`);
+      }
+      // Log campos de order_items para las primeras 2 órdenes
+      if (curData.orders.indexOf(order) < 2) {
+        (order.order_items||[]).slice(0,1).forEach(oi => {
+          const keys = Object.keys(oi).filter(k => !['item','variation_id'].includes(k));
+          console.log(`[OI_FIELDS] order=${order.id} fields=${keys.join(',')} sale_fee=${oi.sale_fee} unit_price=${oi.unit_price}`);
+          console.log(`[OI_FULL] ${JSON.stringify(oi)}`);
+        });
       }
 
       (order.order_items || []).forEach(oi => {
