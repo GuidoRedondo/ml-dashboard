@@ -2125,7 +2125,7 @@ app.get('/api/logistica/full-stock', requireAuth, async (req, res) => {
     if (!token) return res.status(403).json({ error: 'Sin token' });
     const headers  = { 'Authorization': `Bearer ${token}` };
 
-    // ── 1. Ítems FULL activos ────────────────────────────────────────────────
+    // ── 1. Todos los ítems activos ───────────────────────────────────────────
     let allIds = [], offset = 0;
     while (true) {
       const r = await fetch(`${ML_API}/users/${uid}/items/search?status=active&limit=100&offset=${offset}`, { headers }).then(r => r.json());
@@ -2133,11 +2133,11 @@ app.get('/api/logistica/full-stock', requireAuth, async (req, res) => {
       allIds = allIds.concat(ids);
       if (ids.length < 100 || allIds.length >= (r.paging?.total || 0)) break;
       offset += 100;
-      if (offset > 2000) break;
+      if (offset > 5000) break;
     }
 
-    // ── 2. Filtrar solo FULL y obtener inventory_id ──────────────────────────
-    const fullItems = [];
+    // ── 2. Datos de cada ítem (todos, no solo FULL) ──────────────────────────
+    const allItems = [];
     for (let i = 0; i < allIds.length; i += 20) {
       const batch = allIds.slice(i, i + 20);
       try {
@@ -2145,56 +2145,68 @@ app.get('/api/logistica/full-stock', requireAuth, async (req, res) => {
         (Array.isArray(data) ? data : []).forEach(r => {
           if (r.code !== 200 || !r.body) return;
           const b = r.body;
-          if ((b.shipping?.logistic_type || '') !== 'fulfillment') return;
-          // SKU del ítem raíz (seller_custom_field)
-          const itemSku = b.seller_custom_field || null;
-          if (b.inventory_id) {
-            fullItems.push({ id: b.id, title: b.title, price: b.price, inventory_id: b.inventory_id, variation_id: null, sku: itemSku });
-          } else if (b.variations?.length) {
+          const lt       = b.shipping?.logistic_type || '';
+          const isFull   = lt === 'fulfillment';
+          const itemSku  = b.seller_custom_field || null;
+
+          if (b.variations?.length) {
+            // Ítem con variaciones → una fila por variante
             b.variations.forEach(v => {
-              if (!v.inventory_id) return;
               const varName = (v.attribute_combinations || []).map(a => a.value_name).join(' / ') || `Var ${v.id}`;
-              // SKU de la variación: buscar en seller_custom_field o atributo SELLER_SKU
-              const varSku = v.attributes?.find(a => a.id === 'SELLER_SKU')?.value_name || itemSku || null;
-              fullItems.push({ id: b.id, title: `${b.title} — ${varName}`, price: v.price || b.price, inventory_id: v.inventory_id, variation_id: v.id, sku: varSku });
+              const varSku  = v.attributes?.find(a => a.id === 'SELLER_SKU')?.value_name || itemSku || null;
+              allItems.push({
+                id:           b.id,
+                title:        `${b.title} — ${varName}`,
+                price:        v.price || b.price,
+                variation_id: v.id,
+                inventory_id: v.inventory_id || null,
+                is_full:      isFull && !!v.inventory_id,
+                logistic_type: lt,
+                sku:          varSku,
+              });
+            });
+          } else {
+            // Ítem sin variaciones
+            allItems.push({
+              id:           b.id,
+              title:        b.title,
+              price:        b.price,
+              variation_id: null,
+              inventory_id: b.inventory_id || null,
+              is_full:      isFull && !!b.inventory_id,
+              logistic_type: lt,
+              sku:          itemSku,
             });
           }
         });
       } catch(e) {}
     }
 
-    console.log(`[FULL_STOCK] allIds=${allIds.length}, fullItems=${fullItems.length}`);
-    // ── 3. Stock FULL por inventory_id — en batches de 10 para evitar rate limit ──
+    // ── 3. Stock FULL para los que tienen inventory_id ───────────────────────
     const delay = ms => new Promise(r => setTimeout(r, ms));
-    const stockResults = [];
-    for (let i = 0; i < fullItems.length; i += 10) {
-      const batch = fullItems.slice(i, i + 10);
-      const batchResults = await Promise.all(
-        batch.map(async item => {
-          try {
-            const s = await fetch(`${ML_API}/inventories/${item.inventory_id}/stock/fulfillment`, { headers }).then(r => r.json());
-            return {
-              ...item,
-              stock_available:  s.available_quantity ?? 0,
-              stock_reserved:   s.not_available_quantity?.reserved ?? 0,
-              stock_damaged:    s.not_available_quantity?.damaged  ?? 0,
-              stock_in_transit: s.in_transit?.quantity ?? 0,
-            };
-          } catch(e) {
-            return { ...item, stock_available: null, stock_reserved: 0, stock_damaged: 0, stock_in_transit: 0 };
-          }
-        })
-      );
-      stockResults.push(...batchResults);
-      if (i + 10 < fullItems.length) await delay(150); // pausa entre batches
+    const fullItemsToQuery = allItems.filter(i => i.inventory_id);
+    const stockMap = {};
+    for (let i = 0; i < fullItemsToQuery.length; i += 10) {
+      const batch = fullItemsToQuery.slice(i, i + 10);
+      await Promise.all(batch.map(async item => {
+        try {
+          const s = await fetch(`${ML_API}/inventories/${item.inventory_id}/stock/fulfillment`, { headers }).then(r => r.json());
+          const key = item.variation_id ? `${item.id}_${item.variation_id}` : item.id;
+          stockMap[key] = {
+            stock_full:       s.available_quantity ?? 0,
+            stock_reserved:   s.not_available_quantity?.reserved ?? 0,
+            stock_in_transit: s.in_transit?.quantity ?? 0,
+          };
+        } catch(e) {}
+      }));
+      if (i + 10 < fullItemsToQuery.length) await delay(150);
     }
 
-    // ── 4. Ventas últimos N días — por variation_id si existe, si no por item_id ──
-    const now = new Date();
+    // ── 4. Ventas por SKU ────────────────────────────────────────────────────
+    const now      = new Date();
     const dateFrom = new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
-    const fmt = d => d.toISOString().slice(0, 19) + '.000-00:00';
+    const fmt      = d => d.toISOString().slice(0, 19) + '.000-00:00';
     const { orders } = await fetchAllOrders(uid, headers, fmt(dateFrom), fmt(now));
-    // clave: "itemId" o "itemId_variationId"
     const salesByKey = {};
     orders.forEach(order => {
       (order.order_items || []).forEach(oi => {
@@ -2213,41 +2225,40 @@ app.get('/api/logistica/full-stock', requireAuth, async (req, res) => {
     );
     const configMap = {};
     configs.forEach(c => { configMap[c.item_id] = c; });
-
-    // Config global de días de cobertura (guardada con item_id = '__global__')
-    const globalCfg = configMap['__global__'] || {};
-    const globalTargetDays = globalCfg.coverage_days_target || 30;
+    const globalTargetDays = (configMap['__global__'] || {}).coverage_days_target || 30;
 
     // ── 6. Armar respuesta ───────────────────────────────────────────────────
-    const result = stockResults.map(item => {
-      const salesKey   = item.variation_id ? `${item.id}_${item.variation_id}` : item.id;
-      const unitsSold  = salesByKey[salesKey] || 0;
-      const stockFull    = item.stock_available || 0;  // stock en depósito FULL
-      const stockDeposito = item.stock_deposito || 0;   // stock en depósito propio
-      const stockTotal   = stockFull + (item.stock_reserved || 0) + (item.stock_in_transit || 0);
-      const dailyRate    = unitsSold / days;
-      // Cobertura y sugerido basados en stock FULL disponible
-      const coverage     = dailyRate > 0 ? Math.round(stockFull / dailyRate) : null;
-      const cfg          = configMap[item.id] || {};
-      const targetDays   = cfg.coverage_days_target || globalTargetDays;
-      // Sugerido: solo si hay ritmo de venta; si ritmo=0 → 0
-      const suggested    = cfg.suggested_quantity != null
-        ? cfg.suggested_quantity
-        : (dailyRate > 0 ? Math.max(0, Math.round(dailyRate * targetDays - stockFull)) : 0);
+    const result = allItems.map(item => {
+      const salesKey  = item.variation_id ? `${item.id}_${item.variation_id}` : item.id;
+      const stockKey  = salesKey;
+      const stock     = stockMap[stockKey] || { stock_full: 0, stock_reserved: 0, stock_in_transit: 0 };
+      const unitsSold = salesByKey[salesKey] || 0;
+      const dailyRate = unitsSold / days;
+      const coverage  = (dailyRate > 0 && item.is_full) ? Math.round(stock.stock_full / dailyRate) : (item.is_full ? null : 0);
+      const cfg       = configMap[item.id] || {};
+      const targetDays = cfg.coverage_days_target || globalTargetDays;
+      const suggested  = dailyRate > 0
+        ? Math.max(0, Math.round(dailyRate * targetDays - stock.stock_full))
+        : 0;
       return {
-        ...item,
-        stock_full:        stockFull,
-        stock_deposito:    stockDeposito,
-        stock_total:       stockTotal,
+        id:                item.id,
+        title:             item.title,
+        variation_id:      item.variation_id,
+        sku:               item.sku,
+        is_full:           item.is_full,
+        logistic_type:     item.logistic_type,
+        stock_full:        stock.stock_full,
+        stock_reserved:    stock.stock_reserved,
+        stock_in_transit:  stock.stock_in_transit,
         units_sold_period: unitsSold,
         daily_rate:        parseFloat(dailyRate.toFixed(2)),
         coverage_days:     coverage,
         coverage_days_target: targetDays,
         suggested_quantity: suggested,
-        notes:             cfg.notes || '',
       };
     });
 
+    console.log(`[FULL_STOCK] allIds=${allIds.length}, allItems=${allItems.length}, conFULL=${result.filter(i=>i.is_full).length}`);
     res.json({ items: result, period_days: days, global_target_days: globalTargetDays });
   } catch(e) {
     console.error('[FULL_STOCK]', e.message);
@@ -2255,20 +2266,6 @@ app.get('/api/logistica/full-stock', requireAuth, async (req, res) => {
   }
 });
 
-app.delete('/api/logistica/full-stock-overrides', requireAuth, async (req, res) => {
-  try {
-    const { client_id } = req.body;
-    if (!client_id) return res.status(400).json({ error: 'client_id requerido' });
-    const r = await pool.query(
-      "UPDATE full_stock_config SET suggested_quantity = NULL WHERE client_id = $1 AND item_id != '__global__'",
-      [client_id]
-    );
-    res.json({ ok: true, cleared: r.rowCount });
-  } catch(e) {
-    console.error('[FULL_STOCK_CLEAR]', e.message);
-    res.status(500).json({ error: e.message });
-  }
-});
 
 app.put('/api/logistica/full-stock-global', requireAuth, async (req, res) => {
   try {
