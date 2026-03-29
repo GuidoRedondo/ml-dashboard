@@ -783,7 +783,7 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
         const id    = oi.item && oi.item.id;
         const title = oi.item && oi.item.title;
         if (!id) return;
-        if (!byItem[id]) byItem[id] = { id, title: title || id, revenue: 0, units: 0, net: 0, orders: 0, envio_cobrado: 0, envio_pagado: 0 };
+        if (!byItem[id]) byItem[id] = { id, title: title || id, revenue: 0, units: 0, net: 0, orders: 0, envio_cobrado: 0, envio_pagado: 0, impuestos: 0, comision: 0, ads: 0 };
 
         // Also track per mode
         if (!byItemPerMode[mode])     byItemPerMode[mode] = {};
@@ -809,6 +809,8 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
         byItem[id].orders        += 1;
         byItem[id].envio_cobrado += itemBuyerShip;
         byItem[id].envio_pagado  += itemShip;
+        byItem[id].impuestos     += itemTax;
+        byItem[id].comision      += itemSaleFee;
 
         byItemPerMode[mode][id].revenue += itemRevenue;
         byItemPerMode[mode][id].units   += oi.quantity || 0;
@@ -882,6 +884,39 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
       }
     } catch(e) { /* ads spend optional */ }
 
+    // Fetch ads spend por ítem (cost por MLA)
+    const adsByItem = {};
+    try {
+      const advData = await fetch(`${ML_API}/advertising/advertisers?product_id=PADS`, {
+        headers: { ...headers, 'Content-Type': 'application/json', 'Api-Version': '1' }
+      }).then(r => r.json());
+      const advertisers = advData.advertisers || [];
+      if (advertisers.length) {
+        const adv = advertisers.find(a => a.site_id === (user.site_id || 'MLA')) || advertisers[0];
+        const siteId   = user.site_id || 'MLA';
+        const fromDate = curFrom.toISOString().slice(0,10);
+        const toDate   = curTo.toISOString().slice(0,10);
+        // Paginar todos los ítems con métricas de costo
+        let offset = 0, limit = 50, total = 999;
+        while (offset < total) {
+          const url = `${ML_API}/advertising/${siteId}/advertisers/${adv.advertiser_id}/product_ads/ads/search?date_from=${fromDate}&date_to=${toDate}&metrics=cost&limit=${limit}&offset=${offset}`;
+          const data = await fetch(url, { headers: { ...headers, 'api-version': '2' } }).then(r => r.json()).catch(() => ({}));
+          total = data.paging?.total || 0;
+          (data.results || []).forEach(ad => {
+            if (ad.item_id && ad.metrics?.cost > 0) {
+              adsByItem[ad.item_id] = (adsByItem[ad.item_id] || 0) + parseFloat(ad.metrics.cost);
+            }
+          });
+          offset += limit;
+          if ((data.results || []).length < limit) break;
+        }
+        // Distribuir ads a byItem
+        Object.entries(adsByItem).forEach(([id, cost]) => {
+          if (byItem[id]) byItem[id].ads = cost;
+        });
+      }
+    } catch(e) { /* ads por item opcional */ }
+
     const importeRecibido = netBeforeAds - adsSpend;
     const porcentajeRecibido = curData.amount > 0
       ? ((importeRecibido / curData.amount) * 100).toFixed(1)
@@ -899,28 +934,31 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
         title:           i.title,
         revenue:         i.revenue,
         units:           i.units,
-        comision:        i.revenue > 0 ? (i.revenue - i.net) : 0,
+        comision:        i.comision || (i.revenue > 0 ? (i.revenue - i.net) : 0),
+        impuestos:       i.impuestos || 0,
         envio_cobrado:   i.envio_cobrado,
         envio_pagado:    i.envio_pagado,
         resultado_envio: i.envio_cobrado - i.envio_pagado,
+        ads:             i.ads || 0,
         neto:            i.net,
         pct_neto:        i.revenue > 0 ? ((i.net / i.revenue) * 100).toFixed(1) : '0'
       }));
 
     const rentabilidad = {
-      facturacion:     totalFacturacion,
-      envios_cobrados: totalBuyerShip,
-      total_ingresos:  totalFacturacion + totalBuyerShip,
-      comisiones:      totalSaleFee,
-      impuestos:       totalTaxes,
-      costo_envios:    totalSellerShip,
-      anulaciones:     totalCancelled,
-      cancelled_count: cancelledCount,
-      inversion_ads:   adsSpend,
-      total_egresos:   totalEgresos,
-      neto_ml:         netoML,
-      costo_productos: 0,
-      by_product:      byProduct,
+      facturacion:      totalFacturacion,
+      envios_cobrados:  totalBuyerShip,
+      total_ingresos:   totalFacturacion + totalBuyerShip,
+      comisiones:       totalSaleFee,
+      impuestos:        totalTaxes,
+      costo_envios:     totalSellerShip,
+      resultado_envios: totalBuyerShip - totalSellerShip,
+      anulaciones:      totalCancelled,
+      cancelled_count:  cancelledCount,
+      inversion_ads:    adsSpend,
+      total_egresos:    totalEgresos,
+      neto_ml:          netoML,
+      costo_productos:  0,
+      by_product:       byProduct,
     };
 
     // Units sold
