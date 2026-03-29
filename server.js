@@ -707,21 +707,11 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
       if (order.taxes && order.taxes.amount) {
         totalTaxes += parseFloat(order.taxes.amount) || 0;
       }
-      // Log primeras 3 órdenes para ver estructura de taxes y payments
-      if (i < 3) {
-        const pmtInfo = (order.payments||[]).map(p => `fee=${p.marketplace_fee} ship=${p.shipping_cost} tax=${JSON.stringify(p.taxes_withheld)}`).join('|');
-        console.log(`[TAX_DEBUG] order=${order.id} taxes=${JSON.stringify(order.taxes)} payments=[${pmtInfo}]`);
-      }
 
       const shipId = order.shipping && order.shipping.id;
       if (shipId && shippingCostMap[shipId] !== undefined) {
         totalSellerShip += shippingCostMap[shipId].sellerCost || 0;
       }
-    });
-
-    // DEBUG — log first 2 orders raw to understand structure
-    curData.orders.slice(0, 2).forEach((order, i) => {
-      console.log(`[ORDER_RAW] #${i} id=${order.id} paid=${order.paid_amount} total=${order.total_amount} shipping=${JSON.stringify(order.shipping)} taxes=${JSON.stringify(order.taxes)} items=${(order.order_items||[]).map(oi => `${oi.item?.id}:price=${oi.unit_price}:qty=${oi.quantity}:fee=${oi.sale_fee}`).join('|')}`);
     });
 
     // ── PERFORMANCE DATA ──────────────────────────────────────────────────────
