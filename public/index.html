@@ -4008,11 +4008,11 @@ function renderFsTable() {
   const colMap = {
     mla:       i => i.id,
     title:     i => (i.title || '').toLowerCase(),
-    available: i => i.stock_available ?? -1,
-    total:     i => i.stock_total     ?? -1,
+    full:      i => i.stock_full      ?? -1,
+    deposito:  i => i.stock_deposito  ?? -1,
     sold:      i => i.units_sold_period ?? -1,
-    ritmo:     i => i.daily_rate ?? -1,
-    coverage:  i => i.coverage_days ?? 9999,
+    ritmo:     i => i.daily_rate      ?? -1,
+    coverage:  i => i.coverage_days   ?? 9999,
     suggested: i => i.suggested_quantity ?? -1,
   };
   if (_fsSort.col && colMap[_fsSort.col]) {
@@ -4023,19 +4023,19 @@ function renderFsTable() {
   }
 
   const globalTarget = _fullStockData?.global_target_days || 30;
+  const pd = _fullStockData?.period_days || _fsDays || 30;
 
   const rows = filtered.map(item => {
-    const rowKey     = `${item.id}${item.variation_id ? '-'+item.variation_id : ''}`;
-    const cov        = item.coverage_days;
-    const covColor   = coverageColor(cov);
-    const ritmo      = item.daily_rate || 0;
-    const ritmoText  = ritmo > 0 ? ritmo.toFixed(2) : '—';
-    // Sugerido = ritmo × días_objetivo − stock_disponible (mínimo 0)
-    const targetDays = globalTarget;
-    const autoSug    = ritmo > 0 ? Math.max(0, Math.round(ritmo * targetDays - (item.stock_available || 0))) : null;
-    const sugVal     = item.suggested_quantity != null ? item.suggested_quantity : autoSug;
-
-    const skuLabel = item.variation_id
+    const rowKey    = `${item.id}${item.variation_id ? '-'+item.variation_id : ''}`;
+    const cov       = item.coverage_days;
+    const covColor  = coverageColor(cov);
+    const ritmo     = item.daily_rate || 0;
+    const ritmoText = ritmo > 0 ? ritmo.toFixed(2) : '—';
+    // Sugerido: ritmo=0 → 0; ritmo>0 → ritmo × días_objetivo − stock_full (mín. 0)
+    const autoSug   = ritmo > 0
+      ? Math.max(0, Math.round(ritmo * globalTarget - (item.stock_full || 0)))
+      : 0;
+    const skuLabel   = item.variation_id
       ? (item.title.includes(' — ') ? item.title.split(' — ').slice(1).join(' — ') : String(item.variation_id))
       : '—';
     const cleanTitle = item.variation_id && item.title.includes(' — ')
@@ -4044,15 +4044,12 @@ function renderFsTable() {
 
     return `<tr>
       <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;white-space:nowrap">
-        <a href="https://articulo.mercadolibre.com.ar/${item.id}" target="_blank" style="color:var(--accent);text-decoration:none;font-weight:600">${item.id}</a>
+        <a href="https://articulo.mercadolibre.com.ar/${item.id}" target="_blank" style="color:var(--text);text-decoration:none;font-weight:600">${item.id}</a>
       </td>
       <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${cleanTitle}">${cleanTitle}</td>
       <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:11px;color:var(--muted);max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${skuLabel}">${skuLabel}</td>
-      <td style="padding:8px 10px;border-bottom:1px solid var(--border);text-align:center">
-        <div style="font-size:13px;font-weight:700;color:#6366f1">${item.stock_available ?? '—'}</div>
-        <div style="font-size:10px;color:var(--muted);line-height:1.4">${item.stock_reserved ? item.stock_reserved+' res.' : ''}${item.stock_reserved && item.stock_in_transit ? ' · ' : ''}${item.stock_in_transit ? item.stock_in_transit+' trán.' : ''}</div>
-      </td>
-      <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:13px;text-align:center;font-weight:700;color:#8b5cf6">${item.stock_total ?? '—'}</td>
+      <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:13px;text-align:center;font-weight:700;color:#6366f1">${item.stock_full ?? '—'}</td>
+      <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:13px;text-align:center;font-weight:700;color:var(--text)">${item.stock_deposito ?? '—'}</td>
       <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;text-align:center">${item.units_sold_period}</td>
       <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:13px;text-align:center;font-weight:600;color:var(--text)">${ritmoText}</td>
       <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:13px;text-align:center;font-weight:700;color:${covColor}">${cov != null ? cov+'d' : '—'}</td>
@@ -4060,7 +4057,7 @@ function renderFsTable() {
         <div style="display:flex;align-items:center;gap:4px;justify-content:center">
           <input type="number" min="0" id="sug-${rowKey}"
             value="${item.suggested_quantity != null ? item.suggested_quantity : ''}"
-            placeholder="${autoSug != null ? autoSug : '—'}"
+            placeholder="${autoSug}"
             style="width:60px;padding:3px 6px;border:1px solid var(--border);border-radius:6px;background:var(--surface2);color:var(--text);font-size:12px;text-align:center"
             onkeydown="if(event.key==='Enter') saveFullStockSuggested('${item.id}', '${item.variation_id || ''}')"
           />
@@ -4074,22 +4071,22 @@ function renderFsTable() {
   wrap.innerHTML = `<div style="overflow-x:auto">
     <table style="width:100%;border-collapse:collapse">
       <thead><tr style="background:var(--surface2)">
-        ${thLabel('mla',      'MLA',              'left')}
-        ${thLabel('title',    'Título',           'left')}
+        ${thLabel('mla',       'MLA',            'left')}
+        ${thLabel('title',     'Título',         'left')}
         <th style="padding:8px 10px;text-align:left;font-size:11px;font-weight:600;color:var(--muted);border-bottom:1px solid var(--border)">SKU / Variante</th>
-        ${thLabel('available','Disponible')}
-        ${thLabel('total',    'Stock total')}
-        ${thLabel('sold',     'Ventas ${period_days}d')}
-        ${thLabel('ritmo',    'Ritmo/día')}
-        ${thLabel('coverage', 'Cobertura')}
-        ${thLabel('suggested','Sugerido a enviar')}
+        ${thLabel('full',      'Stock FULL')}
+        ${thLabel('deposito',  'Stock depósito')}
+        ${thLabel('sold',      'Ventas ' + pd + 'd')}
+        ${thLabel('ritmo',     'Ritmo/día')}
+        ${thLabel('coverage',  'Cobertura')}
+        ${thLabel('suggested', 'Sugerido a enviar')}
       </tr></thead>
       <tbody>${rows || '<tr><td colspan="9" style="padding:30px;text-align:center;color:var(--muted)">Sin ítems para el filtro seleccionado</td></tr>'}</tbody>
     </table>
   </div>
   <div style="font-size:11px;color:var(--muted);margin-top:10px;padding:0 2px">
     🟢 Cobertura ≥30d &nbsp;|&nbsp; 🟡 15–29d &nbsp;|&nbsp; 🟠 7–14d &nbsp;|&nbsp; 🔴 &lt;7d &nbsp;·&nbsp;
-    Sugerido = ritmo/día × días objetivo − stock disponible &nbsp;·&nbsp; Editá el campo para override manual
+    Sugerido = ritmo/día × días objetivo − stock FULL (0 si sin ventas) &nbsp;·&nbsp; Editá para override manual
   </div>`;
 }
 function exportFullStockExcel() {
@@ -4100,31 +4097,29 @@ function exportFullStockExcel() {
   const clientName = client?.name || 'Cliente';
 
   const rows = items.map(i => {
-    const skuLabel = i.variation_id
+    const skuLabel   = i.variation_id
       ? (i.title.includes(' — ') ? i.title.split(' — ').slice(1).join(' — ') : String(i.variation_id))
       : '—';
     const cleanTitle = i.variation_id && i.title.includes(' — ') ? i.title.split(' — ')[0] : i.title;
-    const ritmo  = i.daily_rate || 0;
-    const autoSug = ritmo > 0 ? Math.max(0, Math.round(ritmo * targetDays - (i.stock_available || 0))) : null;
+    const ritmo      = i.daily_rate || 0;
+    const autoSug    = ritmo > 0 ? Math.max(0, Math.round(ritmo * targetDays - (i.stock_full || 0))) : 0;
     return {
       'MLA':               i.id,
       'Título':            cleanTitle,
       'SKU / Variante':    skuLabel,
-      'Disponible':        i.stock_available ?? 0,
-      'Reservado':         i.stock_reserved  ?? 0,
-      'En tránsito':       i.stock_in_transit ?? 0,
-      'Stock total':       i.stock_total ?? 0,
-      [`Ventas ${period_days}d`]: i.units_sold_period,
+      'Stock FULL':        i.stock_full      ?? 0,
+      'Stock depósito':    i.stock_deposito  ?? 0,
+      ['Ventas ' + period_days + 'd']: i.units_sold_period,
       'Ritmo/día':         ritmo > 0 ? parseFloat(ritmo.toFixed(2)) : 0,
       'Cobertura (días)':  i.coverage_days ?? '',
       'Días objetivo':     targetDays,
-      'Sugerido a enviar': i.suggested_quantity != null ? i.suggested_quantity : (autoSug ?? ''),
+      'Sugerido a enviar': i.suggested_quantity != null ? i.suggested_quantity : autoSug,
     };
   });
 
   const wb = XLSX.utils.book_new();
   const ws = XLSX.utils.json_to_sheet(rows);
-  ws['!cols'] = [18,40,22,12,12,13,12,14,11,17,13,16].map(w => ({ wch: w }));
+  ws['!cols'] = [18,40,22,14,16,13,11,16,13,16].map(w => ({ wch: w }));
   XLSX.utils.book_append_sheet(wb, ws, 'Stock FULL');
   const fecha = new Date().toISOString().slice(0,10);
   XLSX.writeFile(wb, `StockFULL_${clientName.replace(/\s+/g,'_')}_${fecha}.xlsx`);
