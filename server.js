@@ -326,6 +326,7 @@ app.get('/oauth/callback', async (req, res) => {
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({ grant_type: 'authorization_code', ...getMLCredentials(client), code, redirect_uri: redirectUri }).toString()
     });
+    console.log('[OAUTH_CALLBACK] client_id usado:', getMLCredentials(client).app_id, '| ML_APP_ID env:', process.env.ML_APP_ID ? 'SET' : 'NOT SET');
     const tokens = await tokenRes.json();
     console.log('OAuth tokens received:', JSON.stringify({
       has_access: !!tokens.access_token,
