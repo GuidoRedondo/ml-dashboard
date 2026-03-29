@@ -2141,18 +2141,20 @@ app.get('/api/logistica/full-stock', requireAuth, async (req, res) => {
     for (let i = 0; i < allIds.length; i += 20) {
       const batch = allIds.slice(i, i + 20);
       try {
-        const data = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,title,price,shipping,inventory_id,variations`, { headers }).then(r => r.json());
+        const data = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,title,price,available_quantity,shipping,inventory_id,variations`, { headers }).then(r => r.json());
         (Array.isArray(data) ? data : []).forEach(r => {
           if (r.code !== 200 || !r.body) return;
           const b = r.body;
           if ((b.shipping?.logistic_type || '') !== 'fulfillment') return;
+          // stock_deposito = available_quantity del ítem (stock en depósito propio)
+          const stockDeposito = b.available_quantity ?? 0;
           if (b.inventory_id) {
-            fullItems.push({ id: b.id, title: b.title, price: b.price, inventory_id: b.inventory_id, variation_id: null });
+            fullItems.push({ id: b.id, title: b.title, price: b.price, inventory_id: b.inventory_id, variation_id: null, stock_deposito: stockDeposito });
           } else if (b.variations?.length) {
             b.variations.forEach(v => {
               if (!v.inventory_id) return;
               const varName = (v.attribute_combinations || []).map(a => a.value_name).join(' / ') || `Var ${v.id}`;
-              fullItems.push({ id: b.id, title: `${b.title} — ${varName}`, price: v.price || b.price, inventory_id: v.inventory_id, variation_id: v.id });
+              fullItems.push({ id: b.id, title: `${b.title} — ${varName}`, price: v.price || b.price, inventory_id: v.inventory_id, variation_id: v.id, stock_deposito: v.available_quantity ?? stockDeposito });
             });
           }
         });
@@ -2210,17 +2212,22 @@ app.get('/api/logistica/full-stock', requireAuth, async (req, res) => {
     const result = stockResults.map(item => {
       const salesKey   = item.variation_id ? `${item.id}_${item.variation_id}` : item.id;
       const unitsSold  = salesByKey[salesKey] || 0;
-      const stockTotal = (item.stock_available || 0) + (item.stock_reserved || 0) + (item.stock_in_transit || 0);
-      const dailyRate  = unitsSold / days;
-      const coverage   = dailyRate > 0 ? Math.round((item.stock_available || 0) / dailyRate) : null;
-      // config por item tiene prioridad sobre global
-      const cfg        = configMap[item.id] || {};
-      const targetDays = cfg.coverage_days_target || globalTargetDays;
-      const suggested  = cfg.suggested_quantity != null
+      const stockFull    = item.stock_available || 0;  // stock en depósito FULL
+      const stockDeposito = item.stock_deposito || 0;   // stock en depósito propio
+      const stockTotal   = stockFull + (item.stock_reserved || 0) + (item.stock_in_transit || 0);
+      const dailyRate    = unitsSold / days;
+      // Cobertura y sugerido basados en stock FULL disponible
+      const coverage     = dailyRate > 0 ? Math.round(stockFull / dailyRate) : null;
+      const cfg          = configMap[item.id] || {};
+      const targetDays   = cfg.coverage_days_target || globalTargetDays;
+      // Sugerido: solo si hay ritmo de venta; si ritmo=0 → 0
+      const suggested    = cfg.suggested_quantity != null
         ? cfg.suggested_quantity
-        : (dailyRate > 0 ? Math.max(0, Math.round(dailyRate * targetDays - (item.stock_available || 0))) : null);
+        : (dailyRate > 0 ? Math.max(0, Math.round(dailyRate * targetDays - stockFull)) : 0);
       return {
         ...item,
+        stock_full:        stockFull,
+        stock_deposito:    stockDeposito,
         stock_total:       stockTotal,
         units_sold_period: unitsSold,
         daily_rate:        parseFloat(dailyRate.toFixed(2)),
