@@ -2214,6 +2214,9 @@ function perfFilterMode(idx) {
 function loadRentabilidad() {
   const el = document.getElementById('rentabilidadContent');
   if (!el) return;
+  const client = getActiveClient();
+  if (!client) { el.innerHTML = '<div style="color:var(--muted);padding:20px;text-align:center">Seleccioná una cuenta</div>'; return; }
+
   const connected = state.accounts.filter(a => a.data && a.data.rentabilidad);
   if (!connected.length) {
     el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:20px;text-align:center">Sincronizá primero para ver los datos</div>';
@@ -2225,9 +2228,8 @@ function loadRentabilidad() {
   connected.forEach(acc => {
     const r = acc.data.rentabilidad;
     Object.keys(R).forEach(k => { R[k] += r[k]||0; });
-    // Merge by_product across accounts
     (r.by_product || []).forEach(p => {
-      if (!allProducts[p.id]) allProducts[p.id] = { ...p };
+      if (!allProducts[p.id]) allProducts[p.id] = { ...p, ads: 0 };
       else {
         allProducts[p.id].revenue         += p.revenue;
         allProducts[p.id].units           += p.units;
@@ -2236,28 +2238,39 @@ function loadRentabilidad() {
         allProducts[p.id].envio_pagado    += p.envio_pagado  || 0;
         allProducts[p.id].resultado_envio += p.resultado_envio || 0;
         allProducts[p.id].neto            += p.neto;
+        allProducts[p.id].impuestos       += p.impuestos || 0;
       }
     });
   });
 
-  const products = Object.values(allProducts)
-    .map(p => ({ ...p, pct_neto: p.revenue > 0 ? ((p.neto/p.revenue)*100).toFixed(1) : '0' }));
+  // Cargar CMV desde product_costs
+  const clientId = client.id;
+  apiCall('GET', `/api/reporte/items-vendidos?client_id=${clientId}&date_from=${getDateRange().date_from}&date_to=${getDateRange().date_to}`)
+    .then(costsData => {
+      const costsMap = {};
+      (costsData?.items || []).forEach(i => { if (i.costo_unit) costsMap[i.mla_id] = parseFloat(i.costo_unit)||0; });
+      renderRentabilidad(R, allProducts, costsMap);
+    })
+    .catch(() => renderRentabilidad(R, allProducts, {}));
+}
 
-  // Sort state
-  if (!window._rentSort) window._rentSort = { col: 'revenue', asc: false };
-  const sc = window._rentSort.col, sa = window._rentSort.asc;
-  const colVal = p => {
-    if (sc === 'title')    return p.title?.toLowerCase() || '';
-    if (sc === 'pct_neto') return parseFloat(p.pct_neto) || 0;
-    return parseFloat(p[sc]) || 0;
-  };
-  products.sort((a, b) => {
-    const va = colVal(a), vb = colVal(b);
-    if (typeof va === 'string') return sa ? va.localeCompare(vb) : vb.localeCompare(va);
-    return sa ? va - vb : vb - va;
+function renderRentabilidad(R, allProducts, costsMap) {
+  const el = document.getElementById('rentabilidadContent');
+
+  // Calcular CMV total
+  let cmvTotal = 0;
+  const products = Object.values(allProducts).map(p => {
+    const costoUnit = costsMap[p.id] ?? null;
+    const cmv = costoUnit != null ? costoUnit * p.units : null;
+    if (cmv != null) cmvTotal += cmv;
+    const margen = p.revenue > 0 && cmv != null
+      ? ((p.revenue - p.comision - (p.impuestos||0) - cmv - (p.resultado_envio < 0 ? -p.resultado_envio : 0)) / p.revenue * 100)
+      : (p.revenue > 0 ? (p.neto / p.revenue * 100) : 0);
+    return { ...p, costo_unit: costoUnit, cmv, margen: parseFloat(margen.toFixed(1)) };
   });
 
-  const utilidad_final = R.neto_ml - R.costo_productos;
+  const utilidad_final = R.neto_ml - cmvTotal;
+  const resultado_envios = R.envios_cobrados - R.costo_envios;
   const base = R.facturacion || 1;
 
   const fmtM = n => {
@@ -2266,130 +2279,94 @@ function loadRentabilidad() {
     if (abs >= 1000)    return sign+'$'+(abs/1000).toFixed(1)+'K';
     return sign+'$'+Math.round(abs).toLocaleString('es-AR');
   };
-  const pct = (val, b) => b > 0 ? (val/b*100).toFixed(1)+'%' : '—';
+  const pct = (val, b) => b > 0 ? (Math.abs(val)/b*100).toFixed(1)+'%' : '—';
+  const margenColor = m => m >= 30 ? '#00e676' : m >= 15 ? '#FFD700' : '#ff5252';
 
-  function statRow(label, value, pctVal, valueColor) {
-    return `
-      <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid rgba(255,255,255,.06)">
-        <span style="font-size:12px;color:var(--muted)">${label}</span>
-        <div style="display:flex;align-items:center;gap:12px">
-          <span style="font-size:13px;font-weight:700;color:${valueColor||'var(--text)'};">${fmtM(value)}</span>
-          <span style="font-size:11px;color:var(--muted);min-width:50px;text-align:right">${pctVal}</span>
-        </div>
-      </div>`;
-  }
+  // Ordenamiento
+  if (!window._rentSort) window._rentSort = { col: 'revenue', asc: false };
+  const { col: sc, asc: sa } = window._rentSort;
+  const colVal = p => {
+    if (sc === 'title') return (p.title||'').toLowerCase();
+    if (sc === 'margen') return p.margen ?? -999;
+    if (sc === 'cmv') return p.cmv ?? -1;
+    if (sc === 'pct_total') return p.revenue / base;
+    return parseFloat(p[sc]) || 0;
+  };
+  products.sort((a, b) => {
+    const va = colVal(a), vb = colVal(b);
+    if (typeof va === 'string') return sa ? va.localeCompare(vb) : vb.localeCompare(va);
+    return sa ? va - vb : vb - va;
+  });
 
-  function totalCard(icon, label, value, color, sub) {
-    return `
-      <div class="kpi-card" style="border-top:3px solid ${color}">
-        <div class="kpi-label">${icon} ${label}</div>
-        <div class="kpi-value" style="color:${color}">${fmtM(value)}</div>
-        <div class="kpi-sub">${sub}</div>
-      </div>`;
-  }
+  const th = (col, label, align='right') => {
+    const active = window._rentSort.col === col;
+    const arrow = active ? (window._rentSort.asc ? ' ↑' : ' ↓') : '';
+    return `<th onclick="sortRent('${col}')" style="text-align:${align};padding:8px 10px;color:${active?'var(--text)':'var(--muted)'};font-weight:600;cursor:pointer;user-select:none;white-space:nowrap">${label}${arrow}</th>`;
+  };
 
-  // Pct neto color
-  const pctColor = p => p >= 60 ? '#00e676' : p >= 40 ? '#FFD700' : '#ff5252';
+  // KPI cards
+  const kpiCard = (icon, label, value, color, sub) => `
+    <div class="kpi-card" style="border-top:3px solid ${color};padding:16px">
+      <div class="kpi-label" style="margin-bottom:6px">${icon} ${label}</div>
+      <div style="font-size:22px;font-weight:700;color:${color};font-family:var(--font-b)">${fmtM(value)}</div>
+      <div style="font-size:11px;color:var(--muted);margin-top:4px">${sub}</div>
+    </div>`;
 
   el.innerHTML = `
-    <!-- FILA 1: 5 KPIs principales -->
-    <div class="kpi-grid" style="grid-template-columns:repeat(5,1fr);margin-bottom:12px">
-      ${totalCard('📥','TOTAL INGRESOS',   R.total_ingresos,  '#00e676', pct(R.total_ingresos, base)+' sobre facturación')}
-      ${totalCard('📤','TOTAL EGRESOS',   -R.total_egresos,   '#ff5252', pct(R.total_egresos,  base)+' sobre facturación')}
-      ${totalCard('📣','INVERSIÓN ADS',   -R.inversion_ads,   '#ff9100', pct(R.inversion_ads,  base)+' sobre facturación')}
-      ${totalCard('🏦','NETO ML',          R.neto_ml,         R.neto_ml>=0?'#00e676':'#ff5252', pct(R.neto_ml, base)+' sobre facturación')}
-      ${totalCard('🎯','UTILIDAD FINAL',   utilidad_final,    utilidad_final>=0?'#FFD700':'#ff5252', R.costo_productos>0?pct(utilidad_final,base)+' sobre facturación':'Sin costo de productos aún')}
+    <!-- KPIs superiores -->
+    <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:10px;margin-bottom:16px">
+      ${kpiCard('💰','FACTURACIÓN',       R.facturacion,      '#00e676', pct(R.facturacion, base)+' base')}
+      ${kpiCard('🏦','COMISIONES ML',    -R.comisiones,       '#ff5252', pct(R.comisiones,  base)+' s/facturación')}
+      ${kpiCard('🧾','IMPUESTOS',        -R.impuestos,        '#ff5252', pct(R.impuestos,   base)+' s/facturación')}
+      ${kpiCard('🚚','RES. ENVÍOS',       resultado_envios,   resultado_envios>=0?'#00e676':'#ff5252', pct(Math.abs(resultado_envios), base)+' s/facturación')}
+      ${kpiCard('📣','INVERSIÓN ADS',    -R.inversion_ads,    '#ff9100', pct(R.inversion_ads, base)+' s/facturación')}
+      ${kpiCard('📦','CMV',              -cmvTotal,            cmvTotal>0?'#ff9100':'var(--muted)', cmvTotal>0?pct(cmvTotal,base)+' s/facturación':'Sin costos cargados')}
+      ${kpiCard('🎯','UTILIDAD FINAL',    utilidad_final,     utilidad_final>=0?'#FFD700':'#ff5252', cmvTotal>0?pct(Math.abs(utilidad_final),base)+' s/facturación':'Sin CMV aún')}
     </div>
 
-    <!-- FILA 2: Desglose INGRESOS + EGRESOS -->
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
-      <div class="kpi-card" style="padding:18px">
-        <div class="kpi-label" style="margin-bottom:12px">📥 DESGLOSE DE INGRESOS</div>
-        ${statRow('Facturación (productos)',          R.facturacion,     pct(R.facturacion,     base), '#fff')}
-        ${statRow('Envíos cobrados al comprador',     R.envios_cobrados, pct(R.envios_cobrados, base), '#00e676')}
-        <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0 0">
-          <span style="font-size:13px;font-weight:700">Total Ingresos</span>
-          <span style="font-size:15px;font-weight:700;color:#00e676">${fmtM(R.total_ingresos)}</span>
-        </div>
-      </div>
-      <div class="kpi-card" style="padding:18px">
-        <div class="kpi-label" style="margin-bottom:12px">📤 DESGLOSE DE EGRESOS</div>
-        ${statRow('Comisiones ML (sale_fee)',          -R.comisiones,    pct(R.comisiones,    base), '#ff5252')}
-        ${statRow('Impuestos (IIBB / percepciones)',   -R.impuestos,     pct(R.impuestos,     base), '#ff5252')}
-        ${statRow('Costo de envíos (vendedor)',         -R.costo_envios,  pct(R.costo_envios,  base), '#ff5252')}
-        ${statRow(`Anulaciones y reembolsos (${R.cancelled_count})`, -R.anulaciones, pct(R.anulaciones, base), '#ff9100')}
-        ${statRow('Inversión en publicidad (Ads)',      -R.inversion_ads, pct(R.inversion_ads, base), '#ff9100')}
-        <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0 0">
-          <span style="font-size:13px;font-weight:700">Total Egresos</span>
-          <span style="font-size:15px;font-weight:700;color:#ff5252">${fmtM(-R.total_egresos)}</span>
-        </div>
-      </div>
-    </div>
-
-    <!-- FILA 3: Resultados -->
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
-      <div class="kpi-card" style="padding:18px">
-        <div class="kpi-label" style="margin-bottom:12px">🏦 RESULTADO NETO ML</div>
-        ${statRow('Total Ingresos',  R.total_ingresos,  pct(R.total_ingresos,  base), '#00e676')}
-        ${statRow('Total Egresos',  -R.total_egresos,   pct(R.total_egresos,   base), '#ff5252')}
-        <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0 0">
-          <span style="font-size:13px;font-weight:700">Neto ML</span>
-          <span style="font-size:15px;font-weight:700;color:${R.neto_ml>=0?'#00e676':'#ff5252'}">${fmtM(R.neto_ml)}</span>
-        </div>
-      </div>
-      <div class="kpi-card" style="padding:18px">
-        <div class="kpi-label" style="margin-bottom:12px">🎯 RESULTADO CON COSTO DE PRODUCTOS</div>
-        ${statRow('Neto ML', R.neto_ml, pct(R.neto_ml, base), R.neto_ml>=0?'#00e676':'#ff5252')}
-        ${R.costo_productos > 0
-          ? statRow('Costo de Productos', -R.costo_productos, pct(R.costo_productos, base), '#ff9100')
-          : `<div style="padding:8px 0;border-bottom:1px solid rgba(255,255,255,.06);font-size:12px;color:var(--muted);font-style:italic">Costo de productos — próximamente</div>`
-        }
-        <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0 0">
-          <span style="font-size:13px;font-weight:700">Utilidad Final</span>
-          <span style="font-size:15px;font-weight:700;color:${utilidad_final>=0?'#FFD700':'#ff5252'}">${fmtM(utilidad_final)}</span>
-        </div>
-      </div>
-    </div>
-
-    <!-- TABLA PRODUCTOS -->
+    <!-- Tabla productos -->
     <div class="kpi-card" style="padding:18px">
-      <div class="kpi-label" style="margin-bottom:14px">📋 DESGLOSE POR PRODUCTO</div>
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+        <div class="kpi-label">📋 DESGLOSE POR PRODUCTO</div>
+        <div style="font-size:11px;color:var(--muted)">${products.length} productos · ${Object.keys(costsMap).length} con CMV cargado</div>
+      </div>
       <div style="overflow-x:auto">
         <table style="width:100%;border-collapse:collapse;font-size:12px">
           <thead>
             <tr style="border-bottom:2px solid rgba(255,255,255,.1)">
-              <th style="text-align:left;padding:8px 10px;color:var(--muted);font-weight:600">#</th>
-              ${['title','revenue','units','comision','resultado_envio','pct_neto','pct_neto'].map((col,i) => {
-                const labels = ['Producto','Facturación','Unidades','Comisiones','Res. Envío','Inv. Ads','% Neto','% Total'];
-                const cols   = ['title','revenue','units','comision','resultado_envio','_ads','pct_neto','revenue'];
-                const label  = ['Producto','Facturación','Unidades','Comisiones','Res. Envío','Inv. Ads','% Neto','% Total'][i];
-                const c      = cols[i];
-                const active = window._rentSort.col === c;
-                const arrow  = active ? (window._rentSort.asc ? ' ↑' : ' ↓') : '';
-                const align  = i === 0 ? 'left' : 'right';
-                return `<th onclick="sortRent('${c}')" style="text-align:${align};padding:8px 10px;color:${active?'var(--text)':'var(--muted)'};font-weight:600;cursor:pointer;user-select:none;white-space:nowrap">${label}${arrow}</th>`;
-              }).join('')}
-              <th onclick="sortRent('revenue_pct')" style="text-align:right;padding:8px 10px;color:${window._rentSort.col==='revenue_pct'?'var(--text)':'var(--muted)'};font-weight:600;cursor:pointer;user-select:none">% Total${window._rentSort.col==='revenue_pct'?(window._rentSort.asc?' ↑':' ↓'):''}</th>
+              <th style="text-align:left;padding:8px 6px;color:var(--muted);font-weight:600">#</th>
+              ${th('title',       'Producto',    'left')}
+              ${th('revenue',     'Facturación')}
+              ${th('units',       'Unidades')}
+              ${th('cmv',         'CMV')}
+              ${th('comision',    'Comisión ML')}
+              ${th('impuestos',   'Impuestos')}
+              ${th('_ads',        'Inv. Ads')}
+              ${th('resultado_envio', 'Res. Envío')}
+              ${th('margen',      '% Margen')}
+              ${th('pct_total',   '% Total')}
             </tr>
           </thead>
           <tbody>
             ${products.map((p, i) => {
-              const resEnvio = p.resultado_envio || 0;
-              const resEnvioColor = resEnvio >= 0 ? '#00e676' : '#ff5252';
+              const resEnvioColor = (p.resultado_envio||0) >= 0 ? '#00e676' : '#ff5252';
+              const hasCmv = p.cmv != null;
               return `
               <tr style="border-bottom:1px solid rgba(255,255,255,.05);${i%2===0?'background:rgba(255,255,255,.02)':''}">
-                <td style="padding:8px 10px;color:var(--muted)">${i+1}</td>
-                <td style="padding:8px 10px;max-width:220px">
+                <td style="padding:7px 6px;color:var(--muted)">${i+1}</td>
+                <td style="padding:7px 6px;max-width:200px">
                   <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${p.title}">${p.title}</div>
                   <div style="font-size:10px;color:var(--muted);cursor:pointer" onclick="copyMLA(this,'${p.id}')">${p.id}</div>
                 </td>
-                <td style="padding:8px 10px;text-align:right;font-weight:700">${fmtM(p.revenue)}</td>
-                <td style="padding:8px 10px;text-align:right">${p.units}</td>
-                <td style="padding:8px 10px;text-align:right;color:#ff5252">${fmtM(-p.comision)}</td>
-                <td style="padding:8px 10px;text-align:right;color:${resEnvioColor}" title="Cobrado: ${fmtM(p.envio_cobrado)} / Pagado: ${fmtM(p.envio_pagado)}">${fmtM(resEnvio)}</td>
-                <td style="padding:8px 10px;text-align:right;color:var(--muted)">—</td>
-                <td style="padding:8px 10px;text-align:right;font-weight:700;color:${pctColor(parseFloat(p.pct_neto))}">${p.pct_neto}%</td>
-                <td style="padding:8px 10px;text-align:right;color:var(--muted)">${pct(p.revenue, base)}</td>
+                <td style="padding:7px 6px;text-align:right;font-weight:700">${fmtM(p.revenue)}</td>
+                <td style="padding:7px 6px;text-align:right">${p.units}</td>
+                <td style="padding:7px 6px;text-align:right;color:${hasCmv?'#ff9100':'var(--muted)'}">${hasCmv?fmtM(-p.cmv):'—'}</td>
+                <td style="padding:7px 6px;text-align:right;color:#ff5252">${fmtM(-p.comision)}</td>
+                <td style="padding:7px 6px;text-align:right;color:#ff5252">${(p.impuestos||0)>0?fmtM(-(p.impuestos||0)):'$0'}</td>
+                <td style="padding:7px 6px;text-align:right;color:var(--muted)">—</td>
+                <td style="padding:7px 6px;text-align:right;color:${resEnvioColor}">${fmtM(p.resultado_envio||0)}</td>
+                <td style="padding:7px 6px;text-align:right;font-weight:700;color:${margenColor(p.margen)}">${p.margen}%</td>
+                <td style="padding:7px 6px;text-align:right;color:var(--muted)">${pct(p.revenue, base)}</td>
               </tr>`;
             }).join('')}
           </tbody>
@@ -2397,6 +2374,7 @@ function loadRentabilidad() {
       </div>
     </div>`;
 }
+
 
 function loadVentas() {
   const el = document.getElementById('ventasContent');
