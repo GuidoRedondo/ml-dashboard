@@ -707,6 +707,13 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
       if (order.taxes && order.taxes.amount) {
         totalTaxes += parseFloat(order.taxes.amount) || 0;
       }
+      // TAX_DEBUG — primeras 2 órdenes
+      if (totalTaxes === 0 && curData.orders.indexOf(order) < 2) {
+        const pmtInfo = (order.payments||[]).slice(0,2).map(p =>
+          `fee=${p.marketplace_fee} ship=${p.shipping_cost} taxes_wh=${JSON.stringify(p.taxes_withheld)}`
+        ).join('|');
+        console.log(`[TAX_DEBUG] id=${order.id} taxes=${JSON.stringify(order.taxes)} pmts=[${pmtInfo}]`);
+      }
 
       const shipId = order.shipping && order.shipping.id;
       if (shipId && shippingCostMap[shipId] !== undefined) {
@@ -854,6 +861,8 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
     // Buyer shipping — what buyers paid for shipping (buyerCost from shipments)
     let totalBuyerShip = 0;
     Object.values(shippingCostMap).forEach(s => { totalBuyerShip += s.buyerCost || 0; });
+    console.log(`[ENVIOS_DEBUG] shippingEntries=${Object.keys(shippingCostMap).length} totalBuyerShip=${totalBuyerShip.toFixed(0)} totalSellerShip=${totalSellerShip.toFixed(0)} resultado=${(totalBuyerShip-totalSellerShip).toFixed(0)}`);
+    console.log(`[TAXES_DEBUG] totalTaxes=${totalTaxes.toFixed(0)} totalSaleFee=${totalSaleFee.toFixed(0)}`);
 
     // Facturación = sum of item revenues
     const totalFacturacion = Object.values(byItem).reduce((s, i) => s + i.revenue, 0);
@@ -876,7 +885,7 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
         const url = `${ML_API}/advertising/${siteId}/advertisers/${adv.advertiser_id}/product_ads/campaigns/search?limit=50&date_from=${fromDate}&date_to=${toDate}&metrics=cost&metrics_summary=true`;
         const adsData = await fetch(url, { headers: { ...headers, 'api-version': '2' } }).then(r => r.json()).catch(() => ({}));
         adsSpend = parseFloat((adsData.metrics_summary || {}).cost) || 0;
-        console.log(`[ADS_TOTAL] advertiser=${adv.advertiser_id} from=${fromDate} to=${toDate} campaigns=${adsData.paging?.total} adsSpend=${adsSpend}`);
+        console.log(`[ADS_TOTAL] advertiser=${adv.advertiser_id} from=${fromDate} to=${toDate} campaigns=${adsData.paging?.total} adsSpend=${adsSpend} summary=${JSON.stringify(adsData.metrics_summary)}`);
       }
     } catch(e) { /* ads spend optional */ }
 
