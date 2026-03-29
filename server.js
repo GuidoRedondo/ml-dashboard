@@ -2245,6 +2245,21 @@ app.get('/api/logistica/full-stock', requireAuth, async (req, res) => {
   }
 });
 
+app.delete('/api/logistica/full-stock-overrides', requireAuth, async (req, res) => {
+  try {
+    const { client_id } = req.body;
+    if (!client_id) return res.status(400).json({ error: 'client_id requerido' });
+    const r = await pool.query(
+      "UPDATE full_stock_config SET suggested_quantity = NULL WHERE client_id = $1 AND item_id != '__global__'",
+      [client_id]
+    );
+    res.json({ ok: true, cleared: r.rowCount });
+  } catch(e) {
+    console.error('[FULL_STOCK_CLEAR]', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.put('/api/logistica/full-stock-global', requireAuth, async (req, res) => {
   try {
     const { client_id, coverage_days_target } = req.body;
