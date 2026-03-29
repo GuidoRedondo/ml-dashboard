@@ -2315,11 +2315,10 @@ function renderRentabilidad(R, allProducts, costsMap) {
 
   el.innerHTML = `
     <!-- KPIs superiores -->
-    <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:10px;margin-bottom:16px">
+    <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:10px;margin-bottom:16px">
       ${kpiCard('💰','FACTURACIÓN',       R.facturacion,      '#00e676', pct(R.facturacion, base)+' base')}
-      ${kpiCard('🏦','COMISIONES ML',    -R.comisiones,       '#ff5252', pct(R.comisiones,  base)+' s/facturación')}
-      ${kpiCard('🧾','IMPUESTOS',        -R.impuestos,        '#ff5252', pct(R.impuestos,   base)+' s/facturación')}
-      ${kpiCard('🚚','RES. ENVÍOS',       resultado_envios,   resultado_envios>=0?'#00e676':'#ff5252', pct(Math.abs(resultado_envios), base)+' s/facturación')}
+      ${kpiCard('🏦','COMISIONES + IMP.',  -(R.comisiones + R.impuestos), '#ff5252', pct(R.comisiones + R.impuestos, base)+' s/facturación')}
+      ${kpiCard('🚚','COSTO NETO ENVÍOS',  resultado_envios,   resultado_envios>=0?'#00e676':'#ff5252', pct(Math.abs(resultado_envios), base)+' s/facturación')}
       ${kpiCard('📣','INVERSIÓN ADS',    -R.inversion_ads,    '#ff9100', pct(R.inversion_ads, base)+' s/facturación')}
       ${kpiCard('📦','CMV',              -cmvTotal,            cmvTotal>0?'#ff9100':'var(--muted)', cmvTotal>0?pct(cmvTotal,base)+' s/facturación':'Sin costos cargados')}
       ${kpiCard('🎯','UTILIDAD FINAL',    utilidad_final,     utilidad_final>=0?'#FFD700':'#ff5252', cmvTotal>0?pct(Math.abs(utilidad_final),base)+' s/facturación':'Sin CMV aún')}
