@@ -2163,23 +2163,31 @@ app.get('/api/logistica/full-stock', requireAuth, async (req, res) => {
       } catch(e) {}
     }
 
-    // ── 3. Stock FULL por inventory_id ───────────────────────────────────────
-    const stockResults = await Promise.all(
-      fullItems.map(async item => {
-        try {
-          const s = await fetch(`${ML_API}/inventories/${item.inventory_id}/stock/fulfillment`, { headers }).then(r => r.json());
-          return {
-            ...item,
-            stock_available:  s.available_quantity ?? 0,
-            stock_reserved:   s.not_available_quantity?.reserved ?? 0,
-            stock_damaged:    s.not_available_quantity?.damaged  ?? 0,
-            stock_in_transit: s.in_transit?.quantity ?? 0,
-          };
-        } catch(e) {
-          return { ...item, stock_available: null, stock_reserved: 0, stock_damaged: 0, stock_in_transit: 0 };
-        }
-      })
-    );
+    console.log(`[FULL_STOCK] allIds=${allIds.length}, fullItems=${fullItems.length}`);
+    // ── 3. Stock FULL por inventory_id — en batches de 10 para evitar rate limit ──
+    const delay = ms => new Promise(r => setTimeout(r, ms));
+    const stockResults = [];
+    for (let i = 0; i < fullItems.length; i += 10) {
+      const batch = fullItems.slice(i, i + 10);
+      const batchResults = await Promise.all(
+        batch.map(async item => {
+          try {
+            const s = await fetch(`${ML_API}/inventories/${item.inventory_id}/stock/fulfillment`, { headers }).then(r => r.json());
+            return {
+              ...item,
+              stock_available:  s.available_quantity ?? 0,
+              stock_reserved:   s.not_available_quantity?.reserved ?? 0,
+              stock_damaged:    s.not_available_quantity?.damaged  ?? 0,
+              stock_in_transit: s.in_transit?.quantity ?? 0,
+            };
+          } catch(e) {
+            return { ...item, stock_available: null, stock_reserved: 0, stock_damaged: 0, stock_in_transit: 0 };
+          }
+        })
+      );
+      stockResults.push(...batchResults);
+      if (i + 10 < fullItems.length) await delay(150); // pausa entre batches
+    }
 
     // ── 4. Ventas últimos N días — por variation_id si existe, si no por item_id ──
     const now = new Date();
