@@ -497,63 +497,31 @@ async function fetchShippingCosts(orders, headers) {
   const costMap = {};
   for (let i = 0; i < shipIds.length; i += 10) {
     const batch = shipIds.slice(i, i + 10);
-    const results = await Promise.all(batch.map(id =>
-      fetch(`${ML_API}/shipments/${id}`, { headers })
-        .then(r => r.json())
-        .then(data => { 
-          if (batch.indexOf(id) < 2 && i < 10) console.log(`[SHIPMENT_RAW] id=${id} base_cost=${data?.base_cost} logistic=${data?.logistic_type} cost=${JSON.stringify(data?.cost)} receiver_cost=${data?.receiver_cost}`);
-          return data;
-        })
-        .catch(e => { console.log(`[SHIPMENT_ERR] id=${id} err=${e.message}`); return null; })
-    ));
-    // Fetch /costs para los primeros 3 shipments del primer batch para comparar
-    if (i === 0) {
-      for (const id of batch.slice(0, 3)) {
-        try {
-          const costs = await fetch(`${ML_API}/shipments/${id}/costs`, { headers }).then(r => r.json());
-          console.log(`[SHIPMENT_COSTS] id=${id} ${JSON.stringify(costs)}`);
-        } catch(e) {}
-      }
-    }
+    // Fetch shipment base (logistic_type, province) + /costs (costos reales) en paralelo
+    const [results, costsResults] = await Promise.all([
+      Promise.all(batch.map(id =>
+        fetch(`${ML_API}/shipments/${id}`, { headers })
+          .then(r => r.json())
+          .catch(() => null)
+      )),
+      Promise.all(batch.map(id =>
+        fetch(`${ML_API}/shipments/${id}/costs`, { headers })
+          .then(r => r.json())
+          .catch(() => null)
+      ))
+    ]);
     results.forEach((s, idx) => {
       if (!s) return;
 
-      // ML Shipping cost structure:
-      // base_cost = full shipping cost
-      // cost.gross = gross cost charged to seller
-      // cost.special = discount on seller cost
-      // cost.net = cost.gross - cost.special = actual seller cost
-      // receiver_cost = what buyer paid for shipping (separate from seller cost)
+      // Usar /costs como fuente principal (más preciso que el shipment raíz)
+      // /costs devuelve: receiver.cost = lo que paga el comprador
+      //                  senders[0].cost = lo que paga el vendedor
+      const costsData  = costsResults[idx];
+      const buyerCost  = parseFloat(costsData?.receiver?.cost)    || 0;
+      const sellerCost = parseFloat(costsData?.senders?.[0]?.cost) || 0;
 
-      const baseCost     = parseFloat(s.base_cost) || 0;
-      const costGross    = parseFloat(s.cost?.gross) || 0;
-      const costNet      = parseFloat(s.cost?.net)   || 0;
-      const costSpec     = parseFloat(s.cost?.special) || 0;
-      const costDiscount = parseFloat(s.cost?.discount) || 0;
-      const receiverCost = parseFloat(s.receiver_cost) || 0;
-
-      // Logic:
-      // cost.net = actual seller cost after all discounts (most reliable)
-      // If receiver_cost >= base_cost → buyer covers all shipping → seller pays 0
-      // If cost.net is available and > 0 → use it
-      // Otherwise fallback to gross - special - discount
-      let sellerCost;
-      if (receiverCost >= baseCost && baseCost > 0) {
-        // Buyer fully covers shipping (e.g. buyer-paid correo)
-        sellerCost = 0;
-      } else if (costNet > 0) {
-        sellerCost = costNet;
-      } else if (costGross > 0) {
-        sellerCost = Math.max(0, costGross - costSpec - costDiscount - receiverCost);
-      } else {
-        sellerCost = 0;
-      }
-
-      // buyerCost = what the buyer paid
-      const buyerCost = receiverCost;
-
-      if (idx < 5 && i < 50) {
-        console.log(`[SHIPMENT] id=${batch[idx]} base=${s.base_cost} gross=${s.cost?.gross} special=${s.cost?.special} net=${s.cost?.net} receiver_cost=${s.receiver_cost} discount=${s.cost?.discount} -> sellerCost=${sellerCost.toFixed(0)} buyerCost=${buyerCost.toFixed(0)} logistic=${s.logistic_type} cost_keys=${JSON.stringify(Object.keys(s.cost||{}))}`);
+      if (idx < 3 && i < 10) {
+        console.log(`[SHIPMENT] id=${batch[idx]} logistic=${s.logistic_type} buyerCost=${buyerCost} sellerCost=${sellerCost}`);
       }
 
       // Province: receiver address state
@@ -577,7 +545,7 @@ async function fetchShippingCosts(orders, headers) {
         mode = s.logistic_type || s.shipping_mode || 'Otro';
       }
 
-      costMap[batch[idx]] = { sellerCost, province, mode, baseCost, buyerCost };
+      costMap[batch[idx]] = { sellerCost, province, mode, buyerCost };
     });
   }
   return costMap;
@@ -708,20 +676,7 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
 
     curData.orders.forEach(order => {
       totalPaidAmount += parseFloat(order.paid_amount) || 0;
-      // Debug orden específica
-      if (order.id == '2000012255952125') {
-        const shipId = order.shipping?.id;
-        const shipData = shipId ? shippingCostMap[shipId] : null;
-        console.log(`[ORDER_TARGET] id=${order.id} shipping_id=${shipId} paid=${order.paid_amount} shipData=${JSON.stringify(shipData)}`);
-      }
-      // Log campos de order_items para las primeras 2 órdenes
-      if (curData.orders.indexOf(order) < 2) {
-        (order.order_items||[]).slice(0,1).forEach(oi => {
-          const keys = Object.keys(oi).filter(k => !['item','variation_id'].includes(k));
-          console.log(`[OI_FIELDS] order=${order.id} fields=${keys.join(',')} sale_fee=${oi.sale_fee} unit_price=${oi.unit_price}`);
-          console.log(`[OI_FULL] ${JSON.stringify(oi)}`);
-        });
-      }
+
 
       (order.order_items || []).forEach(oi => {
         totalSaleFee += parseFloat(oi.sale_fee) || 0;
@@ -729,13 +684,6 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
 
       if (order.taxes && order.taxes.amount) {
         totalTaxes += parseFloat(order.taxes.amount) || 0;
-      }
-      // TAX_DEBUG — primeras 2 órdenes
-      if (totalTaxes === 0 && curData.orders.indexOf(order) < 2) {
-        const pmtInfo = (order.payments||[]).slice(0,2).map(p =>
-          `fee=${p.marketplace_fee} ship=${p.shipping_cost} taxes_wh=${JSON.stringify(p.taxes_withheld)}`
-        ).join('|');
-        console.log(`[TAX_DEBUG] id=${order.id} taxes=${JSON.stringify(order.taxes)} pmts=[${pmtInfo}]`);
       }
 
       const shipId = order.shipping && order.shipping.id;
