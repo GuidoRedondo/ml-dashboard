@@ -3892,19 +3892,19 @@ function renderFullStock(data, client) {
   }
 
   // ── KPIs (clickeables para filtrar) ───────────────────────────────────────
-  const totalStockDisp  = items.reduce((s, i) => s + (i.stock_available || 0), 0);
-  const totalStockTotal = items.reduce((s, i) => s + (i.stock_total     || 0), 0);
   const critico = items.filter(i => i.coverage_days != null && i.coverage_days < 7).length;
   const bajo    = items.filter(i => i.coverage_days != null && i.coverage_days >= 7 && i.coverage_days < 15).length;
   const ok      = items.filter(i => i.coverage_days == null || i.coverage_days >= 15).length;
 
+  const enFull    = items.filter(i => i.is_full).length;
+  const sinFull   = items.filter(i => !i.is_full).length;
   const kpiDefs = [
-    { key: 'todos',   label: 'SKUs FULL',       value: items.length,     color: 'var(--text)', bg: 'var(--surface)', border: 'var(--border)' },
-    { key: 'critico', label: '🔴 Crítico <7d',  value: critico,          color: '#dc2626',     bg: critico > 0 ? '#fef2f2' : 'var(--surface)', border: critico > 0 ? '#fca5a5' : 'var(--border)' },
-    { key: 'bajo',    label: '🟠 Bajo 7–14d',   value: bajo,             color: '#d97706',     bg: bajo    > 0 ? '#fffbeb' : 'var(--surface)', border: bajo    > 0 ? '#fcd34d' : 'var(--border)' },
-    { key: 'ok',      label: '🟢 OK ≥15d',      value: ok,               color: '#16a34a',     bg: 'var(--surface)', border: 'var(--border)' },
-    { key: 'stock',   label: 'Stock disponible', value: totalStockDisp,   color: '#6366f1',     bg: 'var(--surface)', border: 'var(--border)' },
-    { key: 'total',   label: 'Stock total',      value: totalStockTotal,  color: '#8b5cf6',     bg: 'var(--surface)', border: 'var(--border)' },
+    { key: 'todos',   label: 'Todos',            value: items.length,     color: 'var(--text)', bg: 'var(--surface)', border: 'var(--border)' },
+    { key: 'full',    label: '📦 En FULL',        value: enFull,           color: '#6366f1',     bg: 'var(--surface)', border: 'var(--border)' },
+    { key: 'nofull',  label: '⚠️ Sin FULL',       value: sinFull,          color: '#d97706',     bg: sinFull > 0 ? '#fffbeb' : 'var(--surface)', border: sinFull > 0 ? '#fcd34d' : 'var(--border)' },
+    { key: 'critico', label: '🔴 Crítico <7d',    value: critico,          color: '#dc2626',     bg: critico > 0 ? '#fef2f2' : 'var(--surface)', border: critico > 0 ? '#fca5a5' : 'var(--border)' },
+    { key: 'bajo',    label: '🟠 Bajo 7–14d',     value: bajo,             color: '#d97706',     bg: bajo    > 0 ? '#fffbeb' : 'var(--surface)', border: bajo    > 0 ? '#fcd34d' : 'var(--border)' },
+    { key: 'ok',      label: '🟢 OK ≥15d',        value: ok,               color: '#16a34a',     bg: 'var(--surface)', border: 'var(--border)' },
   ];
 
   const kpis = `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:12px;margin-bottom:16px" id="fsKpiRow">
@@ -3958,7 +3958,7 @@ function renderFullStock(data, client) {
 function setFsFilter(key) {
   _fsFilter = key;
   // Actualizar bordes de KPIs sin re-renderizar todo
-  ['todos','critico','bajo','ok','stock','transito'].forEach(k => {
+  ['todos','full','nofull','critico','bajo','ok'].forEach(k => {
     const el = document.getElementById(`fskpi-${k}`);
     if (el) el.style.borderColor = k === key ? 'var(--accent)' : '';
   });
@@ -3978,9 +3978,11 @@ function renderFsTable() {
 
   // ── Filtro KPI ─────────────────────────────────────────────────────────────
   let filtered = items;
-  if (_fsFilter === 'critico') filtered = items.filter(i => i.coverage_days != null && i.coverage_days < 7);
-  else if (_fsFilter === 'bajo') filtered = items.filter(i => i.coverage_days != null && i.coverage_days >= 7 && i.coverage_days < 15);
-  else if (_fsFilter === 'ok')   filtered = items.filter(i => i.coverage_days == null || i.coverage_days >= 15);
+  if      (_fsFilter === 'full')    filtered = items.filter(i => i.is_full);
+  else if (_fsFilter === 'nofull')  filtered = items.filter(i => !i.is_full);
+  else if (_fsFilter === 'critico') filtered = items.filter(i => i.coverage_days != null && i.coverage_days < 7);
+  else if (_fsFilter === 'bajo')    filtered = items.filter(i => i.coverage_days != null && i.coverage_days >= 7 && i.coverage_days < 15);
+  else if (_fsFilter === 'ok')      filtered = items.filter(i => i.coverage_days == null || i.coverage_days >= 15);
 
   // ── Filtro búsqueda ────────────────────────────────────────────────────────
   if (_fsSearch && _fsSearch.trim()) {
@@ -4052,6 +4054,7 @@ function renderFsTable() {
     return `<tr>
       <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;white-space:nowrap">
         <a href="https://articulo.mercadolibre.com.ar/${item.id}" target="_blank" style="color:var(--text);text-decoration:none;font-weight:600">${item.id}</a>
+        <span style="display:inline-block;margin-left:5px;padding:1px 6px;border-radius:4px;font-size:10px;font-weight:600;background:${item.is_full ? '#e0e7ff' : '#fef3c7'};color:${item.is_full ? '#4338ca' : '#92400e'}">${item.is_full ? 'FULL' : 'SIN FULL'}</span>
       </td>
       <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${cleanTitle}">${cleanTitle}</td>
       <td style="padding:8px 10px;border-bottom:1px solid var(--border);max-width:130px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
