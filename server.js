@@ -147,7 +147,22 @@ async function initDB() {
   console.log('DB initialized');
 }
 
-// ── MIDDLEWARE ────────────────────────────────────────────────────────────────
+// ── HEALTH + KEEP-ALIVE ──────────────────────────────────────────────────────
+app.get('/health', (req, res) => res.json({ ok: true, ts: new Date().toISOString() }));
+
+// Keep-alive: el servidor se pingea a sí mismo cada 4 minutos para no dormir
+// Solo activo si RAILWAY_PUBLIC_DOMAIN está seteado (producción)
+if (process.env.RAILWAY_PUBLIC_DOMAIN || process.env.SELF_URL) {
+  const selfUrl = process.env.SELF_URL || `https://${process.env.RAILWAY_PUBLIC_DOMAIN}/health`;
+  setInterval(async () => {
+    try {
+      await fetch(selfUrl);
+    } catch(e) { /* ignorar errores de red */ }
+  }, 4 * 60 * 1000); // cada 4 minutos
+  console.log(`Keep-alive activo → ${selfUrl}`);
+}
+
+// ── MIDDLEWARE ─────────────────────────────────────────────────────────────────
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
   res.header('Access-Control-Allow-Credentials', 'true');
@@ -332,19 +347,22 @@ app.get('/oauth/callback', async (req, res) => {
   }
 });
 
-// Refresh token — uses refresh_token if available, otherwise tries access_token (works while still valid)
+// Refresh token — usa refresh_token (dura 6 meses). Si no hay, el token está muerto.
 async function refreshClientToken(client) {
   try {
-    // Use refresh_token if available, otherwise use access_token (ML accepts this while token is still valid)
-    const tokenToRefresh = client.refresh_token || client.access_token;
-    if (!tokenToRefresh) return false;
+    // El refresh_token de ML dura 6 meses y es de un solo uso.
+    // Si no hay refresh_token, no podemos renovar sin intervención del usuario.
+    if (!client.refresh_token) {
+      console.warn(`No hay refresh_token para ${client.name} — requiere reconexión manual`);
+      return false;
+    }
 
     const { app_id, client_secret } = getMLCredentials(client);
     const body = new URLSearchParams({
       grant_type: 'refresh_token',
       client_id: app_id,
       client_secret,
-      refresh_token: tokenToRefresh
+      refresh_token: client.refresh_token
     });
     const tokenRes = await fetch(`${ML_API}/oauth/token`, {
       method: 'POST',
@@ -354,6 +372,14 @@ async function refreshClientToken(client) {
     const tokens = await tokenRes.json();
     if (tokens.error) {
       console.error(`Refresh failed for client ${client.id} (${client.name}): ${tokens.error} - ${tokens.message}`);
+      // Si el token expiró definitivamente, marcarlo como desconectado
+      if (tokens.error === 'invalid_grant' || tokens.error === 'invalid_token') {
+        await pool.query(
+          `UPDATE clients SET access_token = NULL, token_expires_at = NULL, updated_at = NOW() WHERE id = $1`,
+          [client.id]
+        );
+        console.error(`⚠️  Token expirado definitivamente para ${client.name} — requiere reconexión`);
+      }
       return false;
     }
     const expiresAt = new Date(Date.now() + (tokens.expires_in || 21600) * 1000);
@@ -373,14 +399,14 @@ async function refreshClientToken(client) {
 setInterval(async () => {
   try {
     const result = await pool.query(
-      `SELECT * FROM clients WHERE active = true AND access_token IS NOT NULL AND token_expires_at < NOW() + INTERVAL '4 hours'`
+      `SELECT * FROM clients WHERE active = true AND access_token IS NOT NULL AND token_expires_at < NOW() + INTERVAL '5 hours 30 minutes'`
     );
     if (result.rows.length) {
       console.log(`Auto-refresh: ${result.rows.length} tokens expiring soon — refreshing now`);
       for (const client of result.rows) { await refreshClientToken(client); }
     }
   } catch(e) { console.error('Auto-refresh error:', e.message); }
-}, 10 * 60 * 1000); // every 10 minutes
+}, 5 * 60 * 1000); // every 5 minutes
 
 // Also run immediately on startup to fix any already-expired tokens
 setTimeout(async () => {
