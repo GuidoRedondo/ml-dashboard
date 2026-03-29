@@ -3829,6 +3829,7 @@ let _fullStockData = null;
 let _fsSort = { col: null, dir: 1 };
 let _fsFilter = 'todos';
 let _fsDays = 30;
+let _fsSearch = '';
 
 function switchLogisticaTab(tab) {
   _logisticaActiveTab = tab;
@@ -3850,6 +3851,7 @@ function refreshLogisticaTab() {
     _fsSort = { col: null, dir: 1 };
     _fsFilter = 'todos';
     _fsDays = 30;
+    _fsSearch = '';
     loadFullStock();
   } else {
     loadLogistica();
@@ -3933,7 +3935,17 @@ function renderFullStock(data, client) {
     <span id="fsGlobalSaveMsg" style="font-size:12px;color:var(--muted)"></span>
   </div>`;
 
-  el.innerHTML = kpis + globalCtrl + `<div id="fsTableWrap"></div>`;
+  const searchBar = `<div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
+    <input type="text" id="fsSearchInput" placeholder="🔍  Buscar por MLA, título o SKU..."
+      oninput="_fsSearch=this.value;renderFsTable()"
+      style="flex:1;padding:8px 12px;border:1px solid var(--border);border-radius:8px;background:var(--surface2);color:var(--text);font-size:13px"
+    />
+    <button onclick="exportFullStockExcel()"
+      style="padding:7px 16px;border:none;border-radius:8px;background:#16a34a;color:#fff;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap">
+      📥 Exportar Excel
+    </button>
+  </div>`;
+  el.innerHTML = kpis + globalCtrl + searchBar + `<div id="fsTableWrap"></div>`;
   renderFsTable();
 }
 
@@ -3958,11 +3970,24 @@ function renderFsTable() {
   if (!wrap || !_fullStockData) return;
   const { items, period_days } = _fullStockData;
 
-  // ── Filtro ─────────────────────────────────────────────────────────────────
+  // ── Filtro KPI ─────────────────────────────────────────────────────────────
   let filtered = items;
   if (_fsFilter === 'critico') filtered = items.filter(i => i.coverage_days != null && i.coverage_days < 7);
   else if (_fsFilter === 'bajo') filtered = items.filter(i => i.coverage_days != null && i.coverage_days >= 7 && i.coverage_days < 15);
   else if (_fsFilter === 'ok')   filtered = items.filter(i => i.coverage_days == null || i.coverage_days >= 15);
+
+  // ── Filtro búsqueda ────────────────────────────────────────────────────────
+  if (_fsSearch && _fsSearch.trim()) {
+    const q = _fsSearch.trim().toLowerCase();
+    filtered = filtered.filter(i => {
+      const skuLabel = i.variation_id
+        ? (i.title.includes(' — ') ? i.title.split(' — ').slice(1).join(' — ') : String(i.variation_id))
+        : '';
+      return i.id.toLowerCase().includes(q) ||
+             i.title.toLowerCase().includes(q) ||
+             skuLabel.toLowerCase().includes(q);
+    });
+  }
 
   // ── Semáforo ───────────────────────────────────────────────────────────────
   const coverageColor = d => {
@@ -4067,6 +4092,45 @@ function renderFsTable() {
     Sugerido = ritmo/día × días objetivo − stock disponible &nbsp;·&nbsp; Editá el campo para override manual
   </div>`;
 }
+function exportFullStockExcel() {
+  if (!_fullStockData || !_fullStockData.items.length) { showToast('Sin datos para exportar'); return; }
+  const { items, period_days, global_target_days } = _fullStockData;
+  const targetDays = global_target_days || 30;
+  const client = getActiveClient();
+  const clientName = client?.name || 'Cliente';
+
+  const rows = items.map(i => {
+    const skuLabel = i.variation_id
+      ? (i.title.includes(' — ') ? i.title.split(' — ').slice(1).join(' — ') : String(i.variation_id))
+      : '—';
+    const cleanTitle = i.variation_id && i.title.includes(' — ') ? i.title.split(' — ')[0] : i.title;
+    const ritmo  = i.daily_rate || 0;
+    const autoSug = ritmo > 0 ? Math.max(0, Math.round(ritmo * targetDays - (i.stock_available || 0))) : null;
+    return {
+      'MLA':               i.id,
+      'Título':            cleanTitle,
+      'SKU / Variante':    skuLabel,
+      'Disponible':        i.stock_available ?? 0,
+      'Reservado':         i.stock_reserved  ?? 0,
+      'En tránsito':       i.stock_in_transit ?? 0,
+      'Stock total':       i.stock_total ?? 0,
+      [`Ventas ${period_days}d`]: i.units_sold_period,
+      'Ritmo/día':         ritmo > 0 ? parseFloat(ritmo.toFixed(2)) : 0,
+      'Cobertura (días)':  i.coverage_days ?? '',
+      'Días objetivo':     targetDays,
+      'Sugerido a enviar': i.suggested_quantity != null ? i.suggested_quantity : (autoSug ?? ''),
+    };
+  });
+
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.json_to_sheet(rows);
+  ws['!cols'] = [18,40,22,12,12,13,12,14,11,17,13,16].map(w => ({ wch: w }));
+  XLSX.utils.book_append_sheet(wb, ws, 'Stock FULL');
+  const fecha = new Date().toISOString().slice(0,10);
+  XLSX.writeFile(wb, `StockFULL_${clientName.replace(/\s+/g,'_')}_${fecha}.xlsx`);
+  showToast('✅ Excel descargado');
+}
+
 async function setFsDays(days) {
   _fsDays = days;
   _fullStockData = null;
