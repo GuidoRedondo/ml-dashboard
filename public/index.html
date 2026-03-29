@@ -2229,16 +2229,17 @@ function loadRentabilidad() {
     const r = acc.data.rentabilidad;
     Object.keys(R).forEach(k => { R[k] += r[k]||0; });
     (r.by_product || []).forEach(p => {
-      if (!allProducts[p.id]) allProducts[p.id] = { ...p, ads: 0 };
+      if (!allProducts[p.id]) allProducts[p.id] = { ...p };
       else {
         allProducts[p.id].revenue         += p.revenue;
         allProducts[p.id].units           += p.units;
         allProducts[p.id].comision        += p.comision;
+        allProducts[p.id].impuestos       += p.impuestos || 0;
         allProducts[p.id].envio_cobrado   += p.envio_cobrado || 0;
         allProducts[p.id].envio_pagado    += p.envio_pagado  || 0;
         allProducts[p.id].resultado_envio += p.resultado_envio || 0;
+        allProducts[p.id].ads             += p.ads || 0;
         allProducts[p.id].neto            += p.neto;
-        allProducts[p.id].impuestos       += p.impuestos || 0;
       }
     });
   });
@@ -2270,7 +2271,7 @@ function renderRentabilidad(R, allProducts, costsMap) {
   });
 
   const utilidad_final = R.neto_ml - cmvTotal;
-  const resultado_envios = R.envios_cobrados - R.costo_envios;
+  const resultado_envios = R.resultado_envios != null ? R.resultado_envios : (R.envios_cobrados - R.costo_envios);
   const base = R.facturacion || 1;
 
   const fmtM = n => {
@@ -2363,7 +2364,7 @@ function renderRentabilidad(R, allProducts, costsMap) {
                 <td style="padding:7px 6px;text-align:right;color:${hasCmv?'#ff9100':'var(--muted)'}">${hasCmv?fmtM(-p.cmv):'—'}</td>
                 <td style="padding:7px 6px;text-align:right;color:#ff5252">${fmtM(-p.comision)}</td>
                 <td style="padding:7px 6px;text-align:right;color:#ff5252">${(p.impuestos||0)>0?fmtM(-(p.impuestos||0)):'$0'}</td>
-                <td style="padding:7px 6px;text-align:right;color:var(--muted)">—</td>
+                <td style="padding:7px 6px;text-align:right;color:${(p.ads||0)>0?'#ff9100':'var(--muted)'}">${(p.ads||0)>0?fmtM(-p.ads):'—'}</td>
                 <td style="padding:7px 6px;text-align:right;color:${resEnvioColor}">${fmtM(p.resultado_envio||0)}</td>
                 <td style="padding:7px 6px;text-align:right;font-weight:700;color:${margenColor(p.margen)}">${p.margen}%</td>
                 <td style="padding:7px 6px;text-align:right;color:var(--muted)">${pct(p.revenue, base)}</td>
