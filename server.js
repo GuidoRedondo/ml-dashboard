@@ -321,10 +321,13 @@ app.get('/oauth/callback', async (req, res) => {
     const client = clientResult.rows[0];
     const redirectUri = process.env.REDIRECT_URI || 'https://ml-dashboard-production.up.railway.app/oauth/callback';
 
+    const creds = getMLCredentials(client);
+    const bodyParams = new URLSearchParams({ grant_type: 'authorization_code', client_id: creds.app_id, client_secret: creds.client_secret, code, redirect_uri: redirectUri });
+    console.log('[OAUTH_CALLBACK] body enviado a ML:', bodyParams.toString());
     const tokenRes = await fetch(`${ML_API}/oauth/token`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({ grant_type: 'authorization_code', ...getMLCredentials(client), code, redirect_uri: redirectUri }).toString()
+      body: bodyParams.toString()
     });
     console.log('[OAUTH_CALLBACK] client_id usado:', getMLCredentials(client).app_id, '| ML_APP_ID env:', process.env.ML_APP_ID ? 'SET' : 'NOT SET');
     const tokens = await tokenRes.json();
