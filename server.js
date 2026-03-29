@@ -2141,20 +2141,22 @@ app.get('/api/logistica/full-stock', requireAuth, async (req, res) => {
     for (let i = 0; i < allIds.length; i += 20) {
       const batch = allIds.slice(i, i + 20);
       try {
-        const data = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,title,price,available_quantity,shipping,inventory_id,variations`, { headers }).then(r => r.json());
+        const data = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,title,price,available_quantity,shipping,inventory_id,seller_custom_field,variations`, { headers }).then(r => r.json());
         (Array.isArray(data) ? data : []).forEach(r => {
           if (r.code !== 200 || !r.body) return;
           const b = r.body;
           if ((b.shipping?.logistic_type || '') !== 'fulfillment') return;
-          // stock_deposito = available_quantity del ítem (stock en depósito propio)
-          const stockDeposito = b.available_quantity ?? 0;
+          // SKU del ítem raíz (seller_custom_field)
+          const itemSku = b.seller_custom_field || null;
           if (b.inventory_id) {
-            fullItems.push({ id: b.id, title: b.title, price: b.price, inventory_id: b.inventory_id, variation_id: null, stock_deposito: stockDeposito });
+            fullItems.push({ id: b.id, title: b.title, price: b.price, inventory_id: b.inventory_id, variation_id: null, sku: itemSku });
           } else if (b.variations?.length) {
             b.variations.forEach(v => {
               if (!v.inventory_id) return;
               const varName = (v.attribute_combinations || []).map(a => a.value_name).join(' / ') || `Var ${v.id}`;
-              fullItems.push({ id: b.id, title: `${b.title} — ${varName}`, price: v.price || b.price, inventory_id: v.inventory_id, variation_id: v.id, stock_deposito: v.available_quantity ?? stockDeposito });
+              // SKU de la variación: buscar en seller_custom_field o atributo SELLER_SKU
+              const varSku = v.attributes?.find(a => a.id === 'SELLER_SKU')?.value_name || itemSku || null;
+              fullItems.push({ id: b.id, title: `${b.title} — ${varName}`, price: v.price || b.price, inventory_id: v.inventory_id, variation_id: v.id, sku: varSku });
             });
           }
         });
