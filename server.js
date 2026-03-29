@@ -707,6 +707,11 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
       if (order.taxes && order.taxes.amount) {
         totalTaxes += parseFloat(order.taxes.amount) || 0;
       }
+      // Log primeras 3 órdenes para ver estructura de taxes y payments
+      if (i < 3) {
+        const pmtInfo = (order.payments||[]).map(p => `fee=${p.marketplace_fee} ship=${p.shipping_cost} tax=${JSON.stringify(p.taxes_withheld)}`).join('|');
+        console.log(`[TAX_DEBUG] order=${order.id} taxes=${JSON.stringify(order.taxes)} payments=[${pmtInfo}]`);
+      }
 
       const shipId = order.shipping && order.shipping.id;
       if (shipId && shippingCostMap[shipId] !== undefined) {
@@ -878,9 +883,10 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
         const siteId = user.site_id || 'MLA';
         const fromDate = curFrom.toISOString().slice(0,10);
         const toDate = curTo.toISOString().slice(0,10);
-        const url = `${ML_API}/advertising/${siteId}/advertisers/${adv.advertiser_id}/product_ads/campaigns/search?limit=1&date_from=${fromDate}&date_to=${toDate}&metrics=cost&metrics_summary=true`;
+        const url = `${ML_API}/advertising/${siteId}/advertisers/${adv.advertiser_id}/product_ads/campaigns/search?limit=50&date_from=${fromDate}&date_to=${toDate}&metrics=cost&metrics_summary=true`;
         const adsData = await fetch(url, { headers: { ...headers, 'api-version': '2' } }).then(r => r.json()).catch(() => ({}));
         adsSpend = parseFloat((adsData.metrics_summary || {}).cost) || 0;
+        console.log(`[ADS_TOTAL] advertiser=${adv.advertiser_id} from=${fromDate} to=${toDate} campaigns=${adsData.paging?.total} adsSpend=${adsSpend}`);
       }
     } catch(e) { /* ads spend optional */ }
 
