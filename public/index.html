@@ -837,19 +837,11 @@ tbody td {
       </div>
 
       <div class="add-client-form" id="addClientForm">
-        <div style="font-size:13px;color:var(--muted);margin-bottom:12px">Los datos de App ID y Secret son los de tu aplicación de ML Developers.</div>
+        <div style="font-size:13px;color:var(--muted);margin-bottom:12px">Ingresá el nombre del cliente. Después generás el link de autorización de ML.</div>
         <div class="form-row">
           <div class="form-field">
             <label>NOMBRE DEL CLIENTE</label>
-            <input id="newClientName" type="text" placeholder="Ej: Yakka Deportes">
-          </div>
-          <div class="form-field">
-            <label>APP ID</label>
-            <input id="newClientAppId" type="text" placeholder="Tu App ID de ML">
-          </div>
-          <div class="form-field">
-            <label>CLIENT SECRET</label>
-            <input id="newClientSecret" type="password" placeholder="Tu Secret">
+            <input id="newClientName" type="text" placeholder="Ej: Yakka Deportes" onkeydown="if(event.key==='Enter') addClient()">
           </div>
         </div>
         <div style="margin-top:12px;display:flex;gap:8px">
@@ -1181,16 +1173,12 @@ function renderClientsList() {
 
 async function addClient() {
   const name = document.getElementById('newClientName').value.trim();
-  const appId = document.getElementById('newClientAppId').value.trim();
-  const secret = document.getElementById('newClientSecret').value.trim();
-  if (!name || !appId || !secret) { showToast('❌ Completá todos los campos'); return; }
-  const result = await apiCall('POST', '/api/clients', { name, app_id: appId, client_secret: secret });
+  if (!name) { showToast('❌ Ingresá el nombre del cliente'); return; }
+  const result = await apiCall('POST', '/api/clients', { name });
   if (result) {
     document.getElementById('newClientName').value = '';
-    document.getElementById('newClientAppId').value = '';
-    document.getElementById('newClientSecret').value = '';
     document.getElementById('addClientForm').style.display = 'none';
-    showToast('✅ Cliente agregado');
+    showToast('✅ Cliente agregado — generá el link de autorización');
     await loadClients();
   }
 }
