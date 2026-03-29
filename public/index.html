@@ -2223,7 +2223,7 @@ function loadRentabilidad() {
     return;
   }
 
-  const R = { facturacion:0, envios_cobrados:0, total_ingresos:0, comisiones:0, impuestos:0, costo_envios:0, anulaciones:0, cancelled_count:0, inversion_ads:0, total_egresos:0, neto_ml:0, costo_productos:0 };
+  const R = { facturacion:0, envios_cobrados:0, total_ingresos:0, comisiones:0, impuestos:0, costo_envios:0, resultado_envios:0, anulaciones:0, cancelled_count:0, inversion_ads:0, total_egresos:0, neto_ml:0, costo_productos:0 };
   const allProducts = {};
   connected.forEach(acc => {
     const r = acc.data.rentabilidad;
@@ -2327,9 +2327,16 @@ function renderRentabilidad(R, allProducts, costsMap) {
 
     <!-- Tabla productos -->
     <div class="kpi-card" style="padding:18px">
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:8px">
         <div class="kpi-label">📋 DESGLOSE POR PRODUCTO</div>
-        <div style="font-size:11px;color:var(--muted)">${products.length} productos · ${Object.keys(costsMap).length} con CMV cargado</div>
+        <div style="display:flex;align-items:center;gap:8px">
+          <span style="font-size:11px;color:var(--muted)">${products.length} productos · ${Object.keys(costsMap).length} con CMV</span>
+          <button onclick="descargarCMVRentabilidad()" style="padding:5px 12px;border:none;border-radius:6px;background:#6366f1;color:#fff;font-size:12px;font-weight:600;cursor:pointer">📥 Excel CMV</button>
+          <label style="padding:5px 12px;border:none;border-radius:6px;background:#16a34a;color:#fff;font-size:12px;font-weight:600;cursor:pointer">
+            📤 Importar CMV
+            <input type="file" accept=".xlsx" style="display:none" onchange="importarCMVRentabilidad(this)">
+          </label>
+        </div>
       </div>
       <div style="overflow-x:auto">
         <table style="width:100%;border-collapse:collapse;font-size:12px">
@@ -2535,6 +2542,68 @@ function ventasPage(p) {
   );
   renderVentas(filtered);
   document.getElementById('ventasContent').scrollIntoView({ behavior: 'smooth' });
+}
+
+async function descargarCMVRentabilidad() {
+  const client = getActiveClient();
+  if (!client) { showToast('⚠ Seleccioná una cuenta'); return; }
+  const { date_from, date_to } = getDateRange();
+  showToast('⏳ Generando Excel...');
+  try {
+    const data = await apiCall('GET', `/api/reporte/items-vendidos?client_id=${client.id}&date_from=${date_from}&date_to=${date_to}`);
+    if (!data) return;
+    const XLSX = window.XLSX;
+    const wsData = [
+      [`COSTOS DE PRODUCTOS — ${client.name} | ${date_from} → ${date_to}`],
+      ['⚠ Completá la columna "Costo Unitario (ARS)". Guardá y subí el archivo para actualizar.'],
+      ['MLA', 'Título', 'Costo Unitario (ARS)', 'Unidades vendidas', 'Facturación (ARS)', 'Notas'],
+      ...(data.items || []).map(i => [
+        i.mla_id, i.title, i.costo_unit || '', i.units, Math.round(i.revenue), i.notas || ''
+      ])
+    ];
+    const wb = XLSX.utils.book_new();
+    const ws = XLSX.utils.aoa_to_sheet(wsData);
+    ws['!cols'] = [{ wch: 18 }, { wch: 50 }, { wch: 22 }, { wch: 18 }, { wch: 20 }, { wch: 25 }];
+    XLSX.utils.book_append_sheet(wb, ws, 'CMV');
+    XLSX.writeFile(wb, `CMV_${client.name.replace(/\s+/g,'_')}_${date_from}.xlsx`);
+    showToast('✅ Excel descargado');
+  } catch(e) { showToast(`❌ Error: ${e.message}`); }
+}
+
+async function importarCMVRentabilidad(input) {
+  const client = getActiveClient();
+  if (!client) { showToast('⚠ Seleccioná una cuenta'); input.value=''; return; }
+  const file = input.files[0];
+  if (!file) return;
+  showToast('⏳ Leyendo archivo...');
+  try {
+    const buffer = await file.arrayBuffer();
+    const XLSX = window.XLSX;
+    const wb = XLSX.read(buffer, { type: 'array' });
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+    // Buscar fila de headers (contiene 'MLA')
+    let headerRow = -1;
+    for (let i = 0; i < Math.min(rows.length, 5); i++) {
+      if (String(rows[i][0]).toUpperCase().includes('MLA') && rows[i].length > 2) { headerRow = i; break; }
+    }
+    if (headerRow === -1) { showToast('❌ No se encontró la fila de encabezados'); input.value=''; return; }
+    const costos = [];
+    rows.slice(headerRow + 1).forEach(row => {
+      const mla_id = String(row[0]||'').trim();
+      const title  = String(row[1]||'').trim();
+      const costo  = parseFloat(String(row[2]||'').replace(/[,$\s]/g,''))||0;
+      const notas  = String(row[5]||'').trim();
+      if (mla_id.startsWith('MLA') && costo > 0) costos.push({ mla_id, title, costo_unit: costo, notas });
+    });
+    if (!costos.length) { showToast('❌ Sin costos válidos en el archivo'); input.value=''; return; }
+    const r = await apiCall('POST', '/api/reporte/costos', { client_id: client.id, costos });
+    if (r?.ok) {
+      showToast(`✅ ${r.saved} costos actualizados`);
+      loadRentabilidad(); // Recargar para reflejar los nuevos CMV
+    } else { showToast('❌ Error al guardar'); }
+  } catch(e) { showToast(`❌ Error: ${e.message}`); }
+  input.value = '';
 }
 
 function sortRent(col) {
@@ -5106,3 +5175,4 @@ window.addEventListener('DOMContentLoaded', () => {
 </script>
 </body>
 </html>
+
