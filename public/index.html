@@ -2331,6 +2331,7 @@ function renderRentabilidad(R, allProducts, costsMap) {
         <div class="kpi-label">📋 DESGLOSE POR PRODUCTO</div>
         <div style="display:flex;align-items:center;gap:8px">
           <span style="font-size:11px;color:var(--muted)">${products.length} productos · ${Object.keys(costsMap).length} con CMV</span>
+          <button onclick="descargarTablaRentabilidad()" style="padding:5px 12px;border:none;border-radius:6px;background:#0ea5e9;color:#fff;font-size:12px;font-weight:600;cursor:pointer">📊 Excel tabla</button>
           <button onclick="descargarCMVRentabilidad()" style="padding:5px 12px;border:none;border-radius:6px;background:#6366f1;color:#fff;font-size:12px;font-weight:600;cursor:pointer">📥 Excel CMV</button>
           <label style="padding:5px 12px;border:none;border-radius:6px;background:#16a34a;color:#fff;font-size:12px;font-weight:600;cursor:pointer">
             📤 Importar CMV
@@ -2542,6 +2543,73 @@ function ventasPage(p) {
   );
   renderVentas(filtered);
   document.getElementById('ventasContent').scrollIntoView({ behavior: 'smooth' });
+}
+
+async function descargarTablaRentabilidad() {
+  const client = getActiveClient();
+  if (!client) { showToast('⚠ Seleccioná una cuenta'); return; }
+
+  // Usar los datos que ya están renderizados
+  const connected = state.accounts.filter(a => a.data && a.data.rentabilidad);
+  if (!connected.length) { showToast('⚠ Sincronizá primero'); return; }
+
+  const allProducts = {};
+  connected.forEach(acc => {
+    (acc.data.rentabilidad.by_product || []).forEach(p => {
+      if (!allProducts[p.id]) allProducts[p.id] = { ...p };
+      else {
+        allProducts[p.id].revenue         += p.revenue;
+        allProducts[p.id].units           += p.units;
+        allProducts[p.id].comision        += p.comision || 0;
+        allProducts[p.id].impuestos       += p.impuestos || 0;
+        allProducts[p.id].resultado_envio += p.resultado_envio || 0;
+        allProducts[p.id].ads             += p.ads || 0;
+        allProducts[p.id].neto            += p.neto;
+      }
+    });
+  });
+
+  // Cargar CMV
+  const { date_from, date_to } = getDateRange();
+  let costsMap = {};
+  try {
+    const data = await apiCall('GET', `/api/reporte/items-vendidos?client_id=${client.id}&date_from=${date_from}&date_to=${date_to}`);
+    (data?.items || []).forEach(i => { if (i.costo_unit) costsMap[i.mla_id] = parseFloat(i.costo_unit)||0; });
+  } catch(e) {}
+
+  const base = Object.values(allProducts).reduce((s, p) => s + p.revenue, 0) || 1;
+  const products = Object.values(allProducts).sort((a, b) => b.revenue - a.revenue);
+
+  const XLSX = window.XLSX;
+  const rows = products.map((p, i) => {
+    const costoUnit = costsMap[p.id] ?? null;
+    const cmv = costoUnit != null ? costoUnit * p.units : null;
+    const margen = p.revenue > 0
+      ? ((p.revenue - (p.comision||0) - (p.impuestos||0) - (cmv||0)) / p.revenue * 100).toFixed(1)
+      : '—';
+    return {
+      '#':             i + 1,
+      'MLA':           p.id,
+      'Título':        p.title,
+      'Facturación':   Math.round(p.revenue),
+      'Unidades':      p.units,
+      'CMV':           cmv != null ? Math.round(cmv) : '',
+      'Comisión ML':   Math.round(p.comision || 0),
+      'Impuestos':     Math.round(p.impuestos || 0),
+      'Inv. Ads':      Math.round(p.ads || 0),
+      'Res. Envío':    Math.round(p.resultado_envio || 0),
+      '% Margen':      margen,
+      '% Total':       base > 0 ? (p.revenue / base * 100).toFixed(1) : '—',
+    };
+  });
+
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.json_to_sheet(rows);
+  ws['!cols'] = [4, 18, 45, 14, 10, 14, 14, 12, 12, 12, 10, 9].map(w => ({ wch: w }));
+  XLSX.utils.book_append_sheet(wb, ws, 'Rentabilidad');
+  const fecha = new Date().toISOString().slice(0, 10);
+  XLSX.writeFile(wb, `Rentabilidad_${client.name.replace(/\s+/g,'_')}_${fecha}.xlsx`);
+  showToast('✅ Excel descargado');
 }
 
 async function descargarCMVRentabilidad() {
@@ -5175,4 +5243,3 @@ window.addEventListener('DOMContentLoaded', () => {
 </script>
 </body>
 </html>
-
