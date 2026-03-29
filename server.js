@@ -15,6 +15,19 @@ const pool = new Pool({
   ssl: { rejectUnauthorized: false }
 });
 
+// Evitar que un error de DB tire abajo toda la app
+pool.on('error', (err) => {
+  console.error('PostgreSQL pool error (handled):', err.message);
+});
+
+// Evitar crashes por promesas no manejadas
+process.on('unhandledRejection', (reason) => {
+  console.error('Unhandled rejection (handled):', reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught exception (handled):', err.message);
+});
+
 // ── Credenciales ML: DB si existen, sino env var ─────────────────────────────
 function getMLCredentials(client) {
   return {
