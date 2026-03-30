@@ -752,6 +752,8 @@ tbody td {
           <option value="pocas">Pocas fotos (≤3)</option>
           <option value="sin">Sin fotos</option>
           <option value="ok">Suficientes (≥6)</option>
+          <option value="sin_clip">Sin clip</option>
+          <option value="con_clip">Con clip 🎬</option>
         </select>
       </div>
       <div id="fotosContent"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Cargando...</div></div>
@@ -3942,20 +3944,26 @@ function renderFotosTabla() {
   const el = document.getElementById('fotosContent');
   const filtro = document.getElementById('fotosFilter')?.value || 'all';
   let items = _fotosData;
-  if (filtro === 'sin')   items = items.filter(i => i.photo_count === 0);
-  if (filtro === 'pocas') items = items.filter(i => i.photo_count > 0 && i.photo_count <= 3);
-  if (filtro === 'ok')    items = items.filter(i => i.photo_count >= 6);
+  if (filtro === 'sin')      items = items.filter(i => i.photo_count === 0);
+  if (filtro === 'pocas')    items = items.filter(i => i.photo_count > 0 && i.photo_count <= 3);
+  if (filtro === 'ok')       items = items.filter(i => i.photo_count >= 6);
+  if (filtro === 'sin_clip') items = items.filter(i => !i.has_clip);
+  if (filtro === 'con_clip') items = items.filter(i => i.has_clip);
 
   const sinFotos = _fotosData.filter(i => i.photo_count === 0).length;
   const pocasFotos = _fotosData.filter(i => i.photo_count > 0 && i.photo_count <= 3).length;
   const buenas = _fotosData.filter(i => i.photo_count >= 6).length;
+  const conClip = _fotosData.filter(i => i.has_clip).length;
+  const sinClip = _fotosData.filter(i => !i.has_clip).length;
 
   const kpis = `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:12px;margin-bottom:20px">
     ${[
-      ['Total pubs', _fotosData.length, ''],
-      ['Sin fotos', sinFotos, sinFotos > 0 ? '#f97316' : '#22c55e'],
-      ['Con 1-3 fotos', pocasFotos, pocasFotos > 0 ? '#f59e0b' : '#22c55e'],
-      ['6+ fotos ✓', buenas, '#22c55e'],
+      ['Total pubs',   _fotosData.length, ''],
+      ['Sin fotos',    sinFotos,    sinFotos > 0 ? '#f97316' : '#22c55e'],
+      ['Con 1-3 fotos',pocasFotos, pocasFotos > 0 ? '#f59e0b' : '#22c55e'],
+      ['6+ fotos ✓',   buenas,     '#22c55e'],
+      ['🎬 Con clip',  conClip,    conClip > 0 ? '#6366f1' : 'var(--muted)'],
+      ['Sin clip',     sinClip,    sinClip > 0 ? '#f59e0b' : '#22c55e'],
     ].map(([l,v,c]) => `<div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px 14px">
       <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em">${l}</div>
       <div style="font-size:22px;font-weight:700;font-family:var(--font-b);color:${c||'var(--text)'};margin-top:4px">${v}</div>
@@ -3985,6 +3993,7 @@ function renderFotosTabla() {
       <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;text-align:right">$${(item.price||0).toLocaleString('es-AR')}</td>
       <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;text-align:center">${item.available_quantity ?? '—'}</td>
       <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;text-align:center">${item.catalog_listing ? '✓' : '—'}</td>
+      <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:13px;text-align:center">${item.has_clip ? '<span style="color:#6366f1" title="Tiene clip">🎬</span>' : '<span style="color:var(--muted);font-size:11px">—</span>'}</td>
     </tr>`;
   }).join('');
 
@@ -3999,6 +4008,7 @@ function renderFotosTabla() {
       <th style="padding:8px 10px;text-align:right;font-size:11px;font-weight:600;color:var(--muted);border-bottom:1px solid var(--border)">Precio</th>
       <th style="padding:8px 10px;text-align:center;font-size:11px;font-weight:600;color:var(--muted);border-bottom:1px solid var(--border)">Stock</th>
       <th style="padding:8px 10px;text-align:center;font-size:11px;font-weight:600;color:var(--muted);border-bottom:1px solid var(--border)">Catálogo</th>
+      <th style="padding:8px 10px;text-align:center;font-size:11px;font-weight:600;color:var(--muted);border-bottom:1px solid var(--border)">🎬 Clip</th>
     </tr></thead>
     <tbody>${rows || '<tr><td colspan="8" style="padding:30px;text-align:center;color:var(--muted)">No hay publicaciones con este filtro</td></tr>'}</tbody>
   </table></div>`;
