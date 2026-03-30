@@ -2459,10 +2459,8 @@ function renderVentas(orders) {
   const slice = orders.slice(page * PAGE, (page+1) * PAGE);
 
   const fmtM = n => {
-    const abs = Math.abs(n), sign = n < 0 ? '-' : '';
-    if (abs >= 1000000) return sign+'$'+(abs/1000000).toFixed(2)+'M';
-    if (abs >= 1000)    return sign+'$'+(abs/1000).toFixed(1)+'K';
-    return sign+'$'+Math.round(abs).toLocaleString('es-AR');
+    const sign = n < 0 ? '-' : '';
+    return sign + '$' + Math.round(Math.abs(n)).toLocaleString('es-AR');
   };
   const fmtDate = d => {
     const dt = new Date(d);
