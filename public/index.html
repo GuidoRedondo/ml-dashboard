@@ -530,7 +530,7 @@ tbody td {
       <div class="nav-item" data-page="escalabilidad" onclick="showPage('escalabilidad',this);loadEscalabilidad()">
         <span class="nav-icon">🚀</span> Escalabilidad
       </div>
-      <div class="nav-item" data-page="competencia" onclick="showPage('competencia',this);loadCompetencia()">
+      <div class="nav-item" data-page="competencia" onclick="showPage('competencia',this);_catVentasLoaded=false;switchCompTab('categorias')">
         <span class="nav-icon">🏆</span> Competencia
       </div>
       <div class="nav-item" data-page="reporte" onclick="showPage('reporte',this);initReporte()">
@@ -801,20 +801,38 @@ tbody td {
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap">
         <h2 style="margin:0;font-family:var(--font-b);flex:1">🏆 Competencia</h2>
       </div>
-      <!-- Buscador por URL -->
-      <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px 18px;margin-bottom:20px">
-        <div style="font-size:13px;font-weight:600;margin-bottom:10px">🔍 Analizar publicación de competidor</div>
-        <div style="display:flex;gap:8px;flex-wrap:wrap">
-          <input id="compUrlInput" type="text" placeholder="Pegá la URL de ML (ej: https://www.mercadolibre.com.ar/...)"
-            style="flex:1;min-width:280px;padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px"
-            onkeydown="if(event.key==='Enter') analizarCompetidor()">
-          <button onclick="analizarCompetidor()" style="padding:8px 18px;background:var(--accent);color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap">
-            ⚡ Analizar
-          </button>
-        </div>
-        <div id="compAnalisisResult"></div>
+      <!-- Tabs -->
+      <div style="display:flex;gap:0;border-bottom:2px solid var(--border);margin-bottom:20px">
+        <button id="tab-comp-categorias" onclick="switchCompTab('categorias')"
+          style="padding:8px 18px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--accent);border-bottom:2px solid var(--accent);margin-bottom:-2px;font-family:var(--font-b)">
+          📊 Mis Categorías
+        </button>
+        <button id="tab-comp-mercado" onclick="switchCompTab('mercado')"
+          style="padding:8px 18px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-2px;font-family:var(--font-b)">
+          🏆 Mercado
+        </button>
       </div>
-      <div id="competenciaContent"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Cargando categorías...</div></div>
+      <!-- Tab: Mis Categorías -->
+      <div id="comp-tab-categorias">
+        <div id="catVentasContent"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Cargando...</div></div>
+      </div>
+      <!-- Tab: Mercado -->
+      <div id="comp-tab-mercado" style="display:none">
+        <!-- Buscador por URL -->
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px 18px;margin-bottom:20px">
+          <div style="font-size:13px;font-weight:600;margin-bottom:10px">🔍 Analizar publicación de competidor</div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <input id="compUrlInput" type="text" placeholder="Pegá la URL de ML (ej: https://www.mercadolibre.com.ar/...)"
+              style="flex:1;min-width:280px;padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px"
+              onkeydown="if(event.key==='Enter') analizarCompetidor()">
+            <button onclick="analizarCompetidor()" style="padding:8px 18px;background:var(--accent);color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap">
+              ⚡ Analizar
+            </button>
+          </div>
+          <div id="compAnalisisResult"></div>
+        </div>
+        <div id="competenciaContent"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Cargando categorías...</div></div>
+      </div>
     </div>
 
     <!-- REPORTE FINANCIERO -->
@@ -5335,6 +5353,119 @@ function sortEscalabilidad(col) {
   renderEscalabilidad();
 }
 
+
+// ── COMPETENCIA TABS ──────────────────────────────────────────────────────────
+let _compActiveTab = 'categorias';
+let _catVentasLoaded = false;
+
+function switchCompTab(tab) {
+  _compActiveTab = tab;
+  ['categorias','mercado'].forEach(t => {
+    const el  = document.getElementById(`comp-tab-${t}`);
+    const btn = document.getElementById(`tab-comp-${t}`);
+    if (el)  el.style.display  = t === tab ? '' : 'none';
+    if (btn) {
+      btn.style.color        = t === tab ? 'var(--accent)' : 'var(--muted)';
+      btn.style.borderBottom = t === tab ? '2px solid var(--accent)' : '2px solid transparent';
+    }
+  });
+  if (tab === 'categorias' && !_catVentasLoaded) loadCatVentas();
+  if (tab === 'mercado')    loadCompetencia();
+}
+
+async function loadCatVentas() {
+  const el = document.getElementById('catVentasContent');
+  const client = getActiveClient();
+  if (!client) { el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">Seleccioná una cuenta</div>'; return; }
+  el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">⏳ Calculando ventas por categoría y buscando rankings...<br><span style="font-size:11px;margin-top:8px;display:block">Esto puede tardar 30-60 segundos</span></div>';
+  const { date_from, date_to } = getDateRange();
+  try {
+    const data = await apiCall('GET', `/api/categorias-ventas?client_id=${client.id}&date_from=${date_from}&date_to=${date_to}`);
+    _catVentasLoaded = true;
+    renderCatVentas(data);
+  } catch(e) {
+    el.innerHTML = `<div style="color:var(--muted);padding:40px;text-align:center">Error: ${e.message}</div>`;
+  }
+}
+
+function renderCatVentas(data) {
+  const el = document.getElementById('catVentasContent');
+  const { categories, from, to } = data;
+  if (!categories?.length) {
+    el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">Sin datos de ventas en el período</div>';
+    return;
+  }
+
+  const fmtN = n => '$' + Math.round(n).toLocaleString('es-AR');
+  const rankColor = r => !r ? 'var(--muted)' : r <= 5 ? '#00e676' : r <= 20 ? '#ff9100' : '#ff5252';
+  const rankLabel = r => !r ? '+200' : `#${r}`;
+
+  const totalRevenue = categories.reduce((s, c) => s + c.revenue, 0);
+
+  const rows = categories.map((cat, ci) => {
+    const pct = totalRevenue > 0 ? (cat.revenue / totalRevenue * 100).toFixed(1) : '0';
+    const itemRows = cat.items.map(item => {
+      const rColor = rankColor(item.ranking);
+      return `<tr style="background:rgba(255,255,255,.015);border-bottom:1px solid var(--border)">
+        <td style="padding:6px 10px 6px 30px;font-size:11px;color:var(--muted)">
+          <a href="https://articulo.mercadolibre.com.ar/${item.id}" target="_blank" style="color:var(--accent);text-decoration:none">${item.id}</a>
+        </td>
+        <td style="padding:6px 10px;font-size:12px;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${item.title}">${item.title}</td>
+        <td style="padding:6px 10px;text-align:right;font-size:12px;font-weight:600">${fmtN(item.revenue)}</td>
+        <td style="padding:6px 10px;text-align:right;font-size:12px">${item.units}</td>
+        <td style="padding:6px 10px;text-align:center;font-size:13px;font-weight:700;color:${rColor}">${rankLabel(item.ranking)}</td>
+      </tr>`;
+    }).join('');
+
+    return `
+      <tr style="border-bottom:1px solid var(--border);cursor:pointer;background:var(--surface2)"
+          onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'':'none'">
+        <td style="padding:10px;font-size:12px;color:var(--muted)">${ci+1}</td>
+        <td style="padding:10px;font-size:13px;font-weight:600">${cat.name}</td>
+        <td style="padding:10px;text-align:right;font-size:13px;font-weight:700;color:var(--accent)">${fmtN(cat.revenue)}</td>
+        <td style="padding:10px;text-align:right;font-size:12px">${cat.units}</td>
+        <td style="padding:10px;text-align:center;font-size:12px;color:var(--muted)">${cat.items.length} pub${cat.items.length!==1?'s':''}</td>
+        <td style="padding:10px;text-align:right;font-size:12px;color:var(--muted)">${pct}%</td>
+        <td style="padding:10px;text-align:center;font-size:11px;color:var(--muted)">▼ ver</td>
+      </tr>
+      <tr style="display:none">
+        <td colspan="7" style="padding:0">
+          <table style="width:100%;border-collapse:collapse">
+            <thead><tr style="background:var(--surface)">
+              <th style="padding:6px 10px 6px 30px;text-align:left;font-size:11px;color:var(--muted)">MLA</th>
+              <th style="padding:6px 10px;text-align:left;font-size:11px;color:var(--muted)">Publicación</th>
+              <th style="padding:6px 10px;text-align:right;font-size:11px;color:var(--muted)">Facturación</th>
+              <th style="padding:6px 10px;text-align:right;font-size:11px;color:var(--muted)">Unidades</th>
+              <th style="padding:6px 10px;text-align:center;font-size:11px;color:var(--muted)">Ranking</th>
+            </tr></thead>
+            <tbody>${itemRows}</tbody>
+          </table>
+        </td>
+      </tr>`;
+  }).join('');
+
+  el.innerHTML = `
+    <div style="font-size:12px;color:var(--muted);margin-bottom:12px">${categories.length} categorías · ${from} → ${to} · Click en fila para ver publicaciones</div>
+    <div class="kpi-card" style="padding:0;overflow:hidden">
+      <div style="overflow-x:auto">
+        <table style="width:100%;border-collapse:collapse">
+          <thead><tr style="background:var(--surface2);border-bottom:2px solid var(--border)">
+            <th style="padding:10px;text-align:left;font-size:11px;font-weight:600;color:var(--muted)">#</th>
+            <th style="padding:10px;text-align:left;font-size:11px;font-weight:600;color:var(--muted)">Categoría</th>
+            <th style="padding:10px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Facturación</th>
+            <th style="padding:10px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Unidades</th>
+            <th style="padding:10px;text-align:center;font-size:11px;font-weight:600;color:var(--muted)">Publicaciones</th>
+            <th style="padding:10px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">% Total</th>
+            <th style="padding:10px;text-align:center;font-size:11px;font-weight:600;color:var(--muted)"></th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    </div>
+    <div style="font-size:11px;color:var(--muted);margin-top:10px">
+      Ranking = posición en resultados de búsqueda de la categoría · 🟢 Top 5 · 🟡 Top 20 · 🔴 +20 · +200 = no encontrado en primeras 200 posiciones
+    </div>`;
+}
 
 async function loadCompetencia() {
   const el = document.getElementById('competenciaContent');
