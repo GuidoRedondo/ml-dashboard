@@ -2113,7 +2113,6 @@ async function loadPublicaciones() {
         <thead><tr>
           <th style="cursor:pointer" onclick="sortPubs('id')">MLA ↕</th>
           <th style="cursor:pointer" onclick="sortPubs('title')">Título ↕</th>
-          <th>Cuenta</th>
           <th style="cursor:pointer" onclick="sortPubs('status')">Estado ↕</th>
           <th>Problemas</th>
           <th>Ads</th>
@@ -2125,6 +2124,7 @@ async function loadPublicaciones() {
           <th style="text-align:right;cursor:pointer" onclick="sortPubs('conversion')">Conv. ↕</th>
           <th style="text-align:right;cursor:pointer" onclick="sortPubs('adsClicks')">Clicks Ads ↕</th>
           <th style="text-align:right;cursor:pointer" onclick="sortPubs('adsConversion')">Conv. Ads ↕</th>
+          <th style="text-align:center;cursor:pointer" onclick="sortPubs('has_clip')">🎬 Clip ↕</th>
         </tr></thead>
         <tbody id="pubsBody">${buildPubRows(allItems, fmt)}</tbody>
       </table>
@@ -2157,10 +2157,10 @@ function buildPubRows(items, fmt) {
     const convColor    = item.conversion    >= 3 ? '#00e676' : item.conversion    >= 1 ? '#ff9100' : item.conversion    > 0 ? '#ff4d4d' : 'var(--muted)';
     const adsConvColor = item.adsConversion >= 5 ? '#00e676' : item.adsConversion >= 2 ? '#ff9100' : item.adsConversion > 0 ? '#ff4d4d' : 'var(--muted)';
 
-    return '<tr class="pub-row" data-status="' + item.status + '" data-hassales="' + item.hasSales + '" data-hasproblems="' + item.hasProblems + '" data-search="' + (item.title + item.id + item.cuenta).toLowerCase() + '">'
+    return '<tr class="pub-row" data-status="' + item.status + '" data-hassales="' + item.hasSales + '" data-hasproblems="' + item.hasProblems + '" data-search="' + (item.title + item.id + (item.cuenta||'')).toLowerCase() + '">'
       + '<td style="font-size:11px"><span style="color:var(--muted);cursor:pointer" title="Click para copiar" onclick="copyMLA(this,\'' + item.id + '\')">' + item.id + '</span></td>'
       + '<td style="max-width:240px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="' + item.title + '">' + item.title + '</td>'
-      + '<td style="color:var(--muted);font-size:11px">' + item.cuenta + '</td>'
+
       + '<td>' + statusTag + '</td>'
       + '<td>' + problemsTag + '</td>'
       + '<td>' + adsTag + '</td>'
@@ -2172,6 +2172,7 @@ function buildPubRows(items, fmt) {
       + '<td style="text-align:right;font-size:13px;font-weight:700;color:' + convColor + '">' + (item.conversion > 0 ? item.conversion + '%' : '—') + '</td>'
       + '<td style="text-align:right">' + (item.adsClicks > 0 ? item.adsClicks.toLocaleString('es-AR') : '—') + '</td>'
       + '<td style="text-align:right;font-size:13px;font-weight:700;color:' + adsConvColor + '">' + (item.adsConversion > 0 ? item.adsConversion + '%' : '—') + '</td>'
+      + '<td style="text-align:center;font-size:14px">' + (item.has_clip ? '🎬' : '<span style="color:var(--muted)">—</span>') + '</td>'
       + '</tr>';
   }).join('');
 }
