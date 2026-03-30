@@ -1,2942 +1,5383 @@
-const express = require('express');
-const cookieParser = require('cookie-parser');
-const cors = require('cors');
-const fetch = require('node-fetch');
-const { Pool } = require('pg');
-const crypto = require('crypto');
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Negocio Redondo</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+/* ── RESET & FONTS ── */
+@import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700;800&display=swap');
 
-const app = express();
-const PORT = process.env.PORT || 3000;
-const ML_API = 'https://api.mercadolibre.com';
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-// ── DATABASE ──────────────────────────────────────────────────────────────────
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false }
-});
+:root {
+  --font: 'Poppins', sans-serif;
+  --font-b: 'Poppins', sans-serif;
 
-// Evitar que un error de DB tire abajo toda la app
-pool.on('error', (err) => {
-  console.error('PostgreSQL pool error (handled):', err.message);
-});
+  /* Light theme */
+  --bg: #F5F6FA;
+  --surface: #FFFFFF;
+  --surface2: #F0F2F8;
+  --border: #E4E7F0;
+  --text: #1A1D2E;
+  --muted: #8B90A7;
+  --accent: #FFD600;
+  --accent-text: #1A1D2E;
+  --green: #00C851;
+  --red: #FF4444;
+  --orange: #FF8800;
+  --blue: #3B82F6;
+  --shadow: 0 2px 12px rgba(0,0,0,0.07);
+  --shadow-lg: 0 8px 32px rgba(0,0,0,0.10);
+}
 
-// Evitar crashes por promesas no manejadas
-process.on('unhandledRejection', (reason) => {
-  console.error('Unhandled rejection (handled):', reason);
-});
-process.on('uncaughtException', (err) => {
-  console.error('Uncaught exception (handled):', err.message);
-});
+body {
+  font-family: var(--font);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+}
 
-// ── Credenciales ML: DB si existen, sino env var ─────────────────────────────
-function getMLCredentials(client) {
+/* ── LAYOUT ── */
+.app { display: flex; height: 100vh; overflow: hidden; }
+
+/* ── SIDEBAR ── */
+.sidebar {
+  width: 220px;
+  min-width: 220px;
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  overflow-y: auto;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 20px 18px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.brand-icon {
+  width: 36px; height: 36px;
+  background: var(--accent);
+  border-radius: 10px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 18px;
+  flex-shrink: 0;
+}
+.brand-name {
+  font-family: var(--font-b);
+  font-weight: 700;
+  font-size: 15px;
+  color: var(--text);
+  line-height: 1.2;
+}
+.brand-sub {
+  font-size: 10px;
+  color: var(--muted);
+  font-weight: 500;
+  letter-spacing: 1px;
+}
+
+.nav { padding: 12px 10px; flex: 1; }
+
+.nav-section-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 1.2px;
+  color: var(--muted);
+  padding: 8px 8px 4px;
+  margin-top: 4px;
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--muted);
+  transition: all 0.15s;
+  margin-bottom: 1px;
+}
+.nav-item:hover { background: var(--surface2); color: var(--text); }
+.nav-item.active {
+  background: var(--accent);
+  color: var(--accent-text);
+  font-weight: 600;
+}
+.nav-icon { font-size: 15px; width: 20px; text-align: center; flex-shrink: 0; }
+
+/* ── MAIN ── */
+.main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--bg);
+}
+
+/* ── TOPBAR ── */
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 28px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  gap: 16px;
+}
+.page-title {
+  font-family: var(--font-b);
+  font-weight: 700;
+  font-size: 20px;
+  color: var(--text);
+}
+.page-subtitle {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+
+/* ── PAGES ── */
+.page { display: none; padding: 24px 28px; overflow-y: auto; flex: 1; }
+.page.active { display: block; }
+
+/* ── KPI GRID ── */
+.kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 14px;
+}
+@media (max-width: 1100px) { .kpi-grid { grid-template-columns: repeat(2,1fr); } }
+@media (max-width: 700px) { .kpi-grid { grid-template-columns: 1fr; } }
+
+.kpi-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 20px;
+  box-shadow: var(--shadow);
+  transition: box-shadow 0.2s;
+}
+.kpi-card:hover { box-shadow: var(--shadow-lg); }
+
+.kpi-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.8px;
+  color: var(--muted);
+  text-transform: uppercase;
+  margin-bottom: 10px;
+}
+.kpi-value {
+  font-family: var(--font-b);
+  font-size: 26px;
+  font-weight: 700;
+  color: var(--text);
+  line-height: 1.1;
+}
+.kpi-delta {
+  font-size: 12px;
+  font-weight: 600;
+  margin-top: 4px;
+}
+.kpi-delta.up { color: var(--green); }
+.kpi-delta.down { color: var(--red); }
+.kpi-sub {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 4px;
+}
+
+/* ── BAR CHART ── */
+.bar-grp {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  flex: 1;
+  height: 100%;
+  gap: 4px;
+}
+.bar-grp > div:first-child {
+  flex: 1;
+  width: 100%;
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  justify-content: center;
+}
+.bar {
+  border-radius: 3px 3px 0 0;
+  transition: opacity 0.2s;
+  min-width: 4px;
+}
+.bar:hover { opacity: 0.75 !important; }
+.bar-lbl {
+  font-size: 10px;
+  color: var(--muted);
+  text-align: center;
+  white-space: nowrap;
+  padding-top: 4px;
+}
+.leg {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.leg-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+/* ── BUTTONS ── */
+.sync-btn {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 7px 14px;
+  font-family: var(--font);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+.sync-btn:hover { background: var(--surface2); border-color: #C5CAE0; }
+    .vf-btn {
+      padding: 6px 14px; border-radius: 20px; border: 1px solid var(--border);
+      background: var(--surface2); color: var(--muted); font-size: 12px;
+      cursor: pointer; transition: all .15s; white-space: nowrap;
+    }
+    .vf-btn:hover { border-color: #C5CAE0; color: var(--text); }
+    .vf-active { background: var(--accent) !important; color: #fff !important; border-color: var(--accent) !important; }
+    input[type="date"] { color-scheme: dark; }
+
+.range-btn {
+  background: rgba(255,255,255,0.08);
+  border: 1px solid rgba(255,255,255,0.18);
+  color: var(--text);
+  border-radius: 7px;
+  padding: 5px 12px;
+  font-family: var(--font);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.range-btn:hover { background: rgba(255,255,255,0.15); border-color: rgba(255,255,255,0.35); }
+.range-btn.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  font-weight: 600;
+}
+input[type="date"]::-webkit-calendar-picker-indicator {
+  filter: invert(0.6);
+  cursor: pointer;
+  border-radius: 4px;
+}
+input[type="date"]:focus {
+  outline: none;
+  border-color: var(--accent) !important;
+}
+
+.acc-tab {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  border-radius: 20px;
+  padding: 5px 14px;
+  font-family: var(--font);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.acc-tab.active {
+  background: var(--text);
+  border-color: var(--text);
+  color: #fff;
+  font-weight: 600;
+}
+
+/* ── TABLES ── */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+thead th {
+  padding: 10px 12px;
+  text-align: left;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: var(--muted);
+  border-bottom: 2px solid var(--border);
+  background: var(--surface2);
+}
+thead th:first-child { border-radius: 8px 0 0 0; }
+thead th:last-child { border-radius: 0 8px 0 0; }
+tbody tr {
+  border-bottom: 1px solid var(--border);
+  transition: background 0.1s;
+}
+tbody tr:hover { background: var(--surface2); }
+tbody td {
+  padding: 10px 12px;
+  color: var(--text);
+  vertical-align: middle;
+}
+
+/* ── TOAST ── */
+.toast {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%) translateY(80px);
+  background: var(--text);
+  color: #fff;
+  padding: 10px 22px;
+  border-radius: 10px;
+  font-size: 13px;
+  font-weight: 500;
+  z-index: 9999;
+  transition: transform 0.3s ease;
+  pointer-events: none;
+  white-space: nowrap;
+  box-shadow: var(--shadow-lg);
+}
+.toast.show { transform: translateX(-50%) translateY(0); }
+
+/* ── LOGIN ── */
+#loginScreen {
+  display: none;
+  position: fixed; inset: 0;
+  background: var(--bg);
+  align-items: center; justify-content: center;
+  z-index: 9999;
+  flex-direction: column;
+}
+.login-box {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  padding: 44px 40px;
+  width: 380px;
+  max-width: 92vw;
+  box-shadow: var(--shadow-lg);
+}
+.login-logo { text-align: center; margin-bottom: 32px; }
+.login-logo h1 { font-family: var(--font-b); font-size: 22px; font-weight: 700; color: var(--text); }
+.login-logo p { color: var(--muted); font-size: 13px; margin-top: 4px; }
+.login-field { margin-bottom: 16px; }
+.login-field label { display: block; font-size: 11px; font-weight: 600; color: var(--muted); margin-bottom: 6px; letter-spacing: 0.5px; text-transform: uppercase; }
+.login-field input {
+  width: 100%; background: var(--surface2);
+  border: 1.5px solid var(--border); border-radius: 10px;
+  padding: 11px 14px; color: var(--text);
+  font-family: var(--font); font-size: 14px; outline: none;
+}
+.login-field input:focus { border-color: var(--text); background: #fff; }
+.login-btn {
+  width: 100%; background: var(--accent); color: var(--accent-text);
+  border: none; border-radius: 10px; padding: 13px;
+  font-family: var(--font); font-size: 14px; font-weight: 700;
+  cursor: pointer; margin-top: 8px; transition: opacity 0.15s;
+}
+.login-btn:hover { opacity: 0.88; }
+.login-btn:disabled { opacity: 0.5; }
+.login-error { color: var(--red); font-size: 12px; margin-top: 10px; min-height: 16px; text-align: center; font-weight: 500; }
+
+/* ── HEADER USER ── */
+.header-user { display: flex; align-items: center; gap: 10px; }
+.header-user span { font-size: 13px; color: var(--muted); font-weight: 500; }
+.logout-btn {
+  background: var(--surface2); border: 1px solid var(--border);
+  color: var(--muted); border-radius: 7px; padding: 6px 12px;
+  font-size: 12px; font-weight: 600; cursor: pointer; font-family: var(--font);
+  transition: all 0.15s;
+}
+.logout-btn:hover { color: var(--red); border-color: var(--red); }
+
+/* ── CLIENTS ADMIN ── */
+.add-client-form {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px; padding: 22px; margin-bottom: 20px;
+  display: none; box-shadow: var(--shadow);
+}
+.form-row { display: flex; gap: 14px; flex-wrap: wrap; }
+.form-field { flex: 1; min-width: 160px; }
+.form-field label { display: block; font-size: 11px; font-weight: 600; color: var(--muted); margin-bottom: 5px; text-transform: uppercase; letter-spacing: 0.5px; }
+.form-field input {
+  width: 100%; background: var(--surface2); border: 1.5px solid var(--border);
+  border-radius: 8px; padding: 9px 12px; color: var(--text);
+  font-family: var(--font); font-size: 13px; outline: none;
+}
+.form-field input:focus { border-color: var(--text); background: #fff; }
+.status.s-ok { color: var(--green); font-size: 12px; font-weight: 600; }
+.status.s-off { color: var(--orange); font-size: 12px; font-weight: 600; }
+
+/* ── AUTH LINK MODAL ── */
+#authLinkModal {
+  display: none; position: fixed; inset: 0;
+  background: rgba(0,0,0,.4); align-items: center; justify-content: center; z-index: 999;
+  backdrop-filter: blur(4px);
+}
+.auth-link-box {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 18px; padding: 32px; width: 560px; max-width: 92vw;
+  box-shadow: var(--shadow-lg);
+}
+.auth-link-box h3 { margin: 0 0 8px; font-family: var(--font-b); font-weight: 700; font-size: 16px; }
+.auth-link-box p { color: var(--muted); font-size: 13px; margin: 0 0 16px; line-height: 1.5; }
+.auth-link-box textarea {
+  width: 100%; background: var(--surface2); border: 1.5px solid var(--border);
+  border-radius: 10px; padding: 12px; color: var(--text); font-size: 12px;
+  font-family: monospace; resize: none; box-sizing: border-box; height: 80px; outline: none;
+}
+.modal-btns { display: flex; gap: 10px; margin-top: 14px; flex-wrap: wrap; }
+</style>
+</head>
+<body>
+
+<!-- LOGIN SCREEN -->
+<div id="loginScreen" style="display:none">
+  <div class="login-box">
+    <div class="login-logo">
+      <div style="width:48px;height:48px;background:var(--accent);border-radius:12px;display:flex;align-items:center;justify-content:center;margin:0 auto 16px;font-size:24px">📊</div>
+      <h1>Negocio Redondo</h1>
+      <p>Redirigiendo al login...</p>
+    </div>
+  </div>
+</div>
+
+<!-- AUTH LINK MODAL -->
+<div id="authLinkModal">
+  <div class="auth-link-box">
+    <h3>🔗 Link de autorización</h3>
+    <p>Enviá este link al cliente. Cuando haga click y autorice, su cuenta quedará conectada automáticamente.</p>
+    <textarea id="authLinkText" readonly></textarea>
+    <div class="modal-btns">
+      <button class="sync-btn" onclick="copyAuthLink()">📋 Copiar link</button>
+      <button class="sync-btn" onclick="openAuthLink()">🔗 Abrir</button>
+      <button class="sync-btn" style="margin-left:auto" onclick="document.getElementById('authLinkModal').style.display='none'">Cerrar</button>
+    </div>
+  </div>
+</div>
+
+<!-- MAIN APP -->
+<div class="app" id="app" style="display:none">
+
+  <!-- SIDEBAR -->
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-icon" style="background:transparent;padding:0;overflow:hidden"><img src="data:image/png;base64,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lX/InN++5VXiaSjhbXWurI9LoZHlocRyc0/eu7+vrVHSVaTntdaSzZQ4nrq17Wxi3SsAd9857S1rfEkgKKqfa7y+fQdNNab7HUbvGDomHj2B29oq+bQOe16zRLLZBS/QuwQydIylD958rhydIeR06gOA70Gl5N0c1wzXwtSwAmR11pyNO6QE/ECuoQ5KnWxBlXWyXkZjXqldDSQMcy2NkboZXkaOlA/BA1APWT3K4qAiIgIiICIiAiIgIiICIiAiIgIiICg7aEyFkzVxRQ3lmImWwUtH6N0ZpjJveuXa67w7VOKII32fssn5WYTqrG+7NufT1ZqBKIej01a1ummp/BXk2hcnaHNe12+M17bbcKGUmKq6HpNY3D1mEajhqAefAjvUpogr7khs+3jLDGsd+o8Zsqqd8boaul9DLRMw8hrvnQg6EHRZjaIyOkzYu9qr2YgZaxQQPi3DTGTf3nA667w05KakQVC+o1qP7cxfsB/5p9RrUf25i/YD/wA1b1EEcZA5ZvyuwdU2B91bcjPVuqOlEPR6ataNNNT2KF7/ALIc10vtwuYxrHEKyqlqNw0JO7vvLtNd/vVr0QVDGxrPrxxzHp8Hn/mtxwPsl4Js9XHV4gudbiB7CCIXNEEJPe1pJPtVi0Qea2UFFbKCGgt9LDS0sDAyKGJga1jR1ABelEQR/m3lDg3MqmH0cojFXsbuxV9MQyZg7NeTh3HVV1vuxzfWVTvoHi63z0+vq+lwPjfp37uoVykQVFwpscyCpZJijFzDCDq6K3wHecOzffy9hVlsvsDYZwHZRacM2yOjhOhkeOMkrvwnuPElbIiDy3ik+iFpq6Hf3PSIXxb2mum80jX41VvDmyLPaMQ267fTpFKKOqiqOj9BI3tx4dprv8NdFa5EBaZnHl7asysF1GHrkRDISJKWpDN50Eo5OA6x1EdYK3NEFYMu9lWbCmObLiV2MI6oWysjqehFEW7+6ddNd46Kbc6MEuzCy8uGFG14oDVuiPTmPf3dyRr+Wo197otyRBUP6jWf+3EX7Af+a+1Jsat6YGrx0RF1iK3+sfa9W2RBFWU+Q2A8vJ46+jpJLldWcW11bo57D+Q0Ddb4ga96lVEQfj2tewse0OaRoQRqCoBzS2XMG4prZrpYKmTDtdKS57Iow+ne49e5qN3/AAnTuU/ogpQ7Y7xiKndbimxmHX35ZLrp4af6qSstNlDClhrIrjim4SYgqIzvNpuj6KnB7xqS/wAyB3KxqIPnTQQ0tPHT08TIYY2hrGMaA1oHIADkF9ERAREQEREBERAREQEREBERAREQEREBERAREQEREBERAREQEREBERAREQEREBERAREQEREBERAREQEREBERAREQEREBERAREQEREBERAREQEREBERAREQEREBERAREQEREBERAREQEREBERAREQEREBERAREQEREBERAREQEREBERAREQEREBERAREQEREBERAREQEREBERAREQEREBERAREQEREBERAREQEREBERAREQEREBERAREQEREBERAREQEREBERAREQf//Z" style="width:36px;height:36px;object-fit:contain"></div>
+      <div>
+        <div class="brand-name">Negocio Redondo</div>
+        <div class="brand-sub">CONSULTORA</div>
+      </div>
+    </div>
+
+    <nav class="nav">
+      <div class="nav-section-label">PRINCIPAL</div>
+      <div class="nav-item active" data-page="dashboard" onclick="showPage('dashboard',this)">
+        <span class="nav-icon">📊</span> Dashboard
+      </div>
+      <div class="nav-item" data-page="performance" onclick="showPage('performance',this)">
+        <span class="nav-icon">🚀</span> Performance
+      </div>
+      <div class="nav-item" data-page="publicaciones" onclick="showPage('publicaciones',this)">
+        <span class="nav-icon">📦</span> Publicaciones
+      </div>
+      <div class="nav-item" data-page="ventas" onclick="showPage('ventas',this);loadVentas()">
+        <span class="nav-icon">💳</span> Ventas
+      </div>
+      <div class="nav-item" data-page="rentabilidad" onclick="showPage('rentabilidad',this);loadRentabilidad()">
+        <span class="nav-icon">📊</span> Rentabilidad
+      </div>
+      <div class="nav-item" data-page="ads" onclick="showPage('ads',this)">
+        <span class="nav-icon">📣</span> Publicidad
+      </div>
+      <div class="nav-item" data-page="diagnostico" onclick="showPage('diagnostico',this);loadDiagnostico()">
+        <span class="nav-icon">🩺</span> Diagnóstico
+      </div>
+      <div class="nav-item" data-page="fotos" onclick="showPage('fotos',this);loadFotos()">
+        <span class="nav-icon">📷</span> Fotos
+      </div>
+      <div class="nav-item" data-page="logistica" onclick="showPage('logistica',this);loadLogistica()">
+        <span class="nav-icon">🚚</span> Logística
+      </div>
+      <div class="nav-item" data-page="competencia" onclick="showPage('competencia',this);loadCompetencia()">
+        <span class="nav-icon">🏆</span> Competencia
+      </div>
+      <div class="nav-item" data-page="reporte" onclick="showPage('reporte',this);initReporte()">
+        <span class="nav-icon">📊</span> Reporte Financiero
+      </div>
+
+      <div style="height:1px;background:var(--border);margin:12px 0"></div>
+
+      <div id="clientSelector" style="display:none">
+        <div class="nav-section-label">CUENTAS</div>
+        <div class="nav-item" style="color:var(--muted);font-size:12px;pointer-events:none">Cargando...</div>
+      </div>
+
+      <div style="height:1px;background:var(--border);margin:12px 0"></div>
+
+      <div class="nav-section-label">GESTIÓN</div>
+      <div class="nav-item" data-page="clientes" onclick="showPage('clientes',this);renderClientsList()">
+        <span class="nav-icon">👥</span> Clientes
+      </div>
+      <div class="nav-item" data-page="tokens" onclick="showPage('tokens',this);loadTokenStatus()">
+        <span class="nav-icon">🔑</span> Tokens
+      </div>
+      <div class="nav-item" data-page="reputacion" onclick="showPage('reputacion',this)">
+        <span class="nav-icon">⭐</span> Reputación
+      </div>
+    </nav>
+  </aside>
+
+  <!-- MAIN CONTENT -->
+  <main class="main">
+
+    <!-- TOPBAR -->
+    <header class="topbar">
+      <div>
+        <div class="page-title" id="pageTitle">Dashboard General</div>
+        <div class="page-subtitle" id="pageSubtitle">Resumen consolidado · <span id="currentDate"></span></div>
+      </div>
+      <!-- DATE RANGE PICKER — global, visible en todas las secciones -->
+      <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;background:var(--surface2);border:1px solid var(--border);border-radius:12px;padding:6px 12px" id="globalRangePicker">
+        <input type="date" id="globalDateFrom" onchange="applyGlobalRange()"
+          style="padding:4px 8px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:12px;font-family:var(--font);cursor:pointer">
+        <span style="font-size:12px;color:var(--muted);font-family:var(--font)">→</span>
+        <input type="date" id="globalDateTo" onchange="applyGlobalRange()"
+          style="padding:4px 8px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:12px;font-family:var(--font);cursor:pointer">
+        <div style="display:flex;gap:3px;margin-left:4px">
+          <button class="range-btn active" id="qr-7"  onclick="setQuickRange(7)"  style="padding:3px 9px;font-size:11px">7d</button>
+          <button class="range-btn"        id="qr-30" onclick="setQuickRange(30)" style="padding:3px 9px;font-size:11px">30d</button>
+          <button class="range-btn"        id="qr-60" onclick="setQuickRange(60)" style="padding:3px 9px;font-size:11px">60d</button>
+          <button class="range-btn"        id="qr-90" onclick="setQuickRange(90)" style="padding:3px 9px;font-size:11px">90d</button>
+        </div>
+      </div>
+      <div class="header-user" style="display:flex;align-items:center;gap:10px">
+        <div id="accountSelectorWrap" style="display:none">
+          <select id="accountSelectorDropdown" onchange="onAccountSelect(this.value)"
+            style="font-family:var(--font);font-size:13px;font-weight:600;padding:7px 12px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text);cursor:pointer;min-width:180px">
+            <option value="">— Seleccioná una cuenta —</option>
+          </select>
+        </div>
+        <span id="sessionUser">Usuario</span>
+        <button class="logout-btn" onclick="logout()">Salir</button>
+        <button class="sync-btn" id="syncBtn" onclick="syncAll()" style="display:none">⟳ Sincronizar</button>
+      </div>
+    </header>
+
+    <!-- TOKEN EXPIRY WARNING BAR -->
+    <div id="tokenWarningBar" style="display:none;background:#fef3c7;border-bottom:1px solid #fcd34d;padding:8px 24px;display:flex;align-items:center;gap:12px;flex-wrap:wrap"></div>
+
+    <!-- DASHBOARD -->
+    <div class="page active" id="page-dashboard">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:20px;flex-wrap:wrap">
+        <div id="accountTabs" style="display:flex;gap:8px;flex-wrap:wrap;flex:1">
+          <button class="acc-tab active" onclick="filterAccount(null,this)">● Todas las cuentas</button>
+        </div>
+      </div>
+
+      <!-- FILA 1: Facturación, Ventas, Ticket promedio -->
+      <div class="kpi-grid" style="grid-template-columns:repeat(3,1fr);margin-bottom:12px">
+        <div class="kpi-card"><div class="kpi-label">🧾 FACTURACIÓN</div><div class="kpi-value" id="kpiAmount">—</div><div class="kpi-delta" id="kpiAmountDelta"></div><div class="kpi-sub" id="kpiAmountSub">Seleccioná una cuenta</div></div>
+        <div class="kpi-card"><div class="kpi-label">🛒 VENTAS</div><div class="kpi-value" id="kpiOrders">—</div><div class="kpi-delta" id="kpiOrdersDelta"></div><div class="kpi-sub" id="kpiOrdersSub">Seleccioná una cuenta</div></div>
+        <div class="kpi-card"><div class="kpi-label">🎯 TICKET PROMEDIO</div><div class="kpi-value" id="kpiTicket">—</div><div class="kpi-delta" id="kpiTicketDelta"></div><div class="kpi-sub" id="kpiTicketSub">Seleccioná una cuenta</div></div>
+      </div>
+
+      <!-- FILA 2: Visitas, Unidades, Conversión -->
+      <div class="kpi-grid" style="grid-template-columns:repeat(3,1fr);margin-bottom:12px">
+        <div class="kpi-card"><div class="kpi-label">👁 VISITAS</div><div class="kpi-value" id="kpiVisits">—</div><div class="kpi-delta" id="kpiVisitsDelta"></div><div class="kpi-sub" id="kpiVisitsSub">Seleccioná una cuenta</div></div>
+        <div class="kpi-card"><div class="kpi-label">📦 UNIDADES VENDIDAS</div><div class="kpi-value" id="kpiUnits">—</div><div class="kpi-delta" id="kpiUnitsDelta"></div><div class="kpi-sub" id="kpiUnitsSub">Seleccioná una cuenta</div></div>
+        <div class="kpi-card"><div class="kpi-label">📊 CONVERSIÓN</div><div class="kpi-value" id="kpiConv">—</div><div class="kpi-delta" id="kpiConvDelta"></div><div class="kpi-sub" id="kpiConvSub">Seleccioná una cuenta</div></div>
+      </div>
+
+      <!-- FILA 3: TACOS, Importe recibido, % recibido + Reputación -->
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:12px;margin-bottom:12px;align-items:stretch">
+        <div class="kpi-card"><div class="kpi-label">📣 TACOS</div><div class="kpi-value" id="kpiTacos">—</div><div class="kpi-delta" id="kpiTacosDelta"></div><div class="kpi-sub" id="kpiTacosSub">Gasto Ads / Facturación</div></div>
+        <div class="kpi-card"><div class="kpi-label">💰 IMPORTE RECIBIDO</div><div class="kpi-value" id="kpiRecibido">—</div><div class="kpi-delta" id="kpiRecibidoDelta"></div><div class="kpi-sub" id="kpiRecibidoSub">Neto después de cargos</div></div>
+        <div class="kpi-card"><div class="kpi-label">📈 % RECIBIDO</div><div class="kpi-value" id="kpiPctRecibido">—</div><div class="kpi-delta" id="kpiPctRecibidoDelta"></div><div class="kpi-sub" id="kpiPctRecibidoSub">Sobre facturación</div></div>
+        <div class="kpi-card" style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:20px 24px;min-width:130px">
+          <div class="kpi-label" style="margin-bottom:10px">REPUTACIÓN</div>
+          <div id="reputationBadge" style="font-size:36px">—</div>
+          <div id="reputationLabel" style="font-size:12px;font-weight:700;margin-top:6px;letter-spacing:1px">—</div>
+        </div>
+      </div>
+
+      <!-- GRÁFICO: Evolución facturación, ventas y conversión -->
+      <div class="kpi-card" style="padding:20px;margin-bottom:12px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+          <div class="kpi-label">Evolución — Facturación · Ventas · Conversión</div>
+          <span style="font-size:11px;color:var(--muted)" id="weeklyRangeLabel">Últimas semanas</span>
+        </div>
+        <div id="weeklyChart" style="width:100%;height:180px;position:relative"></div>
+        <div id="chartLegend" style="display:flex;gap:16px;flex-wrap:wrap;margin-top:10px"></div>
+      </div>
+    </div>
+
+    <!-- PERFORMANCE -->
+    <div class="page" id="page-performance">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px;flex-wrap:wrap">
+        <h2 style="margin:0;font-family:var(--font-b);flex:1">Performance por publicación</h2>
+        <button class="sync-btn" onclick="exportPerformanceExcel()">📥 Excel</button>
+      </div>
+      <div id="performanceContent"></div>
+    </div>
+
+    <!-- PUBLICACIONES -->
+    <div class="page" id="page-publicaciones">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px;flex-wrap:wrap">
+        <h2 style="margin:0;font-family:var(--font-b);flex:1">Publicaciones</h2>
+        <button class="sync-btn" onclick="exportPubsExcel()">📥 Excel</button>
+      </div>
+      <div id="publicacionesContent"></div>
+    </div>
+
+    <!-- VENTAS -->
+    <div class="page" id="page-ventas">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap">
+        <h2 style="margin:0;font-family:var(--font-b);flex:1">💳 Ventas</h2>
+        <input type="text" id="ventasSearch" placeholder="Buscar por # orden o producto..." oninput="filterVentas()"
+          style="padding:7px 12px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:12px;width:220px">
+      </div>
+      <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap">
+        <button id="vf-all"      onclick="setVentasMode('all')"      class="vf-btn vf-active">Todos</button>
+        <button id="vf-FULL"     onclick="setVentasMode('FULL')"     class="vf-btn">📦 FULL</button>
+        <button id="vf-flex"     onclick="setVentasMode('flex')"     class="vf-btn">⚡ Flex</button>
+        <button id="vf-correo"   onclick="setVentasMode('correo')"   class="vf-btn">📮 Correo / Colecta</button>
+        <button id="vf-coordinar" onclick="setVentasMode('coordinar')" class="vf-btn">🤝 A coordinar</button>
+      </div>
+      <div id="ventasContent"><div style="color:var(--muted);font-size:13px;padding:20px;text-align:center">Sincronizá primero para ver los datos</div></div>
+    </div>
+
+    <!-- RENTABILIDAD -->
+    <div class="page" id="page-rentabilidad">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px;flex-wrap:wrap">
+        <h2 style="margin:0;font-family:var(--font-b);flex:1">📊 Rentabilidad</h2>
+      </div>
+      <div id="rentabilidadContent"><div style="color:var(--muted);font-size:13px;padding:20px;text-align:center">Sincronizá primero para ver los datos</div></div>
+    </div>
+
+    <!-- ADS -->\n    <div class="page" id="page-ads">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap">
+        <h2 style="margin:0;font-family:var(--font-b);flex:1">Publicidad</h2>
+        <button class="sync-btn" id="adsRefreshBtn" onclick="refreshAdsTab()">🔄 Actualizar</button>
+      </div>
+      <!-- Tabs -->
+      <div style="display:flex;gap:0;border-bottom:2px solid var(--border);margin-bottom:20px">
+        <button id="tab-ads-campanas" onclick="switchAdsTab('campanas')"
+          style="padding:8px 18px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--accent);border-bottom:2px solid var(--accent);margin-bottom:-2px;font-family:var(--font-b)">
+          📊 Campañas
+        </button>
+        <button id="tab-ads-anuncios" onclick="switchAdsTab('anuncios')"
+          style="padding:8px 18px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-2px;font-family:var(--font-b)">
+          📋 Anuncios
+        </button>
+      </div>
+      <div id="adsContent"></div>
+      <div id="adsAnunciosContent" style="display:none"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Seleccioná la pestaña Anuncios para cargar</div></div>
+    </div>
+
+    <!-- DIAGNÓSTICO MENSUAL -->
+    <div class="page" id="page-diagnostico">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px;flex-wrap:wrap">
+        <h2 style="margin:0;font-family:var(--font-b);flex:1">🩺 Diagnóstico Mensual</h2>
+        <select id="diagClientSel" onchange="diagCargarDatos()" style="padding:6px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px"></select>
+        <select id="diagMesSel" style="padding:6px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px">
+          <option value="2025-01-01">Ene 2025</option>
+          <option value="2025-02-01">Feb 2025</option>
+          <option value="2025-03-01">Mar 2025</option>
+          <option value="2025-04-01">Abr 2025</option>
+          <option value="2025-05-01">May 2025</option>
+          <option value="2025-06-01">Jun 2025</option>
+          <option value="2025-07-01">Jul 2025</option>
+          <option value="2025-08-01">Ago 2025</option>
+          <option value="2025-09-01">Sep 2025</option>
+          <option value="2025-10-01">Oct 2025</option>
+          <option value="2025-11-01">Nov 2025</option>
+          <option value="2025-12-01">Dic 2025</option>
+          <option value="2026-01-01">Ene 2026</option>
+          <option value="2026-02-01">Feb 2026</option>
+          <option value="2026-03-01" selected>Mar 2026</option>
+        </select>
+        <button class="sync-btn" id="diagCalcBtn" onclick="diagCalcularTodo()" style="background:var(--accent);color:#fff;border:none">⚡ Calcular 3 meses</button>
+      </div>
+      <div id="diagContent"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Seleccioná un cliente y calculá el diagnóstico del mes</div></div>
+    </div>
+
+    <!-- PROMOCIONES -->
+    <div class="page" id="page-promociones">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px;flex-wrap:wrap">
+        <h2 style="margin:0;font-family:var(--font-b);flex:1">🏷️ Promociones</h2>
+        <button class="sync-btn" onclick="loadPromociones()">🔄 Actualizar</button>
+      </div>
+      <div id="promoContent"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Cargando...</div></div>
+    </div>
+
+    <!-- FOTOS -->
+    <div class="page" id="page-fotos">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px;flex-wrap:wrap">
+        <h2 style="margin:0;font-family:var(--font-b);flex:1">📷 Fotos de Publicaciones</h2>
+        <select id="fotosFilter" onchange="renderFotosTabla()" style="padding:6px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px">
+          <option value="all">Todas</option>
+          <option value="pocas">Pocas fotos (≤3)</option>
+          <option value="sin">Sin fotos</option>
+          <option value="ok">Suficientes (≥6)</option>
+        </select>
+      </div>
+      <div id="fotosContent"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Cargando...</div></div>
+    </div>
+
+    <!-- LOGÍSTICA -->
+    <div class="page" id="page-logistica">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap">
+        <h2 style="margin:0;font-family:var(--font-b);flex:1">🚚 Logística</h2>
+        <button class="sync-btn" id="logisticaRefreshBtn" onclick="refreshLogisticaTab()">🔄 Actualizar</button>
+      </div>
+      <!-- Tabs -->
+      <div style="display:flex;gap:0;border-bottom:2px solid var(--border);margin-bottom:20px">
+        <button id="tab-logistica-general" onclick="switchLogisticaTab('general')"
+          style="padding:8px 18px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--accent);border-bottom:2px solid var(--accent);margin-bottom:-2px;font-family:var(--font-b)">
+          📦 General
+        </button>
+        <button id="tab-logistica-fullstock" onclick="switchLogisticaTab('fullstock')"
+          style="padding:8px 18px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-2px;font-family:var(--font-b)">
+          🏭 Stock FULL
+        </button>
+      </div>
+      <div id="logisticaContent"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Cargando...</div></div>
+      <div id="fullStockContent" style="display:none"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Seleccioná la pestaña Stock FULL para cargar</div></div>
+    </div>
+
+    <!-- COMPETENCIA -->
+    <div class="page" id="page-competencia">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap">
+        <h2 style="margin:0;font-family:var(--font-b);flex:1">🏆 Competencia</h2>
+      </div>
+      <!-- Buscador por URL -->
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px 18px;margin-bottom:20px">
+        <div style="font-size:13px;font-weight:600;margin-bottom:10px">🔍 Analizar publicación de competidor</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <input id="compUrlInput" type="text" placeholder="Pegá la URL de ML (ej: https://www.mercadolibre.com.ar/...)"
+            style="flex:1;min-width:280px;padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px"
+            onkeydown="if(event.key==='Enter') analizarCompetidor()">
+          <button onclick="analizarCompetidor()" style="padding:8px 18px;background:var(--accent);color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap">
+            ⚡ Analizar
+          </button>
+        </div>
+        <div id="compAnalisisResult"></div>
+      </div>
+      <div id="competenciaContent"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Cargando categorías...</div></div>
+    </div>
+
+    <!-- REPORTE FINANCIERO -->
+    <div class="page" id="page-reporte">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px;flex-wrap:wrap">
+        <h2 style="margin:0;font-family:var(--font-b);flex:1">📊 Reporte Financiero</h2>
+      </div>
+      <!-- Config bar -->
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:14px 18px;margin-bottom:16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+        <select id="reporteClientSel" style="padding:6px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px;min-width:160px"></select>
+        <select id="reporteMesSel" style="padding:6px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px"></select>
+        <button onclick="loadReporteItems()" style="padding:7px 16px;background:var(--accent);color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer">📋 Cargar productos</button>
+        <button onclick="descargarTemplateExcel()" style="padding:7px 16px;background:#6366f1;color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer">📥 Descargar Excel</button>
+        <label style="padding:7px 16px;background:#0ea5e9;color:#fff;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer">
+          📤 Importar Excel
+          <input type="file" accept=".xlsx" style="display:none" onchange="importarCostosExcel(this)">
+        </label>
+        <button id="reportePylBtn" onclick="generarPyL()" style="padding:7px 16px;background:#16a34a;color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;display:none">⚡ Generar P&L</button>
+        <button id="reporteExcelBtn" onclick="exportarReporteExcel()" style="padding:7px 16px;background:#6366f1;color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;display:none">📥 Descargar Excel</button>
+      </div>
+      <!-- Tabs -->
+      <div style="display:flex;gap:4px;margin-bottom:16px">
+        <button class="reporte-tab active" onclick="setReporteTab('costos',this)" id="tab-costos" style="padding:7px 16px;border-radius:8px;border:1px solid var(--border);background:var(--accent);color:#fff;font-size:13px;cursor:pointer">💰 Costos de productos</button>
+        <button class="reporte-tab" onclick="setReporteTab('gastos',this)" id="tab-gastos" style="padding:7px 16px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px;cursor:pointer">🏢 Gastos fijos</button>
+        <button class="reporte-tab" onclick="setReporteTab('pyl',this)" id="tab-pyl" style="padding:7px 16px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px;cursor:pointer">📈 P&L</button>
+      </div>
+      <div id="reporte-costos-panel">
+        <div id="reporteCostosContent"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Seleccioná un cliente y mes, luego hacé click en "Cargar productos"</div></div>
+      </div>
+      <div id="reporte-gastos-panel" style="display:none">
+        <div id="reporteGastosContent"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Seleccioná un cliente y mes primero</div></div>
+      </div>
+      <div id="reporte-pyl-panel" style="display:none">
+        <div id="reportePylContent"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Completá costos y gastos, luego generá el P&L</div></div>
+      </div>
+    </div>
+
+    <!-- TOKENS -->
+    <div class="page" id="page-tokens">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px">
+        <h2 style="margin:0;font-family:var(--font-b);flex:1">🔑 Estado de Tokens</h2>
+        <span id="tokenStatusTime" style="font-size:12px;color:var(--muted)"></span>
+        <button class="sync-btn" onclick="loadTokenStatus()">🔄 Actualizar</button>
+      </div>
+      <div id="tokenStatusContent"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Cargando...</div></div>
+    </div>
+
+    <!-- CLIENTES ADMIN -->
+    <div class="page" id="page-clientes">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px">
+        <h2 style="margin:0;font-family:var(--font-b);flex:1">Gestión de Clientes</h2>
+        <button class="sync-btn" onclick="document.getElementById('addClientForm').style.display=document.getElementById('addClientForm').style.display==='none'?'block':'none'">+ Agregar cliente</button>
+        <button class="sync-btn" onclick="loadClients();renderClientsList()">🔄 Actualizar</button>
+      </div>
+
+      <div class="add-client-form" id="addClientForm">
+        <div style="font-size:13px;color:var(--muted);margin-bottom:12px">Ingresá el nombre del cliente. Después generás el link de autorización de ML.</div>
+        <div class="form-row">
+          <div class="form-field">
+            <label>NOMBRE DEL CLIENTE</label>
+            <input id="newClientName" type="text" placeholder="Ej: Yakka Deportes" onkeydown="if(event.key==='Enter') addClient()">
+          </div>
+        </div>
+        <div style="margin-top:12px;display:flex;gap:8px">
+          <button class="sync-btn" onclick="addClient()">✅ Guardar cliente</button>
+          <button class="sync-btn" onclick="document.getElementById('addClientForm').style.display='none'">Cancelar</button>
+        </div>
+      </div>
+
+      <div id="clientsAdminContent"></div>
+    </div>
+
+    <!-- REPUTACION -->
+    <div class="page" id="page-reputacion">
+      <h2 style="margin:0 0 20px;font-family:var(--font-b)">Reputación</h2>
+      <div id="reputacionContent"><div style="color:var(--muted)">Sincronizá para ver datos</div></div>
+    </div>
+
+  </main>
+</div>
+
+<div id="toast" class="toast"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js" defer></script>
+<script>
+// ─── SESSION & LOGIN ──────────────────────────────────────────────────────────
+const SERVER_URL = window.location.origin;
+
+function setCookie(name, value, days) {
+  const d = new Date();
+  d.setTime(d.getTime() + (days||7)*24*60*60*1000);
+  document.cookie = name + '=' + encodeURIComponent(value) + ';expires=' + d.toUTCString() + ';path=/;SameSite=Lax';
+}
+function getCookie(name) {
+  const match = document.cookie.match(new RegExp('(^| )' + name + '=([^;]+)'));
+  return match ? decodeURIComponent(match[2]) : null;
+}
+function deleteCookie(name) {
+  document.cookie = name + '=;expires=Thu, 01 Jan 1970 00:00:00 GMT;path=/';
+}
+
+// In-memory session (survives page within tab, not full reload)
+let _sessionId = getCookie('ml_session_id') || null;
+let _sessionUser = getCookie('ml_session_user') || null;
+let _sessionRole = getCookie('ml_session_role') || null;
+
+function getSession() { 
+  if (_sessionId) return _sessionId;
+  const c = getCookie('ml_session_id');
+  if (c) { _sessionId = c; return c; }
+  const u = new URLSearchParams(window.location.search).get('sid');
+  if (u) { _sessionId = u; return u; }
+  return null;
+}
+function getSessionUser() { return _sessionUser || getCookie('ml_session_user'); }
+function getSessionRole() { return _sessionRole || getCookie('ml_session_role'); }
+
+// Helper: get the currently selected client from allClients
+function getActiveClient() {
+  if (!allClients.length) return null;
+  if (activeClientId) {
+    const c = allClients.find(c => String(c.id) === String(activeClientId));
+    if (c) return c;
+  }
+  // Fallback: first active client with ml_user_id
+  return allClients.find(c => c.ml_user_id && (c.active === true || c.active === 't' || c.active === 1)) || null;
+}
+
+async function apiCall(method, path, body) {
+  const sid = getSession() || '';
+  let url = SERVER_URL + path;
+  // Always append session_id as query param
+  if (sid) url += (url.includes('?') ? '&' : '?') + 'session_id=' + sid;
+  const opts = {
+    method,
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json', 'x-session-id': sid }
+  };
+  if (body) opts.body = JSON.stringify(body);
+  const r = await fetch(url, opts);
+  if (r.status === 401) { window.location.href = '/login'; return null; }
+  if (r.status === 403) { return null; } // Token ML inválido — no redirigir al login
+  const data = await r.json();
+  return data;
+}
+
+async function login(username, password) {
+  const r = await fetch(SERVER_URL + '/api/login', {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password })
+  });
+  const data = await r.json();
+  if (data.error) throw new Error(data.error);
+  setCookie('ml_session_id', data.sessionId, 7);
+  setCookie('ml_session_user', data.username, 7);
+  setCookie('ml_session_role', data.role, 7);
+  _sessionId = data.sessionId;
+  _sessionUser = data.username;
+  _sessionRole = data.role;
+  return data;
+}
+
+function logout() {
+  fetch(SERVER_URL + '/api/logout', { method: 'POST', headers: { 'x-session-id': getSession() || '' } }).catch(() => {});
+  deleteCookie('ml_session_id');
+  deleteCookie('ml_session_user');
+  deleteCookie('ml_session_role');
+  showLoginScreen();
+}
+
+function showLoginScreen() {
+  window.location.href = '/login';
+}
+
+function showAppScreen() {
+  document.getElementById('loginScreen').style.display = 'none';
+  document.getElementById('app').style.display = 'flex';
+  document.getElementById('sessionUser').textContent = getSessionUser() || 'Usuario';
+}
+
+async function handleLogin() {
+  const username = document.getElementById('loginUser').value.trim();
+  const password = document.getElementById('loginPass').value;
+  const btn = document.getElementById('loginBtn');
+  const err = document.getElementById('loginError');
+  if (!username || !password) { err.textContent = 'Completá usuario y contraseña'; return; }
+  btn.textContent = 'Ingresando...'; btn.disabled = true; err.textContent = '';
+  try {
+    const data = await login(username, password);
+    _sessionId = data.sessionId;
+    _sessionUser = data.username;
+    _sessionRole = data.role;
+    setCookie('ml_session_id', data.sessionId, 7);
+    setCookie('ml_session_user', data.username, 7);
+    setCookie('ml_session_role', data.role, 7);
+    // Redirect with session in URL to survive any redirect
+    window.location.href = window.location.pathname + '?sid=' + data.sessionId;
+  } catch(e) {
+    err.textContent = e.message;
+    btn.textContent = 'Ingresar'; btn.disabled = false;
+  }
+}
+
+
+// ─── CLIENT MANAGEMENT ───────────────────────────────────────────────────────
+let allClients = [];
+let activeClientId = null;
+
+async function loadClients() {
+  const clients = await apiCall('GET', '/api/clients');
+  if (!clients) return;
+  allClients = clients;
+  renderClientSelector();
+  renderClientsList();
+  checkTokenWarnings();
+}
+
+function checkTokenWarnings() {
+  const bar = document.getElementById('tokenWarningBar');
+  if (!bar) return;
+  const now = new Date();
+  const expiring = allClients.filter(c => {
+    if (!c.ml_user_id || !c.token_expires_at) return false;
+    const exp = new Date(c.token_expires_at);
+    const hoursLeft = (exp - now) / (1000 * 60 * 60);
+    return hoursLeft < 2; // warn when less than 2 hours left
+  });
+  if (!expiring.length) { bar.style.display = 'none'; return; }
+  bar.style.display = 'flex';
+  bar.innerHTML = `
+    <span style="font-size:16px">⚠️</span>
+    <span style="font-size:12px;color:#92400e;font-weight:600">Token por vencer:</span>
+    <span style="font-size:12px;color:#92400e">${expiring.map(c => c.name).join(', ')}</span>
+    <div style="display:flex;gap:8px;margin-left:auto;flex-wrap:wrap">
+      ${expiring.map(c => `
+        <button onclick="quickReconnect(${c.id},'${c.name}')"
+          style="padding:4px 12px;background:#d97706;color:#fff;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer">
+          🔗 Renovar ${c.name}
+        </button>`).join('')}
+    </div>`;
+}
+
+async function quickReconnect(clientId, name) {
+  const data = await apiCall('GET', `/api/clients/${clientId}/auth-link`);
+  if (!data) return;
+  window.open(data.link, '_blank');
+  showToast(`🔗 Abrí la ventana y autorizá ${name}`);
+}
+
+function renderClientSelector() {
+  const role = getSessionRole();
+  const isAdmin = role === 'admin' || role === 'consultant';
+
+  if (isAdmin) {
+    // Show dropdown in topbar
+    const wrap = document.getElementById('accountSelectorWrap');
+    const dropdown = document.getElementById('accountSelectorDropdown');
+    const syncBtn = document.getElementById('syncBtn');
+    if (wrap) wrap.style.display = 'block';
+    if (syncBtn) syncBtn.style.display = '';
+    if (dropdown) {
+      const activeClients = allClients.filter(c => c.active && c.ml_user_id);
+      dropdown.innerHTML = '<option value="">— Seleccioná una cuenta —</option>'
+        + activeClients.map(c => `<option value="${c.id}">${c.name}${!c.ml_user_id ? ' ⚠' : ''}</option>`).join('');
+      // Restore selected if exists
+      if (activeClientId) dropdown.value = activeClientId;
+    }
+  } else {
+    // Client: auto-select their own account
+    const myClient = allClients.find(c => c.active && c.ml_user_id);
+    if (myClient) {
+      activeClientId = myClient.id;
+      loadDashboardData();
+    }
+  }
+}
+
+async function onAccountSelect(value) {
+  if (!value) {
+    // Clear dashboard
+    state.accounts = [];
+    updateDashboard();
+    return;
+  }
+  activeClientId = parseInt(value);
+  const syncBtn = document.getElementById('syncBtn');
+  if (syncBtn) syncBtn.style.display = '';
+  await loadDashboardData();
+}
+
+async function selectClient(clientId, el) {
+  activeClientId = clientId;
+  document.querySelectorAll('#clientSelector .nav-item').forEach(n => n.classList.remove('active'));
+  if (el) el.classList.add('active');
+  await loadDashboardData();
+}
+
+async function loadDashboardData() {
+  if (!allClients.length) return;
+  const clientsToLoad = activeClientId
+    ? allClients.filter(c => c.id === activeClientId && c.ml_user_id)
+    : allClients.filter(c => c.ml_user_id && c.active);
+
+  if (!clientsToLoad.length) {
+    showToast('⚠️ No hay cuentas conectadas para mostrar');
+    return;
+  }
+
+  showToast('⏳ Sincronizando...');
+  const { date_from, date_to } = getDateRange();
+
+  await Promise.all(clientsToLoad.map(async client => {
+    try {
+      const data = await apiCall('GET', `/api/dashboard?client_id=${client.id}&date_from=${date_from}&date_to=${date_to}`);
+      if (data) {
+        const acc = { id: client.id, name: client.name, color: clientColor(client.id), data, accessToken: null, clientId: client.id, userId: client.ml_user_id };
+        const existing = state.accounts.findIndex(a => a.id === client.id);
+        if (existing >= 0) state.accounts[existing] = acc;
+        else state.accounts.push(acc);
+      }
+    } catch(e) { console.error('Client load error:', e); }
+  }));
+
+  updateDashboard();
+  showToast('✅ Datos actualizados');
+}
+
+function clientColor(id) {
+  const colors = ['#FFD700','#00e676','#2196F3','#ff9100','#e91e63','#9c27b0','#00bcd4','#ff5722'];
+  return colors[id % colors.length];
+}
+
+// Override loadAllData to use new client system
+async function loadAllData() {
+  await loadDashboardData();
+}
+
+// ─── CLIENTS ADMIN PAGE ───────────────────────────────────────────────────────
+function renderClientsList() {
+  const el = document.getElementById('clientsAdminContent');
+  if (!el) return;
+
+  if (!allClients.length) {
+    el.innerHTML = '<div style="color:var(--muted);padding:20px;text-align:center">No hay clientes. Agregá uno con el botón +</div>';
+    return;
+  }
+
+  // Warning banner for clients without refresh_token
+  const sinRefresh = allClients.filter(c => c.ml_user_id && !c.refresh_token);
+  const warningBanner = sinRefresh.length ? `
+    <div style="background:#fef3c7;border:1px solid #fcd34d;border-radius:10px;padding:14px 16px;margin-bottom:16px;display:flex;align-items:center;gap:12px">
+      <span style="font-size:20px">⚠️</span>
+      <div>
+        <div style="font-size:13px;font-weight:600;color:#92400e">Token de larga duración faltante</div>
+        <div style="font-size:12px;color:#b45309;margin-top:2px">
+          ${sinRefresh.map(c => `<strong>${c.name}</strong>`).join(', ')} 
+          ${sinRefresh.length === 1 ? 'no tiene' : 'no tienen'} refresh_token — el token expira cada 6hs y hay que reconectar manualmente.
+          Hacé click en <strong>🔄 Reconectar</strong> y autorizá la app de nuevo para obtener el token permanente.
+        </div>
+      </div>
+    </div>` : '';
+
+  const rows = allClients.map(c => {
+    const connected = c.ml_user_id ? `<span class="status s-ok">● Conectado</span>` : `<span class="status s-off">● Sin conectar</span>`;
+    const expires = c.token_expires_at ? new Date(c.token_expires_at).toLocaleString('es-AR') : '—';
+    const tokenStatus = !c.ml_user_id ? '—'
+      : c.refresh_token
+        ? `<span style="color:#16a34a;font-size:11px;font-weight:600">✓ Permanente</span>`
+        : `<span style="color:#dc2626;font-size:11px;font-weight:600">⚠ Expira 6hs</span>`;
+    return `<tr>
+      <td style="font-weight:600">${c.name}</td>
+      <td>${connected}</td>
+      <td style="color:var(--muted);font-size:11px">${c.ml_user_id || '—'}</td>
+      <td style="color:var(--muted);font-size:11px">${expires}</td>
+      <td>${tokenStatus}</td>
+      <td style="display:flex;gap:8px">
+        ${!c.ml_user_id ? `<button class="sync-btn" onclick="generateAuthLink(${c.id})">🔗 Generar Link</button>` : `<button class="sync-btn" onclick="generateAuthLink(${c.id})">🔄 Reconectar</button>`}
+        <button class="sync-btn" style="color:#ff4d4d;border-color:#ff4d4d" onclick="deleteClient(${c.id}, '${c.name}')">🗑</button>
+      </td>
+    </tr>`;
+  }).join('');
+
+  el.innerHTML = warningBanner + `<div style="overflow-x:auto"><table>
+    <thead><tr><th>Cliente</th><th>Estado</th><th>ML User ID</th><th>Token expira</th><th>Renovación</th><th>Acciones</th></tr></thead>
+    <tbody>${rows}</tbody>
+  </table></div>`;
+}
+
+async function addClient() {
+  const name = document.getElementById('newClientName').value.trim();
+  if (!name) { showToast('❌ Ingresá el nombre del cliente'); return; }
+  const result = await apiCall('POST', '/api/clients', { name });
+  if (result) {
+    document.getElementById('newClientName').value = '';
+    document.getElementById('addClientForm').style.display = 'none';
+    showToast('✅ Cliente agregado — generá el link de autorización');
+    await loadClients();
+  }
+}
+
+async function generateAuthLink(clientId) {
+  const data = await apiCall('GET', `/api/clients/${clientId}/auth-link`);
+  if (!data) return;
+  const link = data.link;
+  document.getElementById('authLinkText').value = link;
+  document.getElementById('authLinkModal').style.display = 'flex';
+}
+
+function copyAuthLink() {
+  const text = document.getElementById('authLinkText').value;
+  navigator.clipboard.writeText(text).then(() => showToast('✅ Link copiado'));
+}
+
+function openAuthLink() {
+  window.open(document.getElementById('authLinkText').value, '_blank');
+}
+
+async function deleteClient(id, name) {
+  if (!confirm(`¿Eliminar cliente "${name}"?`)) return;
+  await apiCall('DELETE', `/api/clients/${id}`);
+  showToast('✅ Cliente eliminado');
+  await loadClients();
+}
+
+
+
+// ─── STATE ───────────────────────────────────────────────────────────────────
+const state = {
+  appId: '',
+  secret: '',
+  redirect: 'https://localhost',
+  accounts: [],  // { id, name, color, accessToken, userId, data }
+  currentStep: 1
+};
+
+const COLORS = ['#ffe600','#00e676','#3483fa','#ff9100','#9370db','#ff4d4d'];
+const ML_AUTH = 'https://auth.mercadolibre.com.ar/authorization';
+const ML_API  = 'https://api.mercadolibre.com';
+
+// ─── INIT ─────────────────────────────────────────────────────────────────────
+// (currentDate is set inside DOMContentLoaded below)
+
+// ─── NAVIGATION ──────────────────────────────────────────────────────────────
+function showPage(id, el) {
+  if (id === 'performance') setTimeout(loadPerformance, 100);
+  if (id === 'publicaciones') setTimeout(loadPublicaciones, 100);
+  if (id === 'ads') setTimeout(loadAds, 100);
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  const pageEl = document.getElementById('page-' + id);
+  if (pageEl) pageEl.classList.add('active');
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  if (el) el.classList.add('active');
+  // Show date picker only on data pages
+  const noPicker = ['login','setup','clientes','diagnostico'];
+  const picker = document.getElementById('globalRangePicker');
+  if (picker) picker.style.display = noPicker.includes(id) ? 'none' : 'flex';
+}
+
+function setDashTab(el, accId) {
+  document.querySelectorAll('.acc-tab').forEach(t => t.classList.remove('active'));
+  el.classList.add('active');
+}
+
+function filterAccount(id, el) {
+  document.querySelectorAll('.acc-chip').forEach(c => c.classList.remove('sel'));
+  el.classList.add('sel');
+}
+
+// ─── SETUP STEPS ─────────────────────────────────────────────────────────────
+function goStep(n) {
+  ['step1card','step2card','step3card','step4card'].forEach((id,i) => {
+    document.getElementById(id).style.display = (i === n-1) ? 'block' : 'none';
+  });
+  ['sc1','sc2','sc3','sc4'].forEach((id,i) => {
+    const el = document.getElementById(id);
+    el.className = 'step-circle ' + (i < n ? 'done' : i === n-1 ? 'active' : 'todo');
+  });
+  state.currentStep = n;
+  if (n === 3) renderOAuthList();
+}
+
+function saveCredentials() {
+  const appId  = document.getElementById('inputAppId').value.trim();
+  const secret = document.getElementById('inputSecret').value.trim();
+  const redir  = document.getElementById('inputRedirect').value.trim();
+  if (!appId || !secret) { showToast('⚠️ Completá App ID y Secret Key'); return; }
+  state.appId  = appId;
+  state.secret = secret;
+  state.redirect = redir || 'https://negocioredondo.netlify.app/';
+  const serverUrl = document.getElementById('inputServerUrl').value.trim();
+  if (serverUrl) localStorage.setItem('ml_server_url', serverUrl);
+  localStorage.setItem('ml_appId', appId);
+  localStorage.setItem('ml_secret', secret);
+  localStorage.setItem('ml_redirect', state.redirect);
+  goStep(2);
+  showToast('✅ Credenciales guardadas');
+}
+
+function addAccount() {
+  const name = document.getElementById('newAccName').value.trim();
+  if (!name) { showToast('⚠️ Ingresá un nombre'); return; }
+  if (state.accounts.find(a => a.name.toLowerCase() === name.toLowerCase())) {
+    showToast('⚠️ Ya existe una cuenta con ese nombre'); return;
+  }
+  const color = COLORS[state.accounts.length % COLORS.length];
+  state.accounts.push({ id: Date.now(), name, color, accessToken: null, userId: null, data: null });
+  document.getElementById('newAccName').value = '';
+  renderAccountsList();
+  renderSidebar();
+  saveAccounts();
+  showToast(`✅ Cuenta "${name}" agregada`);
+}
+
+function removeAccount(id) {
+  state.accounts = state.accounts.filter(a => a.id !== id);
+  renderAccountsList();
+  renderSidebar();
+}
+
+function renderAccountsList() {
+  const el = document.getElementById('accountsList');
+  if (!state.accounts.length) {
+    el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:8px 0">Sin cuentas agregadas todavía</div>';
+    return;
+  }
+  el.innerHTML = state.accounts.map(a => `
+    <div style="display:flex;align-items:center;gap:10px;background:var(--surface2);border:1px solid var(--border);border-radius:9px;padding:10px 14px;margin-bottom:8px">
+      <div style="width:10px;height:10px;border-radius:50%;background:${a.color};flex-shrink:0"></div>
+      <div style="flex:1;font-size:13px;font-weight:500">${a.name}</div>
+      ${a.accessToken ? '<span style="font-size:11px;color:var(--green)">✓ Conectada</span>' : '<span style="font-size:11px;color:var(--muted)">Pendiente</span>'}
+      <button onclick="removeAccount(${a.id})" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:16px;line-height:1">×</button>
+    </div>
+  `).join('');
+}
+
+function renderSidebar() {
+  const el = document.getElementById('sidebarAccounts');
+  let html = `<div class="acc-chip sel" onclick="filterAccount('all',this)">
+    <div class="acc-dot" style="background:var(--yellow)"></div>
+    <div class="acc-name">Todas</div>
+  </div>`;
+  state.accounts.forEach(a => {
+    html += `<div class="acc-chip" onclick="filterAccount(${a.id},this)">
+      <div class="acc-dot" style="background:${a.color}"></div>
+      <div class="acc-name">${a.name}</div>
+      <div class="${a.accessToken ? 'acc-live' : 'acc-err'}">${a.accessToken ? '●' : '○'}</div>
+    </div>`;
+  });
+  el.innerHTML = html;
+
+  // Tabs in dashboard
+  const tabs = document.getElementById('dashTabs');
+  let tabsHtml = `<div class="acc-tab active" onclick="setDashTab(this,'all')">
+    <div class="acc-tab-dot" style="background:var(--yellow)"></div>Todas las cuentas
+  </div>`;
+  state.accounts.forEach(a => {
+    tabsHtml += `<div class="acc-tab" onclick="setDashTab(this,'${a.id}')">
+      <div class="acc-tab-dot" style="background:${a.color}"></div>${a.name}
+    </div>`;
+  });
+  tabs.innerHTML = tabsHtml;
+}
+
+// ─── OAUTH ────────────────────────────────────────────────────────────────────
+function buildAuthUrl() {
+  return `${ML_AUTH}?response_type=code&client_id=${state.appId}&redirect_uri=${encodeURIComponent(state.redirect)}`;
+}
+
+function renderOAuthList() {
+  const el = document.getElementById('oauthList');
+  if (!state.accounts.length) {
+    el.innerHTML = '<div style="color:var(--muted);font-size:13px">No hay cuentas configuradas. Volvé al paso anterior.</div>';
+    return;
+  }
+  el.innerHTML = state.accounts.map((a, i) => `
+    <div class="oauth-acc" id="oauthRow${a.id}">
+      <div class="oauth-num" style="background:rgba(255,255,255,.04);border-color:${a.color};color:${a.color}">${i+1}</div>
+      <div class="oauth-info">
+        <div class="oauth-name">${a.name}</div>
+        <div class="oauth-desc">${a.accessToken ? '✅ Conectada · User ID: ' + a.userId : 'Necesita autorización'}</div>
+      </div>
+      <span class="oauth-status ${a.accessToken ? 'oauth-ok' : 'oauth-pending'}">${a.accessToken ? '✓ Autorizada' : 'Pendiente'}</span>
+      ${!a.accessToken ? `
+        <button class="oauth-btn" onclick="startOAuth(${a.id})">Autorizar →</button>
+      ` : `
+        <div style="display:flex;gap:8px">
+          <button class="oauth-btn done" style="font-size:11px">✓ OK</button>
+          <button class="oauth-btn" style="background:rgba(255,255,255,.08);color:var(--text);font-size:11px" onclick="startOAuth(${a.id})">🔄 Renovar</button>
+        </div>
+      `}
+    </div>
+  `).join('');
+}
+
+function startOAuth(accId) {
+  const acc = state.accounts.find(a => a.id === accId);
+  if (!acc) return;
+
+  const authUrl = buildAuthUrl();
+
+  // Open a dialog to paste the code
+  const overlay = document.createElement('div');
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:500;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(4px)';
+  overlay.innerHTML = `
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:28px;width:440px;animation:fadeUp .3s ease both">
+      <h3 style="font-family:var(--font-d);font-size:18px;font-weight:800;margin-bottom:8px">Autorizar: ${acc.name}</h3>
+      <p style="color:var(--muted);font-size:13px;margin-bottom:18px;line-height:1.6">
+        Hacé click en el botón para abrir la página de autorización de ML.<br>
+        Después de autorizar, copiá el código que aparece en la URL y pegalo acá.
+      </p>
+      <div style="margin-bottom:16px">
+        <a href="${authUrl}" target="_blank" style="display:flex;align-items:center;justify-content:center;gap:8px;background:var(--yellow);color:#000;padding:11px;border-radius:8px;font-family:var(--font-d);font-weight:700;font-size:13px;text-decoration:none">
+          🔗 Abrir página de autorización de ML
+        </a>
+      </div>
+      <div style="background:rgba(255,230,0,.05);border:1px solid rgba(255,230,0,.15);border-radius:8px;padding:12px;margin-bottom:16px;font-size:12px;color:var(--muted);line-height:1.6">
+        Después de autorizar, ML te redirige de vuelta a tu app en Netlify. La URL va a tener un parámetro <strong style="color:var(--yellow)">?code=TG-XXXXXXX</strong>. Copiá ese código y pegalo acá.
+      </div>
+      <div style="margin-bottom:14px">
+        <label style="display:block;font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--muted);margin-bottom:6px">Pegá el código acá</label>
+        <input id="oauthCode" type="text" placeholder="Ej: TG-abc123..." style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:10px 12px;color:var(--text);font-family:var(--font-b);font-size:13px;outline:none">
+      </div>
+      <div style="display:flex;gap:10px">
+        <button onclick="this.closest('[style]').remove()" style="flex:1;background:transparent;color:var(--muted);border:1px solid var(--border);padding:11px;border-radius:8px;font-family:var(--font-b);font-size:13px;cursor:pointer">Cancelar</button>
+        <button onclick="exchangeCode(${accId}, document.getElementById('oauthCode').value, this.closest('[style]'))" style="flex:1;background:var(--yellow);color:#000;border:none;padding:11px;border-radius:8px;font-family:var(--font-d);font-weight:700;font-size:13px;cursor:pointer">Conectar cuenta →</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+}
+
+async function exchangeCode(accId, code, overlay) {
+  code = code.trim();
+  if (!code) { showToast('⚠️ Pegá el código primero'); return; }
+
+  showToast('🔄 Obteniendo access token...');
+
+  try {
+    // NOTE: In production this call should go through your backend to avoid
+    // exposing the Secret Key in the browser. For demo/testing it works directly.
+    const serverUrl2 = localStorage.getItem('ml_server_url') || SERVER_URL;
+    const res = await fetch(serverUrl2 + '/api/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        grant_type: 'authorization_code',
+        client_id: state.appId,
+        client_secret: state.secret,
+        code,
+        redirect_uri: state.redirect
+      })
+    });
+
+    const data = await res.json();
+
+    if (data.access_token) {
+      const acc = state.accounts.find(a => a.id === accId);
+      acc.accessToken = data.access_token;
+      acc.refreshToken = data.refresh_token;
+      acc.userId = data.user_id;
+      overlay.remove();
+      showToast(`✅ ¡${acc.name} conectada exitosamente!`);
+      renderOAuthList();
+      renderAccountsList();
+      renderSidebar();
+      saveAccounts();
+      loadAllData();
+    } else {
+      showToast('❌ Error: ' + (data.message || 'Token inválido'));
+    }
+  } catch(e) {
+    showToast('❌ Error de conexión. Verificá las credenciales.');
+  }
+}
+
+// ─── DATA LOADING ────────────────────────────────────────────────────────────
+async function mlGet(path, token) {
+  // Try direct first, then fallback to proxy
+  const directUrl = ML_API + path;
+  const proxyUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(directUrl + (directUrl.includes('?') ? '&' : '?') + '_token=' + token)}`;
+  
+  try {
+    // Try direct call first
+    const res = await fetch(directUrl, {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    if (res.ok) return res.json();
+    throw new Error('direct failed');
+  } catch(e) {
+    // Fallback: use allorigins proxy
+    try {
+      const proxyRes = await fetch(`https://api.allorigins.win/get?url=${encodeURIComponent(directUrl)}`, {
+        headers: { 'X-Requested-With': 'XMLHttpRequest' }
+      });
+      // allorigins returns { contents: "json string" }
+      // But we can't pass auth headers through allorigins
+      // So use a different approach - encode token in a special header workaround
+      const data = await proxyRes.json();
+      if (data && data.contents) return JSON.parse(data.contents);
+      throw new Error('proxy failed');
+    } catch(e2) {
+      // Last resort: try with access_token as query param (ML supports this)
+      const urlWithToken = ML_API + path + (path.includes('?') ? '&' : '?') + 'access_token=' + token;
+      const res3 = await fetch(`https://api.allorigins.win/get?url=${encodeURIComponent(urlWithToken)}`);
+      const data3 = await res3.json();
+      if (data3 && data3.contents) return JSON.parse(data3.contents);
+      throw new Error('all methods failed');
+    }
+  }
+}
+
+async function refreshToken(acc) {
+  if (!acc.refreshToken) return false;
+  try {
+    const serverUrl = localStorage.getItem('ml_server_url') || SERVER_URL;
+    const res = await fetch(serverUrl + '/api/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        grant_type: 'refresh_token',
+        client_id: state.appId,
+        client_secret: state.secret,
+        refresh_token: acc.refreshToken
+      })
+    });
+    const data = await res.json();
+    if (data.access_token) {
+      acc.accessToken = data.access_token;
+      acc.refreshToken = data.refresh_token;
+      saveAccounts();
+      return true;
+    }
+    return false;
+  } catch(e) {
+    return false;
+  }
+}
+
+async function mlGetWithRefresh(path, acc) {
+  try {
+    const data = await mlGet(path, acc.accessToken);
+    // If ML returns unauthorized, try refreshing token
+    if (data && data.error === 'unauthorized_scopes' || data && data.status === 401) {
+      const refreshed = await refreshToken(acc);
+      if (refreshed) return await mlGet(path, acc.accessToken);
+    }
+    return data;
+  } catch(e) {
+    // Try refreshing token and retry
+    const refreshed = await refreshToken(acc);
+    if (refreshed) {
+      return await mlGet(path, acc.accessToken);
+    }
+    throw e;
+  }
+}
+
+async function mlFetch(path, token) {
+  const sep = path.includes('?') ? '&' : '?';
+  const fullUrl = 'https://api.mercadolibre.com' + path + sep + 'access_token=' + token;
+  const proxyUrl = 'https://api.allorigins.win/get?url=' + encodeURIComponent(fullUrl);
+  const res = await fetch(proxyUrl);
+  const json = await res.json();
+  if (!json.contents) throw new Error('No contents from proxy');
+  const data = JSON.parse(json.contents);
+  if (data.error === 'not_found') throw new Error('not_found');
+  return data;
+}
+
+function getRangeDates(days) {
+  const now = new Date();
+  const from = new Date(now - days * 24 * 60 * 60 * 1000);
+  const pad = n => String(n).padStart(2,'0');
+  const fmt = d => d.getFullYear() + '-' + pad(d.getMonth()+1) + '-' + pad(d.getDate()) + 'T00:00:00.000-00:00';
+  return { from: fmt(from), to: fmt(now) };
+}
+
+async function loadAllData() {
+  const connected = state.accounts.filter(a => a.accessToken);
+  if (!connected.length) return;
+
+  const serverUrl = localStorage.getItem('ml_server_url') || SERVER_URL;
+  if (!serverUrl) {
+    showToast('⚠️ Configurá la URL del servidor primero');
+    return;
+  }
+
+  showToast('📡 Cargando datos...');
+
+  await Promise.all(connected.map(async acc => {
+    try {
+      const range  = getDateRange();
+      const apiUrl = serverUrl + '/api/dashboard?token=' + encodeURIComponent(acc.accessToken)
+                   + '&date_from=' + range.date_from + '&date_to=' + range.date_to;
+      const res = await fetch(apiUrl);
+      const data = await res.json();
+
+      if (data.error) {
+        // Try refreshing token
+        const refreshed = await refreshToken(acc);
+        if (refreshed) {
+          showToast('🔄 Token renovado para ' + acc.name);
+          setTimeout(() => loadAllData(), 500);
+        } else {
+          showToast('⚠️ Reconectá la cuenta ' + acc.name);
+        }
+        return;
+      }
+
+      if (data.user && data.user.id) { acc.userId = data.user.id; }
+      acc.data = data;
+      saveAccounts();
+    } catch(e) {
+      showToast('❌ Error conectando al servidor');
+    }
+  }));
+
+  updateDashboard();
+  showToast('✅ Datos actualizados');
+}
+
+function updateDashboard() {
+  try {
+  const connected = state.accounts.filter(a => a.data);
+  if (!connected.length) return;
+
+  function formatMoney(n) {
+    if (n >= 1000000) return '$' + (n/1000000).toFixed(2) + 'M';
+    if (n >= 1000) return '$' + (n/1000).toFixed(1) + 'K';
+    return '$' + Math.round(n).toLocaleString('es-AR');
+  }
+
+  function deltaHtml(val) {
+    if (val === null || val === undefined) return '<span style="color:var(--muted);font-size:11px">vs período anterior</span>';
+    const n = parseFloat(val);
+    const cls = n >= 0 ? 'up' : 'down';
+    const sign = n >= 0 ? '▲' : '▼';
+    return '<span class="kpi-delta ' + cls + '">' + sign + ' ' + Math.abs(n) + '% vs período anterior</span>';
+  }
+
+  let totalFac = 0, totalVentas = 0, totalVisits = 0, totalUnits = 0;
+  let totalRecibido = 0, totalAds = 0;
+  let convRates = [];
+  let changes = { amount: [], orders: [], visits: [], conversion: [], units: [], ticket: [] };
+
+  connected.forEach(acc => {
+    if (!acc.data || !acc.data.stats) return;
+    const s = acc.data.stats;
+    totalFac      += s.total_amount   || 0;
+    totalVentas   += s.total_orders   || 0;
+    totalVisits   += s.total_visits   || 0;
+    totalUnits    += s.total_units    || 0;
+    totalRecibido += s.importe_recibido || 0;
+    totalAds      += s.ads_spend      || 0;
+    if (s.conversion_rate) convRates.push(parseFloat(s.conversion_rate));
+    if (s.change) {
+      ['amount','orders','visits','conversion','units','ticket'].forEach(k => {
+        if (s.change[k] != null) changes[k].push(parseFloat(s.change[k]));
+      });
+    }
+  });
+
+  const avgConv   = convRates.length ? (convRates.reduce((a,b) => a+b,0)/convRates.length).toFixed(1) : 0;
+  const avgCh     = arr => arr.length ? (arr.reduce((a,b)=>a+b,0)/arr.length).toFixed(1) : null;
+  const ticketProm = totalVentas > 0 ? totalFac / totalVentas : 0;
+  const tacos     = totalFac > 0 ? ((totalAds / totalFac) * 100).toFixed(1) : '—';
+  const pctRecibido = totalFac > 0 ? ((totalRecibido / totalFac) * 100).toFixed(1) : '—';
+
+  // Fila 1
+  document.getElementById('kpiAmount').textContent = formatMoney(totalFac);
+  document.getElementById('kpiAmountDelta').innerHTML = deltaHtml(avgCh(changes.amount));
+  document.getElementById('kpiAmountSub').textContent = 'Facturación bruta';
+
+  document.getElementById('kpiOrders').textContent = totalVentas.toLocaleString('es-AR');
+  document.getElementById('kpiOrdersDelta').innerHTML = deltaHtml(avgCh(changes.orders));
+  document.getElementById('kpiOrdersSub').textContent = 'Órdenes pagadas';
+
+  document.getElementById('kpiTicket').textContent = formatMoney(ticketProm);
+  document.getElementById('kpiTicketDelta').innerHTML = deltaHtml(avgCh(changes.ticket));
+  document.getElementById('kpiTicketSub').textContent = 'Facturación / Ventas';
+
+  // Fila 2
+  document.getElementById('kpiVisits').textContent = totalVisits.toLocaleString('es-AR');
+  document.getElementById('kpiVisitsDelta').innerHTML = deltaHtml(avgCh(changes.visits));
+  document.getElementById('kpiVisitsSub').textContent = 'Visitas al período';
+
+  document.getElementById('kpiUnits').textContent = totalUnits.toLocaleString('es-AR');
+  document.getElementById('kpiUnitsDelta').innerHTML = deltaHtml(avgCh(changes.units));
+  document.getElementById('kpiUnitsSub').textContent = 'Unidades despachadas';
+
+  document.getElementById('kpiConv').textContent = avgConv + '%';
+  document.getElementById('kpiConvDelta').innerHTML = deltaHtml(avgCh(changes.conversion));
+  document.getElementById('kpiConvSub').textContent = 'Ventas / Visitas';
+
+  // Fila 3
+  document.getElementById('kpiTacos').textContent = tacos === '—' ? '—' : tacos + '%';
+  document.getElementById('kpiTacosSub').textContent = totalAds > 0 ? 'Ads: ' + formatMoney(totalAds) : 'Sin datos de Ads aún';
+
+  document.getElementById('kpiRecibido').textContent = formatMoney(totalRecibido);
+  document.getElementById('kpiRecibidoSub').textContent = 'Neto tras comisiones, envío e impuestos';
+
+  document.getElementById('kpiPctRecibido').textContent = pctRecibido === '—' ? '—' : pctRecibido + '%';
+  document.getElementById('kpiPctRecibidoSub').textContent = 'Sobre facturación bruta';
+
+  // Reputación — solo la medalla de la primera cuenta
+  const firstWithRep = connected.find(acc => acc.data.reputation || (acc.data.user && acc.data.user.seller_reputation));
+  const repBadgeEl = document.getElementById('reputationBadge');
+  const repLabelEl = document.getElementById('reputationLabel');
+  if (firstWithRep) {
+    const rep = firstWithRep.data.reputation || firstWithRep.data.user.seller_reputation;
+    const level = rep.power_seller_status || 'silver';
+    const medals = { platinum: '🏆', gold: '🥇', silver: '🥈', bronze: '🥉' };
+    const labels = { platinum: 'PLATINO', gold: 'ORO', silver: 'PLATA', bronze: 'BRONCE' };
+    const colors = { platinum: '#e5e4e2', gold: '#FFD700', silver: '#C0C0C0', bronze: '#CD7F32' };
+    repBadgeEl.textContent = medals[level] || '🥈';
+    repLabelEl.textContent = labels[level] || 'PLATA';
+    repLabelEl.style.color = colors[level] || '#C0C0C0';
+  } else {
+    repBadgeEl.textContent = '—';
+    repLabelEl.textContent = 'Sin datos';
+  }
+
+  // Gráfico evolución
+  try { buildEvolutionChart(); } catch(e) { console.error('Chart error:', e); }
+
+  // Subpáginas
+  loadPublicaciones();
+  loadVentas();
+  } catch(e) { console.error('Dashboard update error:', e); }
+}
+
+function buildEvolutionChart() {
+  const connected = state.accounts.filter(a => a.data);
+  const chartEl = document.getElementById('weeklyChart');
+  const legendEl = document.getElementById('chartLegend');
+  if (!chartEl) return;
+  chartEl.innerHTML = '';
+  if (legendEl) legendEl.innerHTML = '';
+  if (!connected.length) return;
+  try {
+
+  const range = getDateRange();
+  const fromMs = new Date(range.date_from).getTime();
+  const toMs   = new Date(range.date_to).getTime();
+  const days   = (fromMs && toMs) ? Math.max(1, Math.round((toMs - fromMs) / (1000*60*60*24))) : (state.rangeDays || 30);
+  const now = Date.now();
+
+  // Build daily buckets
+  const facByDay    = new Array(days).fill(0);
+  const ventasByDay = new Array(days).fill(0);
+
+  connected.forEach(acc => {
+    (acc.data.recent_orders || []).forEach(o => {
+      const age = (now - new Date(o.date_created).getTime()) / (1000 * 60 * 60 * 24);
+      const di = Math.floor(age);
+      if (di >= 0 && di < days) {
+        const idx = days - 1 - di;
+        facByDay[idx]    += parseFloat(o.total_amount) || 0;
+        ventasByDay[idx] += 1;
+      }
+    });
+  });
+
+  // Date labels
+  const labels = [];
+  for (let i = 0; i < days; i++) {
+    const d = new Date(now - (days - 1 - i) * 24 * 60 * 60 * 1000);
+    labels.push(d.toLocaleDateString('es-AR', { day:'2-digit', month:'short' }).replace('.',''));
+  }
+
+  const W = chartEl.clientWidth || 900;
+  const H = 200;
+  const padL = 12, padR = 12, padT = 20, padB = 32;
+  const innerW = W - padL - padR;
+  const innerH = H - padT - padB;
+
+  // Independent max for each series
+  const maxFac    = Math.max(...facByDay, 1);
+  const maxVentas = Math.max(...ventasByDay, 1);
+
+  function getPoints(arr, maxVal) {
+    return arr.map((v, i) => ({
+      x: padL + (i / Math.max(arr.length - 1, 1)) * innerW,
+      y: padT + innerH - (v / maxVal) * innerH
+    }));
+  }
+
+  function smoothD(points) {
+    if (points.length < 2) return '';
+    let d = `M ${points[0].x.toFixed(1)} ${points[0].y.toFixed(1)}`;
+    for (let i = 0; i < points.length - 1; i++) {
+      const p0 = points[Math.max(0, i - 1)];
+      const p1 = points[i];
+      const p2 = points[i + 1];
+      const p3 = points[Math.min(points.length - 1, i + 2)];
+      const cp1x = p1.x + (p2.x - p0.x) / 6;
+      const cp1y = p1.y + (p2.y - p0.y) / 6;
+      const cp2x = p2.x - (p3.x - p1.x) / 6;
+      const cp2y = p2.y - (p3.y - p1.y) / 6;
+      d += ` C ${cp1x.toFixed(1)} ${cp1y.toFixed(1)}, ${cp2x.toFixed(1)} ${cp2y.toFixed(1)}, ${p2.x.toFixed(1)} ${p2.y.toFixed(1)}`;
+    }
+    return d;
+  }
+
+  function areaD(points) {
+    const line = smoothD(points);
+    if (!line) return '';
+    const baseY = (padT + innerH).toFixed(1);
+    return `${line} L ${points[points.length-1].x.toFixed(1)} ${baseY} L ${points[0].x.toFixed(1)} ${baseY} Z`;
+  }
+
+  const ptsFac    = getPoints(facByDay, maxFac);
+  const ptsVentas = getPoints(ventasByDay, maxVentas);
+
+  // X axis labels — smart spacing
+  const labelStep = days <= 14 ? 1 : days <= 30 ? 3 : 7;
+  let xLabels = '';
+  for (let i = 0; i < days; i++) {
+    if (i % labelStep !== 0 && i !== days - 1) continue;
+    const x = padL + (i / (days - 1)) * innerW;
+    xLabels += `<text x="${x.toFixed(1)}" y="${H - 8}" text-anchor="middle" fill="#aaa" font-size="10" font-family="sans-serif">${labels[i]}</text>`;
+  }
+
+  // Invisible overlay rects per day for hover detection
+  let overlays = '';
+  const colW = innerW / days;
+  for (let i = 0; i < days; i++) {
+    const x = padL + i * colW;
+    const fac = facByDay[i];
+    const ventas = ventasByDay[i];
+    const fmt = n => n >= 1000000 ? '$'+(n/1000000).toFixed(2)+'M' : n >= 1000 ? '$'+(n/1000).toFixed(1)+'K' : '$'+Math.round(n).toLocaleString('es-AR');
+    overlays += `<rect x="${x.toFixed(1)}" y="${padT}" width="${colW.toFixed(1)}" height="${innerH}"
+      fill="transparent" class="chart-overlay"
+      data-label="${labels[i]}" data-fac="${fmt(fac)}" data-ventas="${ventas}"
+      data-cx="${(padL + (i/(days-1))*innerW).toFixed(1)}"
+      data-facy="${ptsFac[i].y.toFixed(1)}" data-ventasy="${ptsVentas[i].y.toFixed(1)}"/>`;
+  }
+
+  // Crosshair line (hidden initially)
+  const crosshair = `<line id="chartCrosshair" x1="0" y1="${padT}" x2="0" y2="${padT+innerH}" stroke="#ccc" stroke-width="1" stroke-dasharray="3,3" opacity="0"/>`;
+  // Highlight dots
+  const hlDots = `
+    <circle id="chartDotFac"    r="4" fill="#FFD700" stroke="#fff" stroke-width="2" opacity="0"/>
+    <circle id="chartDotVentas" r="4" fill="#00e676" stroke="#fff" stroke-width="2" opacity="0"/>`;
+
+  // Grid lines
+  const gridLines = [0.25, 0.5, 0.75, 1].map(f => {
+    const y = (padT + innerH - f * innerH).toFixed(1);
+    return `<line x1="${padL}" y1="${y}" x2="${padL + innerW}" y2="${y}" stroke="#e8e8e8" stroke-width="1" stroke-dasharray="4,4"/>`;
+  }).join('');
+
+  chartEl.style.height = H + 'px';
+  chartEl.style.display = 'block';
+  chartEl.style.position = 'relative';
+  chartEl.style.overflow = 'hidden';
+  chartEl.innerHTML = `
+    <div id="chartTooltip" style="
+      display:none;position:absolute;pointer-events:none;z-index:10;
+      background:var(--surface,#fff);border:1px solid var(--border,#e0e0e0);
+      border-radius:8px;padding:8px 12px;font-size:12px;
+      box-shadow:0 4px 16px rgba(0,0,0,0.12);min-width:130px;white-space:nowrap">
+    </div>
+    <svg id="chartSvg" width="100%" height="${H}" viewBox="0 0 ${W} ${H}" style="overflow:hidden;display:block">
+      <defs>
+        <linearGradient id="gFac" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="#FFD700" stop-opacity="0.3"/>
+          <stop offset="100%" stop-color="#FFD700" stop-opacity="0.0"/>
+        </linearGradient>
+        <linearGradient id="gVentas" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="#00e676" stop-opacity="0.25"/>
+          <stop offset="100%" stop-color="#00e676" stop-opacity="0.0"/>
+        </linearGradient>
+      </defs>
+      ${gridLines}
+      ${crosshair}
+      <path d="${areaD(ptsFac)}"    fill="url(#gFac)"/>
+      <path d="${areaD(ptsVentas)}" fill="url(#gVentas)"/>
+      <path d="${smoothD(ptsFac)}"    fill="none" stroke="#FFD700" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+      <path d="${smoothD(ptsVentas)}" fill="none" stroke="#00e676" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+      ${hlDots}
+      ${overlays}
+      ${xLabels}
+    </svg>`;
+
+  // Tooltip logic
+  const tooltip   = chartEl.querySelector('#chartTooltip');
+  const crossEl   = chartEl.querySelector('#chartCrosshair');
+  const dotFac    = chartEl.querySelector('#chartDotFac');
+  const dotVentas = chartEl.querySelector('#chartDotVentas');
+  const svgEl     = chartEl.querySelector('#chartSvg');
+
+  chartEl.querySelectorAll('.chart-overlay').forEach(rect => {
+    rect.addEventListener('mouseenter', function() {
+      const cx     = parseFloat(this.dataset.cx);
+      const facY   = parseFloat(this.dataset.facy);
+      const ventY  = parseFloat(this.dataset.ventasy);
+
+      // Crosshair
+      crossEl.setAttribute('x1', cx); crossEl.setAttribute('x2', cx);
+      crossEl.setAttribute('opacity', '1');
+
+      // Highlight dots
+      dotFac.setAttribute('cx', cx); dotFac.setAttribute('cy', facY);
+      dotFac.setAttribute('opacity', '1');
+      dotVentas.setAttribute('cx', cx); dotVentas.setAttribute('cy', ventY);
+      dotVentas.setAttribute('opacity', '1');
+
+      // Tooltip content
+      tooltip.innerHTML = `
+        <div style="font-weight:700;margin-bottom:6px;color:var(--text)">${this.dataset.label}</div>
+        <div style="display:flex;align-items:center;gap:6px;margin-bottom:3px">
+          <span style="width:8px;height:8px;border-radius:50%;background:#FFD700;display:inline-block"></span>
+          <span style="color:var(--muted)">Facturación:</span>
+          <span style="font-weight:600">${this.dataset.fac}</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:6px">
+          <span style="width:8px;height:8px;border-radius:50%;background:#00e676;display:inline-block"></span>
+          <span style="color:var(--muted)">Ventas:</span>
+          <span style="font-weight:600">${this.dataset.ventas}</span>
+        </div>`;
+      tooltip.style.display = 'block';
+
+      // Position tooltip — flip if near right edge
+      const svgRect = svgEl.getBoundingClientRect();
+      const relX = (cx / W) * svgRect.width;
+      const flipLeft = relX > svgRect.width * 0.65;
+      tooltip.style.left  = flipLeft ? '' : (relX + 12) + 'px';
+      tooltip.style.right = flipLeft ? (svgRect.width - relX + 12) + 'px' : '';
+      tooltip.style.top   = padT + 'px';
+    });
+
+    rect.addEventListener('mouseleave', function() {
+      tooltip.style.display = 'none';
+      crossEl.setAttribute('opacity', '0');
+      dotFac.setAttribute('opacity', '0');
+      dotVentas.setAttribute('opacity', '0');
+    });
+  });
+
+  // Add hover cursor style once
+  if (!document.getElementById('chart-dot-style')) {
+    const style = document.createElement('style');
+    style.id = 'chart-dot-style';
+    style.textContent = '.chart-overlay { cursor: crosshair; }';
+    document.head.appendChild(style);
+  }
+
+  legendEl.innerHTML = `
+    <div class="leg"><div class="leg-dot" style="background:#FFD700"></div>Facturación</div>
+    <div class="leg"><div class="leg-dot" style="background:#00e676"></div>Ventas</div>
+  `;
+  } catch(e) { console.error('Chart render error:', e); }
+}
+
+function setPubsRange(el, days) { setQuickRange(days); }
+
+
+function filterPubs(q) {
+  if (!window._pubsData) return;
+  const term = q.toLowerCase();
+  document.querySelectorAll('#pubsTable tr.pub-row').forEach(row => {
+    row.style.display = row.dataset.search.includes(term) ? '' : 'none';
+  });
+}
+
+function exportPubsExcel() {
+  if (!window._pubsData || !window._pubsData.length) { showToast('No hay datos para exportar'); return; }
+  const rows = window._pubsData.map(i => ({
+    'MLA': i.id, 'Título': i.title, 'Tiene Ads': i.hasAds ? 'Sí' : 'No',
+    'Unidades': i.units, 'Facturación': Math.round(i.revenue),
+    'Ventas por Ads': Math.round(i.adsSales), '% Aporte': i.revenueShare,
+    'Visitas': i.visits, 'Conversión %': i.conversion,
+    'Clicks Ads': i.adsClicks, 'Conv. Ads %': i.adsConversion
+  }));
+  const ws = XLSX.utils.json_to_sheet(rows);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Publicaciones');
+  XLSX.writeFile(wb, 'publicaciones.xlsx');
+}
+
+async function loadPublicaciones() {
+  const el = document.getElementById('publicacionesContent');
+  if (!el) return;
+  const connected = state.accounts.filter(a => a.data);
+  if (!connected.length) {
+    el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:20px;text-align:center">Sincronizá primero para ver datos</div>';
+    return;
+  }
+  const range2 = getDateRange();
+  const dateParams = '&date_from=' + range2.date_from + '&date_to=' + range2.date_to;
+  el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:20px;text-align:center">⏳ Cargando publicaciones... puede tardar 30-60 segundos</div>';
+
+  let allItems = [];
+  let totalSummary = { total: 0, active: 0, inactive: 0, withSales: 0, withProblems: 0 };
+
+  await Promise.all(connected.map(async acc => {
+    try {
+      const res = await fetch(SERVER_URL + '/api/items-full?client_id=' + acc.id + dateParams + '&session_id=' + (getSession()||''));
+      const data = await res.json();
+      (data.items || []).forEach(item => allItems.push({ ...item, cuenta: acc.name, color: acc.color, totalRevenue: data.total_revenue }));
+      if (data.summary) {
+        totalSummary.total        += data.summary.total;
+        totalSummary.active       += data.summary.active;
+        totalSummary.inactive     += data.summary.inactive;
+        totalSummary.withSales    += data.summary.withSales;
+        totalSummary.withProblems += data.summary.withProblems;
+      }
+    } catch(e) { console.error('Pubs error:', e); }
+  }));
+
+  if (!allItems.length) {
+    el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:20px;text-align:center">No hay datos para mostrar</div>';
+    return;
+  }
+
+  // % Aporte calculated per-account (each item vs its own account total)
+  // Group by cuenta to get per-account revenue totals
+  const revenueByAccount = {};
+  allItems.forEach(i => {
+    revenueByAccount[i.cuenta] = (revenueByAccount[i.cuenta] || 0) + i.revenue;
+  });
+  allItems.forEach(i => {
+    const accTotal = revenueByAccount[i.cuenta] || 1;
+    i.revenueShare = accTotal > 0 ? parseFloat(((i.revenue / accTotal) * 100).toFixed(2)) : 0;
+  });
+  allItems.sort((a, b) => b.revenue - a.revenue);
+  window._pubsData = allItems;
+  window._pubsFilter = 'all';
+
+  function fmt(n) {
+    if (n >= 1000000) return '$' + (n/1000000).toFixed(2) + 'M';
+    if (n >= 1000) return '$' + (n/1000).toFixed(1) + 'K';
+    return '$' + Math.round(n).toLocaleString('es-AR');
+  }
+
+  const T = totalSummary.total || 1;
+  const pctActive   = (totalSummary.active   / T * 100).toFixed(0);
+  const pctInactive = (totalSummary.inactive / T * 100).toFixed(0);
+  const pctSales    = totalSummary.active > 0 ? (totalSummary.withSales / totalSummary.active * 100).toFixed(0) : 0;
+  const pctProblems = (totalSummary.withProblems / T * 100).toFixed(0);
+
+  // ── Dashboard cards ───────────────────────────────────────────────────────
+  const cards = `
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px">
+
+      <!-- Activas -->
+      <div class="kpi-card" style="padding:18px;cursor:pointer;border:2px solid transparent;transition:border .2s"
+           onclick="filterPubs('active',this)" id="pubFilterActive">
+        <div class="kpi-label">Publicaciones activas</div>
+        <div style="font-size:28px;font-weight:800;color:#00e676;margin:8px 0">${totalSummary.active.toLocaleString('es-AR')}</div>
+        <div style="font-size:12px;color:var(--muted)">${pctActive}% del total</div>
+        <div style="background:var(--surface2);border-radius:4px;height:4px;margin-top:10px">
+          <div style="background:#00e676;height:100%;width:${pctActive}%;border-radius:4px"></div>
+        </div>
+      </div>
+
+      <!-- Inactivas/Pausadas -->
+      <div class="kpi-card" style="padding:18px;cursor:pointer;border:2px solid transparent;transition:border .2s"
+           onclick="filterPubs('inactive',this)" id="pubFilterInactive">
+        <div class="kpi-label">Inactivas / Pausadas</div>
+        <div style="font-size:28px;font-weight:800;color:#ff4d4d;margin:8px 0">${totalSummary.inactive.toLocaleString('es-AR')}</div>
+        <div style="font-size:12px;color:var(--muted)">${pctInactive}% del total</div>
+        <div style="background:var(--surface2);border-radius:4px;height:4px;margin-top:10px">
+          <div style="background:#ff4d4d;height:100%;width:${pctInactive}%;border-radius:4px"></div>
+        </div>
+      </div>
+
+      <!-- Exitosas -->
+      <div class="kpi-card" style="padding:18px;cursor:pointer;border:2px solid transparent;transition:border .2s"
+           onclick="filterPubs('sales',this)" id="pubFilterSales">
+        <div class="kpi-label">Exitosas (con ventas)</div>
+        <div style="font-size:28px;font-weight:800;color:#FFD700;margin:8px 0">${totalSummary.withSales.toLocaleString('es-AR')}</div>
+        <div style="font-size:12px;color:var(--muted)">${pctSales}% de las activas · período seleccionado</div>
+        <div style="background:var(--surface2);border-radius:4px;height:4px;margin-top:10px">
+          <div style="background:#FFD700;height:100%;width:${pctSales}%;border-radius:4px"></div>
+        </div>
+      </div>
+
+      <!-- Con problemas -->
+      <div class="kpi-card" style="padding:18px;cursor:pointer;border:2px solid transparent;transition:border .2s"
+           onclick="filterPubs('problems',this)" id="pubFilterProblems">
+        <div class="kpi-label">A mejorar (con problemas)</div>
+        <div style="font-size:28px;font-weight:800;color:#ff9100;margin:8px 0">${totalSummary.withProblems.toLocaleString('es-AR')}</div>
+        <div style="font-size:12px;color:var(--muted)">${pctProblems}% del total</div>
+        <div style="background:var(--surface2);border-radius:4px;height:4px;margin-top:10px">
+          <div style="background:#ff9100;height:100%;width:${Math.min(pctProblems,100)}%;border-radius:4px"></div>
+        </div>
+      </div>
+    </div>`;
+
+  el.innerHTML = cards + `
+    <div style="display:flex;gap:10px;align-items:center;margin-bottom:12px;flex-wrap:wrap">
+      <input id="pubSearch" type="text" placeholder="Buscar por título o MLA..."
+        onInput="filterPubSearch(this.value)"
+        style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:8px 12px;color:var(--text);font-family:var(--font-b);font-size:13px;outline:none;flex:1;min-width:200px">
+      <div id="pubCount" style="font-size:12px;color:var(--muted)">${allItems.length} publicaciones</div>
+    </div>
+    <div style="overflow-x:auto">
+      <table id="pubsTable">
+        <thead><tr>
+          <th style="cursor:pointer" onclick="sortPubs('id')">MLA ↕</th>
+          <th style="cursor:pointer" onclick="sortPubs('title')">Título ↕</th>
+          <th>Cuenta</th>
+          <th style="cursor:pointer" onclick="sortPubs('status')">Estado ↕</th>
+          <th>Problemas</th>
+          <th>Ads</th>
+          <th style="text-align:right;cursor:pointer" onclick="sortPubs('units')">Unidades ↕</th>
+          <th style="text-align:right;cursor:pointer" onclick="sortPubs('revenue')">Facturación ↕</th>
+          <th style="text-align:right;cursor:pointer" onclick="sortPubs('adsSales')">Ventas Ads ↕</th>
+          <th style="text-align:right;cursor:pointer" onclick="sortPubs('revenueShare')">% Aporte ↕</th>
+          <th style="text-align:right;cursor:pointer" onclick="sortPubs('visits')">Visitas ↕</th>
+          <th style="text-align:right;cursor:pointer" onclick="sortPubs('conversion')">Conv. ↕</th>
+          <th style="text-align:right;cursor:pointer" onclick="sortPubs('adsClicks')">Clicks Ads ↕</th>
+          <th style="text-align:right;cursor:pointer" onclick="sortPubs('adsConversion')">Conv. Ads ↕</th>
+        </tr></thead>
+        <tbody id="pubsBody">${buildPubRows(allItems, fmt)}</tbody>
+      </table>
+    </div>`;
+}
+
+function buildPubRows(items, fmt) {
+  if (!fmt) fmt = n => n >= 1000000 ? '$'+(n/1000000).toFixed(2)+'M' : n >= 1000 ? '$'+(n/1000).toFixed(1)+'K' : '$'+Math.round(n).toLocaleString('es-AR');
+  return items.map(item => {
+    const adsTag = item.hasAds
+      ? '<span style="background:rgba(255,180,0,.15);color:#ffb400;padding:2px 7px;border-radius:4px;font-size:11px;font-weight:600">📣 Sí</span>'
+      : '<span style="background:rgba(255,255,255,.06);color:var(--muted);padding:2px 7px;border-radius:4px;font-size:11px">—</span>';
+
+    const statusCfg = {
+      'active':   { color: '#00e676', label: '● Activa' },
+      'paused':   { color: '#ff9100', label: '⏸ Pausada' },
+      'inactive': { color: '#ff4d4d', label: '○ Inactiva' },
+    };
+    const st = statusCfg[item.status] || { color: 'var(--muted)', label: item.status };
+    const statusTag = `<span style="color:${st.color};font-size:12px;font-weight:600;white-space:nowrap">${st.label}</span>`;
+
+    const problemsTag = item.hasProblems
+      ? `<span style="background:rgba(255,145,0,.15);color:#ff9100;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600;cursor:pointer;white-space:nowrap"
+           title="${(item.problems||[]).map(p=>p.message||p.code||p).join('\n')}"
+           onclick="showProblems('${item.id}',this)">
+           ⚠️ ${item.problems.length} problema${item.problems.length > 1 ? 's' : ''}
+         </span>`
+      : '<span style="color:var(--muted);font-size:11px">✓</span>';
+
+    const convColor    = item.conversion    >= 3 ? '#00e676' : item.conversion    >= 1 ? '#ff9100' : item.conversion    > 0 ? '#ff4d4d' : 'var(--muted)';
+    const adsConvColor = item.adsConversion >= 5 ? '#00e676' : item.adsConversion >= 2 ? '#ff9100' : item.adsConversion > 0 ? '#ff4d4d' : 'var(--muted)';
+
+    return '<tr class="pub-row" data-status="' + item.status + '" data-hassales="' + item.hasSales + '" data-hasproblems="' + item.hasProblems + '" data-search="' + (item.title + item.id + item.cuenta).toLowerCase() + '">'
+      + '<td style="font-size:11px"><span style="color:var(--muted);cursor:pointer" title="Click para copiar" onclick="copyMLA(this,\'' + item.id + '\')">' + item.id + '</span></td>'
+      + '<td style="max-width:240px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="' + item.title + '">' + item.title + '</td>'
+      + '<td style="color:var(--muted);font-size:11px">' + item.cuenta + '</td>'
+      + '<td>' + statusTag + '</td>'
+      + '<td>' + problemsTag + '</td>'
+      + '<td>' + adsTag + '</td>'
+      + '<td style="text-align:right;color:#00e676;font-weight:700">' + (item.units || '—') + '</td>'
+      + '<td style="text-align:right;color:var(--yellow);font-weight:700">' + (item.revenue > 0 ? fmt(item.revenue) : '—') + '</td>'
+      + '<td style="text-align:right;color:#00e676;font-weight:600">' + (item.adsSales > 0 ? fmt(item.adsSales) : '—') + '</td>'
+      + '<td style="text-align:right;font-size:12px">' + (item.revenueShare > 0 ? item.revenueShare + '%' : '—') + '</td>'
+      + '<td style="text-align:right">' + (item.visits > 0 ? item.visits.toLocaleString('es-AR') : '—') + '</td>'
+      + '<td style="text-align:right;font-size:13px;font-weight:700;color:' + convColor + '">' + (item.conversion > 0 ? item.conversion + '%' : '—') + '</td>'
+      + '<td style="text-align:right">' + (item.adsClicks > 0 ? item.adsClicks.toLocaleString('es-AR') : '—') + '</td>'
+      + '<td style="text-align:right;font-size:13px;font-weight:700;color:' + adsConvColor + '">' + (item.adsConversion > 0 ? item.adsConversion + '%' : '—') + '</td>'
+      + '</tr>';
+  }).join('');
+}
+
+function filterPubs(type, cardEl) {
+  window._pubsFilter = type;
+  // Highlight active card
+  ['pubFilterActive','pubFilterInactive','pubFilterSales','pubFilterProblems'].forEach(id => {
+    const c = document.getElementById(id);
+    if (c) c.style.border = '2px solid transparent';
+  });
+  if (cardEl) cardEl.style.border = '2px solid var(--accent)';
+
+  applyPubsFilter();
+}
+
+function applyPubsFilter() {
+  const f = window._pubsFilter || 'all';
+  const q = (document.getElementById('pubSearch')?.value || '').toLowerCase();
+  let count = 0;
+  document.querySelectorAll('.pub-row').forEach(row => {
+    const matchFilter =
+      f === 'all'      ? true :
+      f === 'active'   ? row.dataset.status === 'active' :
+      f === 'inactive' ? (row.dataset.status === 'inactive' || row.dataset.status === 'paused') :
+      f === 'sales'    ? row.dataset.hassales === 'true' :
+      f === 'problems' ? row.dataset.hasproblems === 'true' : true;
+    const matchSearch = !q || row.dataset.search.includes(q);
+    const show = matchFilter && matchSearch;
+    row.style.display = show ? '' : 'none';
+    if (show) count++;
+  });
+  const el = document.getElementById('pubCount');
+  if (el) el.textContent = count + ' publicaciones';
+}
+
+function filterPubSearch(val) {
+  applyPubsFilter();
+}
+
+function copyMLA(el, id) {
+  navigator.clipboard.writeText(id).then(() => {
+    const orig = el.textContent;
+    el.textContent = '✓ copiado';
+    el.style.color = '#00e676';
+    setTimeout(() => { el.textContent = orig; el.style.color = 'var(--muted)'; }, 1500);
+  }).catch(() => {
+    // fallback
+    const ta = document.createElement('textarea');
+    ta.value = id; document.body.appendChild(ta); ta.select();
+    document.execCommand('copy'); document.body.removeChild(ta);
+    const orig = el.textContent;
+    el.textContent = '✓ copiado'; el.style.color = '#00e676';
+    setTimeout(() => { el.textContent = orig; el.style.color = 'var(--muted)'; }, 1500);
+  });
+}
+
+function perfFilterMode(idx) {
+  if (idx === null) {
+    window._perfModeFilter = null;
+  } else {
+    const label = window._perfModeLabels && window._perfModeLabels[idx];
+    if (!label) return;
+    window._perfModeFilter = (window._perfModeFilter === label) ? null : label;
+  }
+  loadPerformance();
+}
+
+function loadRentabilidad() {
+  const el = document.getElementById('rentabilidadContent');
+  if (!el) return;
+  const client = getActiveClient();
+  if (!client) { el.innerHTML = '<div style="color:var(--muted);padding:20px;text-align:center">Seleccioná una cuenta</div>'; return; }
+
+  const connected = state.accounts.filter(a => a.data && a.data.rentabilidad);
+  if (!connected.length) {
+    el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:20px;text-align:center">Sincronizá primero para ver los datos</div>';
+    return;
+  }
+
+  const R = { facturacion:0, envios_cobrados:0, total_ingresos:0, comisiones:0, impuestos:0, costo_envios:0, resultado_envios:0, anulaciones:0, cancelled_count:0, inversion_ads:0, total_egresos:0, neto_ml:0, costo_productos:0 };
+  const allProducts = {};
+  connected.forEach(acc => {
+    const r = acc.data.rentabilidad;
+    Object.keys(R).forEach(k => { R[k] += r[k]||0; });
+    (r.by_product || []).forEach(p => {
+      if (!allProducts[p.id]) allProducts[p.id] = { ...p };
+      else {
+        allProducts[p.id].revenue         += p.revenue;
+        allProducts[p.id].units           += p.units;
+        allProducts[p.id].comision        += p.comision;
+        allProducts[p.id].impuestos       += p.impuestos || 0;
+        allProducts[p.id].envio_cobrado   += p.envio_cobrado || 0;
+        allProducts[p.id].envio_pagado    += p.envio_pagado  || 0;
+        allProducts[p.id].resultado_envio += p.resultado_envio || 0;
+        allProducts[p.id].ads             += p.ads || 0;
+        allProducts[p.id].neto            += p.neto;
+      }
+    });
+  });
+
+  // Cargar CMV desde product_costs
+  const clientId = client.id;
+  apiCall('GET', `/api/reporte/items-vendidos?client_id=${clientId}&date_from=${getDateRange().date_from}&date_to=${getDateRange().date_to}`)
+    .then(costsData => {
+      const costsMap = {};
+      (costsData?.items || []).forEach(i => { if (i.costo_unit) costsMap[i.mla_id] = parseFloat(i.costo_unit)||0; });
+      renderRentabilidad(R, allProducts, costsMap);
+    })
+    .catch(() => renderRentabilidad(R, allProducts, {}));
+}
+
+function renderRentabilidad(R, allProducts, costsMap) {
+  const el = document.getElementById('rentabilidadContent');
+
+  // Calcular CMV total
+  let cmvTotal = 0;
+  const products = Object.values(allProducts).map(p => {
+    const costoUnit = costsMap[p.id] ?? null;
+    const cmv = costoUnit != null ? costoUnit * p.units : null;
+    if (cmv != null) cmvTotal += cmv;
+    const margen = p.revenue > 0 && cmv != null
+      ? ((p.revenue - p.comision - (p.impuestos||0) - cmv - (p.resultado_envio < 0 ? -p.resultado_envio : 0)) / p.revenue * 100)
+      : (p.revenue > 0 ? (p.neto / p.revenue * 100) : 0);
+    return { ...p, costo_unit: costoUnit, cmv, margen: parseFloat(margen.toFixed(1)) };
+  });
+
+  const utilidad_final = R.neto_ml - cmvTotal;
+  const resultado_envios = R.resultado_envios != null ? R.resultado_envios : (R.envios_cobrados - R.costo_envios);
+  const base = R.facturacion || 1;
+
+  const fmtM = n => {
+    const abs = Math.abs(n), sign = n < 0 ? '-' : '';
+    if (abs >= 1000000) return sign+'$'+(abs/1000000).toFixed(2)+'M';
+    if (abs >= 1000)    return sign+'$'+(abs/1000).toFixed(1)+'K';
+    return sign+'$'+Math.round(abs).toLocaleString('es-AR');
+  };
+  const pct = (val, b) => b > 0 ? (Math.abs(val)/b*100).toFixed(1)+'%' : '—';
+  const margenColor = m => m >= 30 ? '#00e676' : m >= 15 ? '#FFD700' : '#ff5252';
+
+  // Ordenamiento
+  if (!window._rentSort) window._rentSort = { col: 'revenue', asc: false };
+  const { col: sc, asc: sa } = window._rentSort;
+  const colVal = p => {
+    if (sc === 'title') return (p.title||'').toLowerCase();
+    if (sc === 'margen') return p.margen ?? -999;
+    if (sc === 'cmv') return p.cmv ?? -1;
+    if (sc === 'pct_total') return p.revenue / base;
+    return parseFloat(p[sc]) || 0;
+  };
+  products.sort((a, b) => {
+    const va = colVal(a), vb = colVal(b);
+    if (typeof va === 'string') return sa ? va.localeCompare(vb) : vb.localeCompare(va);
+    return sa ? va - vb : vb - va;
+  });
+
+  const th = (col, label, align='right') => {
+    const active = window._rentSort.col === col;
+    const arrow = active ? (window._rentSort.asc ? ' ↑' : ' ↓') : '';
+    return `<th onclick="sortRent('${col}')" style="text-align:${align};padding:8px 10px;color:${active?'var(--text)':'var(--muted)'};font-weight:600;cursor:pointer;user-select:none;white-space:nowrap">${label}${arrow}</th>`;
+  };
+
+  // KPI cards
+  const kpiCard = (icon, label, value, color, sub) => `
+    <div class="kpi-card" style="border-top:3px solid ${color};padding:16px">
+      <div class="kpi-label" style="margin-bottom:6px">${icon} ${label}</div>
+      <div style="font-size:22px;font-weight:700;color:${color};font-family:var(--font-b)">${fmtM(value)}</div>
+      <div style="font-size:11px;color:var(--muted);margin-top:4px">${sub}</div>
+    </div>`;
+
+  el.innerHTML = `
+    <!-- KPIs superiores -->
+    <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:10px;margin-bottom:16px">
+      ${kpiCard('💰','FACTURACIÓN',       R.facturacion,      '#00e676', pct(R.facturacion, base)+' base')}
+      ${kpiCard('🏦','COMISIONES + IMP.',  -(R.comisiones + R.impuestos), '#ff5252', pct(R.comisiones + R.impuestos, base)+' s/facturación')}
+      ${kpiCard('🚚','COSTO NETO ENVÍOS',  resultado_envios,   resultado_envios>=0?'#00e676':'#ff5252', pct(Math.abs(resultado_envios), base)+' s/facturación')}
+      ${kpiCard('📣','INVERSIÓN ADS',    -R.inversion_ads,    '#ff9100', pct(R.inversion_ads, base)+' s/facturación')}
+      ${kpiCard('📦','CMV',              -cmvTotal,            cmvTotal>0?'#ff9100':'var(--muted)', cmvTotal>0?pct(cmvTotal,base)+' s/facturación':'Sin costos cargados')}
+      ${kpiCard('🎯','UTILIDAD FINAL',    utilidad_final,     utilidad_final>=0?'#FFD700':'#ff5252', cmvTotal>0?pct(Math.abs(utilidad_final),base)+' s/facturación':'Sin CMV aún')}
+    </div>
+
+    <!-- Tabla productos -->
+    <div class="kpi-card" style="padding:18px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:8px">
+        <div class="kpi-label">📋 DESGLOSE POR PRODUCTO</div>
+        <div style="display:flex;align-items:center;gap:8px">
+          <span style="font-size:11px;color:var(--muted)">${products.length} productos · ${Object.keys(costsMap).length} con CMV</span>
+          <button onclick="descargarTablaRentabilidad()" style="padding:5px 12px;border:none;border-radius:6px;background:#0ea5e9;color:#fff;font-size:12px;font-weight:600;cursor:pointer">📊 Excel tabla</button>
+          <button onclick="descargarCMVRentabilidad()" style="padding:5px 12px;border:none;border-radius:6px;background:#6366f1;color:#fff;font-size:12px;font-weight:600;cursor:pointer">📥 Excel CMV</button>
+          <label style="padding:5px 12px;border:none;border-radius:6px;background:#16a34a;color:#fff;font-size:12px;font-weight:600;cursor:pointer">
+            📤 Importar CMV
+            <input type="file" accept=".xlsx" style="display:none" onchange="importarCMVRentabilidad(this)">
+          </label>
+        </div>
+      </div>
+      <div style="overflow-x:auto">
+        <table style="width:100%;border-collapse:collapse;font-size:12px">
+          <thead>
+            <tr style="border-bottom:2px solid rgba(255,255,255,.1)">
+              <th style="text-align:left;padding:8px 6px;color:var(--muted);font-weight:600">#</th>
+              ${th('title',       'Producto',    'left')}
+              ${th('revenue',     'Facturación')}
+              ${th('units',       'Unidades')}
+              ${th('cmv',         'CMV')}
+              ${th('comision',    'Comisión ML')}
+              ${th('impuestos',   'Impuestos')}
+              ${th('_ads',        'Inv. Ads')}
+              ${th('resultado_envio', 'Res. Envío')}
+              ${th('margen',      '% Margen')}
+              ${th('pct_total',   '% Total')}
+            </tr>
+          </thead>
+          <tbody>
+            ${products.map((p, i) => {
+              const resEnvioColor = (p.resultado_envio||0) >= 0 ? '#00e676' : '#ff5252';
+              const hasCmv = p.cmv != null;
+              return `
+              <tr style="border-bottom:1px solid rgba(255,255,255,.05);${i%2===0?'background:rgba(255,255,255,.02)':''}">
+                <td style="padding:7px 6px;color:var(--muted)">${i+1}</td>
+                <td style="padding:7px 6px;max-width:200px">
+                  <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${p.title}">${p.title}</div>
+                  <div style="font-size:10px;color:var(--muted);cursor:pointer" onclick="copyMLA(this,'${p.id}')">${p.id}</div>
+                </td>
+                <td style="padding:7px 6px;text-align:right;font-weight:700">${fmtM(p.revenue)}</td>
+                <td style="padding:7px 6px;text-align:right">${p.units}</td>
+                <td style="padding:7px 6px;text-align:right;color:${hasCmv?'#ff9100':'var(--muted)'}">${hasCmv?fmtM(-p.cmv):'—'}</td>
+                <td style="padding:7px 6px;text-align:right;color:#ff5252">${fmtM(-p.comision)}</td>
+                <td style="padding:7px 6px;text-align:right;color:#ff5252">${(p.impuestos||0)>0?fmtM(-(p.impuestos||0)):'$0'}</td>
+                <td style="padding:7px 6px;text-align:right;color:${(p.ads||0)>0?'#ff9100':'var(--muted)'}">${(p.ads||0)>0?fmtM(-p.ads):'—'}</td>
+                <td style="padding:7px 6px;text-align:right;color:${resEnvioColor}">${fmtM(p.resultado_envio||0)}</td>
+                <td style="padding:7px 6px;text-align:right;font-weight:700;color:${margenColor(p.margen)}">${p.margen}%</td>
+                <td style="padding:7px 6px;text-align:right;color:var(--muted)">${pct(p.revenue, base)}</td>
+              </tr>`;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>`;
+}
+
+
+function loadVentas() {
+  const el = document.getElementById('ventasContent');
+  if (!el) return;
+  const connected = state.accounts.filter(a => a.data && a.data.orders_detail);
+  if (!connected.length) {
+    el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:20px;text-align:center">Sincronizá primero para ver los datos</div>';
+    return;
+  }
+
+  // Merge orders from all accounts, re-sort by date desc
+  const allOrders = [];
+  connected.forEach(acc => {
+    (acc.data.orders_detail || []).forEach(o => allOrders.push({ ...o, _account: acc.name }));
+  });
+  allOrders.sort((a,b) => new Date(b.date) - new Date(a.date));
+  window._ventasData = allOrders;
+  renderVentas(allOrders);
+}
+
+function setVentasMode(mode) {
+  window._ventasMode = mode;
+  window._ventasPage = 0;
+  ['all','FULL','flex','correo','coordinar'].forEach(m => {
+    const btn = document.getElementById('vf-'+m);
+    if (btn) btn.classList.toggle('vf-active', m === mode);
+  });
+  filterVentas();
+}
+
+function filterVentas() {
+  const q    = (document.getElementById('ventasSearch')?.value || '').toLowerCase();
+  const mode = window._ventasMode || 'all';
+  if (!window._ventasData) return;
+
+  const modeMatch = (o) => {
+    if (mode === 'all') return true;
+    const m = (o.mode || '').toLowerCase();
+    if (mode === 'FULL')      return m.includes('full');
+    if (mode === 'flex')      return m.includes('flex');
+    if (mode === 'correo')    return m.includes('correo') || m.includes('colecta') || m.includes('collect') || m.includes('xd');
+    if (mode === 'coordinar') return m.includes('coordinar') || m.includes('sin envío') || m.includes('sin datos') || m.includes('retiro') || m.includes('pickup');
+    return true;
+  };
+
+  const filtered = window._ventasData.filter(o =>
+    modeMatch(o) &&
+    (!q || String(o.id).includes(q) ||
+      (o.productos||[]).some(p => (p.title||'').toLowerCase().includes(q) || (p.id||'').toLowerCase().includes(q)))
+  );
+  renderVentas(filtered);
+}
+
+function renderVentas(orders) {
+  const el = document.getElementById('ventasContent');
+  if (!el) return;
+
+  const PAGE = 50;
+  if (!window._ventasPage) window._ventasPage = 0;
+  const page  = window._ventasPage;
+  const total = orders.length;
+  const slice = orders.slice(page * PAGE, (page+1) * PAGE);
+
+  const fmtM = n => {
+    const abs = Math.abs(n), sign = n < 0 ? '-' : '';
+    if (abs >= 1000000) return sign+'$'+(abs/1000000).toFixed(2)+'M';
+    if (abs >= 1000)    return sign+'$'+(abs/1000).toFixed(1)+'K';
+    return sign+'$'+Math.round(abs).toLocaleString('es-AR');
+  };
+  const fmtDate = d => {
+    const dt = new Date(d);
+    return dt.toLocaleDateString('es-AR',{day:'2-digit',month:'2-digit',year:'numeric'}) + ' ' +
+           dt.toLocaleTimeString('es-AR',{hour:'2-digit',minute:'2-digit'});
+  };
+  const pctColor = p => parseFloat(p) >= 60 ? '#00e676' : parseFloat(p) >= 40 ? '#FFD700' : '#ff5252';
+
+  // Summary KPIs
+  const totFact  = orders.reduce((s,o) => s+o.facturacion, 0);
+  const totNeto  = orders.reduce((s,o) => s+o.neto, 0);
+  const totCom   = orders.reduce((s,o) => s+o.comision, 0);
+  const totShip  = orders.reduce((s,o) => s+o.envio_vendedor, 0);
+  const totComp  = orders.reduce((s,o) => s+o.envio_comprador, 0);
+  const avgPct   = totFact > 0 ? (totNeto/totFact*100).toFixed(1) : '0';
+
+  const kpis = `
+    <div class="kpi-grid" style="grid-template-columns:repeat(6,1fr);margin-bottom:12px">
+      <div class="kpi-card"><div class="kpi-label">📋 ÓRDENES</div><div class="kpi-value">${total.toLocaleString('es-AR')}</div></div>
+      <div class="kpi-card"><div class="kpi-label">💵 FACTURACIÓN</div><div class="kpi-value">${fmtM(totFact)}</div></div>
+      <div class="kpi-card"><div class="kpi-label">📤 COMISIONES</div><div class="kpi-value" style="color:#ff5252">${fmtM(-totCom)}</div></div>
+      <div class="kpi-card"><div class="kpi-label">🚚 RES. ENVÍO</div><div class="kpi-value" style="color:${totComp-totShip>=0?'#00e676':'#ff5252'}">${fmtM(totComp-totShip)}</div></div>
+      <div class="kpi-card"><div class="kpi-label">🏦 NETO</div><div class="kpi-value" style="color:#00e676">${fmtM(totNeto)}</div></div>
+      <div class="kpi-card"><div class="kpi-label">📈 % NETO PROM.</div><div class="kpi-value" style="color:${pctColor(avgPct)}">${avgPct}%</div></div>
+    </div>`;
+
+  // Table
+  const thStyle = (col) => `style="text-align:${col==='Fecha'||col==='#Orden'||col==='Producto'?'left':'right'};padding:8px 10px;color:var(--muted);font-weight:600;white-space:nowrap;font-size:11px"`;
+
+  const rows = slice.map((o, i) => {
+    const resEnvio = o.envio_comprador - o.envio_vendedor;
+    const mainProduct = o.productos && o.productos[0];
+    const extraCount  = o.productos && o.productos.length > 1 ? ` <span style="color:var(--muted);font-size:10px">+${o.productos.length-1} más</span>` : '';
+    const bgStripe    = (page*PAGE+i) % 2 === 0 ? 'background:rgba(255,255,255,.02)' : '';
+
+    return `
+      <tr style="border-bottom:1px solid rgba(255,255,255,.05);${bgStripe}">
+        <td style="padding:8px 10px;white-space:nowrap;font-size:12px;color:var(--muted)">${fmtDate(o.date)}</td>
+        <td style="padding:8px 10px;font-size:12px">
+          <span style="font-family:monospace;color:var(--muted);font-size:11px">#${o.id}</span>
+        </td>
+        <td style="padding:8px 10px;max-width:260px;font-size:12px">
+          <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${(o.productos||[]).map(p=>p.title).join(', ')}">
+            ${mainProduct ? mainProduct.title : '—'}${extraCount}
+          </div>
+          ${mainProduct ? `<div style="font-size:10px;color:var(--muted);cursor:pointer" onclick="copyMLA(this,'${mainProduct.id}')">${mainProduct.id}</div>` : ''}
+        </td>
+        <td style="padding:8px 10px;text-align:right;font-size:12px;font-weight:700">${fmtM(o.facturacion)}</td>
+        <td style="padding:8px 10px;text-align:right;font-size:12px;color:#ff5252">${fmtM(-o.comision)}</td>
+        <td style="padding:8px 10px;text-align:right;font-size:12px;color:#ff5252">${o.impuestos > 0 ? fmtM(-o.impuestos) : '<span style="color:var(--muted)">—</span>'}</td>
+        <td style="padding:8px 10px;text-align:right;font-size:12px;color:${resEnvio>=0?'#00e676':'#ff5252'}" title="Cobrado al comprador: ${fmtM(o.envio_comprador)} / Pagado: ${fmtM(o.envio_vendedor)}">${fmtM(resEnvio)}</td>
+        <td style="padding:8px 10px;text-align:right;font-size:12px;color:${parseFloat(o.neto)>=0?'#00e676':'#ff5252'};font-weight:700">${fmtM(o.neto)}</td>
+        <td style="padding:8px 10px;text-align:right;font-size:12px;font-weight:700;color:${pctColor(o.pct_neto)}">${o.pct_neto}%</td>
+        <td style="padding:8px 10px;text-align:right;font-size:11px;color:var(--muted)">${o.mode||'—'}</td>
+      </tr>`;
+  }).join('');
+
+  // Pagination
+  const totalPages = Math.ceil(total / PAGE);
+  const pagination = totalPages > 1 ? `
+    <div style="display:flex;align-items:center;justify-content:center;gap:8px;margin-top:14px;font-size:12px">
+      <button onclick="ventasPage(${page-1})" ${page===0?'disabled':''} class="sync-btn" style="padding:5px 12px">← Ant</button>
+      <span style="color:var(--muted)">Página ${page+1} de ${totalPages} · ${total} órdenes</span>
+      <button onclick="ventasPage(${page+1})" ${page>=totalPages-1?'disabled':''} class="sync-btn" style="padding:5px 12px">Sig →</button>
+    </div>` : `<div style="font-size:11px;color:var(--muted);text-align:center;margin-top:8px">${total} órdenes</div>`;
+
+  el.innerHTML = kpis + `
+    <div class="kpi-card" style="padding:18px">
+      <div style="overflow-x:auto">
+        <table style="width:100%;border-collapse:collapse">
+          <thead>
+            <tr style="border-bottom:2px solid rgba(255,255,255,.1)">
+              ${['Fecha','# Orden','Producto','Facturación','Comisión','Impuestos','Res. Envío','Neto','% Neto','Modo envío'].map(h => `<th ${thStyle(h)}>${h}</th>`).join('')}
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+      ${pagination}
+    </div>`;
+}
+
+function ventasPage(p) {
+  window._ventasPage = p;
+  const q = (document.getElementById('ventasSearch')?.value || '').toLowerCase();
+  const filtered = !q ? window._ventasData : window._ventasData.filter(o =>
+    String(o.id).includes(q) ||
+    (o.productos||[]).some(pr => (pr.title||'').toLowerCase().includes(q) || (pr.id||'').toLowerCase().includes(q))
+  );
+  renderVentas(filtered);
+  document.getElementById('ventasContent').scrollIntoView({ behavior: 'smooth' });
+}
+
+async function descargarTablaRentabilidad() {
+  const client = getActiveClient();
+  if (!client) { showToast('⚠ Seleccioná una cuenta'); return; }
+
+  // Usar los datos que ya están renderizados
+  const connected = state.accounts.filter(a => a.data && a.data.rentabilidad);
+  if (!connected.length) { showToast('⚠ Sincronizá primero'); return; }
+
+  const allProducts = {};
+  connected.forEach(acc => {
+    (acc.data.rentabilidad.by_product || []).forEach(p => {
+      if (!allProducts[p.id]) allProducts[p.id] = { ...p };
+      else {
+        allProducts[p.id].revenue         += p.revenue;
+        allProducts[p.id].units           += p.units;
+        allProducts[p.id].comision        += p.comision || 0;
+        allProducts[p.id].impuestos       += p.impuestos || 0;
+        allProducts[p.id].resultado_envio += p.resultado_envio || 0;
+        allProducts[p.id].ads             += p.ads || 0;
+        allProducts[p.id].neto            += p.neto;
+      }
+    });
+  });
+
+  // Cargar CMV
+  const { date_from, date_to } = getDateRange();
+  let costsMap = {};
+  try {
+    const data = await apiCall('GET', `/api/reporte/items-vendidos?client_id=${client.id}&date_from=${date_from}&date_to=${date_to}`);
+    (data?.items || []).forEach(i => { if (i.costo_unit) costsMap[i.mla_id] = parseFloat(i.costo_unit)||0; });
+  } catch(e) {}
+
+  const base = Object.values(allProducts).reduce((s, p) => s + p.revenue, 0) || 1;
+  const products = Object.values(allProducts).sort((a, b) => b.revenue - a.revenue);
+
+  const XLSX = window.XLSX;
+  const rows = products.map((p, i) => {
+    const costoUnit = costsMap[p.id] ?? null;
+    const cmv = costoUnit != null ? costoUnit * p.units : null;
+    const margen = p.revenue > 0
+      ? ((p.revenue - (p.comision||0) - (p.impuestos||0) - (cmv||0)) / p.revenue * 100).toFixed(1)
+      : '—';
+    return {
+      '#':             i + 1,
+      'MLA':           p.id,
+      'Título':        p.title,
+      'Facturación':   Math.round(p.revenue),
+      'Unidades':      p.units,
+      'CMV':           cmv != null ? Math.round(cmv) : '',
+      'Comisión ML':   Math.round(p.comision || 0),
+      'Impuestos':     Math.round(p.impuestos || 0),
+      'Inv. Ads':      Math.round(p.ads || 0),
+      'Res. Envío':    Math.round(p.resultado_envio || 0),
+      '% Margen':      margen,
+      '% Total':       base > 0 ? (p.revenue / base * 100).toFixed(1) : '—',
+    };
+  });
+
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.json_to_sheet(rows);
+  ws['!cols'] = [4, 18, 45, 14, 10, 14, 14, 12, 12, 12, 10, 9].map(w => ({ wch: w }));
+  XLSX.utils.book_append_sheet(wb, ws, 'Rentabilidad');
+  const fecha = new Date().toISOString().slice(0, 10);
+  XLSX.writeFile(wb, `Rentabilidad_${client.name.replace(/\s+/g,'_')}_${fecha}.xlsx`);
+  showToast('✅ Excel descargado');
+}
+
+async function descargarCMVRentabilidad() {
+  const client = getActiveClient();
+  if (!client) { showToast('⚠ Seleccioná una cuenta'); return; }
+  const { date_from, date_to } = getDateRange();
+  showToast('⏳ Generando Excel...');
+  try {
+    const data = await apiCall('GET', `/api/reporte/items-vendidos?client_id=${client.id}&date_from=${date_from}&date_to=${date_to}`);
+    if (!data) return;
+    const XLSX = window.XLSX;
+    const wsData = [
+      [`COSTOS DE PRODUCTOS — ${client.name} | ${date_from} → ${date_to}`],
+      ['⚠ Completá la columna "Costo Unitario (ARS)". Guardá y subí el archivo para actualizar.'],
+      ['MLA', 'Título', 'Costo Unitario (ARS)', 'Unidades vendidas', 'Facturación (ARS)', 'Notas'],
+      ...(data.items || []).map(i => [
+        i.mla_id, i.title, i.costo_unit || '', i.units, Math.round(i.revenue), i.notas || ''
+      ])
+    ];
+    const wb = XLSX.utils.book_new();
+    const ws = XLSX.utils.aoa_to_sheet(wsData);
+    ws['!cols'] = [{ wch: 18 }, { wch: 50 }, { wch: 22 }, { wch: 18 }, { wch: 20 }, { wch: 25 }];
+    XLSX.utils.book_append_sheet(wb, ws, 'CMV');
+    XLSX.writeFile(wb, `CMV_${client.name.replace(/\s+/g,'_')}_${date_from}.xlsx`);
+    showToast('✅ Excel descargado');
+  } catch(e) { showToast(`❌ Error: ${e.message}`); }
+}
+
+async function importarCMVRentabilidad(input) {
+  const client = getActiveClient();
+  if (!client) { showToast('⚠ Seleccioná una cuenta'); input.value=''; return; }
+  const file = input.files[0];
+  if (!file) return;
+  showToast('⏳ Leyendo archivo...');
+  try {
+    const buffer = await file.arrayBuffer();
+    const XLSX = window.XLSX;
+    const wb = XLSX.read(buffer, { type: 'array' });
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+    // Buscar fila de headers (contiene 'MLA')
+    let headerRow = -1;
+    for (let i = 0; i < Math.min(rows.length, 5); i++) {
+      if (String(rows[i][0]).toUpperCase().includes('MLA') && rows[i].length > 2) { headerRow = i; break; }
+    }
+    if (headerRow === -1) { showToast('❌ No se encontró la fila de encabezados'); input.value=''; return; }
+    const costos = [];
+    rows.slice(headerRow + 1).forEach(row => {
+      const mla_id = String(row[0]||'').trim();
+      const title  = String(row[1]||'').trim();
+      const costo  = parseFloat(String(row[2]||'').replace(/[,$\s]/g,''))||0;
+      const notas  = String(row[5]||'').trim();
+      if (mla_id.startsWith('MLA') && costo > 0) costos.push({ mla_id, title, costo_unit: costo, notas });
+    });
+    if (!costos.length) { showToast('❌ Sin costos válidos en el archivo'); input.value=''; return; }
+    const r = await apiCall('POST', '/api/reporte/costos', { client_id: client.id, costos });
+    if (r?.ok) {
+      showToast(`✅ ${r.saved} costos actualizados`);
+      loadRentabilidad(); // Recargar para reflejar los nuevos CMV
+    } else { showToast('❌ Error al guardar'); }
+  } catch(e) { showToast(`❌ Error: ${e.message}`); }
+  input.value = '';
+}
+
+function sortRent(col) {
+  if (!window._rentSort) window._rentSort = { col: 'revenue', asc: false };
+  if (window._rentSort.col === col) {
+    window._rentSort.asc = !window._rentSort.asc;
+  } else {
+    window._rentSort.col = col;
+    window._rentSort.asc = false; // always start desc
+  }
+  loadRentabilidad();
+}
+
+function sortPubs(col) {
+  if (!window._pubsData) return;
+  const asc = window._pubsSortCol === col && !window._pubsSortAsc;
+  window._pubsSortCol = col; window._pubsSortAsc = asc;
+  window._pubsData.sort((a, b) => {
+    const va = a[col], vb = b[col];
+    if (typeof va === 'string') return asc ? va.localeCompare(vb) : vb.localeCompare(va);
+    return asc ? va - vb : vb - va;
+  });
+  const body = document.getElementById('pubsBody');
+  if (body) body.innerHTML = buildPubRows(window._pubsData);
+  applyPubsFilter();
+}
+
+function showProblems(itemId, el) {
+  const item = (window._pubsData || []).find(i => i.id === itemId);
+  if (!item || !item.problems) return;
+  const msgs = item.problems.map(p => {
+    const msg = p.message || p.code || JSON.stringify(p);
+    const type = p.type || '';
+    const icon = type === 'warning' ? '⚠️' : type === 'error' ? '🚫' : 'ℹ️';
+    return `<div style="padding:8px 0;border-bottom:1px solid var(--border);font-size:13px">${icon} ${msg}</div>`;
+  }).join('');
+  // Simple inline tooltip-like panel below the cell
+  const existing = document.getElementById('problemsPanel');
+  if (existing) { existing.remove(); return; }
+  const panel = document.createElement('div');
+  panel.id = 'problemsPanel';
+  panel.style.cssText = 'position:fixed;z-index:9999;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px 16px;max-width:380px;box-shadow:0 8px 32px rgba(0,0,0,.4)';
+  panel.innerHTML = `<div style="font-weight:700;margin-bottom:10px;font-size:13px">Problemas — ${itemId}</div>${msgs}
+    <button onclick="document.getElementById('problemsPanel').remove()"
+      style="margin-top:12px;background:var(--surface2);border:none;color:var(--muted);padding:6px 14px;border-radius:6px;cursor:pointer;font-size:12px">Cerrar</button>`;
+  // Position near click
+  const rect = el.getBoundingClientRect();
+  panel.style.top  = Math.min(rect.bottom + 8, window.innerHeight - 200) + 'px';
+  panel.style.left = Math.min(rect.left, window.innerWidth - 400) + 'px';
+  document.body.appendChild(panel);
+}
+
+
+
+async function syncAll() {
+  if (!activeClientId) { showToast('⚠️ Seleccioná una cuenta primero'); return; }
+  await loadDashboardData();
+}
+
+// ─── TOAST ────────────────────────────────────────────────────────────────────
+let toastTimer;
+function showToast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove('show'), 3200);
+}
+
+// ─── INIT ─────────────────────────────────────────────────────────────────────
+// ─── GLOBAL DATE RANGE ────────────────────────────────────────────────────────
+function getDateRange() {
+  const from = document.getElementById('globalDateFrom')?.value;
+  const to   = document.getElementById('globalDateTo')?.value;
+  if (from && to) return { date_from: from, date_to: to };
+  // fallback to days
+  const days = state.rangeDays || 30;
+  const now  = new Date();
+  const from2 = new Date(now.getTime() - days * 24*60*60*1000);
   return {
-    app_id:        client?.app_id        || process.env.ML_APP_ID,
-    client_secret: client?.client_secret || process.env.ML_CLIENT_SECRET,
+    date_from: from2.toISOString().slice(0,10),
+    date_to:   now.toISOString().slice(0,10)
   };
 }
 
-
-async function initDB() {
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS users (
-      id SERIAL PRIMARY KEY,
-      username VARCHAR(50) UNIQUE NOT NULL,
-      password_hash VARCHAR(64) NOT NULL,
-      role VARCHAR(20) DEFAULT 'consultant',
-      created_at TIMESTAMP DEFAULT NOW()
-    );
-    CREATE TABLE IF NOT EXISTS clients (
-      id SERIAL PRIMARY KEY,
-      name VARCHAR(100) NOT NULL,
-      ml_user_id BIGINT UNIQUE,
-      access_token TEXT,
-      refresh_token TEXT,
-      token_expires_at TIMESTAMP,
-      app_id VARCHAR(50),
-      client_secret VARCHAR(100),
-      site_id VARCHAR(10) DEFAULT 'MLA',
-      active BOOLEAN DEFAULT true,
-      created_at TIMESTAMP DEFAULT NOW(),
-      updated_at TIMESTAMP DEFAULT NOW()
-    );
-    CREATE TABLE IF NOT EXISTS sessions (
-      id VARCHAR(64) PRIMARY KEY,
-      user_id INTEGER REFERENCES users(id),
-      created_at TIMESTAMP DEFAULT NOW(),
-      expires_at TIMESTAMP DEFAULT NOW() + INTERVAL '7 days'
-    );
-    CREATE TABLE IF NOT EXISTS diagnostico_mensual (
-      id               SERIAL PRIMARY KEY,
-      client_id        INTEGER NOT NULL REFERENCES clients(id),
-      mes              DATE NOT NULL,
-      facturacion      NUMERIC(14,2),
-      ventas           INTEGER,
-      unidades         INTEGER,
-      visitas          INTEGER,
-      conversion       NUMERIC(6,2),
-      ticket_promedio  NUMERIC(12,2),
-      carritos         NUMERIC(6,2),
-      pads_inversion   NUMERIC(12,2),
-      pads_ingresos    NUMERIC(14,2),
-      pads_acos        NUMERIC(6,2),
-      pads_tacos       NUMERIC(6,2),
-      pads_roas        NUMERIC(6,2),
-      pads_clicks      INTEGER,
-      pads_ventas      INTEGER,
-      pads_conversion  NUMERIC(6,2),
-      pads_impresiones INTEGER,
-      pads_ctr         NUMERIC(6,2),
-      pads_aporte_pct  NUMERIC(6,2),
-      rep_medalla      VARCHAR(20),
-      rep_ventas_60    INTEGER,
-      rep_concretadas  INTEGER,
-      rep_no_concretadas INTEGER,
-      rep_reclamos     NUMERIC(6,2),
-      rep_demoras      NUMERIC(6,2),
-      rep_cancelaciones NUMERIC(6,2),
-      rep_mediaciones  NUMERIC(6,2),
-      rep_no_conc_monto NUMERIC(14,2),
-      rep_no_conc_pct  NUMERIC(6,2),
-      pub_total        INTEGER,
-      pub_activas      INTEGER,
-      pub_inactivas    INTEGER,
-      pub_exitosas     INTEGER,
-      pub_pareto_pct   NUMERIC(6,2),
-      pub_interes      NUMERIC(6,2),
-      manuales         JSONB DEFAULT '{}',
-      UNIQUE(client_id, mes)
-    );
-  `);
-
-  // Product costs table
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS product_costs (
-      id          SERIAL PRIMARY KEY,
-      client_id   INTEGER NOT NULL REFERENCES clients(id),
-      mla_id      VARCHAR(20) NOT NULL,
-      title       TEXT,
-      costo_unit  NUMERIC(14,2) NOT NULL DEFAULT 0,
-      notas       TEXT,
-      updated_at  TIMESTAMP DEFAULT NOW(),
-      UNIQUE(client_id, mla_id)
-    );
-    CREATE TABLE IF NOT EXISTS gastos_fijos (
-      id          SERIAL PRIMARY KEY,
-      client_id   INTEGER NOT NULL REFERENCES clients(id),
-      mes         DATE NOT NULL,
-      concepto    VARCHAR(200) NOT NULL,
-      monto       NUMERIC(14,2) NOT NULL DEFAULT 0,
-      categoria   VARCHAR(50) DEFAULT 'general',
-      UNIQUE(client_id, mes, concepto)
-    );
-    CREATE TABLE IF NOT EXISTS reporte_financiero (
-      id          SERIAL PRIMARY KEY,
-      client_id   INTEGER NOT NULL REFERENCES clients(id),
-      mes         DATE NOT NULL,
-      data        JSONB DEFAULT '{}',
-      generated_at TIMESTAMP DEFAULT NOW(),
-      UNIQUE(client_id, mes)
-    );
-    CREATE TABLE IF NOT EXISTS full_stock_config (
-      id                SERIAL PRIMARY KEY,
-      client_id         INTEGER NOT NULL REFERENCES clients(id),
-      item_id           VARCHAR(30) NOT NULL,
-      suggested_quantity INTEGER DEFAULT NULL,
-      coverage_days_target INTEGER DEFAULT 30,
-      notes             TEXT DEFAULT '',
-      updated_at        TIMESTAMP DEFAULT NOW(),
-      UNIQUE(client_id, item_id)
-    );
-  `);
-
-  // Create default admin if not exists (password: admin123 - change after first login)
-  const hash = crypto.createHash('sha256').update('admin123').digest('hex');
-  await pool.query(`
-    INSERT INTO users (username, password_hash, role)
-    VALUES ('admin', $1, 'admin')
-    ON CONFLICT (username) DO NOTHING
-  `, [hash]);
-  console.log('DB initialized');
+function setQuickRange(days) {
+  const now  = new Date();
+  const from = new Date(now.getTime() - days * 24*60*60*1000);
+  const toStr   = now.toISOString().slice(0,10);
+  const fromStr = from.toISOString().slice(0,10);
+  const fromEl = document.getElementById('globalDateFrom');
+  const toEl   = document.getElementById('globalDateTo');
+  if (fromEl) fromEl.value = fromStr;
+  if (toEl)   toEl.value   = toStr;
+  // update quick range button active state
+  ['7','30','60','90'].forEach(d => {
+    const btn = document.getElementById('qr-'+d);
+    if (btn) btn.classList.toggle('active', parseInt(d) === days);
+  });
+  state.rangeDays = days;
+  localStorage.setItem('ml_rangeDays', days);
+  loadAllData();
 }
 
-// ── HEALTH + KEEP-ALIVE ──────────────────────────────────────────────────────
-app.get('/health', (req, res) => res.json({ ok: true, ts: new Date().toISOString() }));
-
-// Keep-alive: el servidor se pingea a sí mismo cada 4 minutos para no dormir
-// Solo activo si RAILWAY_PUBLIC_DOMAIN está seteado (producción)
-if (process.env.RAILWAY_PUBLIC_DOMAIN || process.env.SELF_URL) {
-  const selfUrl = process.env.SELF_URL || `https://${process.env.RAILWAY_PUBLIC_DOMAIN}/health`;
-  setInterval(async () => {
-    try {
-      await fetch(selfUrl);
-    } catch(e) { /* ignorar errores de red */ }
-  }, 4 * 60 * 1000); // cada 4 minutos
-  console.log(`Keep-alive activo → ${selfUrl}`);
+function applyGlobalRange() {
+  const from = document.getElementById('globalDateFrom')?.value;
+  const to   = document.getElementById('globalDateTo')?.value;
+  if (!from || !to) return;
+  if (from > to) { showToast('⚠️ La fecha de inicio debe ser anterior a la de fin'); return; }
+  // Deactivate quick range buttons
+  ['7','30','60','90'].forEach(d => {
+    const btn = document.getElementById('qr-'+d);
+    if (btn) btn.classList.remove('active');
+  });
+  state.rangeDays = null;
+  loadAllData();
 }
 
-// ── MIDDLEWARE ─────────────────────────────────────────────────────────────────
-app.use((req, res, next) => {
-  res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
-  res.header('Access-Control-Allow-Credentials', 'true');
-  res.header('Access-Control-Allow-Headers', 'Content-Type, x-session-id');
-  res.header('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
-  if (req.method === 'OPTIONS') return res.sendStatus(200);
-  next();
-});
-app.use(cookieParser());
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
-app.use(express.static('public'));
+function setRange(el, days) { setQuickRange(days); } // backwards compat
 
-async function requireAuth(req, res, next) {
-  const sessionId = req.headers['x-session-id'] || (req.cookies && req.cookies.ml_session_id) || req.query.session_id;
-  if (!sessionId) return res.status(401).json({ error: 'No autenticado' });
-  const result = await pool.query(
-    'SELECT u.* FROM sessions s JOIN users u ON s.user_id = u.id WHERE s.id = $1 AND s.expires_at > NOW()',
-    [sessionId]
-  );
-  if (!result.rows.length) return res.status(401).json({ error: 'Sesión expirada' });
-  req.user = result.rows[0];
-  next();
+function saveAccounts() {
+  try { localStorage.setItem('ml_accounts', JSON.stringify(state.accounts)); } catch(e) {}
 }
-
-// ── AUTH ENDPOINTS ────────────────────────────────────────────────────────────
-app.post('/api/login', async (req, res) => {
+function loadSavedData() {
   try {
-    const { username, password } = req.body;
-    const hash = crypto.createHash('sha256').update(password).digest('hex');
-    const result = await pool.query('SELECT * FROM users WHERE username = $1 AND password_hash = $2', [username, hash]);
-    if (!result.rows.length) return res.status(401).json({ error: 'Usuario o contraseña incorrectos' });
-    const sessionId = crypto.randomBytes(32).toString('hex');
-    await pool.query('INSERT INTO sessions (id, user_id) VALUES ($1, $2)', [sessionId, result.rows[0].id]);
-    // Set cookie server-side so it works regardless of localStorage/cookie settings
-    res.cookie('ml_session_id', sessionId, { maxAge: 7*24*60*60*1000, httpOnly: false, sameSite: 'lax', path: '/' });
-    res.cookie('ml_session_user', result.rows[0].username, { maxAge: 7*24*60*60*1000, httpOnly: false, sameSite: 'lax', path: '/' });
-    res.cookie('ml_session_role', result.rows[0].role, { maxAge: 7*24*60*60*1000, httpOnly: false, sameSite: 'lax', path: '/' });
-    res.json({ sessionId, username: result.rows[0].username, role: result.rows[0].role });
-  } catch(e) { res.status(500).json({ error: e.message }); }
-});
+    const appId = localStorage.getItem('ml_appId');
+    const secret = localStorage.getItem('ml_secret');
+    const redir = localStorage.getItem('ml_redirect');
+    const accs = localStorage.getItem('ml_accounts');
+    if (appId) { state.appId = appId; document.getElementById('inputAppId').value = appId; }
+    if (secret) { state.secret = secret; document.getElementById('inputSecret').value = secret; }
+    if (redir) { state.redirect = redir; document.getElementById('inputRedirect').value = redir; }
+    if (accs) { state.accounts = JSON.parse(accs); renderAccountsList(); renderSidebar(); }
+    if (appId && secret) {
+      const connected = state.accounts.filter(a => a.accessToken);
+      if (connected.length > 0) { showPage('dashboard', document.querySelectorAll('.nav-item')[0]); loadAllData(); }
+      else if (state.accounts.length > 0) { showPage('setup', document.querySelectorAll('.nav-item')[5]); goStep(3); }
+      else { showPage('setup', document.querySelectorAll('.nav-item')[5]); goStep(2); }
+      showToast('Bienvenido de vuelta!');
+      return true;
+    }
+  } catch(e) {}
+  return false;
+}
+// Start on setup if no accounts
 
-app.post('/api/logout', requireAuth, async (req, res) => {
-  await pool.query('DELETE FROM sessions WHERE id = $1', [req.headers['x-session-id']]);
-  res.clearCookie('ml_session_id', { path: '/' });
-  res.clearCookie('ml_session_user', { path: '/' });
-  res.clearCookie('ml_session_role', { path: '/' });
-  res.json({ ok: true });
-});
+function setPerfRange(el, days) { setQuickRange(days); }
 
-app.post('/api/change-password', requireAuth, async (req, res) => {
-  try {
-    const { newPassword } = req.body;
-    const hash = crypto.createHash('sha256').update(newPassword).digest('hex');
-    await pool.query('UPDATE users SET password_hash = $1 WHERE id = $2', [hash, req.user.id]);
-    res.json({ ok: true });
-  } catch(e) { res.status(500).json({ error: e.message }); }
-});
 
-// ── CLIENT MANAGEMENT ─────────────────────────────────────────────────────────
-app.get('/api/token-status', requireAuth, async (req, res) => {
-  try {
-    const result = await pool.query(
-      `SELECT id, name, ml_user_id, token_expires_at, updated_at,
-       (refresh_token IS NOT NULL AND refresh_token != '') AS has_refresh_token
-       FROM clients WHERE active = true ORDER BY name`
-    );
-    const now = new Date();
-    const clients = result.rows.map(c => {
-      const exp = c.token_expires_at ? new Date(c.token_expires_at) : null;
-      const minsLeft = exp ? Math.round((exp - now) / 60000) : null;
-      const status = !c.ml_user_id ? 'no_connected'
-        : minsLeft === null ? 'unknown'
-        : minsLeft < 0 ? 'expired'
-        : minsLeft < 60 ? 'critical'
-        : minsLeft < 180 ? 'warning'
-        : 'ok';
-      return {
-        id: c.id, name: c.name, ml_user_id: c.ml_user_id,
-        token_expires_at: c.token_expires_at,
-        mins_left: minsLeft,
-        has_refresh_token: c.has_refresh_token,
-        last_updated: c.updated_at,
-        status
-      };
-    });
-    res.json({ clients, server_time: now.toISOString() });
-  } catch(e) { res.status(500).json({ error: e.message }); }
-});
-
-app.get('/api/clients', requireAuth, async (req, res) => {
-  try {
-    const result = await pool.query(
-      `SELECT id, name, ml_user_id, site_id, active, token_expires_at, updated_at,
-       (refresh_token IS NOT NULL AND refresh_token != '') AS has_refresh_token
-       FROM clients ORDER BY name`
-    );
-    // Map has_refresh_token → refresh_token boolean for frontend
-    const rows = result.rows.map(r => ({ ...r, refresh_token: r.has_refresh_token }));
-    res.json(rows);
-  } catch(e) { res.status(500).json({ error: e.message }); }
-});
-
-app.post('/api/clients', requireAuth, async (req, res) => {
-  try {
-    const { name } = req.body;
-    const result = await pool.query(
-      'INSERT INTO clients (name) VALUES ($1) RETURNING id, name',
-      [name]
-    );
-    res.json(result.rows[0]);
-  } catch(e) { res.status(500).json({ error: e.message }); }
-});
-
-app.delete('/api/clients/:id', requireAuth, async (req, res) => {
-  try {
-    await pool.query('DELETE FROM clients WHERE id = $1', [req.params.id]);
-    res.json({ ok: true });
-  } catch(e) { res.status(500).json({ error: e.message }); }
-});
-
-// Generate OAuth link for a client
-app.get('/api/clients/:id/auth-link', requireAuth, async (req, res) => {
-  try {
-    const result = await pool.query('SELECT * FROM clients WHERE id = $1', [req.params.id]);
-    if (!result.rows.length) return res.status(404).json({ error: 'Cliente no encontrado' });
-    const client = result.rows[0];
-    const redirectUri = process.env.REDIRECT_URI || 'https://ml-dashboard-production.up.railway.app/oauth/callback';
-    const { app_id } = getMLCredentials(client);
-    const link = `https://auth.mercadolibre.com.ar/authorization?response_type=code&client_id=${app_id}&redirect_uri=${encodeURIComponent(redirectUri)}&state=${client.id}&scope=offline_access%20read%20write&prompt=consent&approval_prompt=force`;
-    res.json({ link });
-  } catch(e) { res.status(500).json({ error: e.message }); }
-});
-
-// OAuth callback - saves tokens automatically
-app.get('/oauth/callback', async (req, res) => {
-  try {
-    const { code, state } = req.query;
-    if (!code || !state) return res.send('<h2>Error: faltan parámetros</h2>');
-    const clientId = parseInt(state);
-    const clientResult = await pool.query('SELECT * FROM clients WHERE id = $1', [clientId]);
-    if (!clientResult.rows.length) return res.send('<h2>Error: cliente no encontrado</h2>');
-    const client = clientResult.rows[0];
-    const redirectUri = process.env.REDIRECT_URI || 'https://ml-dashboard-production.up.railway.app/oauth/callback';
-
-    const creds = getMLCredentials(client);
-    const bodyParams = new URLSearchParams({ grant_type: 'authorization_code', client_id: creds.app_id, client_secret: creds.client_secret, code, redirect_uri: redirectUri });
-    console.log('[OAUTH_CALLBACK] body enviado a ML:', bodyParams.toString());
-    const tokenRes = await fetch(`${ML_API}/oauth/token`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: bodyParams.toString()
-    });
-    console.log('[OAUTH_CALLBACK] client_id usado:', getMLCredentials(client).app_id, '| ML_APP_ID env:', process.env.ML_APP_ID ? 'SET' : 'NOT SET');
-    const tokens = await tokenRes.json();
-    console.log('[OAUTH_CALLBACK] respuesta completa ML:', JSON.stringify(tokens));
-    console.log('OAuth tokens received:', JSON.stringify({
-      has_access: !!tokens.access_token,
-      has_refresh: !!tokens.refresh_token,
-      refresh_token_value: tokens.refresh_token ? tokens.refresh_token.slice(0,20)+'...' : 'NULL',
-      scope: tokens.scope,
-      expires_in: tokens.expires_in,
-      token_type: tokens.token_type,
-      error: tokens.error,
-      error_description: tokens.error_description
-    }));
-    if (tokens.error) return res.send(`<h2>Error: ${tokens.message}</h2>`);
-
-    const userRes = await fetch(`${ML_API}/users/me`, { headers: { 'Authorization': `Bearer ${tokens.access_token}` } });
-    const user = await userRes.json();
-    const expiresAt = new Date(Date.now() + (tokens.expires_in || 21600) * 1000);
-
-    await pool.query(`
-      UPDATE clients SET
-        ml_user_id = $1, access_token = $2, refresh_token = $3,
-        token_expires_at = $4, site_id = $5, updated_at = NOW()
-      WHERE id = $6
-    `, [user.id, tokens.access_token, tokens.refresh_token, expiresAt, user.site_id || 'MLA', clientId]);
-
-    res.send(`<!DOCTYPE html><html><body style="font-family:sans-serif;text-align:center;padding:60px;background:#0a0a0a;color:#fff">
-      <h1 style="color:#00e676">✅ ¡Conectado exitosamente!</h1>
-      <p style="color:#aaa">La cuenta <strong style="color:#fff">${user.nickname}</strong> fue vinculada al dashboard.</p>
-      <p style="color:#666;font-size:14px">Podés cerrar esta ventana.</p>
-    </body></html>`);
-  } catch(e) {
-    res.send(`<h2>Error: ${e.message}</h2>`);
+function loadPerformance() {
+  if (window._perfModeFilter === undefined) window._perfModeFilter = null;
+  const el = document.getElementById('performanceContent');
+  if (!el) return;
+  const connected = state.accounts.filter(a => a.data);
+  if (!connected.length) {
+    el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:20px;text-align:center">Sincronizá primero para ver los datos</div>';
+    return;
   }
-});
 
-// Refresh token — usa refresh_token (dura 6 meses). Si no hay, el token está muerto.
-async function refreshClientToken(client) {
-  // Advisory lock por cliente — evita race condition si dos procesos intentan refrescar a la vez
-  const lockRes = await pool.query('SELECT pg_try_advisory_lock($1) AS locked', [client.id]);
-  if (!lockRes.rows[0].locked) {
-    console.log(`Refresh ya en curso para client ${client.id} (${client.name}) — skip`);
-    return false;
+  const byMode = {}, byProvince = {}, byHour = new Array(24).fill(0);
+  const top15Rev = [], top15Units = [];
+
+  connected.forEach(acc => {
+    const perf = acc.data.performance;
+    if (!perf) return;
+    console.log('[PERF_FILTER] filter=', window._perfModeFilter, 'has_top15_by_mode=', !!perf.top15_by_mode, 'modes=', perf.top15_by_mode ? Object.keys(perf.top15_by_mode) : 'none');
+    const f = window._perfModeFilter;
+
+    // Province — use filtered data if mode active
+    const provinceData = f && perf.by_province_per_mode && perf.by_province_per_mode[f]
+      ? perf.by_province_per_mode[f]
+      : (perf.by_province || {});
+    Object.entries(provinceData).forEach(([k,v]) => { byProvince[k] = (byProvince[k]||0) + v; });
+
+    // Hour — use filtered data if mode active
+    const hourData = f && perf.by_hour_per_mode && perf.by_hour_per_mode[f]
+      ? perf.by_hour_per_mode[f]
+      : (perf.by_hour || []);
+    hourData.forEach((v,i) => { byHour[i] += v; });
+
+    // by_mode always shows full picture (for the pie itself)
+    Object.entries(perf.by_mode || {}).forEach(([k,v]) => { byMode[k] = (byMode[k]||0) + v; });
+
+    // Top15
+    const modeTop = f && perf.top15_by_mode && perf.top15_by_mode[f];
+    console.log('[PERF_FILTER] modeTop=', !!modeTop, f ? 'using filtered' : 'using all');
+    top15Rev.push(  ...(modeTop ? modeTop.revenue : (perf.top15_revenue || [])));
+    top15Units.push(...(modeTop ? modeTop.units   : (perf.top15_units   || [])));
+  });
+
+  const fmt = n => n >= 1000000 ? '$'+(n/1000000).toFixed(2)+'M' : n >= 1000 ? '$'+(n/1000).toFixed(1)+'K' : '$'+Math.round(n).toLocaleString('es-AR');
+  const totalOrders = Object.values(byMode).reduce((a,b)=>a+b,0) || 1;
+
+  function getFilteredItems(items) {
+    const f = window._perfModeFilter;
+    if (!f) return items;
+    // Filter items that appear in orders with matching shipping mode
+    // Use the performance data which already has mode info per order
+    return items; // top15 filtering done via order cross-reference below
+  }
+
+  function getTotalForFilter(items, key) {
+    const f = window._perfModeFilter;
+    if (!f) return items.reduce((s,i) => s + (parseFloat(i[key])||0), 0) || 1;
+    return items.reduce((s,i) => s + (parseFloat(i[key])||0), 0) || 1;
+  }
+
+  const totalRevenue  = top15Rev.reduce((s,i)   => s + (i.revenue||0), 0) || 1;
+  const totalUnitsAll = top15Units.reduce((s,i)  => s + (i.units||0),   0) || 1;
+
+  // ── PIE CHART SVG ────────────────────────────────────────────────────────
+  function pieChart(data, colors) {
+    const entries = Object.entries(data).sort((a,b) => b[1]-a[1]);
+    window._perfModeLabels = entries.map(([label]) => label); // store for onclick
+    const total = entries.reduce((s,[,v]) => s+v, 0) || 1;
+    const CX = 70, CY = 70, R = 60;
+    let angle = -Math.PI / 2;
+    let slices = '';
+
+    entries.forEach(([label, val], i) => {
+      const pct = val / total;
+      const a1 = angle, a2 = angle + pct * 2 * Math.PI;
+      const x1 = CX + R * Math.cos(a1), y1 = CY + R * Math.sin(a1);
+      const x2 = CX + R * Math.cos(a2), y2 = CY + R * Math.sin(a2);
+      const large = pct > 0.5 ? 1 : 0;
+      const color = colors[i % colors.length];
+      const isActive = window._perfModeFilter === label;
+      const tx = isActive ? (Math.cos((a1+a2)/2)*6).toFixed(1) : 0;
+      const ty = isActive ? (Math.sin((a1+a2)/2)*6).toFixed(1) : 0;
+      slices += `<path d="M${CX},${CY} L${x1.toFixed(1)},${y1.toFixed(1)} A${R},${R} 0 ${large},1 ${x2.toFixed(1)},${y2.toFixed(1)} Z"
+        fill="${color}" stroke="var(--surface)" stroke-width="${isActive ? 3 : 2}"
+        opacity="${window._perfModeFilter && !isActive ? 0.35 : 1}"
+        style="cursor:pointer" transform="translate(${tx},${ty})"
+        onclick="perfFilterMode(${i})">
+        <title>${label}: ${val} (${(pct*100).toFixed(1)}%) — Click para filtrar</title></path>`;
+      angle = a2;
+    });
+
+    const legend = entries.map(([label, val], i) => {
+      const pct = (val/total*100).toFixed(1);
+      const isActive = window._perfModeFilter === label;
+      return `<div onclick="perfFilterMode(${i})" style="display:flex;align-items:center;gap:6px;margin-bottom:6px;cursor:pointer;
+               opacity:${window._perfModeFilter && !isActive ? 0.4 : 1};
+               padding:3px 6px;border-radius:6px;
+               background:${isActive ? 'rgba(255,255,255,.08)' : 'transparent'}">
+        <div style="width:10px;height:10px;border-radius:50%;background:${colors[i%colors.length]};flex-shrink:0"></div>
+        <div style="font-size:12px;color:var(--text);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${label}</div>
+        <div style="font-size:12px;font-weight:700;color:var(--muted)">${pct}%</div>
+        <div style="font-size:11px;color:var(--muted);min-width:30px;text-align:right">${val}</div>
+      </div>`;
+    }).join('');
+
+    const centerVal = window._perfModeFilter ? (data[window._perfModeFilter]||0) : total;
+    const centerLbl = window._perfModeFilter ? '🔍' : 'Total';
+    const filterLabel = window._perfModeFilter
+      ? `<div style="font-size:11px;color:#ff9100;text-align:center;margin-top:4px;cursor:pointer" onclick="perfFilterMode(null)">✕ Quitar filtro</div>`
+      : `<div style="font-size:10px;color:var(--muted);text-align:center;margin-top:4px">Click para filtrar</div>`;
+
+    return `
+      <div style="display:flex;align-items:center;gap:16px">
+        <div style="flex-shrink:0">
+          <svg viewBox="0 0 140 140" style="width:130px;height:130px;display:block">
+            ${slices}
+            <circle cx="${CX}" cy="${CY}" r="28" fill="var(--surface)" style="pointer-events:none"/>
+            <text x="${CX}" y="${CY-5}" text-anchor="middle" font-size="11" fill="var(--muted)" font-family="sans-serif" style="pointer-events:none">${centerLbl}</text>
+            <text x="${CX}" y="${CY+10}" text-anchor="middle" font-size="13" font-weight="bold" fill="var(--text)" font-family="sans-serif" style="pointer-events:none">${centerVal}</text>
+          </svg>
+          ${filterLabel}
+        </div>
+        <div style="flex:1;min-width:0">${legend}</div>
+      </div>`;
+  }
+
+  // ── PROVINCE BARS (Top 10 with %) ────────────────────────────────────────
+  function provinceChart(data) {
+    const total = Object.values(data).reduce((a,b)=>a+b,0) || 1;
+    const entries = Object.entries(data).sort((a,b)=>b[1]-a[1]).slice(0,10);
+    const max = entries[0]?.[1] || 1;
+    const colors = ['#FFD700','#00e676','#2196F3','#ff9100','#e91e63','#9c27b0','#00bcd4','#ff5722','#8bc34a','#795548'];
+    return entries.map(([label, val], i) => {
+      const pct = (val/total*100).toFixed(1);
+      const barW = (val/max*100).toFixed(1);
+      return `
+        <div style="margin-bottom:9px">
+          <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px">
+            <span style="color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:55%">${label}</span>
+            <span style="color:var(--muted);font-size:11px">${val} ventas · <strong style="color:${colors[i]}">${pct}%</strong></span>
+          </div>
+          <div style="background:var(--surface2);border-radius:4px;height:6px">
+            <div style="background:${colors[i]};height:100%;width:${barW}%;border-radius:4px"></div>
+          </div>
+        </div>`;
+    }).join('');
+  }
+
+  // ── HOUR CHART (full width SVG) ───────────────────────────────────────────
+  function hourChart(hours) {
+    const W = 900, H = 200, padL = 35, padR = 10, padT = 24, padB = 30;
+    const innerW = W - padL - padR, innerH = H - padT - padB;
+    const max = Math.max(...hours, 1);
+    const barW = innerW / 24;
+
+    const bars = hours.map((v, i) => {
+      const h = Math.max(2, (v/max) * innerH);
+      const x = padL + i * barW;
+      const y = padT + innerH - h;
+      const isNight = i < 6 || i >= 22;
+      const isMorning = i >= 6 && i < 12;
+      const color = isNight ? '#5c6bc0' : isMorning ? '#FFD700' : '#00e676';
+      return `
+        <rect x="${(x+2).toFixed(1)}" y="${y.toFixed(1)}" width="${(barW-4).toFixed(1)}" height="${h.toFixed(1)}" fill="${color}" rx="3" opacity="0.9">
+          <title>${i}:00hs — ${v} ventas</title>
+        </rect>
+        <text x="${(x+barW/2).toFixed(1)}" y="${H-6}" text-anchor="middle" font-size="10" fill="#888" font-family="sans-serif">${i}h</text>
+        ${v > 0 ? `<text x="${(x+barW/2).toFixed(1)}" y="${(y-5).toFixed(1)}" text-anchor="middle" font-size="9" fill="var(--muted)" font-family="sans-serif">${v}</text>` : ''}
+      `;
+    }).join('');
+
+    const yLabels = [0, 0.25, 0.5, 0.75, 1].map(f => {
+      const y = (padT + innerH - f * innerH).toFixed(1);
+      const val = Math.round(f * max);
+      return `<text x="${padL-4}" y="${y}" text-anchor="end" font-size="9" fill="#888" font-family="sans-serif" dominant-baseline="middle">${val}</text>
+              <line x1="${padL}" y1="${y}" x2="${padL+innerW}" y2="${y}" stroke="#e8e8e8" stroke-width="1" stroke-dasharray="3,3"/>`;
+    }).join('');
+
+    const peakHour = hours.indexOf(Math.max(...hours));
+    return `
+      <svg viewBox="0 0 ${W} ${H}" style="width:100%;height:200px;display:block">
+        ${yLabels}${bars}
+      </svg>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;flex-wrap:wrap;gap:8px">
+        <div style="display:flex;gap:16px;font-size:11px;color:var(--muted)">
+          <span><span style="color:#5c6bc0">■</span> Noche (0-6h · 22-23h)</span>
+          <span><span style="color:#FFD700">■</span> Mañana (6-12h)</span>
+          <span><span style="color:#00e676">■</span> Tarde/Noche (12-22h)</span>
+        </div>
+        <div style="font-size:12px;color:var(--muted)">
+          Hora pico: <strong style="color:var(--text)">${peakHour}:00hs (${hours[peakHour]} ventas)</strong>
+          · Total: <strong style="color:var(--text)">${hours.reduce((a,b)=>a+b,0)} ventas</strong>
+        </div>
+      </div>`;
+  }
+
+  // ── TOP 15 TABLE with % recibido + % del total ─────────────────────────
+  function top15Table(items, sortKey, mainFmt, mainLabel, totalBase) {
+    if (!items.length) return '<div style="color:var(--muted);font-size:12px;padding:10px">Sin datos</div>';
+    const sorted = [...items].sort((a,b) => parseFloat(b[sortKey])-parseFloat(a[sortKey])).slice(0,15);
+    return `
+      <div style="overflow-x:auto">
+      <table style="width:100%;border-collapse:collapse;font-size:12px">
+        <thead>
+          <tr style="border-bottom:1px solid var(--border)">
+            <th style="text-align:left;padding:6px 4px;color:var(--muted);font-weight:600">#</th>
+            <th style="text-align:left;padding:6px 4px;color:var(--muted);font-weight:600">MLA</th>
+            <th style="text-align:left;padding:6px 4px;color:var(--muted);font-weight:600">Publicación</th>
+            <th style="text-align:right;padding:6px 4px;color:var(--muted);font-weight:600">${mainLabel}</th>
+            <th style="text-align:right;padding:6px 4px;color:var(--muted);font-weight:600">% del total</th>
+            <th style="text-align:right;padding:6px 4px;color:var(--muted);font-weight:600">% recibido</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${sorted.map((item, i) => {
+            const val     = parseFloat(item[sortKey]) || 0;
+            const pctTot  = (val / totalBase * 100).toFixed(1);
+            const pctRec  = item.revenue > 0 ? ((item.net / item.revenue)*100).toFixed(1) : '—';
+            const recColor = parseFloat(pctRec) >= 60 ? '#00e676' : parseFloat(pctRec) >= 40 ? '#FFD700' : '#ff9100';
+            return `<tr style="border-bottom:1px solid var(--border)">
+              <td style="padding:6px 4px;color:var(--muted)">${i+1}</td>
+              <td style="padding:6px 4px;white-space:nowrap">
+                <span style="color:var(--muted);cursor:pointer;font-size:11px" title="Click para copiar"
+                  onclick="copyMLA(this,'${item.id}')">${item.id}</span>
+              </td>
+              <td style="padding:6px 4px;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${item.title}">${item.title}</td>
+              <td style="padding:6px 4px;text-align:right;font-weight:700;color:var(--accent)">${mainFmt(val)}</td>
+              <td style="padding:6px 4px;text-align:right;color:var(--muted)">${pctTot}%</td>
+              <td style="padding:6px 4px;text-align:right;font-weight:700;color:${recColor}">${pctRec}%</td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table>
+      </div>`;
+  }
+
+  const modeColors = ['#2196F3','#00e676','#FFD700','#ff9100','#e91e63','#9c27b0'];
+
+  el.innerHTML = `
+    <!-- ROW 1: Forma de entrega + Provincia -->
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
+      <div class="kpi-card" style="padding:18px">
+        <div class="kpi-label" style="margin-bottom:16px">📦 Ventas por forma de entrega</div>
+        ${pieChart(byMode, modeColors)}
+      </div>
+      <div class="kpi-card" style="padding:18px">
+        <div class="kpi-label" style="margin-bottom:14px">📍 Ventas por provincia — Top 10</div>
+        ${provinceChart(byProvince)}
+      </div>
+    </div>
+
+    <!-- ROW 2: Preguntas -->
+    <div id="preguntasCard" style="margin-bottom:12px">
+      <div style="color:var(--muted);font-size:12px;padding:14px;text-align:center">⏳ Cargando datos de preguntas...</div>
+    </div>
+
+    <!-- ROW 3: Horario full width -->
+    <div class="kpi-card" style="padding:18px;margin-bottom:12px">
+      <div class="kpi-label" style="margin-bottom:14px">🕐 Ventas por horario</div>
+      ${hourChart(byHour)}
+    </div>
+
+    <!-- ROW 3: Top 15 Facturación + Top 15 Unidades -->
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <div class="kpi-card" style="padding:18px">
+        <div class="kpi-label" style="margin-bottom:14px">🏆 Top 15 — Facturación ${window._perfModeFilter ? '<span style="color:#ff9100;font-size:11px">· '+window._perfModeFilter+'</span>' : ''}</div>
+        ${top15Table(top15Rev, 'revenue', fmt, 'Facturación', totalRevenue)}
+      </div>
+      <div class="kpi-card" style="padding:18px">
+        <div class="kpi-label" style="margin-bottom:14px">📦 Top 15 — Unidades vendidas ${window._perfModeFilter ? '<span style="color:#ff9100;font-size:11px">· '+window._perfModeFilter+'</span>' : ''}</div>
+        ${top15Table(top15Units, 'units', v => v.toLocaleString('es-AR')+' u.', 'Unidades', totalUnitsAll)}
+      </div>
+    </div>
+  `;
+
+  // Load preguntas async after render
+  setTimeout(loadPreguntasCard, 50);
+}
+
+async function loadPreguntasCard() {
+  const el = document.getElementById('preguntasCard');
+  if (!el) return;
+  const client = getActiveClient();
+  if (!client || !client.ml_user_id) {
+    el.innerHTML = '';
+    return;
   }
   try {
-    // Releer el cliente desde DB para tener el refresh_token más fresco
-    const freshRes = await pool.query('SELECT * FROM clients WHERE id = $1', [client.id]);
-    const fresh = freshRes.rows[0];
-
-    if (!fresh?.refresh_token) {
-      console.warn(`No hay refresh_token para ${fresh?.name || client.name} — requiere reconexión manual`);
-      return false;
-    }
-
-    const { app_id, client_secret } = getMLCredentials(fresh);
-    const masked = `${fresh.refresh_token.slice(0,6)}...${fresh.refresh_token.slice(-4)}`;
-    console.log(`Refreshing client ${fresh.id} (${fresh.name}) token=${masked}`);
-
-    const body = new URLSearchParams({
-      grant_type: 'refresh_token',
-      client_id: app_id,
-      client_secret,
-      refresh_token: fresh.refresh_token
-    });
-    const tokenRes = await fetch(`${ML_API}/oauth/token`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: body.toString()
-    });
-    const tokens = await tokenRes.json();
-
-    if (!tokenRes.ok || tokens.error) {
-      console.error(`Refresh failed for client ${fresh.id} (${fresh.name}): HTTP=${tokenRes.status} error=${tokens.error} msg=${tokens.message}`);
-      if (tokens.error === 'invalid_grant' || tokens.error === 'invalid_token') {
-        await pool.query(
-          `UPDATE clients SET access_token = NULL, token_expires_at = NULL, updated_at = NOW() WHERE id = $1`,
-          [fresh.id]
-        );
-        console.error(`⚠️  Token inválido definitivamente para ${fresh.name} — requiere reconexión`);
-      }
-      return false;
-    }
-
-    // NO usar fallback al refresh_token viejo — si ML no devuelve uno nuevo, falla
-    if (!tokens.refresh_token) {
-      console.error(`ML no devolvió refresh_token nuevo para ${fresh.name} — abortando`);
-      return false;
-    }
-
-    const expiresAt = new Date(Date.now() + (tokens.expires_in || 21600) * 1000);
-    await pool.query(
-      `UPDATE clients SET access_token = $1, refresh_token = $2, token_expires_at = $3, updated_at = NOW() WHERE id = $4`,
-      [tokens.access_token, tokens.refresh_token, expiresAt, fresh.id]
-    );
-    console.log(`✅ Token refreshed for client ${fresh.id} (${fresh.name}), expires: ${expiresAt.toISOString()}`);
-    return tokens.access_token;
-  } catch(e) {
-    console.error(`Refresh error for client ${client.id}:`, e.message);
-    return false;
-  } finally {
-    await pool.query('SELECT pg_advisory_unlock($1)', [client.id]);
-  }
-}
-
-// Auto-refresh cada 5 minutos — renueva solo tokens que vencen en menos de 10 minutos
-setInterval(async () => {
-  try {
-    const result = await pool.query(
-      `SELECT * FROM clients WHERE active = true AND refresh_token IS NOT NULL AND token_expires_at < NOW() + INTERVAL '10 minutes'`
-    );
-    if (result.rows.length) {
-      console.log(`Auto-refresh: ${result.rows.length} tokens expiring soon — refreshing now`);
-      for (const client of result.rows) { await refreshClientToken(client); }
-    }
-  } catch(e) { console.error('Auto-refresh error:', e.message); }
-}, 5 * 60 * 1000); // every 5 minutes
-
-// Also run immediately on startup to fix any already-expired tokens
-setTimeout(async () => {
-  try {
-    const result = await pool.query(
-      `SELECT * FROM clients WHERE active = true AND access_token IS NOT NULL`
-    );
-    console.log(`Startup token check: ${result.rows.length} clients`);
-    for (const client of result.rows) {
-      const exp = client.token_expires_at ? new Date(client.token_expires_at) : null;
-      const hoursLeft = exp ? (exp - new Date()) / (1000*60*60) : -1;
-      console.log(`  ${client.name}: expires in ${hoursLeft.toFixed(1)}hs`);
-      if (hoursLeft < 0.17) { // menos de 10 minutos
-        console.log(`  → Refreshing ${client.name}...`);
-        await refreshClientToken(client);
-      }
-    }
-  } catch(e) { console.error('Startup refresh error:', e.message); }
-}, 5000); // 5 seconds after startup
-
-// Get valid token for a client (refreshing if needed)
-async function getClientToken(clientId) {
-  const result = await pool.query('SELECT * FROM clients WHERE id = $1', [clientId]);
-  if (!result.rows.length) return null;
-  const client = result.rows[0];
-  if (!client.access_token) return null;
-  // Refresh if token expires in less than 10 minutes
-  if (client.token_expires_at && new Date(client.token_expires_at) < new Date(Date.now() + 10 * 60 * 1000)) {
-    const newToken = await refreshClientToken(client);
-    return newToken || client.access_token;
-  }
-  return client.access_token;
-}
-
-// Get app-level token (client_credentials) — for reading public items without user context
-const _appTokenCache = {};
-async function getAppToken(clientId) {
-  const cached = _appTokenCache[clientId];
-  if (cached && cached.expires > Date.now()) return cached.token;
-  try {
-    const result = await pool.query('SELECT app_id, client_secret FROM clients WHERE id = $1', [clientId]);
-    if (!result.rows.length) return null;
-    const { app_id, client_secret } = result.rows[0];
-    const r = await fetch(`${ML_API}/oauth/token`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({ grant_type: 'client_credentials', client_id: app_id, client_secret }).toString()
-    });
-    const data = await r.json();
-    if (data.access_token) {
-      _appTokenCache[clientId] = { token: data.access_token, expires: Date.now() + (data.expires_in || 21600) * 1000 - 60000 };
-      console.log(`[APP TOKEN] Got app token for client ${clientId}`);
-      return data.access_token;
-    }
-    console.error('[APP TOKEN] Failed:', data.error, data.message);
-    return null;
-  } catch(e) {
-    console.error('[APP TOKEN] Error:', e.message);
-    return null;
-  }
-}
-
-// ── SHIPPING COSTS + METADATA ─────────────────────────────────────────────────
-async function fetchShippingCosts(orders, headers) {
-  const shipIds = [...new Set(
-    orders.map(o => o.shipping && o.shipping.id).filter(Boolean)
-  )];
-  if (!shipIds.length) return {};
-
-  const costMap = {};
-  for (let i = 0; i < shipIds.length; i += 10) {
-    const batch = shipIds.slice(i, i + 10);
-    // Fetch shipment base (logistic_type, province) + /costs (costos reales) en paralelo
-    const [results, costsResults] = await Promise.all([
-      Promise.all(batch.map(id =>
-        fetch(`${ML_API}/shipments/${id}`, { headers })
-          .then(r => r.json())
-          .catch(() => null)
-      )),
-      Promise.all(batch.map(id =>
-        fetch(`${ML_API}/shipments/${id}/costs`, { headers })
-          .then(r => r.json())
-          .catch(() => null)
-      ))
-    ]);
-    results.forEach((s, idx) => {
-      if (!s) return;
-
-      // Usar /costs como fuente principal (más preciso que el shipment raíz)
-      // /costs devuelve: receiver.cost = lo que paga el comprador
-      //                  senders[0].cost = lo que paga el vendedor
-      const costsData  = costsResults[idx];
-      const buyerCost  = parseFloat(costsData?.receiver?.cost)    || 0;
-      const sellerCost = parseFloat(costsData?.senders?.[0]?.cost) || 0;
-
-      if (idx < 3 && i < 10) {
-        console.log(`[SHIPMENT] id=${batch[idx]} logistic=${s.logistic_type} buyerCost=${buyerCost} sellerCost=${sellerCost}`);
-      }
-
-      // Province: receiver address state
-      const province = (s.receiver_address && (
-        s.receiver_address.state?.name ||
-        s.receiver_address.city?.name
-      )) || 'Sin dato';
-
-      // logistic_type values: fulfillment=FULL, flex=FLEX, cross_docking/me2=Correo, xd_drop_off=Punto entrega
-      const lt = (s.logistic_type || '').toLowerCase();
-      const sn = (s.shipping_option?.name || '').toLowerCase();
-      const sm = (s.shipping_mode || '').toLowerCase();
-      let mode;
-      if (lt === 'fulfillment' || sn.includes('fulfillment'))                                               mode = 'FULL';
-      else if (lt === 'flex' || lt === 'self_service' || lt.includes('flex') || sn.includes('flex')) mode = 'FLEX';
-      else if (lt.includes('cross') || lt.includes('me1') || lt.includes('me2') || lt.includes('colect') || lt.includes('correo')) mode = 'Correo';
-      else if (lt.includes('xd') || lt.includes('drop') || lt.includes('pick'))                             mode = 'Punto de entrega';
-      else if (lt.includes('custom') || sm.includes('custom'))                                              mode = 'Retiro en local';
-      else {
-        console.log(`[SHIPPING] logistic_type="${s.logistic_type}" shipping_mode="${s.shipping_mode}" option="${s.shipping_option?.name}"`);
-        mode = s.logistic_type || s.shipping_mode || 'Otro';
-      }
-
-      costMap[batch[idx]] = { sellerCost, province, mode, buyerCost };
-    });
-  }
-  return costMap;
-}
-
-// ── DASHBOARD DATA (by client ID) ─────────────────────────────────────────────
-async function fetchAllOrders(uid, headers, fromStr, toStr) {
-  try {
-    const base = `${ML_API}/orders/search?seller=${uid}&order.status=paid&sort=date_desc&limit=50&order.date_created.from=${encodeURIComponent(fromStr)}&order.date_created.to=${encodeURIComponent(toStr)}`;
-    const first = await fetch(base, { headers }).then(r => r.json());
-    const total = (first.paging && first.paging.total) || 0;
-    let all = first.results || [];
-    let amount = 0;
-    all.forEach(o => { amount += parseFloat(o.total_amount) || 0; });
-    if (total > 50) {
-      const maxPages = Math.min(Math.ceil(total / 50), 100); // up to 5000 orders
-      for (let b = 1; b < maxPages; b += 5) {
-        const end = Math.min(b + 5, maxPages);
-        const batch = await Promise.all(Array.from({length: end - b}, (_, i) =>
-          fetch(`${base}&offset=${(b+i)*50}`, { headers }).then(r => r.json()).catch(() => ({results:[]}))
-        ));
-        batch.forEach(p => { if (p.results) { p.results.forEach(o => { amount += parseFloat(o.total_amount)||0; }); all = all.concat(p.results); } });
-      }
-    }
-    return { orders: all, amount };
-  } catch(e) { return { orders: [], amount: 0 }; }
-}
-
-async function fetchVisits(itemIds, days, headers) {
-  try {
-    const results = await Promise.all(itemIds.map(id =>
-      fetch(`${ML_API}/items/${id}/visits/time_window?last=${days}&unit=day`, { headers }).then(r => r.json()).catch(() => null)
-    ));
-    const map = {};
-    results.forEach((v, i) => {
-      if (!v) return;
-      const id = itemIds[i];
-      if (typeof v.total_visits === 'number') map[id] = v.total_visits;
-      else if (Array.isArray(v)) map[id] = v.reduce((s, r) => s + (r.visits || r.total || 0), 0);
-      else if (v.results) map[id] = v.results.reduce((s, r) => s + (r.total || 0), 0);
-      else map[id] = 0;
-    });
-    return map;
-  } catch(e) { return {}; }
-}
-
-app.get('/api/dashboard', requireAuth, async (req, res) => {
-  try {
-    const clientId = parseInt(req.query.client_id);
-    const days = parseInt(req.query.days) || 30;
-    if (!clientId) return res.status(400).json({ error: 'client_id requerido' });
-
-    const token = await getClientToken(clientId);
-    if (!token) return res.status(403).json({ error: 'Cliente no conectado o token expirado' });
-
-    const headers = { 'Authorization': `Bearer ${token}` };
-    const user = await fetch(`${ML_API}/users/me`, { headers }).then(r => r.json());
-    if (user.error) return res.status(403).json({ error: 'token invalido' });
-    const uid = user.id;
-
-    const now = new Date();
-    const fmt = d => d.toISOString().slice(0,19) + '.000-00:00';
-
-    let curFrom, curTo, prevFrom, prevTo, effectiveDays;
-    if (req.query.date_from && req.query.date_to) {
-      curFrom  = new Date(req.query.date_from + 'T00:00:00');
-      curTo    = new Date(req.query.date_to   + 'T23:59:59');
-      effectiveDays = Math.round((curTo - curFrom) / (24*60*60*1000));
-      prevTo   = new Date(curFrom.getTime() - 1);
-      prevFrom = new Date(prevTo.getTime() - effectiveDays * 24*60*60*1000);
-    } else {
-      curFrom  = new Date(now.getTime() - days * 24*60*60*1000);
-      curTo    = now;
-      prevFrom = new Date(curFrom.getTime() - days * 24*60*60*1000);
-      prevTo   = curFrom;
-      effectiveDays = days;
-    }
-
-    const [curData, prevData, itemsData] = await Promise.all([
-      fetchAllOrders(uid, headers, fmt(curFrom), fmt(curTo)),
-      fetchAllOrders(uid, headers, fmt(prevFrom), fmt(prevTo)),
-      fetch(`${ML_API}/users/${uid}/items/search?limit=1`, { headers }).then(r => r.json()).catch(() => ({paging:{total:0}}))
-    ]);
-
-    const salesByItem = {};
-    curData.orders.forEach(order => {
-      (order.order_items || []).forEach(oi => {
-        const id = oi.item && oi.item.id;
-        const title = oi.item && oi.item.title;
-        if (!id) return;
-        if (!salesByItem[id]) salesByItem[id] = { id, title: title || id, units: 0, revenue: 0 };
-        salesByItem[id].units += oi.quantity || 0;
-        salesByItem[id].revenue += (parseFloat(oi.unit_price) || 0) * (oi.quantity || 0);
-      });
-    });
-
-    const soldItemIds = Object.keys(salesByItem);
-    let totalVisits = 0, prevTotalVisits = 0, topItems = [];
-
-    if (soldItemIds.length > 0) {
-      const allVisitsMap = {}, allPrevVisitsMap = {};
-      for (let i = 0; i < soldItemIds.length; i += 20) {
-        const batch = soldItemIds.slice(i, i + 20);
-        const [vm, pvm] = await Promise.all([fetchVisits(batch, effectiveDays, headers), fetchVisits(batch, effectiveDays * 2, headers)]);
-        Object.assign(allVisitsMap, vm); Object.assign(allPrevVisitsMap, pvm);
-      }
-      totalVisits = Object.values(allVisitsMap).reduce((s, v) => s + v, 0);
-      prevTotalVisits = Math.max(0, Object.values(allPrevVisitsMap).reduce((s, v) => s + v, 0) - totalVisits);
-      topItems = Object.values(salesByItem).map(item => {
-        const curVisits = allVisitsMap[item.id] || 0;
-        const conv = curVisits > 0 ? ((item.units / curVisits) * 100).toFixed(1) : '0.0';
-        return { ...item, visits: curVisits, conversion: parseFloat(conv) };
-      }).sort((a, b) => b.revenue - a.revenue);
-    }
-
-    const curConv = totalVisits > 0 ? ((curData.orders.length / totalVisits) * 100).toFixed(1) : 0;
-    const prevConv = prevTotalVisits > 0 ? ((prevData.orders.length / prevTotalVisits) * 100).toFixed(1) : 0;
-    const pct = (cur, prev) => prev > 0 ? (((cur - prev) / prev) * 100).toFixed(1) : null;
-
-    // ── IMPORTE RECIBIDO CALCULATION ──────────────────────────────────────────
-    // Fetch shipping costs for all current orders
-    const shippingCostMap = await fetchShippingCosts(curData.orders, headers);
-
-    let totalPaidAmount    = 0; // what buyers actually paid
-    let totalSaleFee       = 0; // ML commission
-    let totalTaxes         = 0; // taxes (IIBB etc)
-    let totalSellerShip    = 0; // shipping cost absorbed by seller
-
-    curData.orders.forEach(order => {
-      totalPaidAmount += parseFloat(order.paid_amount) || 0;
-
-
-      (order.order_items || []).forEach(oi => {
-        totalSaleFee += parseFloat(oi.sale_fee) || 0;
-      });
-
-      if (order.taxes && order.taxes.amount) {
-        totalTaxes += parseFloat(order.taxes.amount) || 0;
-      }
-
-      const shipId = order.shipping && order.shipping.id;
-      if (shipId && shippingCostMap[shipId] !== undefined) {
-        totalSellerShip += shippingCostMap[shipId].sellerCost || 0;
-      }
-    });
-
-    // ── PERFORMANCE DATA ──────────────────────────────────────────────────────
-    // Log all unique logistic_type values for debugging
-    const uniqueLogisticTypes = {};
-    Object.values(shippingCostMap).forEach(s => {
-      uniqueLogisticTypes[s.mode] = (uniqueLogisticTypes[s.mode] || 0) + 1;
-    });
-    console.log('[SHIPPING MODES]', JSON.stringify(uniqueLogisticTypes));
-    const byMode     = {};
-    // By province
-    const byProvince = {};
-    // By hour
-    const byHour     = new Array(24).fill(0);
-    // Per item breakdown for top lists
-    const byItem     = {};
-    // Per item breakdown per shipping mode (for filtering)
-    const byItemPerMode     = {};
-    const byProvincePerMode = {};
-    const byHourPerMode     = {};
-
-    curData.orders.forEach((order, orderIdx) => {
-      const hour = new Date(order.date_created).getHours();
-      byHour[hour]++;
-
-      const shipId = order.shipping && order.shipping.id;
-      const shipData = shipId ? shippingCostMap[shipId] : null;
-
-      // Shipping mode
-      let mode = 'Sin envío';
-      if (shipData && shipData.mode) mode = shipData.mode;
-      else if (shipId && !shipData)  mode = 'Otro';
-      byMode[mode] = (byMode[mode] || 0) + 1;
-
-      // Province
-      const province = shipData ? shipData.province : 'Sin envío';
-      byProvince[province] = (byProvince[province] || 0) + 1;
-
-      // Per-mode province + hour
-      if (!byProvincePerMode[mode]) byProvincePerMode[mode] = {};
-      byProvincePerMode[mode][province] = (byProvincePerMode[mode][province] || 0) + 1;
-
-      if (!byHourPerMode[mode]) byHourPerMode[mode] = new Array(24).fill(0);
-      byHourPerMode[mode][hour]++;
-
-      // Per item — use item-level sale_fee directly, prorate taxes+shipping by revenue fraction
-      const orderItemsRevenue = (order.order_items || []).reduce((s, oi) =>
-        s + (parseFloat(oi.unit_price) || 0) * (oi.quantity || 0), 0) || 1;
-
-      const orderTax = parseFloat((order.taxes || {}).amount) || 0;
-
-      // Use payments for accurate seller shipping cost
-      let orderSellerShip = 0;
-      const pmts = order.payments || [];
-      if (pmts.length > 0) {
-        pmts.forEach(p => { orderSellerShip += parseFloat(p.shipping_cost) || 0; });
-      }
-      // Fallback to shipment API
-      if (orderSellerShip === 0 && shipData) {
-        orderSellerShip = shipData.sellerCost || 0;
-      }
-
-      (order.order_items || []).forEach(oi => {
-        const id    = oi.item && oi.item.id;
-        const title = oi.item && oi.item.title;
-        if (!id) return;
-        if (!byItem[id]) byItem[id] = { id, title: title || id, revenue: 0, units: 0, net: 0, orders: 0, envio_cobrado: 0, envio_pagado: 0, impuestos: 0, comision: 0, ads: 0 };
-
-        // Also track per mode
-        if (!byItemPerMode[mode])     byItemPerMode[mode] = {};
-        if (!byItemPerMode[mode][id]) byItemPerMode[mode][id] = { id, title: title || id, revenue: 0, units: 0, net: 0, orders: 0 };
-
-        const itemRevenue    = (parseFloat(oi.unit_price) || 0) * (oi.quantity || 0);
-        const itemSaleFee    = parseFloat(oi.sale_fee) || 0;
-        const itemFrac       = itemRevenue / orderItemsRevenue;
-        const itemTax        = orderTax * itemFrac;
-        const itemShip       = orderSellerShip * itemFrac;
-        const itemBuyerShip  = shipData ? (shipData.buyerCost || 0) * itemFrac : 0;
-        const itemNet        = itemRevenue - itemSaleFee - itemTax - itemShip;
-
-        // DEBUG — log ALL orders for MLA1144763103 + first 2 of any item
-        const isTarget = id === 'MLA1144763103';
-        if (isTarget || byItem[id].orders < 2) {
-          console.log(`[ORDER_DETAIL] item=${id} qty=${oi.quantity} price=$${oi.unit_price} revenue=$${itemRevenue.toFixed(0)} sale_fee=$${itemSaleFee.toFixed(0)} tax=$${itemTax.toFixed(0)} ship=$${itemShip.toFixed(0)} net=$${itemNet.toFixed(0)} pct=${itemRevenue>0?(itemNet/itemRevenue*100).toFixed(1):0}% | orderPaid=$${order.paid_amount} orderItemsRevenue=$${orderItemsRevenue.toFixed(0)}`);
-        }
-
-        byItem[id].revenue       += itemRevenue;
-        byItem[id].units         += oi.quantity || 0;
-        byItem[id].net           += itemNet;
-        byItem[id].orders        += 1;
-        byItem[id].envio_cobrado += itemBuyerShip;
-        byItem[id].envio_pagado  += itemShip;
-        byItem[id].impuestos     += itemTax;
-        byItem[id].comision      += itemSaleFee;
-
-        byItemPerMode[mode][id].revenue += itemRevenue;
-        byItemPerMode[mode][id].units   += oi.quantity || 0;
-        byItemPerMode[mode][id].net     += itemNet;
-        byItemPerMode[mode][id].orders  += 1;
-      });
-    });
-
-    // Top 15 lists
-    const itemsArr = Object.values(byItem);
-
-    // DEBUG — log top 5 by revenue with full breakdown
-    [...itemsArr].sort((a,b) => b.revenue - a.revenue).slice(0,5).forEach(i => {
-      const pct = i.revenue > 0 ? (i.net/i.revenue*100).toFixed(1) : '0';
-      console.log(`[ITEM_NET] "${i.title.slice(0,40)}" revenue=$${Math.round(i.revenue)} net=$${Math.round(i.net)} pct=${pct}% orders=${i.orders}`);
-    });
-
-    function makeTop15(arr) {
-      return {
-        revenue: [...arr].sort((a,b) => b.revenue - a.revenue).slice(0,15)
-          .map(i => ({ ...i, pct_recibido: i.revenue > 0 ? ((i.net/i.revenue)*100).toFixed(1) : '0' })),
-        units: [...arr].sort((a,b) => b.units - a.units).slice(0,15)
-          .map(i => ({ ...i, pct_recibido: i.revenue > 0 ? ((i.net/i.revenue)*100).toFixed(1) : '0' })),
-      };
-    }
-
-    const top15Revenue = makeTop15(itemsArr).revenue;
-    const top15Units   = makeTop15(itemsArr).units;
-
-    // Per-mode top15
-    const top15ByMode = {};
-    Object.entries(byItemPerMode).forEach(([mode, itemsObj]) => {
-      top15ByMode[mode] = makeTop15(Object.values(itemsObj));
-    });
-
-    // ── RENTABILIDAD ─────────────────────────────────────────────────────────
-    // Cancelled orders (for anulaciones y reembolsos)
-    let totalCancelled = 0, cancelledCount = 0;
-    try {
-      const cancelBase = `${ML_API}/orders/search?seller=${uid}&order.status=cancelled&sort=date_desc&limit=50&order.date_created.from=${encodeURIComponent(fmt(curFrom))}&order.date_created.to=${encodeURIComponent(fmt(now))}`;
-      const cancelData = await fetch(cancelBase, { headers }).then(r => r.json());
-      (cancelData.results || []).forEach(o => { totalCancelled += parseFloat(o.total_amount) || 0; });
-      cancelledCount = (cancelData.paging && cancelData.paging.total) || (cancelData.results || []).length;
-    } catch(e) {}
-
-    // Buyer shipping — what buyers paid for shipping (buyerCost from shipments)
-    let totalBuyerShip = 0;
-    Object.values(shippingCostMap).forEach(s => { totalBuyerShip += s.buyerCost || 0; });
-    console.log(`[ENVIOS_DEBUG] shippingEntries=${Object.keys(shippingCostMap).length} totalBuyerShip=${totalBuyerShip.toFixed(0)} totalSellerShip=${totalSellerShip.toFixed(0)} resultado=${(totalBuyerShip-totalSellerShip).toFixed(0)}`);
-    console.log(`[TAXES_DEBUG] totalTaxes=${totalTaxes.toFixed(0)} totalSaleFee=${totalSaleFee.toFixed(0)}`);
-
-    // Facturación = sum of item revenues
-    const totalFacturacion = Object.values(byItem).reduce((s, i) => s + i.revenue, 0);
-
-    const netBeforeAds = totalPaidAmount - totalSaleFee - totalTaxes - totalSellerShip;
-    const totalAmountForPct = curData.amount > 0 ? curData.amount : 1;
-
-    // Fetch ads spend to include in calculation
-    let adsSpend = 0;
-    try {
-      const advData = await fetch(`${ML_API}/advertising/advertisers?product_id=PADS`, {
-        headers: { ...headers, 'Content-Type': 'application/json', 'Api-Version': '1' }
-      }).then(r => r.json());
-      const advertisers = advData.advertisers || [];
-      if (advertisers.length) {
-        const adv = advertisers.find(a => a.site_id === (user.site_id || 'MLA')) || advertisers[0];
-        const siteId = user.site_id || 'MLA';
-        const fromDate = curFrom.toISOString().slice(0,10);
-        const toDate = curTo.toISOString().slice(0,10);
-        const url = `${ML_API}/advertising/${siteId}/advertisers/${adv.advertiser_id}/product_ads/campaigns/search?limit=50&date_from=${fromDate}&date_to=${toDate}&metrics=cost&metrics_summary=true`;
-        const adsData = await fetch(url, { headers: { ...headers, 'api-version': '2' } }).then(r => r.json()).catch(() => ({}));
-        adsSpend = parseFloat((adsData.metrics_summary || {}).cost) || 0;
-        console.log(`[ADS_TOTAL] advertiser=${adv.advertiser_id} from=${fromDate} to=${toDate} campaigns=${adsData.paging?.total} adsSpend=${adsSpend} summary=${JSON.stringify(adsData.metrics_summary)}`);
-      }
-    } catch(e) { /* ads spend optional */ }
-
-    // Fetch ads spend por ítem (cost por MLA)
-    const adsByItem = {};
-    try {
-      const advData = await fetch(`${ML_API}/advertising/advertisers?product_id=PADS`, {
-        headers: { ...headers, 'Content-Type': 'application/json', 'Api-Version': '1' }
-      }).then(r => r.json());
-      const advertisers = advData.advertisers || [];
-      if (advertisers.length) {
-        const adv = advertisers.find(a => a.site_id === (user.site_id || 'MLA')) || advertisers[0];
-        const siteId   = user.site_id || 'MLA';
-        const fromDate = curFrom.toISOString().slice(0,10);
-        const toDate   = curTo.toISOString().slice(0,10);
-        // Paginar todos los ítems con métricas de costo
-        let offset = 0, limit = 50, total = 999;
-        while (offset < total) {
-          const url = `${ML_API}/advertising/${siteId}/advertisers/${adv.advertiser_id}/product_ads/ads/search?date_from=${fromDate}&date_to=${toDate}&metrics=cost&limit=${limit}&offset=${offset}`;
-          const data = await fetch(url, { headers: { ...headers, 'api-version': '2' } }).then(r => r.json()).catch(() => ({}));
-          total = data.paging?.total || 0;
-          (data.results || []).forEach(ad => {
-            if (ad.item_id && ad.metrics?.cost > 0) {
-              adsByItem[ad.item_id] = (adsByItem[ad.item_id] || 0) + parseFloat(ad.metrics.cost);
-            }
-          });
-          offset += limit;
-          if ((data.results || []).length < limit) break;
-        }
-        // Distribuir ads a byItem
-        Object.entries(adsByItem).forEach(([id, cost]) => {
-          if (byItem[id]) byItem[id].ads = cost;
-        });
-      }
-    } catch(e) { /* ads por item opcional */ }
-
-    const importeRecibido = netBeforeAds - adsSpend;
-    const porcentajeRecibido = curData.amount > 0
-      ? ((importeRecibido / curData.amount) * 100).toFixed(1)
-      : '0.0';
-
-    // Build rentabilidad now that adsSpend is available
-    const totalEgresos = totalSaleFee + totalTaxes + totalSellerShip + totalCancelled + adsSpend;
-    const netoML = (totalFacturacion + totalBuyerShip) - totalEgresos;
-
-    // By-product breakdown for rentabilidad table
-    const byProduct = Object.values(byItem)
-      .sort((a, b) => b.revenue - a.revenue)
-      .map(i => ({
-        id:              i.id,
-        title:           i.title,
-        revenue:         i.revenue,
-        units:           i.units,
-        comision:        i.comision || (i.revenue > 0 ? (i.revenue - i.net) : 0),
-        impuestos:       i.impuestos || 0,
-        envio_cobrado:   i.envio_cobrado,
-        envio_pagado:    i.envio_pagado,
-        resultado_envio: i.envio_cobrado - i.envio_pagado,
-        ads:             i.ads || 0,
-        neto:            i.net,
-        pct_neto:        i.revenue > 0 ? ((i.net / i.revenue) * 100).toFixed(1) : '0'
-      }));
-
-    const rentabilidad = {
-      facturacion:      totalFacturacion,
-      envios_cobrados:  totalBuyerShip,
-      total_ingresos:   totalFacturacion + totalBuyerShip,
-      comisiones:       totalSaleFee,
-      impuestos:        totalTaxes,
-      costo_envios:     totalSellerShip,
-      resultado_envios: totalBuyerShip - totalSellerShip,
-      anulaciones:      totalCancelled,
-      cancelled_count:  cancelledCount,
-      inversion_ads:    adsSpend,
-      total_egresos:    totalEgresos,
-      neto_ml:          netoML,
-      costo_productos:  0,
-      by_product:       byProduct,
+    const { date_from, date_to } = getDateRange();
+    const d = await apiCall('GET', `/api/preguntas?uid=${client.ml_user_id}&client_id=${client.id}&date_from=${date_from}&date_to=${date_to}`);
+    if (!d || d.error) { el.innerHTML = `<div style="color:var(--muted);font-size:12px;padding:10px">Error cargando preguntas: ${d?.error||'sin respuesta'}</div>`; return; }
+
+    // Ensure all numeric fields have defaults
+    const safe = {
+      total_preguntas: d.total_preguntas || 0,
+      compradores_unicos: d.compradores_unicos || 0,
+      respondidas: d.respondidas || 0,
+      sin_responder: d.sin_responder || 0,
+      ventas_post_pregunta: d.ventas_post_pregunta || 0,
+      tasa_conversion: d.tasa_conversion || 0,
+      tiempo_lv_business: d.tiempo_lv_business || null,
+      tiempo_lv_noche: d.tiempo_lv_noche || null,
+      tiempo_finde: d.tiempo_finde || null,
+      tiempo_mediana: d.tiempo_mediana || null,
+      mins_lv_business: d.mins_lv_business ?? null,
+      mins_lv_noche: d.mins_lv_noche ?? null,
+      mins_finde: d.mins_finde ?? null,
+      mins_mediana: d.mins_mediana ?? null,
     };
 
-    // Units sold
-    const totalUnits = curData.orders.reduce((s, o) =>
-      s + (o.order_items || []).reduce((ss, oi) => ss + (oi.quantity || 0), 0), 0);
-    const prevUnits = prevData.orders.reduce((s, o) =>
-      s + (o.order_items || []).reduce((ss, oi) => ss + (oi.quantity || 0), 0), 0);
+    const kpi = (label, value, sub, color) => `
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px 16px;min-width:0">
+        <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:6px">${label}</div>
+        <div style="font-size:22px;font-weight:700;font-family:var(--font-b);color:${color||'var(--text)'};">${value ?? '—'}</div>
+        ${sub ? `<div style="font-size:11px;color:var(--muted);margin-top:3px">${sub}</div>` : ''}
+      </div>`;
 
-    // Ticket promedio
-    const ticketPromedio = curData.orders.length > 0 ? curData.amount / curData.orders.length : 0;
-    const prevTicket = prevData.orders.length > 0 ? prevData.amount / prevData.orders.length : 0;
+    const timeColor = mins => {
+      if (mins === null) return '#888';
+      if (mins < 30) return '#16a34a';
+      if (mins < 60) return '#d97706';
+      return '#dc2626';
+    };
+    const timeBg = mins => {
+      if (mins === null) return 'var(--surface2)';
+      if (mins < 30) return '#f0fdf4';
+      if (mins < 60) return '#fffbeb';
+      return '#fef2f2';
+    };
+    const timeBorder = mins => {
+      if (mins === null) return 'var(--border)';
+      if (mins < 30) return '#86efac';
+      if (mins < 60) return '#fcd34d';
+      return '#fca5a5';
+    };
+    const timeLabel = mins => {
+      if (mins === null) return '<span style="font-size:10px;color:#aaa">Sin datos</span>';
+      if (mins < 30) return '<span style="font-size:10px;color:#16a34a;font-weight:600">✓ Excelente</span>';
+      if (mins < 60) return '<span style="font-size:10px;color:#d97706;font-weight:600">⚠ Mejorable</span>';
+      return '<span style="font-size:10px;color:#dc2626;font-weight:600">✗ Lento</span>';
+    };
+    const timeBlock = (label, texto, mins) => `
+      <div style="flex:1;min-width:130px;background:${timeBg(mins)};border:1.5px solid ${timeBorder(mins)};border-radius:10px;padding:12px 14px">
+        <div style="font-size:11px;color:#666;margin-bottom:8px;line-height:1.4">${label}</div>
+        <div style="font-size:22px;font-weight:700;font-family:var(--font-b);color:${timeColor(mins)}">${texto || '—'}</div>
+        <div style="margin-top:4px">${timeLabel(mins)}</div>
+      </div>`;
 
-    // ── ORDERS DETAIL (for Ventas section) ───────────────────────────────────
-    const orders_detail = curData.orders.map(order => {
-      const shipId  = order.shipping && order.shipping.id;
-      const shipData = shipId ? shippingCostMap[shipId] : null;
-      const facturacion = (order.order_items||[]).reduce((s,oi) => s+(parseFloat(oi.unit_price)||0)*(oi.quantity||0), 0);
-      const comision    = (order.order_items||[]).reduce((s,oi) => s+(parseFloat(oi.sale_fee)||0), 0);
-      const impuestos   = parseFloat((order.taxes||{}).amount) || 0;
+    const tasaColor = safe.tasa_conversion >= 30 ? '#22c55e' : safe.tasa_conversion >= 15 ? '#f59e0b' : '#ef4444';
+    const respColor = safe.sin_responder > 0 ? '#ef4444' : '#22c55e';
 
-      // Use payments for accurate shipping breakdown
-      // ML payments include: shipping_cost (seller pays), buyer_shipping_cost (buyer pays)
-      let envio_vendedor = 0, envio_comprador = 0;
+    el.innerHTML = `<div class="kpi-card" style="padding:18px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:8px">
+        <div class="kpi-label">💬 Preguntas del período</div>
+        ${safe.sin_responder > 0
+          ? `<span style="background:#fee2e2;color:#dc2626;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:600">⚠ ${safe.sin_responder} sin responder</span>`
+          : '<span style="background:#dcfce7;color:#16a34a;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:600">✓ Sin pendientes</span>'}
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px;margin-bottom:20px">
+        ${kpi('Preguntas recibidas', safe.total_preguntas.toLocaleString('es-AR'), null, '')}
+        ${kpi('Compradores únicos', safe.compradores_unicos.toLocaleString('es-AR'), 'que preguntaron', '')}
+        ${kpi('Respondidas', safe.respondidas.toLocaleString('es-AR'), `${safe.total_preguntas > 0 ? Math.round(safe.respondidas/safe.total_preguntas*100) : 0}% del total`, '#22c55e')}
+        ${kpi('Sin responder', safe.sin_responder.toLocaleString('es-AR'), 'pendientes hoy', respColor)}
+        ${kpi('Ventas post-pregunta', safe.ventas_post_pregunta.toLocaleString('es-AR'), 'preguntaron y compraron', '#6366f1')}
+        ${kpi('Tasa de conversión', safe.tasa_conversion + '%', 'preguntas → compra', tasaColor)}
+      </div>
+      <div style="border-top:1px solid var(--border);padding-top:16px">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px">
+          <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted)">⏱ Tiempo de respuesta por franja</div>
+          <div style="display:flex;gap:12px;font-size:11px;color:var(--muted)">
+            <span><span style="color:#16a34a;font-weight:700">●</span> &lt;30min</span>
+            <span><span style="color:#d97706;font-weight:700">●</span> 30-60min</span>
+            <span><span style="color:#dc2626;font-weight:700">●</span> &gt;1hs</span>
+          </div>
+        </div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap">
+          ${timeBlock('L-V<br>9 a 18hs', safe.tiempo_lv_business, safe.mins_lv_business)}
+          ${timeBlock('L-V<br>18hs a madrugada', safe.tiempo_lv_noche, safe.mins_lv_noche)}
+          ${timeBlock('Sábado<br>y Domingo', safe.tiempo_finde, safe.mins_finde)}
+          ${timeBlock('General<br>(mediana)', safe.tiempo_mediana, safe.mins_mediana)}
+        </div>
+      </div>
+    </div>`;
+  } catch(e) {
+    el.innerHTML = `<div style="color:var(--muted);font-size:12px;padding:10px">Error cargando preguntas: ${e.message}</div>`;
+  }
+}
 
-      const payments = order.payments || [];
-      if (payments.length > 0) {
-        // Sum across all payments (usually 1)
-        payments.forEach(p => {
-          // shipping_cost in payment = what seller pays for shipping (negative impact)
-          const sc = parseFloat(p.shipping_cost) || 0;
-          // overpaid_amount can indicate buyer-paid shipping
-          const buyerShip = parseFloat(p.overpaid_amount) || 0;
-          if (sc > 0) envio_vendedor += sc;
-          if (buyerShip > 0) envio_comprador += buyerShip;
-        });
-      }
+function filterPerformance(val) {
+  document.querySelectorAll('.perf-row').forEach(row => {
+    row.style.display = row.dataset.search.includes(q) ? '' : 'none';
+  });
+}
 
-      // Fallback to shipment API data if payments didn't give us shipping info
-      if (envio_vendedor === 0 && envio_comprador === 0 && shipData) {
-        envio_vendedor  = shipData.sellerCost  || 0;
-        envio_comprador = shipData.buyerCost   || 0;
-      }
+function sortPerformance(col) {
+  if (!window._perfData) return;
+  if (window._perfSort.col === col) { window._perfSort.asc = !window._perfSort.asc; }
+  else { window._perfSort = { col, asc: col === 'titulo' || col === 'id' }; }
+  window._perfData.sort((a, b) => {
+    const va = a[col], vb = b[col];
+    if (typeof va === 'string') return window._perfSort.asc ? va.localeCompare(vb) : vb.localeCompare(va);
+    return window._perfSort.asc ? va - vb : vb - va;
+  });
+  loadPerformance();
+}
 
-      const neto     = facturacion - comision - impuestos - envio_vendedor;
-      const pct_neto = facturacion > 0 ? ((neto/facturacion)*100).toFixed(1) : '0';
-      const productos   = (order.order_items||[]).map(oi => ({
-        id: oi.item&&oi.item.id, title: oi.item&&oi.item.title,
-        qty: oi.quantity||1, price: parseFloat(oi.unit_price)||0
-      }));
-      return {
-        id: order.id, date: order.date_created, status: order.status,
-        facturacion, comision, impuestos, envio_vendedor, envio_comprador,
-        neto, pct_neto, productos,
-        mode: shipData ? shipData.mode : (shipId ? 'Sin datos' : 'Sin envío'),
-      };
-    }).sort((a,b) => new Date(b.date) - new Date(a.date));
+function exportPerformanceExcel() {
+  if (!window._perfData || !window._perfData.length) { showToast('No hay datos para exportar'); return; }
+  const rows = window._perfData.map(i => ({
+    'MLA': i.id,
+    'Título': i.titulo,
+    'Cuenta': i.cuenta,
+    'Facturación': Math.round(i.facturacion),
+    'Unidades vendidas': i.ventas,
+    'Visitas': i.visitas,
+    'Conversión %': i.conversion
+  }));
+  const ws = XLSX.utils.json_to_sheet(rows);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Performance');
+  XLSX.writeFile(wb, 'performance_ml_' + new Date().toISOString().slice(0,10) + '.xlsx');
+  showToast('✅ Excel descargado');
+}
 
-    res.json({
-      user,
-      stats: {
-        total_orders: curData.orders.length, total_amount: curData.amount,
-        total_items: (itemsData.paging && itemsData.paging.total) || 0,
-        total_visits: totalVisits, conversion_rate: curConv,
-        total_units: totalUnits,
-        ticket_promedio: ticketPromedio,
-        importe_recibido: importeRecibido,
-        porcentaje_recibido: parseFloat(porcentajeRecibido),
-        ads_spend: adsSpend,
-        desglose: { paid_amount: totalPaidAmount, sale_fee: totalSaleFee, taxes: totalTaxes, seller_shipping: totalSellerShip, ads: adsSpend },
-        prev: {
-          total_orders: prevData.orders.length, total_amount: prevData.amount,
-          total_visits: prevTotalVisits, conversion_rate: prevConv,
-          total_units: prevUnits, ticket_promedio: prevTicket
-        },
-        change: {
-          orders: pct(curData.orders.length, prevData.orders.length),
-          amount: pct(curData.amount, prevData.amount),
-          visits: pct(totalVisits, prevTotalVisits),
-          conversion: pct(parseFloat(curConv), parseFloat(prevConv)),
-          units: pct(totalUnits, prevUnits),
-          ticket: pct(ticketPromedio, prevTicket)
-        }
-      },
-      top_items: topItems,
-      orders_detail,
-      performance: {
-        by_mode:              byMode,
-        by_province:          byProvince,
-        by_hour:              byHour,
-        by_province_per_mode: byProvincePerMode,
-        by_hour_per_mode:     byHourPerMode,
-        top15_revenue:        top15Revenue,
-        top15_units:          top15Units,
-        top15_by_mode:        top15ByMode
-      },
-      rentabilidad
-    });
-  } catch(e) { console.error('Dashboard error:', e); res.status(500).json({ error: e.message }); }
-});
+function initApp() {
+  // Initialize date pickers with default range (30 days)
+  const savedRange = localStorage.getItem('ml_rangeDays');
+  const days = savedRange ? parseInt(savedRange) : 30;
+  state.rangeDays = days;
 
-app.get('/api/ads', requireAuth, async (req, res) => {
+  const now  = new Date();
+  const from = new Date(now.getTime() - days * 24*60*60*1000);
+  const fromEl = document.getElementById('globalDateFrom');
+  const toEl   = document.getElementById('globalDateTo');
+  if (fromEl) fromEl.value = from.toISOString().slice(0,10);
+  if (toEl)   toEl.value   = now.toISOString().slice(0,10);
+
+  // Mark active quick range button
+  const btn = document.getElementById('qr-'+days);
+  if (btn) btn.classList.add('active');
+
+  // Load clients from server
+  loadClients();
+  showPage('dashboard', document.querySelector('.nav-item[data-page="dashboard"]'));
+}
+
+async function exchangeCodeAuto(code) {
+  const acc = state.accounts.find(a => !a.accessToken);
+  if (!acc || !state.appId || !state.secret) return;
+  showToast('Conectando cuenta...');
   try {
-    const clientId = parseInt(req.query.client_id);
-    const days = parseInt(req.query.days) || 30;
-    const token = await getClientToken(clientId);
-    if (!token) return res.status(403).json({ error: 'Cliente no conectado' });
-
-    const h1 = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'Api-Version': '1' };
-    const h2 = { 'Authorization': `Bearer ${token}`, 'api-version': '2' };
-    const user = await fetch(`${ML_API}/users/me`, { headers: { 'Authorization': `Bearer ${token}` } }).then(r => r.json());
-    const siteId = user.site_id || 'MLA';
-
-    const advData = await fetch(`${ML_API}/advertising/advertisers?product_id=PADS`, { headers: h1 }).then(r => r.json());
-    const advertisers = advData.advertisers || [];
-    if (!advertisers.length) return res.json({ summary: { spend:0, clicks:0, impressions:0, sales:0 }, campaigns: [] });
-    const adv = advertisers.find(a => a.site_id === siteId) || advertisers[0];
-    const advId = adv.advertiser_id;
-
-    const now = new Date();
-    let fromDate, toDate;
-    if (req.query.date_from && req.query.date_to) {
-      fromDate = req.query.date_from;
-      toDate   = req.query.date_to;
-    } else {
-      const from = new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
-      fromDate = from.toISOString().slice(0,10);
-      toDate   = now.toISOString().slice(0,10);
-    }
-    const metrics = 'clicks,prints,cost,cpc,acos,direct_amount,indirect_amount,total_amount,direct_units_quantity,units_quantity,cvr,roas';
-    console.log(`[ADS] client=${clientId} from=${fromDate} to=${toDate}`);
-    const url = `${ML_API}/advertising/${siteId}/advertisers/${advId}/product_ads/campaigns/search?limit=50&offset=0&date_from=${fromDate}&date_to=${toDate}&metrics=${metrics}&metrics_summary=true`;
-    const text = await fetch(url, { headers: h2 }).then(r => r.text());
-    console.log(`[ADS] ML response (first 200): ${text.slice(0,200)}`);
-    let data;
-    try { data = JSON.parse(text); } catch(e) { return res.status(500).json({ error: 'parse error' }); }
-
-    const campaigns = data.results || [];
-    const summary = data.metrics_summary || {};
-
-    res.json({
-      summary: { spend: summary.cost||0, clicks: summary.clicks||0, impressions: summary.prints||0, sales: summary.total_amount||0, acos: summary.cost&&summary.total_amount?((summary.cost/summary.total_amount)*100).toFixed(1):null, roas: summary.cost&&summary.total_amount?(summary.total_amount/summary.cost).toFixed(2):null },
-      campaigns: campaigns.map(c => {
-        const m = c.metrics || {};
-        const spend = m.cost||0, sales = m.total_amount||0;
-        return { id: c.id, name: c.name, status: c.status, budget: c.budget, strategy: c.strategy, spend, clicks: m.clicks||0, impressions: m.prints||0, sales, acos: spend&&sales?((spend/sales)*100).toFixed(1):null, roas: spend&&sales?(sales/spend).toFixed(2):null };
+    const serverUrlAuto = localStorage.getItem('ml_server_url') || SERVER_URL;
+    const res = await fetch(serverUrlAuto + '/api/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        grant_type: 'authorization_code',
+        client_id: state.appId,
+        client_secret: state.secret,
+        code: code,
+        redirect_uri: state.redirect
       })
     });
-  } catch(e) { res.status(500).json({ error: e.message }); }
-});
-
-app.get('/api/ads-items', requireAuth, async (req, res) => {
-  try {
-    const clientId = parseInt(req.query.client_id);
-    const token = await getClientToken(clientId);
-    if (!token) return res.json({ ads_item_ids: [] });
-    const h1 = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'Api-Version': '1' };
-    const h2 = { 'Authorization': `Bearer ${token}`, 'api-version': '2' };
-    const user = await fetch(`${ML_API}/users/me`, { headers: { 'Authorization': `Bearer ${token}` } }).then(r => r.json());
-    const siteId = user.site_id || 'MLA';
-    const advData = await fetch(`${ML_API}/advertising/advertisers?product_id=PADS`, { headers: h1 }).then(r => r.json());
-    const advertisers = advData.advertisers || [];
-    if (!advertisers.length) return res.json({ ads_item_ids: [] });
-    const adv = advertisers.find(a => a.site_id === siteId) || advertisers[0];
-    const adsItemIds = new Set();
-    let offset = 0, maxPages = 20;
-    while (maxPages-- > 0) {
-      const url = `${ML_API}/advertising/${siteId}/advertisers/${adv.advertiser_id}/product_ads/ads/search?limit=100&offset=${offset}&filters[statuses]=active,paused`;
-      const text = await fetch(url, { headers: h2 }).then(r => r.text());
-      let data; try { data = JSON.parse(text); } catch(e) { break; }
-      const results = data.results || [];
-      results.forEach(item => { if (item.item_id) adsItemIds.add(item.item_id); });
-      if (results.length < 100) break;
-      offset += 100;
-      if (offset >= 500) break;
-    }
-    res.json({ ads_item_ids: Array.from(adsItemIds) });
-  } catch(e) { res.status(500).json({ error: e.message }); }
-});
-
-app.get('/api/items-full', requireAuth, async (req, res) => {
-  try {
-    const clientId = parseInt(req.query.client_id);
-    const token = await getClientToken(clientId);
-    if (!token) return res.status(403).json({ error: 'Cliente no conectado' });
-
-    const headers = { 'Authorization': `Bearer ${token}` };
-    const h1 = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'Api-Version': '1' };
-    const h2 = { 'Authorization': `Bearer ${token}`, 'api-version': '2' };
-    const user = await fetch(`${ML_API}/users/me`, { headers }).then(r => r.json());
-    const uid = user.id; const siteId = user.site_id || 'MLA';
-
-    const now = new Date();
-    const fmt = d => d.toISOString().slice(0,19) + '.000-00:00';
-    let curFrom, curTo, fromDate, toDate, effectiveDays;
-    if (req.query.date_from && req.query.date_to) {
-      curFrom      = new Date(req.query.date_from + 'T00:00:00');
-      curTo        = new Date(req.query.date_to   + 'T23:59:59');
-      fromDate     = req.query.date_from;
-      toDate       = req.query.date_to;
-      effectiveDays = Math.max(1, Math.round((curTo - curFrom) / (24*60*60*1000)));
+    const data = await res.json();
+    if (data.access_token) {
+      acc.accessToken = data.access_token;
+      acc.refreshToken = data.refresh_token;
+      acc.userId = data.user_id;
+      showToast('Cuenta ' + acc.name + ' conectada!');
+      renderOAuthList();
+      renderAccountsList();
+      renderSidebar();
+      saveAccounts();
+      loadAllData();
+      showPage('dashboard', document.querySelectorAll('.nav-item')[0]);
     } else {
-      effectiveDays = parseInt(req.query.days) || 30;
-      curFrom  = new Date(now.getTime() - effectiveDays * 24 * 60 * 60 * 1000);
-      curTo    = now;
-      fromDate = curFrom.toISOString().slice(0,10);
-      toDate   = now.toISOString().slice(0,10);
+      showToast('Error al conectar. Intentalo manual.');
     }
+  } catch(e) {
+    showToast('Error de red al conectar.');
+  }
+}
 
-    // ── 1. Sales data ────────────────────────────────────────────────────────
-    const { orders } = await fetchAllOrders(uid, headers, fmt(curFrom), fmt(curTo));
-    const salesByItem = {};
-    orders.forEach(order => {
-      (order.order_items || []).forEach(oi => {
-        const id = oi.item && oi.item.id; const title = oi.item && oi.item.title;
-        if (!id) return;
-        if (!salesByItem[id]) salesByItem[id] = { id, title: title||id, units: 0, revenue: 0 };
-        salesByItem[id].units += oi.quantity||0;
-        salesByItem[id].revenue += (parseFloat(oi.unit_price)||0) * (oi.quantity||0);
+initApp();
+
+// Auto-refresh tokens every 5 hours silently
+setInterval(async () => {
+  const connected = state.accounts.filter(a => a.refreshToken);
+  for (const acc of connected) {
+    await refreshToken(acc);
+  }
+  if (connected.length) loadAllData();
+}, 5 * 60 * 60 * 1000);
+
+// Also reload data every 30 minutes
+setInterval(() => {
+  if (state.accounts.filter(a => a.accessToken).length) loadAllData();
+}, 30 * 60 * 1000);
+
+function setAdsRange(el, days) { setQuickRange(days); }
+
+
+// ── ADS TABS ──────────────────────────────────────────────────────────────────
+let _adsActiveTab = 'campanas';
+let _adsAnunciosData = null;
+let _adsAnunciosSort = { col: 'inversion', asc: false };
+
+function switchAdsTab(tab) {
+  _adsActiveTab = tab;
+  const tabs = { campanas: 'adsContent', anuncios: 'adsAnunciosContent' };
+  Object.keys(tabs).forEach(t => {
+    document.getElementById(tabs[t]).style.display = t === tab ? '' : 'none';
+    const btn = document.getElementById(`tab-ads-${t}`);
+    if (btn) {
+      btn.style.color        = t === tab ? 'var(--accent)' : 'var(--muted)';
+      btn.style.borderBottom = t === tab ? '2px solid var(--accent)' : '2px solid transparent';
+    }
+  });
+  if (tab === 'anuncios' && !_adsAnunciosData) loadAdsAnuncios();
+}
+
+function refreshAdsTab() {
+  if (_adsActiveTab === 'anuncios') {
+    _adsAnunciosData = null;
+    loadAdsAnuncios();
+  } else {
+    loadAds();
+  }
+}
+
+async function loadAdsAnuncios() {
+  const el = document.getElementById('adsAnunciosContent');
+  el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">⏳ Cargando anuncios...</div>';
+  try {
+    const client = getActiveClient();
+    if (!client) { el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">Sin cuenta conectada</div>'; return; }
+    const range = getDateRange();
+    const data = await apiCall('GET', `/api/ads-anuncios?client_id=${client.id}&date_from=${range.date_from}&date_to=${range.date_to}`);
+    if (!data) { el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">Error al cargar</div>'; return; }
+    _adsAnunciosData = data;
+    renderAdsAnuncios(data);
+  } catch(e) {
+    el.innerHTML = `<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Error: ${e.message}</div>`;
+  }
+}
+
+function sortAdsAnuncios(col) {
+  if (_adsAnunciosSort.col === col) _adsAnunciosSort.asc = !_adsAnunciosSort.asc;
+  else { _adsAnunciosSort.col = col; _adsAnunciosSort.asc = false; }
+  if (_adsAnunciosData) renderAdsAnuncios(_adsAnunciosData);
+}
+
+function renderAdsAnuncios(data) {
+  const el = document.getElementById('adsAnunciosContent');
+  const { items, from, to } = data;
+  if (!items || !items.length) {
+    el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">No hay anuncios en el período</div>';
+    return;
+  }
+
+  const fmt  = n => { const a=Math.abs(n), s=n<0?'-':''; if(a>=1000000) return s+'$'+(a/1000000).toFixed(2)+'M'; if(a>=1000) return s+'$'+(a/1000).toFixed(1)+'K'; return s+'$'+Math.round(a).toLocaleString('es-AR'); };
+  const fmtN = n => n != null ? n.toLocaleString('es-AR') : '—';
+  const fmtP = n => n != null && n > 0 ? n.toFixed(2)+'%' : '—';
+  const fmtX = n => n != null && n > 0 ? n.toFixed(2)+'x' : '—';
+
+  // Ordenar
+  const { col, asc } = _adsAnunciosSort;
+  const sorted = [...items].sort((a, b) => {
+    const va = typeof a[col] === 'string' ? a[col].toLowerCase() : (a[col] || 0);
+    const vb = typeof b[col] === 'string' ? b[col].toLowerCase() : (b[col] || 0);
+    if (typeof va === 'string') return asc ? va.localeCompare(vb) : vb.localeCompare(va);
+    return asc ? va - vb : vb - va;
+  });
+
+  const th = (c, label, align='right') => {
+    const active = _adsAnunciosSort.col === c;
+    const arrow  = active ? (_adsAnunciosSort.asc ? ' ↑' : ' ↓') : '';
+    return `<th onclick="sortAdsAnuncios('${c}')" style="padding:8px 10px;text-align:${align};font-size:11px;font-weight:600;color:${active?'var(--accent)':'var(--muted)'};border-bottom:1px solid var(--border);cursor:pointer;user-select:none;white-space:nowrap">${label}${arrow}</th>`;
+  };
+
+  const acosColor = v => !v || v<=0 ? 'var(--muted)' : v<=15 ? '#00e676' : v<=25 ? '#ff9100' : '#ff5252';
+  const roasColor = v => !v || v<=0 ? 'var(--muted)' : v>=6 ? '#00e676' : v>=3 ? '#ff9100' : '#ff5252';
+
+  const rows = sorted.map((i, idx) => `
+    <tr style="border-bottom:1px solid var(--border);${idx%2===0?'background:rgba(255,255,255,.02)':''}">
+      <td style="padding:7px 10px;font-size:12px;white-space:nowrap">
+        <a href="https://articulo.mercadolibre.com.ar/${i.item_id}" target="_blank" style="color:var(--accent);text-decoration:none;font-weight:600">${i.item_id}</a>
+      </td>
+      <td style="padding:7px 10px;font-size:12px;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${i.title}">${i.title}</td>
+      <td style="padding:7px 10px;font-size:11px;color:var(--muted);white-space:nowrap;max-width:130px;overflow:hidden;text-overflow:ellipsis">${i.campaign}</td>
+      <td style="padding:7px 10px;text-align:right;font-size:12px;font-weight:700;color:${acosColor(i.tacos)}">${fmtP(i.tacos)}</td>
+      <td style="padding:7px 10px;text-align:right;font-size:12px;font-weight:700;color:${roasColor(i.roas)}">${fmtX(i.roas)}</td>
+      <td style="padding:7px 10px;text-align:right;font-size:12px;color:#ff9100">${fmt(i.inversion)}</td>
+      <td style="padding:7px 10px;text-align:right;font-size:12px;color:#00e676">${fmt(i.ingresos)}</td>
+      <td style="padding:7px 10px;text-align:right;font-size:12px">${fmtN(i.ventas)}</td>
+      <td style="padding:7px 10px;text-align:right;font-size:12px">${fmtP(i.ctr)}</td>
+      <td style="padding:7px 10px;text-align:right;font-size:12px">${fmtP(i.cvr)}</td>
+      <td style="padding:7px 10px;text-align:right;font-size:12px;color:var(--muted)">${(i.impresiones||0).toLocaleString('es-AR')}</td>
+      <td style="padding:7px 10px;text-align:right;font-size:12px">${fmtN(i.clics)}</td>
+      <td style="padding:7px 10px;text-align:right;font-size:12px;color:var(--muted)">${fmt(i.cpc)}</td>
+    </tr>`).join('');
+
+  el.innerHTML = `
+    <div style="font-size:12px;color:var(--muted);margin-bottom:12px">${items.length} anuncios · ${from} → ${to}</div>
+    <div style="overflow-x:auto">
+      <table style="width:100%;border-collapse:collapse">
+        <thead><tr style="background:var(--surface2)">
+          ${th('item_id',    'MLA',         'left')}
+          ${th('title',      'Título',      'left')}
+          ${th('campaign',   'Campaña',     'left')}
+          ${th('tacos',      'TACOS')}
+          ${th('roas',       'ROAS')}
+          ${th('inversion',  'Inversión')}
+          ${th('ingresos',   'Ingresos')}
+          ${th('ventas',     'Ventas')}
+          ${th('ctr',        'CTR')}
+          ${th('cvr',        'Conversión')}
+          ${th('impresiones','Impresiones')}
+          ${th('clics',      'Clics')}
+          ${th('cpc',        'CPC')}
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+    <div style="font-size:11px;color:var(--muted);margin-top:10px">
+      TACOS = Inversión / Ingresos · ROAS = Ingresos / Inversión · CTR = Clics / Impresiones · Conversión = Ventas / Clics · Click en columnas para ordenar
+    </div>`;
+}
+
+async function loadAds() {
+  const el = document.getElementById('adsContent');
+  if (!el) return;
+  const connected = state.accounts.filter(a => a.data);
+  if (!connected.length) {
+    el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:20px;text-align:center">Sincronizá primero para ver datos</div>';
+    return;
+  }
+
+  // Use global date range helper
+  const range = getDateRange();
+  const dateParam = '&date_from=' + range.date_from + '&date_to=' + range.date_to;
+
+  el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:20px;text-align:center">⏳ Cargando datos de Ads...</div>';
+
+  function fmt(n) {
+    if (n >= 1000000) return '$' + (n/1000000).toFixed(2) + 'M';
+    if (n >= 1000) return '$' + (n/1000).toFixed(1) + 'K';
+    return '$' + Math.round(n).toLocaleString('es-AR');
+  }
+
+  let allCampaigns = [], totalSpend = 0, totalSales = 0, totalClicks = 0, totalImpr = 0;
+  let hasError = false, errorMsg = '';
+
+  await Promise.all(connected.map(async acc => {
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 20000);
+      const res = await fetch(SERVER_URL + '/api/ads?client_id=' + acc.id + dateParam + '&session_id=' + (getSession()||''), { signal: controller.signal });
+      clearTimeout(timeout);
+      if (!res.ok) { hasError = true; errorMsg = 'HTTP ' + res.status; console.error('Ads HTTP error:', res.status); return; }
+      const data = await res.json();
+      if (data.error) { hasError = true; errorMsg = data.error; console.error('Ads API error:', data.error); return; }
+      if (data.summary) {
+        totalSpend  += data.summary.spend || 0;
+        totalSales  += data.summary.sales || 0;
+        totalClicks += data.summary.clicks || 0;
+        totalImpr   += data.summary.impressions || 0;
+      }
+      (data.campaigns || []).forEach(c => allCampaigns.push({ ...c, cuenta: acc.name, color: acc.color }));
+    } catch(e) {
+      hasError = true;
+      errorMsg = e.name === 'AbortError' ? 'Timeout (20s) — el servidor no responde' : e.message;
+      console.error('Ads fetch error:', errorMsg);
+    }
+  }));
+
+  if (hasError && !allCampaigns.length) {
+    el.innerHTML = `<div style="color:#ff5252;font-size:13px;padding:20px;text-align:center">
+      ❌ Error cargando Ads: <code style="background:rgba(255,0,0,.1);padding:2px 6px;border-radius:4px">${errorMsg}</code><br>
+      <span style="color:var(--muted);font-size:11px;margin-top:6px;display:block">Revisá Railway Logs para más detalle</span>
+    </div>`;
+    return;
+  }
+
+  const acos = totalSpend && totalSales ? ((totalSpend / totalSales) * 100).toFixed(1) + '%' : '—';
+  const roas = totalSpend && totalSales ? (totalSales / totalSpend).toFixed(2) + 'x' : '—';
+  const acosNum = totalSpend && totalSales ? (totalSpend / totalSales) * 100 : null;
+
+  let totalRevenue = 0;
+  state.accounts.forEach(acc => {
+    if (acc.data && acc.data.stats) totalRevenue += acc.data.stats.total_amount || 0;
+  });
+  const tacosNum = totalSpend && totalRevenue ? (totalSpend / totalRevenue) * 100 : null;
+  const tacos = tacosNum ? tacosNum.toFixed(1) + '%' : '—';
+  const salesShareNum = totalSales && totalRevenue ? (totalSales / totalRevenue) * 100 : null;
+  const ctrNum = totalClicks && totalImpr ? (totalClicks / totalImpr) * 100 : null;
+  const cpcNum = totalSpend && totalClicks ? totalSpend / totalClicks : null;
+
+  // Update dashboard TACOS KPI if visible
+  const kpiTacosEl = document.getElementById('kpiTacos');
+  const kpiTacosDeltaEl = document.getElementById('kpiTacosSub');
+  if (kpiTacosEl) kpiTacosEl.textContent = tacos;
+  if (kpiTacosDeltaEl) kpiTacosDeltaEl.textContent = 'Ads: ' + fmt(totalSpend);
+
+  // Build KPI cards HTML inline
+  const kpiCardsHtml = `
+    <div class="kpi-grid" style="margin-bottom:20px">
+      <div class="kpi-card"><div class="kpi-label">💸 GASTO TOTAL</div><div class="kpi-value">${fmt(totalSpend)}</div><div class="kpi-sub">${range.date_from} → ${range.date_to}</div></div>
+      <div class="kpi-card"><div class="kpi-label">🛒 VENTAS ADS</div><div class="kpi-value">${fmt(totalSales)}</div></div>
+      <div class="kpi-card"><div class="kpi-label">📊 ACOS</div><div class="kpi-value">${acos}</div><div class="kpi-sub">${acosNum ? (acosNum <= 15 ? '✅ Excelente' : acosNum <= 25 ? '⚠️ Aceptable' : '🔴 Alto') : ''}</div></div>
+      <div class="kpi-card"><div class="kpi-label">📈 TACOS</div><div class="kpi-value">${tacos}</div><div class="kpi-sub">${tacosNum ? (tacosNum <= 8 ? '✅ Excelente' : tacosNum <= 15 ? '⚠️ Aceptable' : '🔴 Alto') : 'Gasto / Facturación total'}</div></div>
+      <div class="kpi-card"><div class="kpi-label">🔄 ROAS</div><div class="kpi-value">${roas}</div></div>
+      <div class="kpi-card"><div class="kpi-label">👆 CLICKS</div><div class="kpi-value">${totalClicks.toLocaleString('es-AR')}</div><div class="kpi-sub">CTR: ${ctrNum ? ctrNum.toFixed(2)+'%' : '—'} · CPC: ${cpcNum ? '$'+Math.round(cpcNum).toLocaleString('es-AR') : '—'}</div></div>
+      <div class="kpi-card"><div class="kpi-label">👁 IMPRESIONES</div><div class="kpi-value">${totalImpr >= 1000000 ? (totalImpr/1000000).toFixed(2)+'M' : totalImpr.toLocaleString('es-AR')}</div></div>
+      <div class="kpi-card"><div class="kpi-label">💰 % VENTAS CON ADS</div><div class="kpi-value">${salesShareNum ? salesShareNum.toFixed(1)+'%' : '—'}</div><div class="kpi-sub">${salesShareNum ? (salesShareNum >= 50 ? '🔥 Muy dependiente de Ads' : salesShareNum >= 30 ? '⚠️ Moderado' : '✅ Saludable') : 'Ventas Ads / Facturación total'}</div></div>
+    </div>`;
+
+  if (!allCampaigns.length) {
+    el.innerHTML = kpiCardsHtml + '<div style="color:var(--muted);font-size:13px;padding:20px;text-align:center">No se encontraron campañas activas</div>';
+    return;
+  }
+
+  allCampaigns.sort((a, b) => b.spend - a.spend);
+  const rows = allCampaigns.map(c => {
+    const acosVal = c.acos ? parseFloat(c.acos) : null;
+    const acosColor = !acosVal ? 'var(--muted)' : acosVal <= 15 ? '#00e676' : acosVal <= 25 ? '#ff9100' : '#ff4d4d';
+    const statusClass = c.status === 'active' ? 's-ok' : 's-off';
+    const stratLabel = c.strategy === 'PROFITABILITY' ? '💰 Rentabilidad' : c.strategy === 'VISIBILITY' ? '👁 Visibilidad' : (c.strategy || '—');
+    return '<tr>'
+      + '<td style="font-weight:600">' + c.name + '</td>'
+      + '<td style="color:' + c.color + ';font-size:11px">' + c.cuenta + '</td>'
+      + '<td><span class="status ' + statusClass + '">● ' + (c.status === 'active' ? 'Activa' : 'Pausada') + '</span></td>'
+      + '<td style="font-size:11px;color:var(--muted)">' + stratLabel + '</td>'
+      + '<td style="text-align:right;color:var(--yellow);font-weight:700">' + fmt(c.spend) + '</td>'
+      + '<td style="text-align:right;color:#00e676;font-weight:700">' + fmt(c.sales) + '</td>'
+      + '<td style="text-align:right;font-weight:600;color:' + acosColor + '">' + (acosVal ? acosVal + '%' : '—') + '</td>'
+      + '<td style="text-align:right;font-weight:600">' + (c.roas ? parseFloat(c.roas).toFixed(2) + 'x' : '—') + '</td>'
+      + '<td style="text-align:right">' + c.clicks.toLocaleString('es-AR') + '</td>'
+      + '<td style="text-align:right">' + (c.impressions >= 1000000 ? (c.impressions/1000000).toFixed(1)+'M' : c.impressions.toLocaleString('es-AR')) + '</td>'
+      + '</tr>';
+  }).join('');
+
+  el.innerHTML = kpiCardsHtml
+    + '<div style="font-size:13px;font-weight:600;margin-bottom:12px;color:var(--text)">' + allCampaigns.length + ' campañas</div>'
+    + '<div style="overflow-x:auto"><table><thead><tr>'
+    + '<th>Campaña</th><th>Cuenta</th><th>Estado</th><th>Estrategia</th>'
+    + '<th style="text-align:right">Gasto</th><th style="text-align:right">Ventas Ads</th>'
+    + '<th style="text-align:right">ACOS</th><th style="text-align:right">ROAS</th>'
+    + '<th style="text-align:right">Clicks</th><th style="text-align:right">Impresiones</th>'
+    + '</tr></thead><tbody>' + rows + '</tbody></table></div>';
+
+  // Load ads vs organic analysis
+  loadAdsAnalysis(dateParam);
+}
+
+async function loadAdsAnalysis(dateParam) {
+  const el = document.getElementById('adsAnalysis');
+  if (!el) return;
+  const connected = state.accounts.filter(a => a.data && a.data.top_items);
+  if (!connected.length) return;
+
+  el.innerHTML = '<div style="color:var(--muted);font-size:12px">⏳ Analizando ventas con y sin Ads...</div>';
+
+  try {
+    // Get ads item IDs for each account
+    const adsItemSets = {};
+    await Promise.all(connected.map(async acc => {
+      const res = await fetch(SERVER_URL + '/api/ads-items?client_id=' + acc.id + '&session_id=' + (getSession()||''));
+      const data = await res.json();
+      adsItemSets[acc.name] = new Set(data.ads_item_ids || []);
+    }));
+
+    // Cross with top_items sales data
+    let withAds = { revenue: 0, units: 0, items: [] };
+    let withoutAds = { revenue: 0, units: 0, items: [] };
+
+    connected.forEach(acc => {
+      const adsSet = adsItemSets[acc.name] || new Set();
+      (acc.data.top_items || []).forEach(item => {
+        const hasAds = adsSet.has(item.id);
+        const target = hasAds ? withAds : withoutAds;
+        target.revenue += item.revenue || 0;
+        target.units += item.units || 0;
+        target.items.push({ ...item, cuenta: acc.name, hasAds });
       });
     });
 
-    // ── 2. ALL items (active + inactive) ────────────────────────────────────
-    async function fetchAllItems(status) {
-      const base = `${ML_API}/users/${uid}/items/search?status=${status}&limit=100`;
-      const first = await fetch(base, { headers }).then(r => r.json());
-      const total = (first.paging && first.paging.total) || 0;
-      let ids = first.results || [];
-      if (total > 100) {
-        const pages = Math.min(Math.ceil(total / 100), 20);
-        for (let p = 1; p < pages; p++) {
-          const r = await fetch(`${base}&offset=${p*100}`, { headers }).then(r => r.json()).catch(() => ({}));
-          ids = ids.concat(r.results || []);
-        }
-      }
-      return ids;
+    const totalRev = withAds.revenue + withoutAds.revenue;
+    const pctWithAds = totalRev ? ((withAds.revenue / totalRev) * 100).toFixed(1) : 0;
+    const pctWithout = totalRev ? ((withoutAds.revenue / totalRev) * 100).toFixed(1) : 0;
+
+    function fmt(n) {
+      if (n >= 1000000) return '$' + (n/1000000).toFixed(2) + 'M';
+      if (n >= 1000) return '$' + (n/1000).toFixed(1) + 'K';
+      return '$' + Math.round(n).toLocaleString('es-AR');
     }
 
-    const [activeIds, inactiveIds, pausedIds] = await Promise.all([
-      fetchAllItems('active'),
-      fetchAllItems('inactive'),
-      fetchAllItems('paused')
-    ]);
+    // Top 5 without ads by revenue
+    const topOrganic = withoutAds.items.sort((a,b) => b.revenue - a.revenue).slice(0, 5);
+    const topWithAds = withAds.items.sort((a,b) => b.revenue - a.revenue).slice(0, 5);
 
-    const allIds = [...new Set([...activeIds, ...inactiveIds, ...pausedIds])];
-    const statusMap = {};
-    // Priority: active > paused > inactive (in case of duplicates across statuses)
-    inactiveIds.forEach(id => { statusMap[id] = 'inactive'; });
-    pausedIds.forEach(id   => { statusMap[id] = 'paused'; });
-    activeIds.forEach(id   => { statusMap[id] = 'active'; }); // active wins
+    el.innerHTML = `
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:20px">
+        <div style="background:rgba(0,230,118,.08);border:1px solid rgba(0,230,118,.2);border-radius:10px;padding:16px">
+          <div style="font-size:11px;color:var(--muted);margin-bottom:4px">📣 CON ADS</div>
+          <div style="font-size:24px;font-weight:800;color:#00e676">${fmt(withAds.revenue)}</div>
+          <div style="font-size:20px;font-weight:700;color:#00e676">${pctWithAds}% de la facturación</div>
+          <div style="font-size:12px;color:var(--muted);margin-top:4px">${withAds.units} unidades · ${withAds.items.length} productos</div>
+        </div>
+        <div style="background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);border-radius:10px;padding:16px">
+          <div style="font-size:11px;color:var(--muted);margin-bottom:4px">🌱 SIN ADS (Orgánico)</div>
+          <div style="font-size:24px;font-weight:800;color:var(--text)">${fmt(withoutAds.revenue)}</div>
+          <div style="font-size:20px;font-weight:700;color:var(--text)">${pctWithout}% de la facturación</div>
+          <div style="font-size:12px;color:var(--muted);margin-top:4px">${withoutAds.units} unidades · ${withoutAds.items.length} productos</div>
+        </div>
+      </div>
 
-    console.log(`[ITEMS] active=${activeIds.length} paused=${pausedIds.length} inactive=${inactiveIds.length} total_unique=${allIds.length} active_unique=${Object.values(statusMap).filter(s=>s==='active').length}`);
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+        <div>
+          <div style="font-size:12px;font-weight:600;color:#00e676;margin-bottom:8px">🔥 Top orgánicos sin Ads</div>
+          ${topOrganic.map(i => `
+            <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid rgba(255,255,255,.05);font-size:12px">
+              <span style="color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:200px" title="${i.title}">${i.title}</span>
+              <span style="color:var(--yellow);font-weight:700;margin-left:8px;white-space:nowrap">${fmt(i.revenue)}</span>
+            </div>`).join('')}
+          ${topOrganic.length ? '<div style="font-size:11px;color:var(--muted);margin-top:8px">💡 Estos productos podrían crecer con Ads</div>' : ''}
+        </div>
+        <div>
+          <div style="font-size:12px;font-weight:600;color:var(--yellow);margin-bottom:8px">📣 Top productos con Ads</div>
+          ${topWithAds.map(i => `
+            <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid rgba(255,255,255,.05);font-size:12px">
+              <span style="color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:200px" title="${i.title}">${i.title}</span>
+              <span style="color:var(--yellow);font-weight:700;margin-left:8px;white-space:nowrap">${fmt(i.revenue)}</span>
+            </div>`).join('')}
+        </div>
+      </div>`;
+  } catch(e) {
+    el.innerHTML = '<div style="color:var(--muted);font-size:12px">Error cargando análisis</div>';
+    console.error(e);
+  }
+}
 
-    // ── 3. Fetch item details in batches of 20 ──────────────────────────────
-    const itemDetailsMap = {};
-    for (let i = 0; i < allIds.length; i += 20) {
-      const batch = allIds.slice(i, i+20);
-      try {
-        const data = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,title,price,status,sub_status,available_quantity,listing_type_id,category_id,shipping,pictures,condition,catalog_listing`, { headers }).then(r => r.json());
-        (Array.isArray(data) ? data : []).forEach(r => {
-          if (r.code === 200 && r.body) itemDetailsMap[r.body.id] = r.body;
-        });
-      } catch(e) {}
-    }
-
-    // ── 4. Fetch problems for ALL items (batches of 20) ─────────────────────
-    const problemsMap = {};
-    for (let i = 0; i < allIds.length; i += 20) {
-      const batch = allIds.slice(i, i+20);
-      await Promise.all(batch.map(async id => {
-        try {
-          const data = await fetch(`${ML_API}/items/${id}/problems`, { headers }).then(r => r.json());
-          const problems = Array.isArray(data) ? data : (data.results || []);
-          if (problems.length > 0) problemsMap[id] = problems;
-        } catch(e) {}
-      }));
-    }
-
-    const soldItemIds = Object.keys(salesByItem);
-    const totalRevenue = Object.values(salesByItem).reduce((s, i) => s + i.revenue, 0);
-
-    // ── 5. Ads data — ALL items ──────────────────────────────────────────────
-    let advId = null;
-    try {
-      const advData = await fetch(`${ML_API}/advertising/advertisers?product_id=PADS`, { headers: h1 }).then(r => r.json());
-      const adv = (advData.advertisers||[]).find(a => a.site_id === siteId) || (advData.advertisers||[])[0];
-      if (adv) advId = adv.advertiser_id;
-    } catch(e) {}
-
-    const adsByItem = {};
-    if (advId) {
-      const metrics = 'clicks,prints,cost,acos,direct_amount,total_amount,units_quantity';
-      // Fetch ALL ads without item_id filter — paginate through all results
-      let offset = 0;
-      const limit = 100;
-      let keepFetching = true;
-      let pageCount = 0;
-      while (keepFetching && pageCount < 50) { // max 5000 ads
-        const url = `${ML_API}/advertising/${siteId}/advertisers/${advId}/product_ads/ads/search?limit=${limit}&offset=${offset}&date_from=${fromDate}&date_to=${toDate}&metrics=${metrics}`;
-        try {
-          const raw = await fetch(url, { headers: h2 }).then(r => r.text());
-          const data = JSON.parse(raw);
-          if (pageCount === 0) console.log(`[ADS] First page response keys: ${Object.keys(data).join(',')} total=${data.paging?.total}`);
-          const results = data.results || [];
-          results.forEach(ad => {
-            if (!ad.item_id) return;
-            const m = ad.metrics || {};
-            adsByItem[ad.item_id] = {
-              hasAds:      true,
-              adsStatus:   ad.status,
-              clicks:      m.clicks         || 0,
-              impressions: m.prints         || 0,
-              adsSales:    m.total_amount   || 0,
-              adsCost:     m.cost           || 0,
-              adsUnits:    m.units_quantity || 0,
-            };
-          });
-          const total = (data.paging && data.paging.total) || 0;
-          offset += limit;
-          pageCount++;
-          keepFetching = results.length === limit && offset < total;
-        } catch(e) {
-          console.error('Ads fetch error:', e.message);
-          keepFetching = false;
-        }
-      }
-    }
-    console.log(`[ADS] Found ${Object.keys(adsByItem).length} items with ads out of ${allIds.length} total`);
-
-    // ── 6. Visits (only items with sales) ───────────────────────────────────
-    const visitsMap = {};
-    for (let i = 0; i < Math.min(soldItemIds.length, 300); i += 20) {
-      Object.assign(visitsMap, await fetchVisits(soldItemIds.slice(i, i+20), effectiveDays, headers));
-    }
-
-    // ── 7. Build final items list ────────────────────────────────────────────
-    // Use item detail status as source of truth (more reliable than search endpoint)
-    const itemsWithSales = Object.values(salesByItem).map(item => {
-      const ads    = adsByItem[item.id] || {};
-      const visits = visitsMap[item.id] || 0;
-      const detail = itemDetailsMap[item.id] || {};
-      const status = detail.status || statusMap[item.id] || 'active';
-      const problems = problemsMap[item.id] || [];
-      const pics = detail.pictures || [];
-      const isFull = (detail.shipping && detail.shipping.logistic_type === 'fulfillment') || false;
-      const isFlex = (detail.shipping && detail.shipping.local_pick_up === false && detail.shipping.free_shipping && !isFull) || false;
-      return {
-        id: item.id, title: detail.title || item.title, status,
-        price: detail.price || 0,
-        available_quantity: detail.available_quantity || 0,
-        listing_type_id: detail.listing_type_id || '',
-        category_id: detail.category_id || '',
-        condition: detail.condition || '',
-        catalog_listing: detail.catalog_listing || false,
-        photo_count: pics.length,
-        photo_urls: pics.slice(0,3).map(p => p.url || p.secure_url || ''),
-        is_full: isFull,
-        is_flex: isFlex,
-        units: item.units, revenue: item.revenue, hasSales: true,
-        revenueShare: totalRevenue > 0 ? parseFloat(((item.revenue/totalRevenue)*100).toFixed(2)) : 0,
-        visits, conversion: visits > 0 ? parseFloat(((item.units/visits)*100).toFixed(1)) : 0,
-        hasAds: ads.hasAds||false, adsStatus: ads.adsStatus||null,
-        adsClicks: ads.clicks||0, adsImpressions: ads.impressions||0,
-        adsSales: ads.adsSales||0, adsCost: ads.adsCost||0,
-        adsConversion: ads.clicks > 0 ? parseFloat(((ads.adsUnits||0)/ads.clicks*100).toFixed(1)) : 0,
-        problems, hasProblems: problems.length > 0
-      };
-    });
-
-    const soldSet = new Set(soldItemIds);
-    const itemsNoSales = allIds.filter(id => !soldSet.has(id)).map(id => {
-      const detail = itemDetailsMap[id] || {};
-      const status = detail.status || statusMap[id] || 'inactive';
-      const problems = problemsMap[id] || [];
-      const ads = adsByItem[id] || {};
-      const pics = detail.pictures || [];
-      const isFull = (detail.shipping && detail.shipping.logistic_type === 'fulfillment') || false;
-      const isFlex = (detail.shipping && detail.shipping.local_pick_up === false && detail.shipping.free_shipping && !isFull) || false;
-      return {
-        id, title: detail.title || id, status,
-        price: detail.price || 0,
-        available_quantity: detail.available_quantity || 0,
-        listing_type_id: detail.listing_type_id || '',
-        category_id: detail.category_id || '',
-        condition: detail.condition || '',
-        catalog_listing: detail.catalog_listing || false,
-        photo_count: pics.length,
-        photo_urls: pics.slice(0,3).map(p => p.url || p.secure_url || ''),
-        is_full: isFull,
-        is_flex: isFlex,
-        units: 0, revenue: 0, hasSales: false,
-        revenueShare: 0, visits: 0, conversion: 0,
-        hasAds: ads.hasAds||false, adsStatus: ads.adsStatus||null,
-        adsClicks: ads.clicks||0, adsImpressions: ads.impressions||0,
-        adsSales: ads.adsSales||0, adsCost: ads.adsCost||0,
-        adsConversion: ads.clicks > 0 ? parseFloat(((ads.adsUnits||0)/ads.clicks*100).toFixed(1)) : 0,
-        problems, hasProblems: problems.length > 0
-      };
-    });
-
-    const items = [...itemsWithSales, ...itemsNoSales].sort((a,b) => b.revenue - a.revenue);
-
-    // ── 8. Summary stats ─────────────────────────────────────────────────────
-    const summary = {
-      total:      items.length,
-      active:     items.filter(i => i.status === 'active').length,
-      inactive:   items.filter(i => i.status === 'inactive' || i.status === 'paused').length,
-      withSales:  items.filter(i => i.hasSales).length,
-      withProblems: items.filter(i => i.hasProblems).length,
-    };
-
-    res.json({ items, total_revenue: totalRevenue, days: effectiveDays, summary });
-  } catch(e) { console.error('[ITEMS-FULL ERROR]', e.message, e.stack); res.status(500).json({ error: e.message }); }
-});
 
 // ── DIAGNÓSTICO MENSUAL ───────────────────────────────────────────────────────
 
-// GET /api/diagnostico?client_id=X  → lista todos los meses guardados
-app.get('/api/diagnostico', requireAuth, async (req, res) => {
-  try {
-    const clientId = parseInt(req.query.client_id);
-    const rows = await pool.query(
-      'SELECT * FROM diagnostico_mensual WHERE client_id=$1 ORDER BY mes DESC',
-      [clientId]
-    );
-    res.json({ meses: rows.rows });
-  } catch(e) { res.status(500).json({ error: e.message }); }
-});
-
-// POST /api/diagnostico/calcular  → calcula métricas del mes desde la API y guarda
-app.post('/api/diagnostico/calcular', requireAuth, async (req, res) => {
-  try {
-    const { client_id, mes } = req.body; // mes = "2024-12-01"
-    if (!client_id || !mes) return res.status(400).json({ error: 'Faltan parámetros' });
-
-    const token = await getClientToken(parseInt(client_id));
-    if (!token) return res.status(403).json({ error: 'Cliente no conectado' });
-
-    const headers = { 'Authorization': `Bearer ${token}` };
-    const mesDate = new Date(mes);
-    const year = mesDate.getFullYear();
-    const month = mesDate.getMonth();
-    const dateFrom = new Date(year, month, 1);
-    const dateTo   = new Date(year, month + 1, 0, 23, 59, 59);
-    const fmt = d => d.toISOString().slice(0,19) + '.000-00:00';
-
-    // ── 1. Usuario ────────────────────────────────────────────────────────────
-    const user = await fetch(`${ML_API}/users/me`, { headers }).then(r => r.json());
-    const uid = user.id;
-
-    // ── 2. Órdenes del mes ────────────────────────────────────────────────────
-    const { orders } = await fetchAllOrders(uid, headers, fmt(dateFrom), fmt(dateTo));
-    const facturacion = orders.reduce((s, o) => s + (parseFloat(o.total_amount)||0), 0);
-    const ventas = orders.length;
-    let unidades = 0;
-    orders.forEach(o => (o.order_items||[]).forEach(oi => { unidades += oi.quantity||0; }));
-    const ticket_promedio = ventas > 0 ? facturacion / ventas : 0;
-
-    // Carritos: promedio de items por orden
-    const carritos = ventas > 0 ? parseFloat((unidades / ventas).toFixed(2)) : 0;
-
-    // ── 3. Visitas y publicaciones ────────────────────────────────────────────
-    const daysInMonth = new Date(year, month+1, 0).getDate();
-
-    // Fetch ALL active item IDs (paginated)
-    let allActiveIdsFull = [];
-    let itemOffset = 0;
-    while (true) {
-      const r = await fetch(`${ML_API}/users/${uid}/items/search?status=active&limit=100&offset=${itemOffset}`, { headers }).then(r => r.json());
-      const ids = r.results || [];
-      allActiveIdsFull = allActiveIdsFull.concat(ids);
-      const total = r.paging?.total || 0;
-      if (ids.length < 100 || allActiveIdsFull.length >= total) break;
-      itemOffset += 100;
-      if (itemOffset > 5000) break;
-    }
-    const totalActive = allActiveIdsFull.length;
-
-    const itemsInactRes = await fetch(
-      `${ML_API}/users/${uid}/items/search?status=inactive&limit=1`, { headers }
-    ).then(r => r.json());
-    const totalInactive = (itemsInactRes.paging && itemsInactRes.paging.total) || 0;
-    const pubTotal = totalActive + totalInactive;
-
-    // Visitas del mes — fetch for all active items using month days
-    let visitas = 0;
-    for (let i = 0; i < allActiveIdsFull.length; i += 20) {
-      const batch = allActiveIdsFull.slice(i, i+20);
-      const vMap = await fetchVisits(batch, daysInMonth, headers);
-      Object.values(vMap).forEach(v => { visitas += v; });
-    }
-
-    // Conversión
-    const conversion = visitas > 0 ? parseFloat(((ventas / visitas) * 100).toFixed(2)) : 0;
-
-    // ── 4. Publicaciones exitosas y Pareto ────────────────────────────────────
-    const salesByItem = {};
-    orders.forEach(o => {
-      (o.order_items||[]).forEach(oi => {
-        const id = oi.item && oi.item.id;
-        if (!id) return;
-        if (!salesByItem[id]) salesByItem[id] = { units: 0, revenue: 0 };
-        salesByItem[id].units += oi.quantity||0;
-        salesByItem[id].revenue += (parseFloat(oi.unit_price)||0) * (oi.quantity||0);
-      });
+function diagGetLast3Months() {
+  const today = new Date();
+  const months = [];
+  for (let i = 3; i >= 1; i--) {
+    const d = new Date(today.getFullYear(), today.getMonth() - i, 1);
+    const y = d.getFullYear();
+    const m = d.getMonth();
+    const label = d.toLocaleDateString('es-AR', { month: 'long', year: 'numeric' });
+    const mesStr = `${y}-${String(m+1).padStart(2,'0')}-01`;
+    const lastDay = new Date(y, m+1, 0).getDate();
+    months.push({
+      label: label.charAt(0).toUpperCase() + label.slice(1),
+      mes: mesStr,
+      date_from: mesStr,
+      date_to: `${y}-${String(m+1).padStart(2,'0')}-${lastDay}`
     });
-    const pubExitosas = Object.keys(salesByItem).length;
+  }
+  return months;
+}
 
-    // Pareto: % de publicaciones activas que generan el 80% de la facturación
-    const itemsSorted = Object.values(salesByItem).sort((a,b) => b.revenue - a.revenue);
-    const target80 = facturacion * 0.8;
-    let cumul = 0; let paretoCount = 0;
-    for (const it of itemsSorted) { cumul += it.revenue; paretoCount++; if (cumul >= target80) break; }
-    const pubParetoP = totalActive > 0 ? parseFloat(((paretoCount / totalActive)*100).toFixed(1)) : 0;
-    const pubInteres = totalActive > 0 ? parseFloat((visitas / totalActive).toFixed(1)) : 0;
-
-    // ── 5. Reputación ─────────────────────────────────────────────────────────
-    const repRes = await fetch(`${ML_API}/users/${uid}`, { headers }).then(r => r.json());
-    const rep = repRes.seller_reputation || {};
-    const repTrans = rep.transactions || {};
-    const repMetrics = rep.metrics || {};
-    const repMedalla = rep.power_seller_status ? rep.power_seller_status.toUpperCase() :
-                       (rep.level_id ? rep.level_id.toUpperCase() : '—');
-    const repVentas60 = repTrans.total || 0;
-    const repConcretadas = repTrans.completed || 0;
-    const repNoConcretadas = repTrans.not_yet_rated || 0;
-    const repReclamos = repMetrics.claims ? parseFloat((repMetrics.claims.rate||0).toFixed(4)) : 0;
-    const repDemoras  = repMetrics.delayed_handling_time ? parseFloat((repMetrics.delayed_handling_time.rate||0).toFixed(4)) : 0;
-    const repCancelaciones = repMetrics.cancellations ? parseFloat((repMetrics.cancellations.rate||0).toFixed(4)) : 0;
-    const repMediaciones = 0; // no expuesto directamente en API pública
-
-    // No concretadas en $: órdenes canceladas del mes
-    const cancelledRes = await fetch(
-      `${ML_API}/orders/search?seller=${uid}&order.status=cancelled&order.date_created.from=${encodeURIComponent(fmt(dateFrom))}&order.date_created.to=${encodeURIComponent(fmt(dateTo))}&limit=50`,
-      { headers }
-    ).then(r => r.json());
-    const cancelledOrders = cancelledRes.results || [];
-    const repNoConcMonto = cancelledOrders.reduce((s,o) => s+(parseFloat(o.total_amount)||0), 0);
-    const repNoConcPct = (facturacion + repNoConcMonto) > 0
-      ? parseFloat(((repNoConcMonto / (facturacion + repNoConcMonto))*100).toFixed(2)) : 0;
-
-    // ── 6. Publicidad (PADS) — same approach as working /api/ads ─────────────
-    let padsInversion=0, padsIngresos=0, padsClicks=0, padsVentas=0, padsImpresiones=0;
-    try {
-      const siteId = user.site_id || 'MLA';
-      const h2 = { 'Authorization': `Bearer ${token}`, 'Api-Version': '2' };
-      const fromStr = dateFrom.toISOString().slice(0,10);
-      const toStr   = dateTo.toISOString().slice(0,10);
-      const metrics = 'cost,clicks,prints,total_amount,units_quantity';
-
-      // Get advertiser id
-      const advRes = await fetch(`${ML_API}/advertising/advertisers?product_id=PADS`, { headers: h2 }).then(r=>r.json()).catch(()=>({}));
-      const advList = advRes.results || advRes.advertisers || (Array.isArray(advRes) ? advRes : []);
-      const advId = advList[0]?.advertiser_id || advList[0]?.id || uid;
-
-      // Use ads/search (same as working ads section) — paginate all
-      let offset = 0, keepFetching = true;
-      while (keepFetching) {
-        const url = `${ML_API}/advertising/${siteId}/advertisers/${advId}/product_ads/ads/search?limit=100&offset=${offset}&date_from=${fromStr}&date_to=${toStr}&metrics=${metrics}`;
-        const res = await fetch(url, { headers: h2 }).then(r=>r.json()).catch(()=>({}));
-        const results = res.results || [];
-        results.forEach(ad => {
-          const m = ad.metrics || {};
-          padsInversion   += parseFloat(m.cost||0);
-          padsIngresos    += parseFloat(m.total_amount||0);
-          padsClicks      += parseInt(m.clicks||0);
-          padsVentas      += parseInt(m.units_quantity||0);
-          padsImpresiones += parseInt(m.prints||0);
-        });
-        const total = res.paging?.total || 0;
-        offset += 100;
-        keepFetching = results.length === 100 && offset < total;
-        if (offset > 2000) break;
-      }
-      console.log(`[DIAG ADS] ${mesStr} advId=${advId} inversion=${padsInversion} ingresos=${padsIngresos} clicks=${padsClicks}`);
-    } catch(e) { console.error('[DIAG ADS ERROR]', e.message); }
-    const padsAcos = padsIngresos > 0 ? parseFloat(((padsInversion/padsIngresos)*100).toFixed(2)) : 0;
-    const padsTacos = facturacion > 0 ? parseFloat(((padsInversion/facturacion)*100).toFixed(2)) : 0;
-    const padsRoas = padsInversion > 0 ? parseFloat((padsIngresos/padsInversion).toFixed(2)) : 0;
-    const padsCtr = padsImpresiones > 0 ? parseFloat(((padsClicks/padsImpresiones)*100).toFixed(2)) : 0;
-    const padsConversion = padsClicks > 0 ? parseFloat(((padsVentas/padsClicks)*100).toFixed(2)) : 0;
-    const padsAportePct = ventas > 0 ? parseFloat(((padsVentas/ventas)*100).toFixed(2)) : 0;
-
-    // ── 6b. Logística — % facturación por modo desde las órdenes ─────────────
-    // ML includes logistic_type directly in order.shipping — no need to fetch each shipment
-    let logFullFact=0, logFlexFact=0, logCorreoFact=0, logFullActive=false, logFlexActive=false;
-    let logUnknownCount=0;
-    try {
-      orders.forEach(o => {
-        const rev = parseFloat(o.total_amount)||0;
-        // Try to get logistic_type from the order itself first
-        const lt = (
-          o.shipping?.logistic_type ||
-          o.shipping?.shipping_option?.logistic_type ||
-          ''
-        ).toLowerCase();
-
-        let mode;
-        if (lt === 'fulfillment' || lt.includes('fulfillment')) {
-          mode = 'FULL';
-        } else if (lt === 'flex' || lt === 'self_service' || lt.includes('flex')) {
-          mode = 'FLEX';
-        } else if (lt) {
-          mode = 'Correo';
-        } else {
-          // No logistic_type in order — mark as unknown for sampling
-          mode = 'Unknown';
-          logUnknownCount++;
-        }
-
-        if (mode === 'FULL')      { logFullFact += rev; logFullActive = true; }
-        else if (mode === 'FLEX') { logFlexFact += rev; logFlexActive = true; }
-        else if (mode === 'Correo') logCorreoFact += rev;
-        // Unknown: will be resolved via shipment sampling below
+function loadDiagnostico() {
+  const sel = document.getElementById('diagClientSel');
+  if (!sel) return;
+  sel.innerHTML = '';
+  const clients = allClients.filter(c => c.ml_user_id && c.active);
+  clients.forEach(c => {
+    const opt = document.createElement('option');
+    opt.value = c.id; opt.textContent = c.name;
+    sel.appendChild(opt);
+  });
+  if (!sel.options.length) {
+    apiCall('GET', '/api/clients').then(data => {
+      (data || []).forEach(c => {
+        const opt = document.createElement('option');
+        opt.value = c.id; opt.textContent = c.name;
+        sel.appendChild(opt);
       });
+      diagCargarDatos();
+    });
+    return;
+  }
+  diagCargarDatos();
+}
 
-      // If too many unknowns, sample shipments to resolve the distribution
-      if (logUnknownCount > orders.length * 0.3) {
-        console.log(`[DIAG LOG] ${mesStr} Many unknowns (${logUnknownCount}/${orders.length}) — sampling shipments to determine mode distribution`);
-        const unknownOrders = orders.filter(o => {
-          const lt = (o.shipping?.logistic_type || '').toLowerCase();
-          return !lt;
-        });
-        const sampleSize = Math.min(unknownOrders.length, 100);
-        const sampleIds = unknownOrders.slice(0, sampleSize).map(o => o.shipping?.id).filter(Boolean);
-        const shipMap = {};
-        for (let i = 0; i < sampleIds.length; i += 10) {
-          const batch = sampleIds.slice(i, i+10);
-          await Promise.all(batch.map(async sid => {
-            try {
-              const s = await fetch(`${ML_API}/shipments/${sid}`, {headers}).then(r=>r.json());
-              const slt = (s.logistic_type||'').toLowerCase();
-              if (slt === 'fulfillment') shipMap[sid] = 'FULL';
-              else if (slt === 'flex' || slt === 'self_service' || slt.includes('flex')) shipMap[sid] = 'FLEX';
-              else shipMap[sid] = 'Correo';
-            } catch(e) {}
-          }));
-        }
-        // Apply distribution from sample to all unknowns
-        const sampleFull = Object.values(shipMap).filter(m=>m==='FULL').length;
-        const sampleFlex = Object.values(shipMap).filter(m=>m==='FLEX').length;
-        const sampleTotal = Object.keys(shipMap).length;
-        if (sampleTotal > 0) {
-          const fullRatio = sampleFull / sampleTotal;
-          const flexRatio = sampleFlex / sampleTotal;
-          const unknownRevenue = unknownOrders.reduce((s,o) => s + (parseFloat(o.total_amount)||0), 0);
-          logFullFact += unknownRevenue * fullRatio;
-          logFlexFact += unknownRevenue * flexRatio;
-          logCorreoFact += unknownRevenue * (1 - fullRatio - flexRatio);
-          if (fullRatio > 0) logFullActive = true;
-          if (flexRatio > 0) logFlexActive = true;
-          console.log(`[DIAG LOG] Sample: full=${(fullRatio*100).toFixed(0)}% flex=${(flexRatio*100).toFixed(0)}% correo=${((1-fullRatio-flexRatio)*100).toFixed(0)}% applied to $${Math.round(unknownRevenue)}`);
-        }
-      }
-
-      console.log(`[DIAG LOG] ${mesStr} orders=${orders.length} unknowns=${logUnknownCount} FULL=$${Math.round(logFullFact)}(${facturacion>0?(logFullFact/facturacion*100).toFixed(1):0}%) FLEX=$${Math.round(logFlexFact)}(${facturacion>0?(logFlexFact/facturacion*100).toFixed(1):0}%) Correo=$${Math.round(logCorreoFact)}`);
-    } catch(e) { console.error('[DIAG LOG]', e.message); }
-    const logFullPct = facturacion>0 ? parseFloat(((logFullFact/facturacion)*100).toFixed(1)) : 0;
-    const logFlexPct = facturacion>0 ? parseFloat(((logFlexFact/facturacion)*100).toFixed(1)) : 0;
-
-    // ── 6c. Marketing — descuentos y cupones desde órdenes ────────────────────
-    let mktOrdenesConDescuento=0, mktOrdenesConCupon=0;
-    try {
-      orders.forEach(o => {
-        // Check discount in multiple places ML can store it
-        const hasDiscount =
-          (o.order_items||[]).some(oi =>
-            (oi.discounts && oi.discounts.length > 0) ||
-            (oi.sale_fee && oi.original_price && oi.unit_price < oi.original_price)
-          ) ||
-          (o.discount_amount && parseFloat(o.discount_amount) > 0) ||
-          (o.payments||[]).some(p => p.coupon_amount > 0 || p.coupon_id);
-
-        const hasCoupon =
-          (o.coupon && (o.coupon.amount > 0 || o.coupon.id)) ||
-          (o.payments||[]).some(p => p.coupon_amount > 0 || p.coupon_id);
-
-        if (hasDiscount) mktOrdenesConDescuento++;
-        if (hasCoupon)   mktOrdenesConCupon++;
-      });
-      console.log(`[DIAG MKT] ${mesStr} descuentos=${mktOrdenesConDescuento}/${ventas} cupones=${mktOrdenesConCupon}/${ventas}`);
-    } catch(e) { console.error('[DIAG MKT]', e.message); }
-    const mktPctDescuento = ventas>0 ? parseFloat(((mktOrdenesConDescuento/ventas)*100).toFixed(1)) : 0;
-    const mktPctCupon     = ventas>0 ? parseFloat(((mktOrdenesConCupon/ventas)*100).toFixed(1))     : 0;
-
-    // ── 7. Tiempos de respuesta (desde preguntas) ─────────────────────────────
-    let tiempos = { lv_business: null, lv_noche: null, finde: null, mediana: null };
-    try {
-      const dateFromStr = `${year}-${String(month+1).padStart(2,'0')}-01`;
-      const dateToStr   = `${year}-${String(month+1).padStart(2,'0')}-${new Date(year, month+1, 0).getDate()}`;
-      let allQ = [], offset = 0;
-      while (true) {
-        const qUrl = `${ML_API}/questions/search?seller_id=${uid}&status=ANSWERED&sort_fields=date_created&sort_types=DESC&limit=50&offset=${offset}`;
-        const qRes = await fetch(qUrl, { headers }).then(r => r.json()).catch(() => ({}));
-        const qs = qRes.questions || qRes.data || [];
-        if (!qs.length) break;
-        const inRange = qs.filter(q => {
-          const d = new Date(q.date_created);
-          return d >= dateFrom && d <= dateTo;
-        });
-        allQ = allQ.concat(inRange);
-        const oldest = new Date(qs[qs.length-1].date_created);
-        if (oldest < dateFrom || qs.length < 50) break;
-        offset += 50;
-        if (offset > 500) break;
-      }
-      const respMins = [], bySlot = { lv_b: [], lv_n: [], fin: [] };
-      allQ.forEach(q => {
-        if (!q.answer?.date_created) return;
-        const asked = new Date(q.date_created);
-        const ans   = new Date(q.answer.date_created);
-        const mins  = Math.round((ans - asked) / 60000);
-        if (mins < 0 || mins > 43200) return;
-        respMins.push(mins);
-        const day = asked.getDay(), hour = asked.getHours();
-        const isWE = day === 0 || day === 6;
-        if (isWE)                              bySlot.fin.push(mins);
-        else if (hour >= 9 && hour < 18)       bySlot.lv_b.push(mins);
-        else                                   bySlot.lv_n.push(mins);
-      });
-      const avg = arr => arr.length ? Math.round(arr.reduce((a,b)=>a+b,0)/arr.length) : null;
-      const med = arr => { if (!arr.length) return null; const s=[...arr].sort((a,b)=>a-b); return s[Math.floor(s.length/2)]; };
-      const fmtT = m => { if (m===null) return null; if (m===0) return '<1min'; if (m<60) return m+'min'; if (m<1440) return (m/60).toFixed(1).replace('.0','')+'hs'; return (m/1440).toFixed(1).replace('.0','')+'d'; };
-      tiempos = {
-        lv_business: fmtT(avg(bySlot.lv_b)),
-        lv_noche:    fmtT(avg(bySlot.lv_n)),
-        finde:       fmtT(avg(bySlot.fin)),
-        mediana:     fmtT(med(respMins)),
-      };
-      console.log(`[DIAG TIEMPOS] ${mesStr} lv=${avg(bySlot.lv_b)}min noche=${avg(bySlot.lv_n)}min finde=${avg(bySlot.fin)}min total_q=${allQ.length}`);
-    } catch(e) { console.error('[DIAG TIEMPOS]', e.message); }
-
-    // ── 8. Guardar en DB ──────────────────────────────────────────────────────
-    const mesStr = `${year}-${String(month+1).padStart(2,'0')}-01`;
-    const existing = await pool.query('SELECT id, manuales FROM diagnostico_mensual WHERE client_id=$1 AND mes=$2', [client_id, mesStr]);
-    const manualesExistentes = existing.rows.length > 0 ? (existing.rows[0].manuales || {}) : {};
-
-    // Merge auto-calculated data (preserve manual overrides)
-    const manualesFinal = {
-      ...manualesExistentes,
-      // Tiempos de respuesta (auto, override with manual if set)
-      rep_resp_lv:    tiempos.lv_business || manualesExistentes.rep_resp_lv,
-      rep_resp_noche: tiempos.lv_noche    || manualesExistentes.rep_resp_noche,
-      rep_resp_finde: tiempos.finde       || manualesExistentes.rep_resp_finde,
-      // Logística (auto)
-      full_activo:    logFullActive ? 'SI' : 'NO',
-      flex_activo:    logFlexActive ? 'SI' : 'NO',
-      full_fact_pct:  logFullPct,
-      flex_fact_pct:  logFlexPct,
-      full_fact_monto: Math.round(logFullFact),
-      flex_fact_monto: Math.round(logFlexFact),
-      // Marketing (auto)
-      mkt_ordenes_con_descuento: mktOrdenesConDescuento,
-      mkt_pct_descuento: mktPctDescuento,
-      mkt_ordenes_con_cupon: mktOrdenesConCupon,
-      mkt_pct_cupon: mktPctCupon,
-      // Preserve manual fields
-      mkt_descuentos: mktOrdenesConDescuento > 0 ? 'SI' : (manualesExistentes.mkt_descuentos || 'NO'),
-      mkt_cupones:    mktOrdenesConCupon > 0     ? 'SI' : (manualesExistentes.mkt_cupones    || 'NO'),
-      mkt_difusiones: manualesExistentes.mkt_difusiones || '',
-      mkt_notas:      manualesExistentes.mkt_notas || '',
-      notas:          manualesExistentes.notas || '',
-    };
-
-    await pool.query(`
-      INSERT INTO diagnostico_mensual
-        (client_id, mes, facturacion, ventas, unidades, visitas, conversion, ticket_promedio, carritos,
-         pads_inversion, pads_ingresos, pads_acos, pads_tacos, pads_roas, pads_clicks, pads_ventas,
-         pads_conversion, pads_impresiones, pads_ctr, pads_aporte_pct,
-         rep_medalla, rep_ventas_60, rep_concretadas, rep_no_concretadas,
-         rep_reclamos, rep_demoras, rep_cancelaciones, rep_mediaciones,
-         rep_no_conc_monto, rep_no_conc_pct,
-         pub_total, pub_activas, pub_inactivas, pub_exitosas, pub_pareto_pct, pub_interes, manuales)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
-              $21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37)
-      ON CONFLICT (client_id, mes) DO UPDATE SET
-        facturacion=$3, ventas=$4, unidades=$5, visitas=$6, conversion=$7, ticket_promedio=$8, carritos=$9,
-        pads_inversion=$10, pads_ingresos=$11, pads_acos=$12, pads_tacos=$13, pads_roas=$14,
-        pads_clicks=$15, pads_ventas=$16, pads_conversion=$17, pads_impresiones=$18, pads_ctr=$19, pads_aporte_pct=$20,
-        rep_medalla=$21, rep_ventas_60=$22, rep_concretadas=$23, rep_no_concretadas=$24,
-        rep_reclamos=$25, rep_demoras=$26, rep_cancelaciones=$27, rep_mediaciones=$28,
-        rep_no_conc_monto=$29, rep_no_conc_pct=$30,
-        pub_total=$31, pub_activas=$32, pub_inactivas=$33, pub_exitosas=$34, pub_pareto_pct=$35, pub_interes=$36,
-        manuales=$37
-    `, [
-      client_id, mesStr,
-      facturacion, ventas, unidades, visitas, conversion, ticket_promedio, carritos,
-      padsInversion, padsIngresos, padsAcos, padsTacos, padsRoas, padsClicks, padsVentas,
-      padsConversion, padsImpresiones, padsCtr, padsAportePct,
-      repMedalla, repVentas60, repConcretadas, repNoConcretadas,
-      repReclamos, repDemoras, repCancelaciones, repMediaciones,
-      repNoConcMonto, repNoConcPct,
-      pubTotal, totalActive, totalInactive, pubExitosas, pubParetoP, pubInteres,
-      JSON.stringify(manualesFinal)
-    ]);
-
-    const saved = await pool.query('SELECT * FROM diagnostico_mensual WHERE client_id=$1 AND mes=$2', [client_id, mesStr]);
-    res.json({ ok: true, data: saved.rows[0] });
-  } catch(e) { console.error('[DIAG CALC]', e.message, e.stack); res.status(500).json({ error: e.message }); }
-});
-
-// POST /api/diagnostico/manuales  → guarda los campos manuales de un mes
-app.post('/api/diagnostico/manuales', requireAuth, async (req, res) => {
+async function diagCargarDatos() {
+  const clientId = document.getElementById('diagClientSel')?.value;
+  if (!clientId) return;
+  const el = document.getElementById('diagContent');
+  el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">⏳ Cargando diagnóstico...</div>';
   try {
-    const { client_id, mes, manuales } = req.body;
-    if (!client_id || !mes) return res.status(400).json({ error: 'Faltan parámetros' });
-    const mesStr = `${mes.slice(0,7)}-01`;
+    const r = await apiCall('GET', `/api/diagnostico?client_id=${clientId}`);
+    const meses = (r && r.meses) || [];
+    diagRender(meses, parseInt(clientId));
+  } catch(e) {
+    el.innerHTML = `<div style="color:var(--muted);padding:40px">Error: ${e.message}</div>`;
+  }
+}
 
-    // Upsert: si no existe el mes, lo crea con solo manuales
-    await pool.query(`
-      INSERT INTO diagnostico_mensual (client_id, mes, manuales)
-      VALUES ($1, $2, $3)
-      ON CONFLICT (client_id, mes) DO UPDATE SET manuales = $3
-    `, [client_id, mesStr, JSON.stringify(manuales)]);
+async function diagCalcularTodo() {
+  const clientId = document.getElementById('diagClientSel')?.value;
+  if (!clientId) return;
+  const btn = document.getElementById('diagCalcBtn');
+  btn.disabled = true; btn.textContent = '⏳ Calculando 3 meses...';
+  const meses = diagGetLast3Months();
+  const el = document.getElementById('diagContent');
+  el.innerHTML = `<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">⏳ Calculando ${meses.map(m=>m.label).join(', ')}...<br><span style="font-size:11px;margin-top:8px;display:block">Esto puede tardar 1-2 minutos</span></div>`;
+  try {
+    for (const mes of meses) {
+      el.innerHTML = `<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">⏳ Calculando ${mes.label}...</div>`;
+      await apiCall('POST', '/api/diagnostico/calcular', { client_id: clientId, mes: mes.mes });
+    }
+    await diagCargarDatos();
+  } catch(e) {
+    el.innerHTML = `<div style="color:var(--muted);padding:40px">Error: ${e.message}</div>`;
+  } finally {
+    btn.disabled = false; btn.textContent = '⚡ Calcular 3 meses';
+  }
+}
 
-    res.json({ ok: true });
-  } catch(e) { res.status(500).json({ error: e.message }); }
-});
+async function diagGuardarManuales(clientId, mes) {
+  const get = id => document.getElementById(id)?.value || '';
+  const manuales = {
+    rep_resp_lv: get('dm_resp_lv'), rep_resp_noche: get('dm_resp_noche'), rep_resp_finde: get('dm_resp_finde'),
+    mkt_difusiones: get('dm_difusiones'),
+    mkt_notas: get('dm_mkt_notas'),
+    notas: get('dm_notas_generales'),
+  };
+  const btn = document.getElementById('diagSaveManBtn');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Guardando...'; }
+  try {
+    await apiCall('POST', '/api/diagnostico/manuales', { client_id: clientId, mes, manuales });
+    if (btn) { btn.textContent = '✓ Guardado'; setTimeout(() => { btn.disabled=false; btn.textContent='💾 Guardar'; }, 2000); }
+    await diagCargarDatos();
+  } catch(e) {
+    alert('Error: ' + e.message);
+    if (btn) { btn.disabled=false; btn.textContent='💾 Guardar'; }
+  }
+}
+
+function diagRender(meses, clientId) {
+  const el = document.getElementById('diagContent');
+  const last3 = diagGetLast3Months();
+  const cols = last3.map(m => {
+    const found = meses.find(d => d.mes && d.mes.slice(0,7) === m.mes.slice(0,7));
+    return { ...m, data: found || null };
+  });
+  const hasAny = cols.some(c => c.data);
+  if (!hasAny) {
+    el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">No hay datos calculados aún.<br>Hacé click en <strong>⚡ Calcular 3 meses</strong> para empezar.</div>';
+    return;
+  }
+  const fmtM = v => v != null ? '$' + parseFloat(v).toLocaleString('es-AR', {maximumFractionDigits:0}) : '—';
+  const fmtN = v => v != null ? parseFloat(v).toLocaleString('es-AR') : '—';
+  const fmtP = v => v != null ? parseFloat(v).toFixed(1) + '%' : '—';
+  const fmtT = v => v || '—';
+  const trend = (prev, curr, hib=true) => {
+    if (prev==null||curr==null) return '';
+    const d = parseFloat(curr)-parseFloat(prev);
+    if (Math.abs(d)<0.01) return '<span style="color:#888;font-size:11px"> →</span>';
+    const up=d>0; const good=hib?up:!up;
+    return `<span style="color:${good?'#16a34a':'#dc2626'};font-size:11px"> ${up?'↑':'↓'}</span>`;
+  };
+  const thS = 'padding:10px 14px;font-size:12px;font-weight:700;text-align:center;border:1px solid var(--border);background:var(--surface2)';
+  const tdL = 'padding:8px 12px;font-size:12px;color:var(--muted);border:1px solid var(--border);white-space:nowrap;background:var(--surface)';
+  const tdV = (hi) => `padding:8px 14px;font-size:13px;font-weight:600;text-align:center;border:1px solid var(--border);${hi?'background:#f8f7ff':''}`;
+  const sec = (lbl,col) => `<tr><td colspan="4" style="padding:8px 12px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;background:${col};border:1px solid var(--border);color:#444">${lbl}</td></tr>`;
+  const row = (lbl, getter, fmt, hib=true) => {
+    const vals = cols.map(c => c.data ? getter(c.data) : null);
+    return `<tr><td style="${tdL}">${lbl}</td>${cols.map((c,i)=>{
+      const v=vals[i]; const t=i>0?trend(vals[i-1],v,hib):'';
+      return `<td style="${tdV(i===cols.length-1)}">${fmt(v)}${t}</td>`;
+    }).join('')}</tr>`;
+  };
+  const lastCol = cols[cols.length-1];
+  const man = lastCol.data?.manuales || {};
+  const tableHTML = `<div style="overflow-x:auto;margin-bottom:24px"><table style="border-collapse:collapse;width:100%;min-width:600px">
+    <thead><tr>
+      <th style="${thS};text-align:left;min-width:220px">Métrica</th>
+      ${cols.map(c=>`<th style="${thS};min-width:190px">${c.label}${c.data?'':' <span style="color:#aaa;font-size:10px;font-weight:400">(sin datos)</span>'}</th>`).join('')}
+    </tr></thead><tbody>
+    ${sec('📊 Métricas Generales','#ede9fe')}
+    ${row('Facturación', d=>d.facturacion, fmtM)}
+    ${row('Ventas', d=>d.ventas, fmtN)}
+    ${row('Visitas', d=>d.visitas, fmtN)}
+    ${row('Conversión', d=>d.conversion, fmtP)}
+    ${row('Ticket promedio', d=>d.ticket_promedio, fmtM)}
+    ${row('Carritos (u/venta)', d=>d.carritos, v=>v!=null?parseFloat(v).toFixed(2):'—')}
+    ${sec('⭐ Reputación','#e0e7ff')}
+    ${row('Medalla', d=>d.rep_medalla, v=>v||'—')}
+    ${row('Ventas 60 días', d=>d.rep_ventas_60, fmtN)}
+    ${row('Concretadas', d=>d.rep_concretadas, fmtN)}
+    ${row('% Reclamos', d=>d.rep_reclamos, v=>v!=null?(parseFloat(v)*100).toFixed(2)+'%':'—', false)}
+    ${row('% Cancelaciones', d=>d.rep_cancelaciones, v=>v!=null?(parseFloat(v)*100).toFixed(2)+'%':'—', false)}
+    ${row('% Demoras', d=>d.rep_demoras, v=>v!=null?(parseFloat(v)*100).toFixed(2)+'%':'—', false)}
+    ${row('Mediaciones', d=>d.rep_mediaciones, fmtN, false)}
+    ${row('No concretadas $', d=>d.rep_no_conc_monto, fmtM, false)}
+    ${row('% No concretadas', d=>d.rep_no_conc_pct, fmtP, false)}
+    ${sec('⏱ Tiempos de Respuesta','#fce7f3')}
+    ${row('L-V 9 a 18hs', d=>d.manuales?.rep_resp_lv, fmtT)}
+    ${row('L-V 18hs a madrugada', d=>d.manuales?.rep_resp_noche, fmtT)}
+    ${row('Sáb y Dom', d=>d.manuales?.rep_resp_finde, fmtT)}
+    ${sec('📋 Publicaciones','#dcfce7')}
+    ${row('Total publicaciones', d=>d.pub_total, fmtN)}
+    ${row('Activas', d=>d.pub_activas, fmtN)}
+    ${row('% Activas', d=>d.pub_activas&&d.pub_total?(d.pub_activas/d.pub_total*100):null, fmtP)}
+    ${row('Con ventas (relevantes)', d=>d.pub_exitosas, fmtN)}
+    ${row('% Relevancia', d=>d.pub_exitosas&&d.pub_activas?(d.pub_exitosas/d.pub_activas*100):null, fmtP)}
+    ${row('Pareto (pubs→80% fact)', d=>d.pub_pareto_pct, fmtP, false)}
+    ${sec('🚚 Logística','#fef3c7')}
+    ${row('FULL activo', d=>d.manuales?.full_activo, fmtT)}
+    ${row('Fact por FULL', d=>d.manuales?.full_fact_monto||null, fmtM)}
+    ${row('% Fact por FULL', d=>d.manuales?.full_fact_pct||null, fmtP)}
+    ${row('FLEX activo', d=>d.manuales?.flex_activo, fmtT)}
+    ${row('Fact por FLEX', d=>d.manuales?.flex_fact_monto||null, fmtM)}
+    ${row('% Fact por FLEX', d=>d.manuales?.flex_fact_pct||null, fmtP)}
+    ${sec('📣 Central de Marketing','#fff7ed')}
+    ${row('Ventas con descuento', d=>d.manuales?.mkt_ordenes_con_descuento||null, fmtN)}
+    ${row('% ventas con descuento', d=>d.manuales?.mkt_pct_descuento||null, fmtP)}
+    ${row('Ventas con cupón', d=>d.manuales?.mkt_ordenes_con_cupon||null, fmtN)}
+    ${row('% ventas con cupón', d=>d.manuales?.mkt_pct_cupon||null, fmtP)}
+    ${row('Difusiones', d=>d.manuales?.mkt_difusiones, fmtT)}
+    ${sec('🏷 Publicidad','#fce7e7')}
+    ${row('Inversión PADS', d=>d.pads_inversion, fmtM, false)}
+    ${row('Facturación PADS', d=>d.pads_ingresos, fmtM)}
+    ${row('ACOS', d=>d.pads_acos, fmtP, false)}
+    ${row('TACOS', d=>d.pads_tacos, fmtP, false)}
+    ${row('% Fact por publicidad', d=>d.pads_aporte_pct, fmtP)}
+    </tbody></table></div>`;
+  const siNo = (id,val) => `<select id="${id}" style="padding:5px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px"><option value="SI" ${val==='SI'?'selected':''}>SI</option><option value="NO" ${(!val||val==='NO')?'selected':''}>NO</option></select>`;
+  const formHTML = `<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px 18px;margin-bottom:20px;display:flex;align-items:center;gap:16px;flex-wrap:wrap">
+    <span style="font-size:13px;font-weight:600;font-family:var(--font-b)">📝 ${lastCol.label}</span>
+    <div style="display:flex;align-items:center;gap:10px;flex:1;flex-wrap:wrap">
+      <div style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)">
+        Difusiones: ${siNo('dm_difusiones', man.mkt_difusiones)}
+      </div>
+      <div style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);flex:1">
+        Notas: <input id="dm_notas_generales" value="${man.notas||''}" placeholder="Observaciones del mes..." style="flex:1;min-width:200px;padding:5px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:12px">
+      </div>
+    </div>
+    <button id="diagSaveManBtn" onclick="diagGuardarManuales('${clientId}','${lastCol.mes}')" style="padding:6px 16px;background:var(--accent);color:#fff;border:none;border-radius:8px;font-size:13px;cursor:pointer;white-space:nowrap">💾 Guardar</button>
+  </div>`;
+  el.innerHTML = formHTML + tableHTML;
+}
+
+// ── FOTOS ─────────────────────────────────────────────────────────────────────
+let _fotosData = [];
+
+async function loadFotos() {
+  const el = document.getElementById('fotosContent');
+  el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">⏳ Cargando publicaciones...</div>';
+  try {
+    const client = getActiveClient();
+    console.log('[FOTOS] client=', client, 'activeClientId=', activeClientId, 'allClients=', allClients.length);
+    if (!client || !client.ml_user_id) { el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">Sin cuenta conectada — seleccioná una cuenta en el topbar</div>'; return; }
+    const { date_from, date_to } = getDateRange();
+    const r = await apiCall('GET', `/api/items-full?uid=${client.ml_user_id}&client_id=${client.id}&date_from=${date_from}&date_to=${date_to}`);
+    _fotosData = (r && r.items) || [];
+    renderFotosTabla();
+  } catch(e) {
+    el.innerHTML = `<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Error: ${e.message}</div>`;
+  }
+}
+
+function renderFotosTabla() {
+  const el = document.getElementById('fotosContent');
+  const filtro = document.getElementById('fotosFilter')?.value || 'all';
+  let items = _fotosData;
+  if (filtro === 'sin')   items = items.filter(i => i.photo_count === 0);
+  if (filtro === 'pocas') items = items.filter(i => i.photo_count > 0 && i.photo_count <= 3);
+  if (filtro === 'ok')    items = items.filter(i => i.photo_count >= 6);
+
+  const sinFotos = _fotosData.filter(i => i.photo_count === 0).length;
+  const pocasFotos = _fotosData.filter(i => i.photo_count > 0 && i.photo_count <= 3).length;
+  const buenas = _fotosData.filter(i => i.photo_count >= 6).length;
+
+  const kpis = `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:12px;margin-bottom:20px">
+    ${[
+      ['Total pubs', _fotosData.length, ''],
+      ['Sin fotos', sinFotos, sinFotos > 0 ? '#f97316' : '#22c55e'],
+      ['Con 1-3 fotos', pocasFotos, pocasFotos > 0 ? '#f59e0b' : '#22c55e'],
+      ['6+ fotos ✓', buenas, '#22c55e'],
+    ].map(([l,v,c]) => `<div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px 14px">
+      <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em">${l}</div>
+      <div style="font-size:22px;font-weight:700;font-family:var(--font-b);color:${c||'var(--text)'};margin-top:4px">${v}</div>
+    </div>`).join('')}
+  </div>`;
+
+  const rows = items.map(item => {
+    const thumbs = (item.photo_urls||[]).slice(0,3).map(url =>
+      url ? `<img src="${url}" style="width:40px;height:40px;object-fit:cover;border-radius:4px;border:1px solid var(--border)" onerror="this.style.display='none'">` : ''
+    ).join('');
+    const badge = item.photo_count === 0
+      ? `<span style="background:#fee2e2;color:#dc2626;padding:2px 7px;border-radius:4px;font-size:11px;font-weight:600">Sin fotos</span>`
+      : item.photo_count <= 3
+      ? `<span style="background:#fef3c7;color:#d97706;padding:2px 7px;border-radius:4px;font-size:11px;font-weight:600">${item.photo_count} foto${item.photo_count>1?'s':''}</span>`
+      : `<span style="background:#dcfce7;color:#16a34a;padding:2px 7px;border-radius:4px;font-size:11px;font-weight:600">${item.photo_count} fotos</span>`;
+    const statusBadge = item.status === 'active'
+      ? `<span style="background:#dcfce7;color:#16a34a;font-size:10px;padding:1px 6px;border-radius:3px">Activa</span>`
+      : `<span style="background:#f3f4f6;color:#6b7280;font-size:10px;padding:1px 6px;border-radius:3px">${item.status}</span>`;
+    return `<tr>
+      <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px">
+        <a href="https://articulo.mercadolibre.com.ar/${item.id}" target="_blank" style="color:var(--accent);text-decoration:none">${item.id}</a>
+      </td>
+      <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${item.title}</td>
+      <td style="padding:8px 10px;border-bottom:1px solid var(--border)">${statusBadge}</td>
+      <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;text-align:center">${badge}</td>
+      <td style="padding:8px 10px;border-bottom:1px solid var(--border)">${thumbs || '<span style="color:var(--muted);font-size:11px">—</span>'}</td>
+      <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;text-align:right">$${(item.price||0).toLocaleString('es-AR')}</td>
+      <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;text-align:center">${item.available_quantity ?? '—'}</td>
+      <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;text-align:center">${item.catalog_listing ? '✓' : '—'}</td>
+    </tr>`;
+  }).join('');
+
+  el.innerHTML = kpis + `<div style="overflow-x:auto">
+  <table style="width:100%;border-collapse:collapse;font-size:12px">
+    <thead><tr style="background:var(--surface2)">
+      <th style="padding:8px 10px;text-align:left;font-size:11px;font-weight:600;color:var(--muted);border-bottom:1px solid var(--border)">MLA</th>
+      <th style="padding:8px 10px;text-align:left;font-size:11px;font-weight:600;color:var(--muted);border-bottom:1px solid var(--border)">Título</th>
+      <th style="padding:8px 10px;text-align:left;font-size:11px;font-weight:600;color:var(--muted);border-bottom:1px solid var(--border)">Estado</th>
+      <th style="padding:8px 10px;text-align:center;font-size:11px;font-weight:600;color:var(--muted);border-bottom:1px solid var(--border)">Fotos</th>
+      <th style="padding:8px 10px;text-align:left;font-size:11px;font-weight:600;color:var(--muted);border-bottom:1px solid var(--border)">Preview</th>
+      <th style="padding:8px 10px;text-align:right;font-size:11px;font-weight:600;color:var(--muted);border-bottom:1px solid var(--border)">Precio</th>
+      <th style="padding:8px 10px;text-align:center;font-size:11px;font-weight:600;color:var(--muted);border-bottom:1px solid var(--border)">Stock</th>
+      <th style="padding:8px 10px;text-align:center;font-size:11px;font-weight:600;color:var(--muted);border-bottom:1px solid var(--border)">Catálogo</th>
+    </tr></thead>
+    <tbody>${rows || '<tr><td colspan="8" style="padding:30px;text-align:center;color:var(--muted)">No hay publicaciones con este filtro</td></tr>'}</tbody>
+  </table></div>`;
+}
 
 // ── LOGÍSTICA ─────────────────────────────────────────────────────────────────
-// ── REPORTE FINANCIERO ────────────────────────────────────────────────────────
-
-// GET /api/reporte/items-vendidos — MLAs vendidos del período con costos guardados
-app.get('/api/reporte/items-vendidos', requireAuth, async (req, res) => {
+async function loadLogistica() {
+  const el = document.getElementById('logisticaContent');
+  el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">⏳ Consultando configuración de envíos...</div>';
   try {
-    const { client_id, date_from, date_to } = req.query;
-    const token = await getClientToken(parseInt(client_id));
-    if (!token) return res.status(403).json({ error: 'Sin token' });
-    const headers = { 'Authorization': `Bearer ${token}` };
+    const client = getActiveClient();
+    if (!client || !client.ml_user_id) { el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">Sin cuenta conectada — seleccioná una cuenta en el topbar</div>'; return; }
+    const data = await apiCall('GET', `/api/logistica?uid=${client.ml_user_id}&client_id=${client.id}`);
+    if (data) renderLogistica(data);
+    else el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">Error al cargar datos</div>';
+  } catch(e) {
+    el.innerHTML = `<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Error: ${e.message}</div>`;
+  }
+}
 
-    const clientRes = await pool.query('SELECT ml_user_id FROM clients WHERE id=$1', [client_id]);
-    const uid = clientRes.rows[0]?.ml_user_id;
-    if (!uid) return res.status(400).json({ error: 'Cliente sin ML User ID' });
+function renderLogistica(data) {
+  const el = document.getElementById('logisticaContent');
+  const { flex, full, handling_time, summary, items } = data;
 
-    const fmt = d => new Date(d).toISOString().slice(0,19) + '.000-00:00';
-    const { orders } = await fetchAllOrders(uid, headers, fmt(date_from + 'T00:00:00'), fmt(date_to + 'T23:59:59'));
+  // ── KPIs ────────────────────────────────────────────────────────────────────
+  const kpis = `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:12px;margin-bottom:24px">
+    ${[
+      ['Total activas', summary.total, ''],
+      ['FULL', summary.full, summary.full > 0 ? '#6366f1' : 'var(--muted)'],
+      ['FLEX', summary.flex, summary.flex > 0 ? '#10b981' : 'var(--muted)'],
+      ['Correo', summary.correo, ''],
+      ['Otro / sin clasif.', summary.otro, ''],
+    ].map(([l,v,c]) => `<div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px 14px">
+      <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em">${l}</div>
+      <div style="font-size:22px;font-weight:700;font-family:var(--font-b);color:${c||'var(--text)'};margin-top:4px">${v}</div>
+    </div>`).join('')}
+  </div>`;
 
-    // Group by MLA
-    const byMla = {};
-    orders.forEach(o => {
-      (o.order_items||[]).forEach(oi => {
-        const id = oi.item?.id;
-        const title = oi.item?.title || id;
-        if (!id) return;
-        if (!byMla[id]) byMla[id] = { mla_id: id, title, units: 0, revenue: 0, sale_fee: 0 };
-        byMla[id].units   += oi.quantity || 0;
-        byMla[id].revenue += (parseFloat(oi.unit_price)||0) * (oi.quantity||0);
-        byMla[id].sale_fee += parseFloat(oi.sale_fee)||0;
-      });
-    });
+  // ── FLEX card ───────────────────────────────────────────────────────────────
+  const flexZonesList = (flex.zones||[]).length
+    ? flex.zones.map(z => `<span style="background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:3px 9px;font-size:12px">${z.name||z.id||z}</span>`).join(' ')
+    : '<span style="color:var(--muted);font-size:12px">Sin zonas activas</span>';
 
-    // Load saved costs
-    const costsRes = await pool.query(
-      'SELECT mla_id, costo_unit, notas FROM product_costs WHERE client_id=$1',
-      [client_id]
-    );
-    const costsMap = {};
-    costsRes.rows.forEach(r => { costsMap[r.mla_id] = { costo_unit: parseFloat(r.costo_unit)||0, notas: r.notas }; });
+  const flexCard = `<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:18px;margin-bottom:16px">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+      <span style="font-size:18px">⚡</span>
+      <span style="font-size:14px;font-weight:600;font-family:var(--font-b)">Mercado Envíos FLEX</span>
+      <span style="padding:2px 10px;border-radius:20px;font-size:11px;font-weight:600;background:${flex.active?'#dcfce7':'#fee2e2'};color:${flex.active?'#16a34a':'#dc2626'}">${flex.active ? 'ACTIVO' : 'INACTIVO'}</span>
+    </div>
+    ${flex.active ? `<div style="margin-bottom:8px"><span style="font-size:12px;color:var(--muted)">Zonas activas:</span></div>
+    <div style="display:flex;flex-wrap:wrap;gap:6px">${flexZonesList}</div>` : '<div style="font-size:12px;color:var(--muted)">FLEX no está habilitado en esta cuenta.</div>'}
+  </div>`;
 
-    const items = Object.values(byMla)
-      .sort((a,b) => b.revenue - a.revenue)
-      .map(i => ({
-        ...i,
-        costo_unit: costsMap[i.mla_id]?.costo_unit ?? null,
-        notas: costsMap[i.mla_id]?.notas || '',
-        cmv_total: costsMap[i.mla_id]?.costo_unit != null
-          ? costsMap[i.mla_id].costo_unit * i.units : null,
-        has_cost: costsMap[i.mla_id] != null,
-      }));
+  // ── FULL card ────────────────────────────────────────────────────────────────
+  const fullCard = `<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:18px;margin-bottom:16px">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+      <span style="font-size:18px">📦</span>
+      <span style="font-size:14px;font-weight:600;font-family:var(--font-b)">Mercado Envíos FULL</span>
+      <span style="padding:2px 10px;border-radius:20px;font-size:11px;font-weight:600;background:${full.enabled?'#e0e7ff':'#fee2e2'};color:${full.enabled?'#4338ca':'#dc2626'}">${full.enabled ? 'HABILITADO' : 'NO HABILITADO'}</span>
+    </div>
+    <div style="font-size:13px;color:var(--text)">Publicaciones activas en FULL: <strong>${summary.full}</strong> de ${summary.total}</div>
+  </div>`;
 
-    const total_orders = orders.length;
-    const completeness = items.length > 0
-      ? Math.round(items.filter(i=>i.has_cost).length / items.length * 100) : 0;
+  // ── Tiempo de preparación ──────────────────────────────────────────────────
+  const prepCard = `<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:18px;margin-bottom:20px">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px">
+      <span style="font-size:18px">⏱️</span>
+      <span style="font-size:14px;font-weight:600;font-family:var(--font-b)">Tiempo de preparación</span>
+    </div>
+    <div style="font-size:22px;font-weight:700;color:var(--accent);margin-top:6px">${handling_time != null ? handling_time + (handling_time === 1 ? ' día' : ' días') : '—'}</div>
+  </div>`;
 
-    res.json({ items, total_orders, completeness });
-  } catch(e) { console.error('[REPORTE ITEMS]', e.message); res.status(500).json({ error: e.message }); }
-});
+  // ── Items table ──────────────────────────────────────────────────────────────
+  const modeColor = { 'FULL': '#e0e7ff:#4338ca', 'FLEX': '#dcfce7:#16a34a', 'Correo': '#fef3c7:#d97706' };
+  const rows = (items||[]).map(item => {
+    const [bg, fg] = (modeColor[item.mode] || 'var(--surface2):var(--text)').split(':');
+    return `<tr>
+      <td style="padding:7px 10px;border-bottom:1px solid var(--border);font-size:12px">
+        <a href="https://articulo.mercadolibre.com.ar/${item.id}" target="_blank" style="color:var(--accent);text-decoration:none">${item.id}</a>
+      </td>
+      <td style="padding:7px 10px;border-bottom:1px solid var(--border);font-size:12px;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${item.title}</td>
+      <td style="padding:7px 10px;border-bottom:1px solid var(--border);font-size:12px;text-align:center">
+        <span style="background:${bg};color:${fg};padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600">${item.mode}</span>
+      </td>
+      <td style="padding:7px 10px;border-bottom:1px solid var(--border);font-size:12px;text-align:center">${item.available_quantity ?? '—'}</td>
+      <td style="padding:7px 10px;border-bottom:1px solid var(--border);font-size:12px;text-align:right">$${(item.price||0).toLocaleString('es-AR')}</td>
+      <td style="padding:7px 10px;border-bottom:1px solid var(--border);font-size:12px;text-align:center">${item.free_shipping ? '✓' : '—'}</td>
+    </tr>`;
+  }).join('');
 
-// POST /api/reporte/costos — guardar costos de productos
-app.post('/api/reporte/costos', requireAuth, async (req, res) => {
-  try {
-    const { client_id, costos } = req.body; // costos: [{mla_id, title, costo_unit, notas}]
-    if (!client_id || !costos?.length) return res.status(400).json({ error: 'Faltan datos' });
-    for (const c of costos) {
-      await pool.query(`
-        INSERT INTO product_costs (client_id, mla_id, title, costo_unit, notas, updated_at)
-        VALUES ($1,$2,$3,$4,$5,NOW())
-        ON CONFLICT (client_id, mla_id) DO UPDATE SET
-          title=$3, costo_unit=$4, notas=$5, updated_at=NOW()
-      `, [client_id, c.mla_id, c.title, c.costo_unit||0, c.notas||'']);
-    }
-    res.json({ ok: true, saved: costos.length });
-  } catch(e) { res.status(500).json({ error: e.message }); }
-});
+  const table = `<div style="overflow-x:auto">
+  <table style="width:100%;border-collapse:collapse">
+    <thead><tr style="background:var(--surface2)">
+      <th style="padding:8px 10px;text-align:left;font-size:11px;font-weight:600;color:var(--muted);border-bottom:1px solid var(--border)">MLA</th>
+      <th style="padding:8px 10px;text-align:left;font-size:11px;font-weight:600;color:var(--muted);border-bottom:1px solid var(--border)">Título</th>
+      <th style="padding:8px 10px;text-align:center;font-size:11px;font-weight:600;color:var(--muted);border-bottom:1px solid var(--border)">Logística</th>
+      <th style="padding:8px 10px;text-align:center;font-size:11px;font-weight:600;color:var(--muted);border-bottom:1px solid var(--border)">Stock</th>
+      <th style="padding:8px 10px;text-align:right;font-size:11px;font-weight:600;color:var(--muted);border-bottom:1px solid var(--border)">Precio</th>
+      <th style="padding:8px 10px;text-align:center;font-size:11px;font-weight:600;color:var(--muted);border-bottom:1px solid var(--border)">Envío gratis</th>
+    </tr></thead>
+    <tbody>${rows || '<tr><td colspan="6" style="padding:30px;text-align:center;color:var(--muted)">Sin publicaciones activas</td></tr>'}</tbody>
+  </table></div>`;
 
-// GET/POST /api/reporte/gastos — gastos fijos del mes
-app.get('/api/reporte/gastos', requireAuth, async (req, res) => {
-  try {
-    const { client_id, mes } = req.query;
-    const mesStr = mes?.slice(0,7) + '-01';
-    const r = await pool.query(
-      'SELECT * FROM gastos_fijos WHERE client_id=$1 AND mes=$2 ORDER BY categoria, concepto',
-      [client_id, mesStr]
-    );
-    res.json({ gastos: r.rows });
-  } catch(e) { res.status(500).json({ error: e.message }); }
-});
-
-app.post('/api/reporte/gastos', requireAuth, async (req, res) => {
-  try {
-    const { client_id, mes, gastos } = req.body;
-    const mesStr = mes?.slice(0,7) + '-01';
-    // Delete existing and re-insert
-    await pool.query('DELETE FROM gastos_fijos WHERE client_id=$1 AND mes=$2', [client_id, mesStr]);
-    for (const g of (gastos||[])) {
-      if (!g.concepto || !g.monto) continue;
-      await pool.query(
-        'INSERT INTO gastos_fijos (client_id, mes, concepto, monto, categoria) VALUES ($1,$2,$3,$4,$5)',
-        [client_id, mesStr, g.concepto, g.monto, g.categoria||'general']
-      );
-    }
-    res.json({ ok: true });
-  } catch(e) { res.status(500).json({ error: e.message }); }
-});
-
-// GET /api/reporte/pyl — genera el P&L completo del mes
-app.get('/api/reporte/pyl', requireAuth, async (req, res) => {
-  try {
-    const { client_id, date_from, date_to } = req.query;
-    const token = await getClientToken(parseInt(client_id));
-    if (!token) return res.status(403).json({ error: 'Sin token' });
-    const headers = { 'Authorization': `Bearer ${token}` };
-
-    const clientRes = await pool.query('SELECT ml_user_id, name FROM clients WHERE id=$1', [client_id]);
-    const { ml_user_id: uid, name: clientName } = clientRes.rows[0] || {};
-    if (!uid) return res.status(400).json({ error: 'Cliente sin ML User ID' });
-
-    const fmt = d => new Date(d).toISOString().slice(0,19) + '.000-00:00';
-    const { orders } = await fetchAllOrders(uid, headers, fmt(date_from + 'T00:00:00'), fmt(date_to + 'T23:59:59'));
-
-    // ── Ingresos ──────────────────────────────────────────────────────────────
-    let facturacion = 0, ingreso_envio_comprador = 0;
-    let egreso_comision = 0, egreso_impuestos = 0, egreso_reembolsos = 0;
-    const byMla = {};
-
-    orders.forEach(o => {
-      facturacion += parseFloat(o.total_amount)||0;
-      (o.order_items||[]).forEach(oi => {
-        egreso_comision += parseFloat(oi.sale_fee)||0;
-        const id = oi.item?.id;
-        if (!id) return;
-        if (!byMla[id]) byMla[id] = { mla_id: id, title: oi.item?.title || id, units: 0, revenue: 0 };
-        byMla[id].units   += oi.quantity||0;
-        byMla[id].revenue += (parseFloat(oi.unit_price)||0)*(oi.quantity||0);
-      });
-      egreso_impuestos += parseFloat(o.taxes?.amount)||0;
-    });
-
-    // Shipping costs
-    const shipIds = [...new Set(orders.map(o=>o.shipping?.id).filter(Boolean))];
-    let egreso_envio_vendedor = 0;
-    const sampleSize = Math.min(shipIds.length, 200);
-    for (let i=0; i<sampleSize; i+=10) {
-      const batch = shipIds.slice(i,i+10);
-      await Promise.all(batch.map(async sid => {
-        try {
-          const s = await fetch(`${ML_API}/shipments/${sid}`, {headers}).then(r=>r.json());
-          const baseCost = parseFloat(s.base_cost)||0;
-          const costNet  = parseFloat(s.cost?.net)||0;
-          const costGross= parseFloat(s.cost?.gross)||0;
-          const costSpec = parseFloat(s.cost?.special)||0;
-          const costDisc = parseFloat(s.cost?.discount)||0;
-          const recvCost = parseFloat(s.receiver_cost)||0;
-          ingreso_envio_comprador += recvCost;
-          let sellerCost = 0;
-          if (recvCost >= baseCost && baseCost > 0) sellerCost = 0;
-          else if (costNet > 0) sellerCost = costNet;
-          else if (costGross > 0) sellerCost = Math.max(0, costGross - costSpec - costDisc - recvCost);
-          egreso_envio_vendedor += sellerCost;
-        } catch(e){}
-      }));
-    }
-    // Scale if sampled
-    if (shipIds.length > sampleSize && sampleSize > 0) {
-      const scale = shipIds.length / sampleSize;
-      egreso_envio_vendedor *= scale;
-      ingreso_envio_comprador *= scale;
-    }
-
-    // PADS
-    let egreso_publicidad = 0;
-    try {
-      const siteId = 'MLA';
-      const h2 = { 'Authorization': `Bearer ${token}`, 'Api-Version': '2' };
-      const advRes = await fetch(`${ML_API}/advertising/advertisers?product_id=PADS`, {headers:h2}).then(r=>r.json()).catch(()=>({}));
-      const advList = advRes.results || advRes.advertisers || (Array.isArray(advRes)?advRes:[]);
-      const advId = advList[0]?.advertiser_id || advList[0]?.id || uid;
-      let offset=0, keep=true;
-      while(keep) {
-        const url = `${ML_API}/advertising/${siteId}/advertisers/${advId}/product_ads/ads/search?limit=100&offset=${offset}&date_from=${date_from}&date_to=${date_to}&metrics=cost`;
-        const r = await fetch(url,{headers:h2}).then(r=>r.json()).catch(()=>({}));
-        (r.results||[]).forEach(ad => { egreso_publicidad += parseFloat(ad.metrics?.cost||0); });
-        const total = r.paging?.total||0;
-        offset+=100;
-        keep = (r.results||[]).length===100 && offset<total && offset<2000;
-      }
-    } catch(e){}
-
-    // ── CMV ───────────────────────────────────────────────────────────────────
-    const costsRes = await pool.query('SELECT mla_id, costo_unit FROM product_costs WHERE client_id=$1', [client_id]);
-    const costsMap = {};
-    costsRes.rows.forEach(r => { costsMap[r.mla_id] = parseFloat(r.costo_unit)||0; });
-
-    let cmv_total = 0, cmv_cubierto = 0, cmv_estimado = false;
-    const items_detalle = Object.values(byMla).map(i => {
-      const costo = costsMap[i.mla_id];
-      const cmv = costo != null ? costo * i.units : null;
-      if (cmv != null) { cmv_total += cmv; cmv_cubierto++; }
-      return { ...i, costo_unit: costo ?? null, cmv };
-    }).sort((a,b) => b.revenue - a.revenue);
-
-    if (cmv_cubierto < items_detalle.length) cmv_estimado = true;
-
-    // ── Gastos Fijos ──────────────────────────────────────────────────────────
-    const mesStr = date_from.slice(0,7) + '-01';
-    const gastosRes = await pool.query(
-      'SELECT concepto, monto, categoria FROM gastos_fijos WHERE client_id=$1 AND mes=$2',
-      [client_id, mesStr]
-    );
-    const gastos = gastosRes.rows;
-    const total_gastos_fijos = gastos.reduce((s,g)=>s+parseFloat(g.monto),0);
-
-    // ── P&L ───────────────────────────────────────────────────────────────────
-    const total_ingresos   = facturacion + ingreso_envio_comprador;
-    const total_egresos_ml = egreso_comision + egreso_impuestos + egreso_envio_vendedor + egreso_publicidad + egreso_reembolsos;
-    const resultado_neto_ml = total_ingresos - total_egresos_ml;
-    const utilidad_antes_gf = resultado_neto_ml - cmv_total;
-    const utilidad_final    = utilidad_antes_gf - total_gastos_fijos;
-
-    const pyl = {
-      cliente: clientName, periodo: { from: date_from, to: date_to },
-      ordenes: orders.length,
-      ingresos: {
-        facturacion,
-        envio_comprador: ingreso_envio_comprador,
-        total: total_ingresos
-      },
-      egresos_ml: {
-        comision: egreso_comision,
-        impuestos: egreso_impuestos,
-        envio_vendedor: egreso_envio_vendedor,
-        publicidad: egreso_publicidad,
-        reembolsos: egreso_reembolsos,
-        total: total_egresos_ml
-      },
-      resultado_neto_ml,
-      cmv: { total: cmv_total, estimado: cmv_estimado, cubierto: cmv_cubierto, total_items: items_detalle.length },
-      utilidad_antes_gf,
-      gastos_fijos: { items: gastos, total: total_gastos_fijos },
-      utilidad_final,
-      margenes: {
-        neto_ml: facturacion>0 ? (resultado_neto_ml/facturacion*100).toFixed(1) : 0,
-        utilidad_final: facturacion>0 ? (utilidad_final/facturacion*100).toFixed(1) : 0,
-      },
-      items_detalle,
-    };
-
-    res.json(pyl);
-  } catch(e) { console.error('[REPORTE PYL]', e.message, e.stack); res.status(500).json({ error: e.message }); }
-});
-
-// ── DEBUG: inspect a specific order's shipment ───────────────────────────────
-app.get('/api/debug/billing', requireAuth, async (req, res) => {
-  try {
-    const { client_id, date_from, date_to } = req.query;
-    const token = await getClientToken(parseInt(client_id));
-    if (!token) return res.status(403).json({ error: 'Sin token' });
-    const headers = { 'Authorization': `Bearer ${token}` };
-    const clientRes = await pool.query('SELECT ml_user_id FROM clients WHERE id=$1', [client_id]);
-    const uid = clientRes.rows[0]?.ml_user_id;
-
-    const results = {};
-    const endpoints = [
-      `/billing/integration/periods?user_id=${uid}&group=fulfillment`,
-      `/billing/integration/periods?user_id=${uid}&group=shipping`,
-      `/billing/integration/periods?user_id=${uid}&group=marketplace`,
-      `/users/${uid}/account/balance/operations?type=shipping&date_from=${date_from}&date_to=${date_to}&limit=10`,
-      `/users/${uid}/account/balance/operations?date_from=${date_from}&date_to=${date_to}&limit=10`,
-      `/logistics/fulfillment/users/${uid}/billing/charges?date_from=${date_from}&date_to=${date_to}&limit=5`,
-      `/users/${uid}/activities?type=shipping&date_from=${date_from}&date_to=${date_to}&limit=5`,
-    ];
-
-    for (const ep of endpoints) {
-      try {
-        const r = await fetch(`${ML_API}${ep}`, { headers }).then(r => r.json());
-        results[ep] = { 
-          status: r.error || r.status || 'ok', 
-          keys: Object.keys(r||{}).slice(0,10), 
-          sample: JSON.stringify(r).slice(0,300) 
-        };
-      } catch(e) { results[ep] = { error: e.message }; }
-    }
-
-    res.json(results);
-  } catch(e) { res.status(500).json({ error: e.message }); }
-});
-
-app.get('/api/debug/order', requireAuth, async (req, res) => {
-  try {
-    const { order_id, client_id } = req.query;
-    const token = await getClientToken(parseInt(client_id));
-    if (!token) return res.status(403).json({ error: 'Sin token' });
-    const headers = { 'Authorization': `Bearer ${token}` };
-
-    // Fetch order + payments
-    const order = await fetch(`${ML_API}/orders/${order_id}`, { headers }).then(r=>r.json());
-    const shipId = order.shipping?.id;
-
-    // Fetch payments for this order — they contain the full financial breakdown
-    const paymentsRes = await fetch(`${ML_API}/orders/${order_id}/payments`, { headers }).then(r=>r.json()).catch(()=>({}));
-    const payments = paymentsRes.results || paymentsRes || [];
-
-    let shipment = null;
-    if (shipId) {
-      shipment = await fetch(`${ML_API}/shipments/${shipId}`, { headers }).then(r=>r.json());
-    }
-
-    const analysis = {
-      order_id: order.id,
-      total_amount: order.total_amount,
-      paid_amount: order.paid_amount,
-      shipping_id: shipId,
-      // Key financial fields
-      order_items: (order.order_items||[]).map(oi => ({
-        title: oi.item?.title,
-        unit_price: oi.unit_price,
-        quantity: oi.quantity,
-        sale_fee: oi.sale_fee,
-        original_price: oi.original_price,
-      })),
-      taxes: order.taxes,
-      coupon: order.coupon,
-      payments: payments.slice ? payments.slice(0,3).map(p => ({
-        id: p.id, status: p.status, total_paid_amount: p.total_paid_amount,
-        shipping_cost: p.shipping_cost, overpaid_amount: p.overpaid_amount,
-        marketplace_fee: p.marketplace_fee, coupon_amount: p.coupon_amount,
-      })) : [],
-      shipment: shipment ? {
-        id: shipment.id,
-        logistic_type: shipment.logistic_type,
-        base_cost: shipment.base_cost,
-        receiver_cost: shipment.receiver_cost,
-        cost: shipment.cost,
-        shipping_option: shipment.shipping_option?.name,
-        status: shipment.status,
-      } : null,
-      shipment_full: shipment,
-      calculated: (() => {
-        if (!shipment) return null;
-        const baseCost     = parseFloat(shipment.base_cost) || 0;
-        const costGross    = parseFloat(shipment.cost?.gross) || 0;
-        const costNet      = parseFloat(shipment.cost?.net) || 0;
-        const costSpec     = parseFloat(shipment.cost?.special) || 0;
-        const costDiscount = parseFloat(shipment.cost?.discount) || 0;
-        const receiverCost = parseFloat(shipment.receiver_cost) || 0;
-        let sellerCost;
-        if (receiverCost >= baseCost && baseCost > 0) sellerCost = 0;
-        else if (costNet > 0) sellerCost = costNet;
-        else if (costGross > 0) sellerCost = Math.max(0, costGross - costSpec - costDiscount - receiverCost);
-        else sellerCost = 0;
-        const facturacion = (order.order_items||[]).reduce((s,oi)=>s+(parseFloat(oi.unit_price)||0)*(oi.quantity||0),0);
-        const comision = (order.order_items||[]).reduce((s,oi)=>s+(parseFloat(oi.sale_fee)||0),0);
-        const impuestos = parseFloat(order.taxes?.amount)||0;
-        const neto = facturacion - comision - impuestos - sellerCost;
-        return { baseCost, costGross, costNet, costSpec, costDiscount, receiverCost, sellerCost, facturacion, comision, impuestos, neto };
-      })()
-    };
-
-    res.json(analysis);
-  } catch(e) { res.status(500).json({ error: e.message, stack: e.stack }); }
-});
-
-app.get('/api/logistica', requireAuth, async (req, res) => {
-  try {
-    const uid = req.query.uid;
-    const token = await getClientToken(parseInt(req.query.client_id));
-    if (!token) return res.status(403).json({ error: 'Sin token' });
-    const headers = { 'Authorization': `Bearer ${token}` };
-
-    // ── Shipping preferences (FLEX + handling time) ──────────────────────────
-    const [prefRes, userRes] = await Promise.all([
-      fetch(`${ML_API}/users/${uid}/shipping_preferences`, { headers }).then(r => r.json()).catch(() => ({})),
-      fetch(`${ML_API}/users/${uid}`, { headers }).then(r => r.json()).catch(() => ({}))
-    ]);
-
-    const flexActive = !!(prefRes.flex && prefRes.flex.enabled);
-    const flexZones  = (prefRes.flex && prefRes.flex.zones) || [];
-    const handlingTime = prefRes.handling_time || prefRes.default_handling_time || null;
-    const fullEnabled = !!(prefRes.fulfillment && prefRes.fulfillment.enabled);
-
-    // ── Items activos: cuántos son FULL / FLEX / correo ──────────────────────
-    // Fetch active items in batches
-    let allActiveIds = [];
-    let offset = 0;
-    while (true) {
-      const r = await fetch(`${ML_API}/users/${uid}/items/search?status=active&limit=100&offset=${offset}`, { headers }).then(r => r.json());
-      const ids = r.results || [];
-      allActiveIds = allActiveIds.concat(ids);
-      if (ids.length < 100 || allActiveIds.length >= (r.paging && r.paging.total || 0)) break;
-      offset += 100;
-      if (offset > 2000) break;
-    }
-
-    // Fetch shipping info for all active items
-    let fullCount = 0, flexCount = 0, correoCount = 0, otroCount = 0;
-    const itemsLogistic = [];
-    for (let i = 0; i < allActiveIds.length; i += 20) {
-      const batch = allActiveIds.slice(i, i+20);
-      try {
-        const data = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,title,price,available_quantity,shipping,listing_type_id`, { headers }).then(r => r.json());
-        (Array.isArray(data) ? data : []).forEach(r => {
-          if (r.code !== 200 || !r.body) return;
-          const b = r.body;
-          const lt = (b.shipping && b.shipping.logistic_type) || '';
-          let mode;
-          if (lt === 'fulfillment') { mode = 'FULL'; fullCount++; }
-          else if (lt === 'flex' || lt === 'self_service') { mode = 'FLEX'; flexCount++; }
-          else if (lt.includes('cross') || lt.includes('me2') || lt.includes('colect')) { mode = 'Correo'; correoCount++; }
-          else { mode = lt || 'Otro'; otroCount++; }
-          itemsLogistic.push({
-            id: b.id, title: b.title, price: b.price,
-            available_quantity: b.available_quantity,
-            listing_type_id: b.listing_type_id,
-            logistic_type: lt, mode,
-            free_shipping: b.shipping && b.shipping.free_shipping
-          });
-        });
-      } catch(e) {}
-    }
-
-    res.json({
-      flex: { active: flexActive, zones: flexZones },
-      full: { enabled: fullEnabled, count: fullCount },
-      handling_time: handlingTime,
-      summary: { full: fullCount, flex: flexCount, correo: correoCount, otro: otroCount, total: allActiveIds.length },
-      items: itemsLogistic
-    });
-  } catch(e) { console.error('[LOGISTICA]', e.message); res.status(500).json({ error: e.message }); }
-});
+  el.innerHTML = kpis + flexCard + fullCard + prepCard + table;
+}
 
 // ── STOCK FULL ────────────────────────────────────────────────────────────────
-app.get('/api/logistica/full-stock', requireAuth, async (req, res) => {
+let _logisticaActiveTab = 'general';
+let _fullStockData = null;
+let _fsSort = { col: null, dir: 1 };
+let _fsFilter = 'todos';
+let _fsDays = 30;
+let _fsSearch = '';
+
+function switchLogisticaTab(tab) {
+  _logisticaActiveTab = tab;
+  const tabs = { general: 'logisticaContent', fullstock: 'fullStockContent' };
+  Object.keys(tabs).forEach(t => {
+    document.getElementById(tabs[t]).style.display = t === tab ? '' : 'none';
+    const btn = document.getElementById(`tab-logistica-${t}`);
+    if (btn) {
+      btn.style.color        = t === tab ? 'var(--accent)' : 'var(--muted)';
+      btn.style.borderBottom = t === tab ? '2px solid var(--accent)' : '2px solid transparent';
+    }
+  });
+  if (tab === 'fullstock' && !_fullStockData) loadFullStock();
+}
+
+function refreshLogisticaTab() {
+  if (_logisticaActiveTab === 'fullstock') {
+    _fullStockData = null;
+    _fsSort = { col: null, dir: 1 };
+    _fsFilter = 'todos';
+    _fsDays = 30;
+    _fsSearch = '';
+    loadFullStock();
+  } else {
+    loadLogistica();
+  }
+}
+
+async function loadFullStock() {
+  const el = document.getElementById('fullStockContent');
+  el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">⏳ Consultando stock FULL en ML...</div>';
   try {
-    const clientId = parseInt(req.query.client_id);
-    const uid      = req.query.uid;
-    const days     = parseInt(req.query.days) || 30;
-    const token    = await getClientToken(clientId);
-    if (!token) return res.status(403).json({ error: 'Sin token' });
-    const headers  = { 'Authorization': `Bearer ${token}` };
-
-    // ── 1. Todos los ítems activos ───────────────────────────────────────────
-    let allIds = [], offset = 0;
-    while (true) {
-      const r = await fetch(`${ML_API}/users/${uid}/items/search?status=active&limit=100&offset=${offset}`, { headers }).then(r => r.json());
-      const ids = r.results || [];
-      allIds = allIds.concat(ids);
-      if (ids.length < 100 || allIds.length >= (r.paging?.total || 0)) break;
-      offset += 100;
-      if (offset > 5000) break;
+    const client = getActiveClient();
+    if (!client || !client.ml_user_id) {
+      el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">Sin cuenta conectada</div>';
+      return;
     }
-
-    // ── 2. Datos de cada ítem (todos, no solo FULL) ──────────────────────────
-    const allItems = [];
-    for (let i = 0; i < allIds.length; i += 20) {
-      const batch = allIds.slice(i, i + 20);
-      try {
-        const data = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,title,price,available_quantity,shipping,inventory_id,seller_custom_field,variations`, { headers }).then(r => r.json());
-        (Array.isArray(data) ? data : []).forEach(r => {
-          if (r.code !== 200 || !r.body) return;
-          const b = r.body;
-          const lt       = b.shipping?.logistic_type || '';
-          const isFull   = lt === 'fulfillment';
-          const itemSku  = b.seller_custom_field || null;
-
-          if (b.variations?.length) {
-            // Ítem con variaciones → una fila por variante
-            b.variations.forEach(v => {
-              const varName = (v.attribute_combinations || []).map(a => a.value_name).join(' / ') || `Var ${v.id}`;
-              const varSku  = v.attributes?.find(a => a.id === 'SELLER_SKU')?.value_name || itemSku || null;
-              allItems.push({
-                id:           b.id,
-                title:        `${b.title} — ${varName}`,
-                price:        v.price || b.price,
-                variation_id: v.id,
-                inventory_id: v.inventory_id || null,
-                is_full:      isFull && !!v.inventory_id,
-                logistic_type: lt,
-                sku:          varSku,
-              });
-            });
-          } else {
-            // Ítem sin variaciones
-            allItems.push({
-              id:           b.id,
-              title:        b.title,
-              price:        b.price,
-              variation_id: null,
-              inventory_id: b.inventory_id || null,
-              is_full:      isFull && !!b.inventory_id,
-              logistic_type: lt,
-              sku:          itemSku,
-            });
-          }
-        });
-      } catch(e) {}
+    const days = _fsDays || 30;
+    const data = await apiCall('GET', `/api/logistica/full-stock?uid=${client.ml_user_id}&client_id=${client.id}&days=${days}`);
+    if (!data) { el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">Error al cargar datos</div>'; return; }
+    _fullStockData = data;
+    // Limpiar cualquier override manual viejo en DB y en memoria
+    if (data.items && data.items.some(i => i.suggested_quantity != null)) {
+      apiCall('DELETE', '/api/logistica/full-stock-overrides', { client_id: client.id }).catch(() => {});
+      data.items.forEach(i => { i.suggested_quantity = null; });
     }
+    renderFullStock(data, client);
+  } catch(e) {
+    el.innerHTML = `<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Error: ${e.message}</div>`;
+  }
+}
 
-    // ── 3. Stock FULL para los que tienen inventory_id ───────────────────────
-    const delay = ms => new Promise(r => setTimeout(r, ms));
-    const fullItemsToQuery = allItems.filter(i => i.inventory_id);
-    const stockMap = {};
-    for (let i = 0; i < fullItemsToQuery.length; i += 10) {
-      const batch = fullItemsToQuery.slice(i, i + 10);
-      await Promise.all(batch.map(async item => {
-        try {
-          const s = await fetch(`${ML_API}/inventories/${item.inventory_id}/stock/fulfillment`, { headers }).then(r => r.json());
-          const key = item.variation_id ? `${item.id}_${item.variation_id}` : item.id;
-          stockMap[key] = {
-            stock_full:       s.available_quantity ?? 0,
-            stock_reserved:   s.not_available_quantity?.reserved ?? 0,
-            stock_in_transit: s.in_transit?.quantity ?? 0,
-          };
-        } catch(e) {}
-      }));
-      if (i + 10 < fullItemsToQuery.length) await delay(150);
+function renderFullStock(data, client) {
+  const el = document.getElementById('fullStockContent');
+  const { items, period_days, global_target_days } = data;
+
+  if (!items || items.length === 0) {
+    el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">No hay publicaciones en Envíos FULL activas.</div>';
+    return;
+  }
+
+  // ── KPIs (clickeables para filtrar) ───────────────────────────────────────
+  const critico = items.filter(i => i.coverage_days != null && i.coverage_days < 7).length;
+  const bajo    = items.filter(i => i.coverage_days != null && i.coverage_days >= 7 && i.coverage_days < 15).length;
+  const ok      = items.filter(i => i.coverage_days == null || i.coverage_days >= 15).length;
+
+  const enFull    = items.filter(i => i.is_full).length;
+  const sinFull   = items.filter(i => !i.is_full).length;
+  const kpiDefs = [
+    { key: 'todos',   label: 'Todos',            value: items.length,     color: 'var(--text)', bg: 'var(--surface)', border: 'var(--border)' },
+    { key: 'full',    label: '📦 En FULL',        value: enFull,           color: '#6366f1',     bg: 'var(--surface)', border: 'var(--border)' },
+    { key: 'nofull',  label: '⚠️ Sin FULL',       value: sinFull,          color: '#d97706',     bg: sinFull > 0 ? '#fffbeb' : 'var(--surface)', border: sinFull > 0 ? '#fcd34d' : 'var(--border)' },
+    { key: 'critico', label: '🔴 Crítico <7d',    value: critico,          color: '#dc2626',     bg: critico > 0 ? '#fef2f2' : 'var(--surface)', border: critico > 0 ? '#fca5a5' : 'var(--border)' },
+    { key: 'bajo',    label: '🟠 Bajo 7–14d',     value: bajo,             color: '#d97706',     bg: bajo    > 0 ? '#fffbeb' : 'var(--surface)', border: bajo    > 0 ? '#fcd34d' : 'var(--border)' },
+    { key: 'ok',      label: '🟢 OK ≥15d',        value: ok,               color: '#16a34a',     bg: 'var(--surface)', border: 'var(--border)' },
+  ];
+
+  const kpis = `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:12px;margin-bottom:16px" id="fsKpiRow">
+    ${kpiDefs.map(k => `<div
+      onclick="setFsFilter('${k.key}')"
+      id="fskpi-${k.key}"
+      style="background:${k.bg};border:2px solid ${_fsFilter===k.key ? 'var(--accent)' : k.border};border-radius:10px;padding:12px 14px;cursor:pointer;transition:border .15s"
+      onmouseover="this.style.borderColor='var(--accent)'" onmouseout="this.style.borderColor='${_fsFilter===k.key ? 'var(--accent)' : k.border}'">
+      <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em">${k.label}</div>
+      <div style="font-size:22px;font-weight:700;font-family:var(--font-b);color:${k.color};margin-top:4px">${k.value}</div>
+    </div>`).join('')}
+  </div>`;
+
+  // ── Barra de controles: período de ventas + días de cobertura objetivo ──────
+  const periodBtns = [7, 14, 30, 60].map(d =>
+    `<button onclick="setFsDays(${d})"
+      style="padding:5px 12px;border:1px solid ${_fsDays===d ? 'var(--accent)' : 'var(--border)'};border-radius:6px;
+             background:${_fsDays===d ? 'var(--accent)' : 'var(--surface2)'};color:${_fsDays===d ? '#fff' : 'var(--text)'};
+             font-size:12px;font-weight:${_fsDays===d ? '700' : '400'};cursor:pointer">${d}d</button>`
+  ).join('');
+
+  const globalCtrl = `<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px 16px;margin-bottom:16px">
+    <span style="font-size:12px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em">Período ventas:</span>
+    <div style="display:flex;gap:6px">${periodBtns}</div>
+    <div style="width:1px;height:24px;background:var(--border);margin:0 4px"></div>
+    <span style="font-size:12px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em">📅 Días objetivo:</span>
+    <input type="number" min="1" max="365" id="fsGlobalDays" value="${global_target_days || 30}"
+      oninput="renderFsTable()"
+      style="width:56px;padding:4px 8px;border:1px solid var(--border);border-radius:6px;background:var(--surface2);color:var(--text);font-size:14px;font-weight:700;text-align:center"
+    />
+    <span style="font-size:12px;color:var(--muted)">días</span>
+    <button onclick="saveGlobalTargetDays()"
+      style="padding:5px 14px;border:none;border-radius:6px;background:var(--accent);color:#fff;font-size:12px;font-weight:600;cursor:pointer">Guardar</button>
+    <span id="fsGlobalSaveMsg" style="font-size:12px;color:var(--muted)"></span>
+  </div>`;
+
+  const searchBar = `<div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
+    <input type="text" id="fsSearchInput" placeholder="🔍  Buscar por MLA, título o SKU..."
+      oninput="_fsSearch=this.value;renderFsTable()"
+      style="flex:1;padding:8px 12px;border:1px solid var(--border);border-radius:8px;background:var(--surface2);color:var(--text);font-size:13px"
+    />
+    <button onclick="exportFullStockExcel()"
+      style="padding:7px 16px;border:none;border-radius:8px;background:#16a34a;color:#fff;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap">
+      📥 Exportar Excel
+    </button>
+  </div>`;
+  el.innerHTML = kpis + globalCtrl + searchBar + `<div id="fsTableWrap"></div>`;
+  renderFsTable();
+}
+
+function setFsFilter(key) {
+  _fsFilter = key;
+  // Actualizar bordes de KPIs sin re-renderizar todo
+  ['todos','full','nofull','critico','bajo','ok'].forEach(k => {
+    const el = document.getElementById(`fskpi-${k}`);
+    if (el) el.style.borderColor = k === key ? 'var(--accent)' : '';
+  });
+  renderFsTable();
+}
+
+function fsSortBy(col) {
+  if (_fsSort.col === col) _fsSort.dir *= -1;
+  else { _fsSort.col = col; _fsSort.dir = 1; }
+  renderFsTable();
+}
+
+function renderFsTable() {
+  const wrap = document.getElementById('fsTableWrap');
+  if (!wrap || !_fullStockData) return;
+  const { items, period_days } = _fullStockData;
+
+  // ── Filtro KPI ─────────────────────────────────────────────────────────────
+  let filtered = items;
+  if      (_fsFilter === 'full')    filtered = items.filter(i => i.is_full);
+  else if (_fsFilter === 'nofull')  filtered = items.filter(i => !i.is_full);
+  else if (_fsFilter === 'critico') filtered = items.filter(i => i.coverage_days != null && i.coverage_days < 7);
+  else if (_fsFilter === 'bajo')    filtered = items.filter(i => i.coverage_days != null && i.coverage_days >= 7 && i.coverage_days < 15);
+  else if (_fsFilter === 'ok')      filtered = items.filter(i => i.coverage_days == null || i.coverage_days >= 15);
+
+  // ── Filtro búsqueda ────────────────────────────────────────────────────────
+  if (_fsSearch && _fsSearch.trim()) {
+    const q = _fsSearch.trim().toLowerCase();
+    filtered = filtered.filter(i => {
+      const skuLabel = i.variation_id
+        ? (i.title.includes(' — ') ? i.title.split(' — ').slice(1).join(' — ') : String(i.variation_id))
+        : '';
+      return i.id.toLowerCase().includes(q) ||
+             i.title.toLowerCase().includes(q) ||
+             skuLabel.toLowerCase().includes(q);
+    });
+  }
+
+  // ── Semáforo ───────────────────────────────────────────────────────────────
+  const coverageColor = d => {
+    if (d == null) return 'var(--muted)';
+    if (d < 7)  return '#dc2626';
+    if (d < 15) return '#d97706';
+    if (d < 30) return '#ca8a04';
+    return '#16a34a';
+  };
+
+  const thStyle = (col, align) => {
+    const active = _fsSort.col === col;
+    const arrow  = active ? (_fsSort.dir === 1 ? ' ↑' : ' ↓') : ' ↕';
+    return `padding:8px 10px;text-align:${align||'center'};font-size:11px;font-weight:600;color:${active ? 'var(--accent)' : 'var(--muted)'};border-bottom:1px solid var(--border);cursor:pointer;user-select:none;white-space:nowrap`;
+  };
+  const thLabel = (col, label, align) => `<th style="${thStyle(col, align)}" onclick="fsSortBy('${col}')">${label}${_fsSort.col===col ? (_fsSort.dir===1?' ↑':' ↓'):' <span style=\'opacity:.35\'>↕</span>'}</th>`;
+
+  const colMap = {
+    mla:       i => i.id,
+    title:     i => (i.title || '').toLowerCase(),
+    full:      i => i.stock_full      ?? -1,
+    sold:      i => i.units_sold_period ?? -1,
+    ritmo:     i => i.daily_rate      ?? -1,
+    coverage:  i => i.coverage_days   ?? 9999,
+    suggested: i => i.suggested_quantity ?? -1,
+  };
+  if (_fsSort.col && colMap[_fsSort.col]) {
+    filtered = [...filtered].sort((a, b) => {
+      const va = colMap[_fsSort.col](a), vb = colMap[_fsSort.col](b);
+      return va < vb ? -_fsSort.dir : va > vb ? _fsSort.dir : 0;
+    });
+  }
+
+  // Leer días objetivo SIEMPRE del input en vivo (no del dato cacheado)
+  const liveTarget = parseInt(document.getElementById('fsGlobalDays')?.value) || _fullStockData?.global_target_days || 30;
+  const pd = _fullStockData?.period_days || _fsDays || 30;
+
+  const rows = filtered.map(item => {
+    const rowKey    = `${item.id}${item.variation_id ? '-'+item.variation_id : ''}`;
+    const cov       = item.coverage_days;
+    const covColor  = coverageColor(cov);
+    const ritmo     = item.daily_rate || 0;
+    const ritmoText = ritmo > 0 ? ritmo.toFixed(2) : '—';
+    // autoSug: siempre calculado en vivo con liveTarget
+    // ritmo=0 → 0; ritmo>0 → max(0, ritmo × días_objetivo − stock_full)
+    const autoSug = ritmo > 0
+      ? Math.max(0, Math.round(ritmo * liveTarget - (item.stock_full || 0)))
+      : 0;
+    const skuLabel   = item.variation_id
+      ? (item.title.includes(' — ') ? item.title.split(' — ').slice(1).join(' — ') : String(item.variation_id))
+      : '—';
+    const cleanTitle = item.variation_id && item.title.includes(' — ')
+      ? item.title.split(' — ')[0]
+      : item.title;
+
+    return `<tr>
+      <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;white-space:nowrap">
+        <a href="https://articulo.mercadolibre.com.ar/${item.id}" target="_blank" style="color:var(--text);text-decoration:none;font-weight:600">${item.id}</a>
+        <span style="display:inline-block;margin-left:5px;padding:1px 6px;border-radius:4px;font-size:10px;font-weight:600;background:${item.is_full ? '#e0e7ff' : '#fef3c7'};color:${item.is_full ? '#4338ca' : '#92400e'}">${item.is_full ? 'FULL' : 'SIN FULL'}</span>
+      </td>
+      <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${cleanTitle}">${cleanTitle}</td>
+      <td style="padding:8px 10px;border-bottom:1px solid var(--border);max-width:130px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+        ${item.sku
+          ? `<span style="font-size:11px;font-weight:600;color:var(--text)">${item.sku}</span>${skuLabel !== '—' ? '<br><span style="font-size:10px;color:var(--muted)">' + skuLabel + '</span>' : ''}`
+          : `<span style="font-size:11px;color:var(--muted)">${skuLabel}</span>`
+        }
+      </td>
+      <td style="padding:8px 10px;border-bottom:1px solid var(--border);text-align:center">
+        <div style="font-size:13px;font-weight:700;color:#6366f1">${item.stock_full ?? '—'}</div>
+        <div style="font-size:10px;color:var(--muted);margin-top:2px">${[item.stock_reserved ? item.stock_reserved+'res' : '', item.stock_in_transit ? item.stock_in_transit+'trán' : ''].filter(Boolean).join(' · ') || ''}</div>
+      </td>
+      <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;text-align:center">${item.units_sold_period}</td>
+      <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:13px;text-align:center;font-weight:600;color:var(--text)">${ritmoText}</td>
+      <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:13px;text-align:center;font-weight:700;color:${covColor}">${cov != null ? cov+'d' : '—'}</td>
+      <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:14px;text-align:center;font-weight:700;color:${autoSug > 0 ? 'var(--accent)' : 'var(--muted)'}">
+        ${autoSug}
+      </td>
+    </tr>`;
+  }).join('');
+
+  wrap.innerHTML = `<div style="overflow-x:auto">
+    <table style="width:100%;border-collapse:collapse">
+      <thead><tr style="background:var(--surface2)">
+        ${thLabel('mla',       'MLA',            'left')}
+        ${thLabel('title',     'Título',         'left')}
+        <th style="padding:8px 10px;text-align:left;font-size:11px;font-weight:600;color:var(--muted);border-bottom:1px solid var(--border)">SKU / Variante</th>
+        ${thLabel('full',      'Stock FULL')}
+        ${thLabel('sold',      'Ventas ' + pd + 'd')}
+        ${thLabel('ritmo',     'Ritmo/día')}
+        ${thLabel('coverage',  'Cobertura')}
+        ${thLabel('suggested', 'Sugerido a enviar')}
+      </tr></thead>
+      <tbody>${rows || '<tr><td colspan="9" style="padding:30px;text-align:center;color:var(--muted)">Sin ítems para el filtro seleccionado</td></tr>'}</tbody>
+    </table>
+  </div>
+  <div style="font-size:11px;color:var(--muted);margin-top:10px;padding:0 2px">
+    🟢 Cobertura ≥30d &nbsp;|&nbsp; 🟡 15–29d &nbsp;|&nbsp; 🟠 7–14d &nbsp;|&nbsp; 🔴 &lt;7d &nbsp;·&nbsp;
+    Sugerido = ritmo/día × días objetivo − stock FULL (0 si sin ventas) &nbsp;·&nbsp; Editá para override manual
+  </div>`;
+}
+async function setFsDays(days) {
+  _fsDays = days;
+  _fullStockData = null;
+  loadFullStock();
+}
+
+async function saveGlobalTargetDays() {
+  const input = document.getElementById('fsGlobalDays');
+  const msg   = document.getElementById('fsGlobalSaveMsg');
+  if (!input) return;
+  const val = parseInt(input.value) || 30;
+  const client = getActiveClient();
+  if (!client) return;
+  msg.textContent = '...';
+  try {
+    const r = await apiCall('PUT', '/api/logistica/full-stock-global', {
+      client_id: client.id,
+      coverage_days_target: val
+    });
+    if (r?.ok) {
+      msg.textContent = '✅ Guardado';
+      if (_fullStockData) _fullStockData.global_target_days = val;
+      setTimeout(() => { msg.textContent = ''; }, 2000);
+    } else { msg.textContent = '❌ Error'; }
+  } catch(e) { msg.textContent = '❌ Error'; }
+}
+
+function exportFullStockExcel() {
+  if (!_fullStockData || !_fullStockData.items.length) { showToast('Sin datos para exportar'); return; }
+  const { items, period_days, global_target_days } = _fullStockData;
+  const targetDays = global_target_days || 30;
+  const client = getActiveClient();
+  const clientName = client?.name || 'Cliente';
+
+  const rows = items.map(i => {
+    const skuLabel   = i.variation_id
+      ? (i.title.includes(' — ') ? i.title.split(' — ').slice(1).join(' — ') : String(i.variation_id))
+      : '—';
+    const cleanTitle = i.variation_id && i.title.includes(' — ') ? i.title.split(' — ')[0] : i.title;
+    const ritmo      = i.daily_rate || 0;
+    const autoSug    = ritmo > 0 ? Math.max(0, Math.round(ritmo * targetDays - (i.stock_full || 0))) : 0;
+    return {
+      'MLA':               i.id,
+      'Título':            cleanTitle,
+      'SKU / Variante':    skuLabel,
+      'SKU (código)':      i.sku || '',
+      'Stock FULL':        i.stock_full       ?? 0,
+      'Reservado':         i.stock_reserved   ?? 0,
+      'En tránsito':       i.stock_in_transit ?? 0,
+      ['Ventas ' + period_days + 'd']: i.units_sold_period,
+      'Ritmo/día':         ritmo > 0 ? parseFloat(ritmo.toFixed(2)) : 0,
+      'Cobertura (días)':  i.coverage_days ?? '',
+      'Días objetivo':     targetDays,
+      'Sugerido a enviar': autoSug,
+    };
+  });
+
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.json_to_sheet(rows);
+  ws['!cols'] = [18,40,22,16,12,11,12,13,11,16,13,16].map(w => ({ wch: w }));
+  XLSX.utils.book_append_sheet(wb, ws, 'Stock FULL');
+  const fecha = new Date().toISOString().slice(0,10);
+  XLSX.writeFile(wb, `StockFULL_${clientName.replace(/\s+/g,'_')}_${fecha}.xlsx`);
+  showToast('✅ Excel descargado');
+}
+
+
+// ── REPORTE FINANCIERO ────────────────────────────────────────────────────────
+let _reporteItems = [], _reportePyl = null;
+
+async function descargarTemplateExcel() {
+  const clientId = document.getElementById('reporteClientSel')?.value;
+  const period = getReportePeriod();
+  if (!clientId || !period) { showToast('⚠ Seleccioná cliente y mes primero'); return; }
+
+  showToast('⏳ Generando template...');
+  try {
+    const data = await apiCall('GET', `/api/reporte/items-vendidos?client_id=${clientId}&date_from=${period.date_from}&date_to=${period.date_to}`);
+    if (!data) return;
+
+    const client = allClients.find(c => String(c.id) === String(clientId));
+    const clientName = client?.name || 'Cliente';
+    const XLSX = window.XLSX;
+
+    const wsData = [
+      [`PLANILLA DE COSTOS — ${clientName} | ${period.date_from} → ${period.date_to}`],
+      ["⚠  Completá la columna 'Costo Unitario (ARS)' — celdas en amarillo. Guardá y subí el archivo al dashboard."],
+      ['MLA', 'Descripción', 'Costo Unitario (ARS)', 'Unidades vendidas', 'Facturación (ARS)', 'Notas'],
+      ...(data.items || []).map(i => [
+        i.mla_id,
+        i.title,
+        i.costo_unit || '',
+        i.units,
+        Math.round(i.revenue),
+        i.notas || '',
+      ])
+    ];
+
+    const wb = XLSX.utils.book_new();
+    const ws = XLSX.utils.aoa_to_sheet(wsData);
+    ws['!cols'] = [{ wch: 18 }, { wch: 50 }, { wch: 22 }, { wch: 18 }, { wch: 20 }, { wch: 25 }];
+    ws['!freeze'] = { xSplit: 0, ySplit: 3 };
+    XLSX.utils.book_append_sheet(wb, ws, 'Costos');
+    XLSX.writeFile(wb, `Costos_${clientName.replace(/\s+/g,'_')}_${period.mes}.xlsx`);
+    showToast('✅ Template descargado');
+  } catch(e) { showToast(`❌ Error: ${e.message}`); }
+}
+
+async function importarCostosExcel(input) {
+  const clientId = document.getElementById('reporteClientSel')?.value;
+  if (!clientId) { showToast('⚠ Seleccioná un cliente primero'); input.value=''; return; }
+  const file = input.files[0];
+  if (!file) return;
+
+  showToast('⏳ Leyendo archivo...');
+  try {
+    const buffer = await file.arrayBuffer();
+    const XLSX = window.XLSX;
+    const wb = XLSX.read(buffer, { type: 'array' });
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+
+    // Find header row (contains 'MLA')
+    let headerRow = -1;
+    for (let i = 0; i < Math.min(rows.length, 5); i++) {
+      if (String(rows[i][0]).toUpperCase().includes('MLA') && rows[i].length > 2) {
+        headerRow = i; break;
+      }
     }
+    if (headerRow === -1) { showToast('❌ No se encontró la fila de encabezados'); input.value=''; return; }
 
-    // ── 4. Ventas por SKU ────────────────────────────────────────────────────
-    const now      = new Date();
-    const dateFrom = new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
-    const fmt      = d => d.toISOString().slice(0, 19) + '.000-00:00';
-    const { orders } = await fetchAllOrders(uid, headers, fmt(dateFrom), fmt(now));
-    const salesByKey = {};
-    orders.forEach(order => {
-      (order.order_items || []).forEach(oi => {
-        const id  = oi.item?.id;
-        const vid = oi.item?.variation_id;
-        if (!id) return;
-        const key = vid ? `${id}_${vid}` : id;
-        salesByKey[key] = (salesByKey[key] || 0) + (oi.quantity || 0);
-      });
+    const costos = [];
+    rows.slice(headerRow + 1).forEach(row => {
+      const mla_id = String(row[0]||'').trim();
+      const title  = String(row[1]||'').trim();
+      const costo  = parseFloat(String(row[2]||'').replace(/[,$\s]/g,''))||0;
+      const notas  = String(row[5]||'').trim();
+      if (mla_id.startsWith('MLA') && costo > 0) {
+        costos.push({ mla_id, title, costo_unit: costo, notas });
+      }
     });
 
-    // ── 5. Config guardada ───────────────────────────────────────────────────
-    const { rows: configs } = await pool.query(
-      'SELECT item_id, suggested_quantity, coverage_days_target, notes FROM full_stock_config WHERE client_id = $1',
-      [clientId]
-    );
-    const configMap = {};
-    configs.forEach(c => { configMap[c.item_id] = c; });
-    const globalTargetDays = (configMap['__global__'] || {}).coverage_days_target || 30;
+    if (!costos.length) { showToast('❌ No se encontraron costos válidos'); input.value=''; return; }
 
-    // ── 6. Armar respuesta ───────────────────────────────────────────────────
-    const result = allItems.map(item => {
-      const salesKey  = item.variation_id ? `${item.id}_${item.variation_id}` : item.id;
-      const stockKey  = salesKey;
-      const stock     = stockMap[stockKey] || { stock_full: 0, stock_reserved: 0, stock_in_transit: 0 };
-      const unitsSold = salesByKey[salesKey] || 0;
-      const dailyRate = unitsSold / days;
-      const coverage  = (dailyRate > 0 && item.is_full) ? Math.round(stock.stock_full / dailyRate) : (item.is_full ? null : 0);
-      const cfg       = configMap[item.id] || {};
-      const targetDays = cfg.coverage_days_target || globalTargetDays;
-      const suggested  = dailyRate > 0
-        ? Math.max(0, Math.round(dailyRate * targetDays - stock.stock_full))
-        : 0;
-      return {
-        id:                item.id,
-        title:             item.title,
-        variation_id:      item.variation_id,
-        sku:               item.sku,
-        is_full:           item.is_full,
-        logistic_type:     item.logistic_type,
-        stock_full:        stock.stock_full,
-        stock_reserved:    stock.stock_reserved,
-        stock_in_transit:  stock.stock_in_transit,
-        units_sold_period: unitsSold,
-        daily_rate:        parseFloat(dailyRate.toFixed(2)),
-        coverage_days:     coverage,
-        coverage_days_target: targetDays,
-        suggested_quantity: suggested,
-      };
+    const r = await apiCall('POST', '/api/reporte/costos', { client_id: clientId, costos });
+    if (r?.ok) {
+      showToast(`✅ ${r.saved} costos importados`);
+      await loadReporteItems();
+    } else {
+      showToast(`❌ Error al guardar`);
+    }
+  } catch(e) { showToast(`❌ Error: ${e.message}`); }
+  input.value = '';
+}
+
+function initReporte() {
+  // Populate client selector
+  const sel = document.getElementById('reporteClientSel');
+  if (sel) {
+    sel.innerHTML = '';
+    allClients.filter(c => c.ml_user_id && c.active).forEach(c => {
+      const o = document.createElement('option');
+      o.value = c.id; o.textContent = c.name;
+      sel.appendChild(o);
     });
-
-    console.log(`[FULL_STOCK] allIds=${allIds.length}, allItems=${allItems.length}, conFULL=${result.filter(i=>i.is_full).length}`);
-    res.json({ items: result, period_days: days, global_target_days: globalTargetDays });
-  } catch(e) {
-    console.error('[FULL_STOCK]', e.message);
-    res.status(500).json({ error: e.message });
   }
-});
+  // Populate month selector — last 6 months
+  const msel = document.getElementById('reporteMesSel');
+  if (msel) {
+    msel.innerHTML = '';
+    const now = new Date();
+    for (let i = 1; i <= 6; i++) {
+      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      const label = d.toLocaleDateString('es-AR', { month: 'long', year: 'numeric' });
+      const val = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+      const o = document.createElement('option');
+      o.value = val; o.textContent = label.charAt(0).toUpperCase() + label.slice(1);
+      msel.appendChild(o);
+    }
+  }
+}
 
+function setReporteTab(tab, el) {
+  ['costos','gastos','pyl'].forEach(t => {
+    document.getElementById(`reporte-${t}-panel`).style.display = t === tab ? '' : 'none';
+    const btn = document.getElementById(`tab-${t}`);
+    if (btn) { btn.style.background = t === tab ? 'var(--accent)' : 'var(--surface)'; btn.style.color = t === tab ? '#fff' : 'var(--text)'; }
+  });
+}
 
-app.put('/api/logistica/full-stock-global', requireAuth, async (req, res) => {
+function getReportePeriod() {
+  const mes = document.getElementById('reporteMesSel')?.value; // "2026-02"
+  if (!mes) return null;
+  const [y, m] = mes.split('-').map(Number);
+  const lastDay = new Date(y, m, 0).getDate();
+  return {
+    date_from: `${y}-${String(m).padStart(2,'0')}-01`,
+    date_to:   `${y}-${String(m).padStart(2,'0')}-${lastDay}`,
+    mes:       `${y}-${String(m).padStart(2,'0')}`
+  };
+}
+
+async function loadReporteItems() {
+  const clientId = document.getElementById('reporteClientSel')?.value;
+  const period = getReportePeriod();
+  if (!clientId || !period) return;
+  const el = document.getElementById('reporteCostosContent');
+  el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">⏳ Cargando productos vendidos...</div>';
   try {
-    const { client_id, coverage_days_target } = req.body;
-    if (!client_id) return res.status(400).json({ error: 'client_id requerido' });
-    await pool.query(`
-      INSERT INTO full_stock_config (client_id, item_id, coverage_days_target, updated_at)
-      VALUES ($1, '__global__', $2, NOW())
-      ON CONFLICT (client_id, item_id) DO UPDATE
-        SET coverage_days_target = EXCLUDED.coverage_days_target,
-            updated_at           = NOW()
-    `, [client_id, coverage_days_target || 30]);
-    res.json({ ok: true });
+    const data = await apiCall('GET', `/api/reporte/items-vendidos?client_id=${clientId}&date_from=${period.date_from}&date_to=${period.date_to}`);
+    if (!data) return;
+    _reporteItems = data.items || [];
+    renderReporteCostos(data, clientId);
+    // Load gastos too
+    loadReporteGastos(clientId, period.mes);
+    document.getElementById('reportePylBtn').style.display = '';
   } catch(e) {
-    console.error('[FULL_STOCK_GLOBAL]', e.message);
-    res.status(500).json({ error: e.message });
+    el.innerHTML = `<div style="color:var(--muted);padding:40px">Error: ${e.message}</div>`;
   }
-});
+}
 
-app.put('/api/logistica/full-stock/:item_id', requireAuth, async (req, res) => {
+function renderReporteCostos(data, clientId) {
+  const el = document.getElementById('reporteCostosContent');
+  const items = data.items || [];
+  const faltanCosto = items.filter(i => !i.has_cost).length;
+
+  const completenessColor = data.completeness === 100 ? '#16a34a' : data.completeness > 70 ? '#d97706' : '#dc2626';
+
+  const rows = items.map((item, idx) => `
+    <tr>
+      <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;color:var(--accent)">${item.mla_id}</td>
+      <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${item.title}</td>
+      <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;text-align:center;font-weight:600">${item.units.toLocaleString('es-AR')}</td>
+      <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;text-align:right">$${Math.round(item.revenue).toLocaleString('es-AR')}</td>
+      <td style="padding:8px 10px;border-bottom:1px solid var(--border);text-align:right">
+        <input type="number" id="costo_${item.mla_id}" value="${item.costo_unit ?? ''}" placeholder="0"
+          style="width:110px;padding:5px 8px;border-radius:6px;border:1px solid ${item.has_cost?'var(--border)':'#fca5a5'};background:${item.has_cost?'var(--surface2)':'#fef2f2'};color:var(--text);font-size:13px;text-align:right"
+          oninput="updateCmvRow('${item.mla_id}',${item.units})">
+      </td>
+      <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;text-align:right" id="cmv_${item.mla_id}">
+        ${item.cmv_total != null ? '$'+Math.round(item.cmv_total).toLocaleString('es-AR') : '<span style="color:#dc2626">—</span>'}
+      </td>
+      <td style="padding:8px 10px;border-bottom:1px solid var(--border)">
+        <input type="text" id="notas_${item.mla_id}" value="${item.notas||''}" placeholder="Notas..."
+          style="width:100%;padding:4px 7px;border-radius:6px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:12px">
+      </td>
+    </tr>`).join('');
+
+  el.innerHTML = `
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:8px">
+      <div style="font-size:13px;color:var(--muted)">${items.length} productos · ${data.total_orders} órdenes</div>
+      <div style="display:flex;align-items:center;gap:10px">
+        <span style="font-size:12px;color:${completenessColor};font-weight:600">${data.completeness}% con costo cargado${faltanCosto>0?' · '+faltanCosto+' sin costo':''}</span>
+        <button onclick="guardarCostos('${clientId}')" style="padding:6px 16px;background:var(--accent);color:#fff;border:none;border-radius:8px;font-size:13px;cursor:pointer">💾 Guardar costos</button>
+      </div>
+    </div>
+    <div style="overflow-x:auto">
+    <table style="width:100%;border-collapse:collapse">
+      <thead><tr style="background:var(--surface2)">
+        <th style="padding:8px 10px;font-size:11px;color:var(--muted);text-align:left;border-bottom:1px solid var(--border)">MLA</th>
+        <th style="padding:8px 10px;font-size:11px;color:var(--muted);text-align:left;border-bottom:1px solid var(--border)">Producto</th>
+        <th style="padding:8px 10px;font-size:11px;color:var(--muted);text-align:center;border-bottom:1px solid var(--border)">Unidades</th>
+        <th style="padding:8px 10px;font-size:11px;color:var(--muted);text-align:right;border-bottom:1px solid var(--border)">Facturación</th>
+        <th style="padding:8px 10px;font-size:11px;color:var(--muted);text-align:right;border-bottom:1px solid var(--border)">Costo unitario $</th>
+        <th style="padding:8px 10px;font-size:11px;color:var(--muted);text-align:right;border-bottom:1px solid var(--border)">CMV total</th>
+        <th style="padding:8px 10px;font-size:11px;color:var(--muted);text-align:left;border-bottom:1px solid var(--border)">Notas</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>`;
+}
+
+function updateCmvRow(mlaId, units) {
+  const val = parseFloat(document.getElementById(`costo_${mlaId}`)?.value) || 0;
+  const cmvEl = document.getElementById(`cmv_${mlaId}`);
+  if (cmvEl) cmvEl.innerHTML = val > 0 ? '$'+Math.round(val*units).toLocaleString('es-AR') : '<span style="color:#dc2626">—</span>';
+}
+
+async function guardarCostos(clientId) {
+  const costos = _reporteItems.map(item => ({
+    mla_id: item.mla_id,
+    title: item.title,
+    costo_unit: parseFloat(document.getElementById(`costo_${item.mla_id}`)?.value)||0,
+    notas: document.getElementById(`notas_${item.mla_id}`)?.value||'',
+  })).filter(c => c.costo_unit > 0);
+
+  if (!costos.length) { showToast('⚠ No hay costos para guardar'); return; }
+  const r = await apiCall('POST', '/api/reporte/costos', { client_id: clientId, costos });
+  if (r?.ok) showToast(`✅ ${r.saved} costos guardados`);
+}
+
+async function loadReporteGastos(clientId, mes) {
+  const el = document.getElementById('reporteGastosContent');
+  el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:20px">⏳ Cargando gastos...</div>';
   try {
-    const { item_id } = req.params;
-    const { client_id, suggested_quantity, coverage_days_target, notes } = req.body;
-    if (!client_id) return res.status(400).json({ error: 'client_id requerido' });
-    await pool.query(`
-      INSERT INTO full_stock_config (client_id, item_id, suggested_quantity, coverage_days_target, notes, updated_at)
-      VALUES ($1, $2, $3, $4, $5, NOW())
-      ON CONFLICT (client_id, item_id) DO UPDATE
-        SET suggested_quantity   = EXCLUDED.suggested_quantity,
-            coverage_days_target = EXCLUDED.coverage_days_target,
-            notes                = EXCLUDED.notes,
-            updated_at           = NOW()
-    `, [client_id, item_id, suggested_quantity ?? null, coverage_days_target ?? 30, notes ?? '']);
-    res.json({ ok: true });
-  } catch(e) {
-    console.error('[FULL_STOCK_PUT]', e.message);
-    res.status(500).json({ error: e.message });
-  }
-});
+    const data = await apiCall('GET', `/api/reporte/gastos?client_id=${clientId}&mes=${mes}`);
+    renderReporteGastos(data?.gastos || [], clientId, mes);
+  } catch(e) { el.innerHTML = `<div style="color:var(--muted);padding:20px">Error: ${e.message}</div>`; }
+}
 
+function renderReporteGastos(gastos, clientId, mes) {
+  const el = document.getElementById('reporteGastosContent');
+  const categorias = ['personal','alquiler','marketing','logistica','servicios','impuestos','otros'];
+
+  const rows = gastos.map((g, i) => `
+    <tr id="gasto-row-${i}">
+      <td style="padding:7px 8px;border-bottom:1px solid var(--border)">
+        <input value="${g.concepto}" style="width:100%;padding:4px 7px;border-radius:6px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px" class="gasto-concepto">
+      </td>
+      <td style="padding:7px 8px;border-bottom:1px solid var(--border)">
+        <select class="gasto-cat" style="padding:4px 7px;border-radius:6px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px">
+          ${categorias.map(c=>`<option value="${c}" ${g.categoria===c?'selected':''}>${c}</option>`).join('')}
+        </select>
+      </td>
+      <td style="padding:7px 8px;border-bottom:1px solid var(--border)">
+        <input type="number" value="${g.monto}" style="width:130px;padding:4px 7px;border-radius:6px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px;text-align:right" class="gasto-monto">
+      </td>
+      <td style="padding:7px 8px;border-bottom:1px solid var(--border)">
+        <button onclick="this.closest('tr').remove()" style="padding:3px 8px;border-radius:6px;border:1px solid #fca5a5;background:#fef2f2;color:#dc2626;font-size:12px;cursor:pointer">✕</button>
+      </td>
+    </tr>`).join('');
+
+  el.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">
+      <div style="font-size:13px;color:var(--muted)">Gastos fijos — <strong>${mes}</strong></div>
+      <div style="display:flex;gap:8px">
+        <button onclick="agregarGasto()" style="padding:6px 14px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px;cursor:pointer">+ Agregar</button>
+        <button onclick="guardarGastos('${clientId}','${mes}')" style="padding:6px 16px;background:var(--accent);color:#fff;border:none;border-radius:8px;font-size:13px;cursor:pointer">💾 Guardar gastos</button>
+      </div>
+    </div>
+    <div style="overflow-x:auto">
+    <table style="width:100%;border-collapse:collapse" id="gastosTable">
+      <thead><tr style="background:var(--surface2)">
+        <th style="padding:7px 8px;font-size:11px;color:var(--muted);text-align:left;border-bottom:1px solid var(--border)">Concepto</th>
+        <th style="padding:7px 8px;font-size:11px;color:var(--muted);text-align:left;border-bottom:1px solid var(--border)">Categoría</th>
+        <th style="padding:7px 8px;font-size:11px;color:var(--muted);text-align:right;border-bottom:1px solid var(--border)">Monto $</th>
+        <th style="padding:7px 8px;border-bottom:1px solid var(--border)"></th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>`;
+}
+
+function agregarGasto() {
+  const tbody = document.querySelector('#gastosTable tbody');
+  if (!tbody) return;
+  const tr = document.createElement('tr');
+  const categorias = ['personal','alquiler','marketing','logistica','servicios','impuestos','otros'];
+  tr.innerHTML = `
+    <td style="padding:7px 8px;border-bottom:1px solid var(--border)">
+      <input placeholder="Ej: Sueldo empleado" style="width:100%;padding:4px 7px;border-radius:6px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px" class="gasto-concepto">
+    </td>
+    <td style="padding:7px 8px;border-bottom:1px solid var(--border)">
+      <select class="gasto-cat" style="padding:4px 7px;border-radius:6px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px">
+        ${categorias.map(c=>`<option value="${c}">${c}</option>`).join('')}
+      </select>
+    </td>
+    <td style="padding:7px 8px;border-bottom:1px solid var(--border)">
+      <input type="number" placeholder="0" style="width:130px;padding:4px 7px;border-radius:6px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px;text-align:right" class="gasto-monto">
+    </td>
+    <td style="padding:7px 8px;border-bottom:1px solid var(--border)">
+      <button onclick="this.closest('tr').remove()" style="padding:3px 8px;border-radius:6px;border:1px solid #fca5a5;background:#fef2f2;color:#dc2626;font-size:12px;cursor:pointer">✕</button>
+    </td>`;
+  tbody.appendChild(tr);
+}
+
+async function guardarGastos(clientId, mes) {
+  const rows = document.querySelectorAll('#gastosTable tbody tr');
+  const gastos = [];
+  rows.forEach(tr => {
+    const concepto = tr.querySelector('.gasto-concepto')?.value?.trim();
+    const monto = parseFloat(tr.querySelector('.gasto-monto')?.value)||0;
+    const categoria = tr.querySelector('.gasto-cat')?.value || 'otros';
+    if (concepto && monto > 0) gastos.push({ concepto, monto, categoria });
+  });
+  const r = await apiCall('POST', '/api/reporte/gastos', { client_id: clientId, mes, gastos });
+  if (r?.ok) showToast('✅ Gastos guardados');
+}
+
+async function generarPyL() {
+  const clientId = document.getElementById('reporteClientSel')?.value;
+  const period = getReportePeriod();
+  if (!clientId || !period) return;
+
+  const btn = document.getElementById('reportePylBtn');
+  btn.disabled = true; btn.textContent = '⏳ Generando...';
+  const el = document.getElementById('reportePylContent');
+  el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">⏳ Calculando P&L... puede tardar un momento</div>';
+  setReporteTab('pyl', document.getElementById('tab-pyl'));
+
+  try {
+    const pyl = await apiCall('GET', `/api/reporte/pyl?client_id=${clientId}&date_from=${period.date_from}&date_to=${period.date_to}`);
+    if (!pyl || pyl.error) { el.innerHTML = `<div style="color:var(--muted);padding:40px">Error: ${pyl?.error}</div>`; return; }
+    _reportePyl = pyl;
+    renderPyL(pyl);
+    document.getElementById('reporteExcelBtn').style.display = '';
+  } catch(e) {
+    el.innerHTML = `<div style="color:var(--muted);padding:40px">Error: ${e.message}</div>`;
+  } finally {
+    btn.disabled = false; btn.textContent = '⚡ Generar P&L';
+  }
+}
+
+function renderPyL(pyl) {
+  const el = document.getElementById('reportePylContent');
+  const fmtM = v => v!=null ? '$'+Math.round(v).toLocaleString('es-AR') : '—';
+  const fmtP = v => v!=null ? parseFloat(v).toFixed(1)+'%' : '—';
+  const row = (label, value, color, bold, indent) => `
+    <tr>
+      <td style="padding:8px 14px 8px ${indent?'32px':'14px'};font-size:13px;border-bottom:1px solid var(--border);${bold?'font-weight:700':''};color:${color||'var(--text)'}">${label}</td>
+      <td style="padding:8px 14px;font-size:13px;text-align:right;border-bottom:1px solid var(--border);${bold?'font-weight:700':''};color:${color||'var(--text)'}">${fmtM(value)}</td>
+      <td style="padding:8px 14px;font-size:13px;text-align:right;border-bottom:1px solid var(--border);color:var(--muted)">${pyl.ingresos.facturacion>0?fmtP(value/pyl.ingresos.facturacion*100):''}</td>
+    </tr>`;
+  const sec = (label, color) => `
+    <tr><td colspan="3" style="padding:8px 14px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;background:${color};border:1px solid var(--border);color:#444">${label}</td></tr>`;
+
+  const cmvWarning = pyl.cmv.estimado
+    ? `<div style="background:#fef3c7;border:1px solid #fcd34d;border-radius:8px;padding:10px 14px;margin-bottom:14px;font-size:12px;color:#92400e">
+        ⚠ CMV parcial — ${pyl.cmv.cubierto} de ${pyl.cmv.total_items} productos tienen costo cargado. El CMV puede estar subestimado.
+      </div>` : '';
+
+  el.innerHTML = cmvWarning + `
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:20px">
+    <!-- P&L Table -->
+    <div style="overflow-x:auto">
+      <table style="width:100%;border-collapse:collapse">
+        <thead><tr style="background:var(--surface2)">
+          <th style="padding:8px 14px;font-size:11px;color:var(--muted);text-align:left;border-bottom:1px solid var(--border)">Concepto</th>
+          <th style="padding:8px 14px;font-size:11px;color:var(--muted);text-align:right;border-bottom:1px solid var(--border)">Monto</th>
+          <th style="padding:8px 14px;font-size:11px;color:var(--muted);text-align:right;border-bottom:1px solid var(--border)">% Fact</th>
+        </tr></thead>
+        <tbody>
+          ${sec('📥 Ingresos','#ede9fe')}
+          ${row('Facturación productos', pyl.ingresos.facturacion, '', false, true)}
+          ${row('Ingreso por envío (comprador)', pyl.ingresos.envio_comprador, '', false, true)}
+          ${row('TOTAL INGRESOS', pyl.ingresos.total, '#6366f1', true, false)}
+          ${sec('📤 Egresos Mercado Libre','#fee2e2')}
+          ${row('Comisión ML', -pyl.egresos_ml.comision, '#dc2626', false, true)}
+          ${row('Impuestos', -pyl.egresos_ml.impuestos, '#dc2626', false, true)}
+          ${row('Costo envío vendedor', -pyl.egresos_ml.envio_vendedor, '#dc2626', false, true)}
+          ${row('Publicidad (PADS)', -pyl.egresos_ml.publicidad, '#dc2626', false, true)}
+          ${pyl.egresos_ml.reembolsos ? row('Reembolsos', -pyl.egresos_ml.reembolsos, '#dc2626', false, true) : ''}
+          ${row('TOTAL EGRESOS ML', -pyl.egresos_ml.total, '#dc2626', true, false)}
+          ${sec('💰 Resultado','#dcfce7')}
+          ${row('RESULTADO NETO ML', pyl.resultado_neto_ml, pyl.resultado_neto_ml>=0?'#16a34a':'#dc2626', true, false)}
+          ${sec('🏭 CMV','#fef3c7')}
+          ${row('Costo de mercancía vendida', -pyl.cmv.total, '#d97706', true, false)}
+          ${row('UTILIDAD ANTES GASTOS FIJOS', pyl.utilidad_antes_gf, pyl.utilidad_antes_gf>=0?'#16a34a':'#dc2626', true, false)}
+          ${sec('🏢 Gastos Fijos','#f0f4ff')}
+          ${(pyl.gastos_fijos.items||[]).map(g => row(g.concepto, -g.monto, '#6366f1', false, true)).join('')}
+          ${row('TOTAL GASTOS FIJOS', -pyl.gastos_fijos.total, '#6366f1', true, false)}
+          ${sec('📊 Resultado Final','#f0fdf4')}
+          ${row('UTILIDAD FINAL', pyl.utilidad_final, pyl.utilidad_final>=0?'#16a34a':'#dc2626', true, false)}
+        </tbody>
+      </table>
+    </div>
+    <!-- KPIs -->
+    <div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px">
+        ${[
+          ['Facturación', fmtM(pyl.ingresos.facturacion), ''],
+          ['Órdenes', pyl.ordenes.toLocaleString('es-AR'), ''],
+          ['Margen Neto ML', fmtP(pyl.margenes.neto_ml), pyl.resultado_neto_ml>=0?'#16a34a':'#dc2626'],
+          ['Margen Final', fmtP(pyl.margenes.utilidad_final), pyl.utilidad_final>=0?'#16a34a':'#dc2626'],
+          ['CMV', fmtM(pyl.cmv.total), '#d97706'],
+          ['Gastos Fijos', fmtM(pyl.gastos_fijos.total), '#6366f1'],
+          ['Utilidad Final', fmtM(pyl.utilidad_final), pyl.utilidad_final>=0?'#16a34a':'#dc2626'],
+        ].map(([l,v,c]) => `<div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px 14px">
+          <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em">${l}</div>
+          <div style="font-size:18px;font-weight:700;font-family:var(--font-b);color:${c||'var(--text)'};margin-top:4px">${v}</div>
+        </div>`).join('')}
+      </div>
+      <!-- Gastos por categoría -->
+      ${pyl.gastos_fijos.items?.length ? `<div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px">
+        <div style="font-size:12px;font-weight:600;margin-bottom:10px">Gastos fijos por categoría</div>
+        ${Object.entries(pyl.gastos_fijos.items.reduce((acc,g)=>{acc[g.categoria]=(acc[g.categoria]||0)+parseFloat(g.monto);return acc},{}))
+          .sort(([,a],[,b])=>b-a)
+          .map(([cat,monto])=>`<div style="display:flex;justify-content:space-between;font-size:12px;padding:4px 0;border-bottom:1px solid var(--border)">
+            <span style="color:var(--muted)">${cat}</span><strong>${fmtM(monto)}</strong>
+          </div>`).join('')}
+      </div>` : ''}
+    </div>
+  </div>`;
+}
+
+async function exportarReporteExcel() {
+  if (!_reportePyl) return;
+  const pyl = _reportePyl;
+  const XLSX = window.XLSX;
+  if (!XLSX) { showToast('⚠ XLSX no disponible'); return; }
+
+  const wb = XLSX.utils.book_new();
+
+  // Sheet 1: P&L
+  const pylData = [
+    ['REPORTE FINANCIERO', pyl.cliente, '', pyl.periodo.from + ' → ' + pyl.periodo.to],
+    [],
+    ['INGRESOS', '', ''],
+    ['Facturación productos', pyl.ingresos.facturacion],
+    ['Ingreso por envío (comprador)', pyl.ingresos.envio_comprador],
+    ['TOTAL INGRESOS', pyl.ingresos.total],
+    [],
+    ['EGRESOS MERCADO LIBRE', ''],
+    ['Comisión ML', -pyl.egresos_ml.comision],
+    ['Impuestos', -pyl.egresos_ml.impuestos],
+    ['Costo envío vendedor', -pyl.egresos_ml.envio_vendedor],
+    ['Publicidad (PADS)', -pyl.egresos_ml.publicidad],
+    ['Reembolsos', -pyl.egresos_ml.reembolsos],
+    ['TOTAL EGRESOS ML', -pyl.egresos_ml.total],
+    [],
+    ['RESULTADO NETO ML', pyl.resultado_neto_ml],
+    [],
+    ['CMV (Costo Mercancía Vendida)', -pyl.cmv.total],
+    ['UTILIDAD ANTES GASTOS FIJOS', pyl.utilidad_antes_gf],
+    [],
+    ['GASTOS FIJOS', ''],
+    ...(pyl.gastos_fijos.items||[]).map(g => [g.concepto, -g.monto]),
+    ['TOTAL GASTOS FIJOS', -pyl.gastos_fijos.total],
+    [],
+    ['UTILIDAD FINAL', pyl.utilidad_final],
+    ['Margen Neto ML %', pyl.margenes.neto_ml + '%'],
+    ['Margen Utilidad Final %', pyl.margenes.utilidad_final + '%'],
+  ];
+  const ws1 = XLSX.utils.aoa_to_sheet(pylData);
+  XLSX.utils.book_append_sheet(wb, ws1, 'P&L');
+
+  // Sheet 2: Detalle por producto
+  const detalle = [
+    ['MLA', 'Producto', 'Unidades', 'Facturación', 'Costo Unitario', 'CMV Total'],
+    ...(pyl.items_detalle||[]).map(i => [
+      i.mla_id, i.title, i.units, Math.round(i.revenue),
+      i.costo_unit ?? '', i.cmv != null ? Math.round(i.cmv) : ''
+    ])
+  ];
+  const ws2 = XLSX.utils.aoa_to_sheet(detalle);
+  XLSX.utils.book_append_sheet(wb, ws2, 'Detalle por producto');
+
+  // Sheet 3: Gastos fijos
+  const gastosData = [
+    ['Concepto', 'Categoría', 'Monto'],
+    ...(pyl.gastos_fijos.items||[]).map(g => [g.concepto, g.categoria, g.monto])
+  ];
+  const ws3 = XLSX.utils.aoa_to_sheet(gastosData);
+  XLSX.utils.book_append_sheet(wb, ws3, 'Gastos Fijos');
+
+  XLSX.writeFile(wb, `Reporte_${pyl.cliente}_${pyl.periodo.from.slice(0,7)}.xlsx`);
+}
 
 // ── COMPETENCIA ───────────────────────────────────────────────────────────────
-// ── ANÁLISIS DE PUBLICACIÓN COMPETIDOR ───────────────────────────────────────
-app.get('/api/competencia/item', requireAuth, async (req, res) => {
-  try {
-    const { item_id, client_id } = req.query;
-    if (!item_id) return res.status(400).json({ error: 'Falta item_id' });
 
-    const token = await getClientToken(parseInt(client_id));
-    if (!token) return res.status(403).json({ error: 'Sin token' });
-    const headers = { 'Authorization': `Bearer ${token}` };
+function extractMlaFromUrl(input) {
+  const clean = input.trim();
+  // Priority 1: wid= parameter (actual listing ID)
+  const widMatch = clean.match(/[?&]wid=(MLA\d+)/i);
+  if (widMatch) return widMatch[1].toUpperCase();
+  // Priority 2: direct MLA ID (not preceded by /p/)
+  const directMatch = clean.match(/(?<!\/p\/)MLA-?(\d+)/i);
+  if (directMatch) return 'MLA' + directMatch[1];
+  // Priority 3: any MLA (fallback including catalog)
+  const anyMatch = clean.match(/MLA-?(\d+)/i);
+  if (anyMatch) return 'MLA' + anyMatch[1];
+  // Direct ID input
+  if (/^MLA\d+$/i.test(clean)) return clean.toUpperCase();
+  return null;
+}
 
-    // Get app-level token for reading public competitor items
-    const appToken = await getAppToken(parseInt(client_id));
-    const pubHeaders = appToken
-      ? { 'Authorization': `Bearer ${appToken}` }
-      : {}; // fallback: no auth (may fail for some items)
+async function analizarCompetidor() {
+  const input = document.getElementById('compUrlInput')?.value || '';
+  const el = document.getElementById('compAnalisisResult');
+  if (!input.trim()) { el.innerHTML = '<div style="color:#dc2626;font-size:12px;margin-top:8px">Pegá una URL de ML</div>'; return; }
 
-    // ── 1. Item details — use app token to read public items ─────────────────
-    const rawItem = await fetch(
-      `${ML_API}/items/${item_id}`,
-      { headers: pubHeaders }
-    ).then(r => r.json());
-
-    console.log(`[COMP ITEM] ${item_id} keys=${Object.keys(rawItem||{}).join(',')} code=${rawItem.code} error=${rawItem.error} title="${rawItem.title?.slice(0,40)}"`);
-
-    const item = rawItem.body || rawItem;
-    if (rawItem.code && rawItem.code !== 200) {
-      return res.status(404).json({ error: `Publicación no encontrada (${rawItem.code}): ${rawItem.message || 'ID inválido'}` });
-    }
-    if (rawItem.error || !item.id) {
-      return res.status(404).json({ error: `Publicación no encontrada: ${rawItem.message || rawItem.error || 'ID inválido'}` });
-    }
-
-    // ── 2. Visits ─────────────────────────────────────────────────────────────
-    const visitsRes = await fetch(
-      `${ML_API}/items/${item_id}/visits/time_window?last=30&unit=day`,
-      { headers: pubHeaders }
-    ).then(r => r.json()).catch(() => ({}));
-
-    // ── 3. Category name ──────────────────────────────────────────────────────
-    const catRes = await fetch(
-      `${ML_API}/categories/${item.category_id}`,
-      { headers: pubHeaders }
-    ).then(r => r.json()).catch(() => ({}));
-
-    // ── 4. Seller info ────────────────────────────────────────────────────────
-    const sellerRes = await fetch(
-      `${ML_API}/users/${item.seller_id}`,
-      { headers: pubHeaders }
-    ).then(r => r.json()).catch(() => ({}));
-
-    // ── 5. Other items from same seller ──────────────────────────────────────
-    const sellerItemsRes = await fetch(
-      `${ML_API}/users/${item.seller_id}/items/search?status=active&limit=50`,
-      { headers: pubHeaders }
-    ).then(r => r.json()).catch(() => ({ results: [] }));
-
-    let otherItems = [];
-    const otherIds = (sellerItemsRes.results || []).filter(id => id !== item_id).slice(0, 20);
-    if (otherIds.length) {
-      const batchRes = await fetch(
-        `${ML_API}/items?ids=${otherIds.join(',')}&attributes=id,title,price,sold_quantity,available_quantity,listing_type_id,status`,
-        { headers: pubHeaders }
-      ).then(r => r.json()).catch(() => []);
-      otherItems = (Array.isArray(batchRes) ? batchRes : [])
-        .filter(r => r.code === 200 && r.body)
-        .map(r => r.body)
-        .sort((a, b) => (b.sold_quantity || 0) - (a.sold_quantity || 0))
-        .slice(0, 10);
-    }
-
-    // ── 6. Description ────────────────────────────────────────────────────────
-    const descRes = await fetch(
-      `${ML_API}/items/${item_id}/description`,
-      { headers: pubHeaders }
-    ).then(r => r.json()).catch(() => ({}));
-
-    const rep = sellerRes.seller_reputation || {};
-    const repMetrics = rep.metrics || {};
-
-    res.json({
-      item: {
-        id: item.id,
-        title: item.title,
-        price: item.price,
-        original_price: item.original_price,
-        discount_pct: item.original_price && item.price < item.original_price
-          ? Math.round((1 - item.price / item.original_price) * 100) : 0,
-        currency: item.currency_id,
-        condition: item.condition,
-        listing_type: item.listing_type_id,
-        status: item.status,
-        available_quantity: item.available_quantity,
-        sold_quantity: item.sold_quantity,
-        category_id: item.category_id,
-        category_name: catRes.name || item.category_id,
-        catalog_listing: item.catalog_listing,
-        permalink: item.permalink,
-        photo_count: (item.pictures || []).length,
-        photo_urls: (item.pictures || []).slice(0, 5).map(p => p.secure_url || p.url),
-        free_shipping: item.shipping?.free_shipping,
-        logistic_type: item.shipping?.logistic_type,
-        description: descRes.plain_text ? descRes.plain_text.slice(0, 500) : null,
-      },
-      visits_30d: visitsRes.total_visits || 0,
-      conversion_30d: visitsRes.total_visits > 0 && item.sold_quantity > 0
-        ? parseFloat(((item.sold_quantity / visitsRes.total_visits) * 100).toFixed(2)) : null,
-      seller: {
-        id: sellerRes.id,
-        nickname: sellerRes.nickname,
-        registration_date: sellerRes.registration_date,
-        medal: rep.power_seller_status || rep.level_id,
-        total_sales: rep.transactions?.total || 0,
-        completed_sales: rep.transactions?.completed || 0,
-        claims_rate: repMetrics.claims?.rate,
-        cancellations_rate: repMetrics.cancellations?.rate,
-        delays_rate: repMetrics.delayed_handling_time?.rate,
-        total_active_items: sellerItemsRes.paging?.total || otherIds.length,
-      },
-      other_items: otherItems,
-    });
-  } catch(e) {
-    console.error('[COMP ITEM]', e.message);
-    res.status(500).json({ error: e.message });
+  const itemId = extractMlaFromUrl(input);
+  if (!itemId) {
+    el.innerHTML = '<div style="color:#dc2626;font-size:12px;margin-top:8px">No se reconoce el formato. Usá una URL de ML o un ID tipo MLA123456789</div>';
+    return;
   }
-});
 
-app.get('/api/competencia', requireAuth, async (req, res) => {
+  const client = getActiveClient();
+  if (!client) { el.innerHTML = '<div style="color:#dc2626;font-size:12px;margin-top:8px">Seleccioná una cuenta primero</div>'; return; }
+
+  el.innerHTML = `<div style="color:var(--muted);font-size:12px;margin-top:12px">⏳ Analizando ${itemId}...</div>`;
+  console.log('[COMP] itemId extracted:', itemId, 'from:', input.trim().slice(0,80));
+
   try {
-    const uid = req.query.uid;
-    const categoryId = req.query.category_id;
-    const token = await getClientToken(parseInt(req.query.client_id));
-    if (!token) return res.status(403).json({ error: 'Sin token' });
-    const headers = { 'Authorization': `Bearer ${token}` };
-
-    if (categoryId) {
-      // ── Top sellers + price range for a specific category ──────────────────
-      // ML search API is public — no auth header needed, use multiple sort options
-      const searchUrl = `${ML_API}/sites/MLA/search?category=${categoryId}&sort=sold_quantity_desc&limit=50`;
-      const searchUrl2 = `${ML_API}/sites/MLA/search?category=${categoryId}&limit=50`;
-      
-      let searchRes = {};
-      try {
-        searchRes = await fetch(searchUrl, { headers }).then(r => r.json());
-        console.log(`[COMP] category=${categoryId} results=${(searchRes.results||[]).length} total=${searchRes.paging?.total} error=${searchRes.error}`);
-        // Fallback if sort not available
-        if (!searchRes.results || searchRes.results.length === 0) {
-          searchRes = await fetch(searchUrl2, { headers }).then(r => r.json());
-          console.log(`[COMP] fallback results=${(searchRes.results||[]).length}`);
-        }
-      } catch(e) { console.error('[COMP] search error:', e.message); }
-
-      const catRes = await fetch(`${ML_API}/categories/${categoryId}`, { headers }).then(r => r.json()).catch(() => ({}));
-
-      const results = searchRes.results || [];
-      console.log(`[COMP] processing ${results.length} results, first=`, results[0] && { id: results[0].id, seller: results[0].seller, price: results[0].price });
-      
-      const prices = results.map(r => parseFloat(r.price)||0).filter(p => p > 0);
-      const priceStats = prices.length ? {
-        min: Math.min(...prices),
-        max: Math.max(...prices),
-        avg: Math.round(prices.reduce((a,b)=>a+b,0) / prices.length)
-      } : null;
-
-      // Group by seller
-      const sellers = {};
-      results.forEach(r => {
-        const sid = r.seller && (r.seller.id || r.seller);
-        const snick = (r.seller && r.seller.nickname) || (typeof r.seller === 'string' ? r.seller : String(sid));
-        if (!sid) return;
-        if (!sellers[sid]) sellers[sid] = { id: sid, nickname: snick, items: [], total_sold: 0 };
-        sellers[sid].items.push({ id: r.id, title: r.title, price: r.price, sold_quantity: r.sold_quantity || 0 });
-        sellers[sid].total_sold += r.sold_quantity || 0;
-      });
-
-      // My items in this category
-      const myItems = results.filter(r => r.seller && String(r.seller.id || r.seller) === String(uid));
-
-      return res.json({
-        category: { id: categoryId, name: catRes.name || categoryId },
-        price_stats: priceStats,
-        sellers: Object.values(sellers).sort((a,b) => b.total_sold - a.total_sold).slice(0,10),
-        my_items: myItems,
-        top_listings: results.slice(0,50)
-      });
+    const data = await apiCall('GET', `/api/competencia/item?item_id=${itemId}&client_id=${client.id}`);
+    if (!data || data.error) {
+      el.innerHTML = `<div style="color:#dc2626;font-size:12px;margin-top:8px">Error: ${data?.error || 'No se pudo cargar'}</div>`;
+      return;
     }
+    renderCompetidorFicha(data, el);
+  } catch(e) {
+    el.innerHTML = `<div style="color:#dc2626;font-size:12px;margin-top:8px">Error: ${e.message}</div>`;
+  }
+}
 
-    // ── No category: return my categories ────────────────────────────────────
-    let activeIds = [];
-    const r = await fetch(`${ML_API}/users/${uid}/items/search?status=active&limit=100`, { headers }).then(r => r.json());
-    activeIds = r.results || [];
+function renderCompetidorFicha(data, el) {
+  const { item, visits_30d, conversion_30d, seller, other_items } = data;
 
-    const catCount = {};
-    for (let i = 0; i < activeIds.length; i += 20) {
-      const batch = activeIds.slice(i, i+20);
-      try {
-        const data = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,title,category_id`, { headers }).then(r => r.json());
-        (Array.isArray(data) ? data : []).forEach(r => {
-          if (r.code !== 200 || !r.body) return;
-          const cid = r.body.category_id;
-          if (!catCount[cid]) catCount[cid] = { id: cid, name: cid, count: 0 };
-          catCount[cid].count++;
-        });
-      } catch(e) {}
-    }
+  const fmtM = v => v != null ? '$' + parseFloat(v).toLocaleString('es-AR', {maximumFractionDigits:0}) : '—';
+  const fmtN = v => v != null ? parseFloat(v).toLocaleString('es-AR') : '—';
+  const fmtP = v => v != null ? (parseFloat(v)*100).toFixed(2)+'%' : '—';
 
-    // Resolve category names
-    const topCats = Object.values(catCount).sort((a,b) => b.count - a.count).slice(0,15);
-    await Promise.all(topCats.map(async c => {
-      try {
-        const cd = await fetch(`${ML_API}/categories/${c.id}`, { headers }).then(r => r.json());
-        c.name = cd.name || c.id;
-      } catch(e) {}
-    }));
+  const listingBadge = {
+    'gold_special': ['#fef3c7','#d97706','Gold Special'],
+    'gold_pro':     ['#fef9c3','#ca8a04','Gold Pro'],
+    'silver':       ['#f1f5f9','#64748b','Silver'],
+    'free':         ['#f3f4f6','#9ca3af','Gratuita'],
+  };
+  const [lbg, lfc, llbl] = listingBadge[item.listing_type] || ['#f3f4f6','#6b7280', item.listing_type||'—'];
 
-    res.json({ categories: topCats });
-  } catch(e) { console.error('[COMPETENCIA]', e.message); res.status(500).json({ error: e.message }); }
-});
+  const logisticBadge = {
+    'fulfillment': ['#e0e7ff','#4338ca','FULL'],
+    'flex':        ['#dcfce7','#16a34a','FLEX'],
+    'self_service':['#dcfce7','#16a34a','FLEX'],
+  };
+  const [ltbg, ltfc, ltlbl] = logisticBadge[item.logistic_type] || ['#f3f4f6','#6b7280', item.logistic_type||'Correo'];
+
+  const medalColors = { platinum: '#e0e7ff:#4338ca', gold: '#fef3c7:#d97706', silver: '#f1f5f9:#64748b' };
+  const [mbg, mfc] = (medalColors[seller.medal?.toLowerCase()] || '#f3f4f6:#6b7280').split(':');
+
+  // Photos strip
+  const photos = (item.photo_urls || []).map(url =>
+    `<img src="${url}" style="width:60px;height:60px;object-fit:cover;border-radius:6px;border:1px solid var(--border)" onerror="this.style.display='none'">`
+  ).join('');
+
+  // Other items table
+  const otherRows = (other_items || []).map(i => `
+    <tr>
+      <td style="padding:6px 8px;border-bottom:1px solid var(--border);font-size:12px;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${i.title}</td>
+      <td style="padding:6px 8px;border-bottom:1px solid var(--border);font-size:12px;text-align:right;font-weight:600">${fmtM(i.price)}</td>
+      <td style="padding:6px 8px;border-bottom:1px solid var(--border);font-size:12px;text-align:center">${fmtN(i.sold_quantity)}</td>
+      <td style="padding:6px 8px;border-bottom:1px solid var(--border);font-size:12px;text-align:center">${i.available_quantity ?? '—'}</td>
+    </tr>`).join('');
+
+  el.innerHTML = `
+  <div style="margin-top:16px;border-top:1px solid var(--border);padding-top:16px">
+
+    <!-- Header -->
+    <div style="display:flex;gap:14px;margin-bottom:16px;flex-wrap:wrap">
+      ${item.photo_urls?.[0] ? `<img src="${item.photo_urls[0]}" style="width:90px;height:90px;object-fit:cover;border-radius:10px;border:1px solid var(--border);flex-shrink:0">` : ''}
+      <div style="flex:1;min-width:0">
+        <a href="${item.permalink}" target="_blank" style="font-size:15px;font-weight:700;color:var(--text);text-decoration:none;display:block;margin-bottom:6px;line-height:1.3">${item.title}</a>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">
+          <span style="background:${lbg};color:${lfc};padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600">${llbl}</span>
+          <span style="background:${ltbg};color:${ltfc};padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600">${ltlbl}</span>
+          ${item.free_shipping ? '<span style="background:#dcfce7;color:#16a34a;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600">Envío gratis</span>' : ''}
+          ${item.catalog_listing ? '<span style="background:#ede9fe;color:#6d28d9;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600">Catálogo</span>' : ''}
+          ${item.discount_pct > 0 ? `<span style="background:#fee2e2;color:#dc2626;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600">-${item.discount_pct}% OFF</span>` : ''}
+        </div>
+        <div style="font-size:11px;color:var(--muted)">${item.category_name} · ${item.photo_count} foto${item.photo_count!==1?'s':''}</div>
+      </div>
+      <div style="text-align:right;flex-shrink:0">
+        <div style="font-size:26px;font-weight:700;font-family:var(--font-b);color:var(--text)">${fmtM(item.price)}</div>
+        ${item.original_price && item.discount_pct > 0 ? `<div style="font-size:12px;color:var(--muted);text-decoration:line-through">${fmtM(item.original_price)}</div>` : ''}
+      </div>
+    </div>
+
+    <!-- KPIs -->
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:10px;margin-bottom:16px">
+      ${[
+        ['Vendidos total', fmtN(item.sold_quantity), '#6366f1'],
+        ['Stock disponible', item.available_quantity ?? '—', ''],
+        ['Visitas 30d', fmtN(visits_30d), ''],
+        ['Conversión 30d', conversion_30d != null ? conversion_30d+'%' : '—', ''],
+      ].map(([l,v,c]) => `<div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:10px 12px">
+        <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em">${l}</div>
+        <div style="font-size:18px;font-weight:700;font-family:var(--font-b);color:${c||'var(--text)'};margin-top:4px">${v}</div>
+      </div>`).join('')}
+    </div>
+
+    <!-- Seller + otras pubs -->
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;flex-wrap:wrap">
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px">
+        <div style="font-size:12px;font-weight:600;margin-bottom:10px">👤 Vendedor</div>
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+          <span style="font-size:14px;font-weight:700">${seller.nickname}</span>
+          <span style="background:${mbg};color:${mfc};padding:2px 8px;border-radius:4px;font-size:10px;font-weight:600">${(seller.medal||'—').toUpperCase()}</span>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:12px">
+          ${[
+            ['Ventas totales', fmtN(seller.total_sales)],
+            ['Pubs activas', fmtN(seller.total_active_items)],
+            ['% Reclamos', fmtP(seller.claims_rate)],
+            ['% Cancelaciones', fmtP(seller.cancellations_rate)],
+            ['% Demoras', fmtP(seller.delays_rate)],
+          ].map(([l,v]) => `<div><div style="color:var(--muted);font-size:10px">${l}</div><div style="font-weight:600">${v}</div></div>`).join('')}
+        </div>
+      </div>
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px">
+        <div style="font-size:12px;font-weight:600;margin-bottom:10px">📋 Otras publicaciones del vendedor (top por ventas)</div>
+        ${otherRows ? `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse">
+          <thead><tr style="background:var(--surface2)">
+            <th style="padding:6px 8px;font-size:10px;color:var(--muted);text-align:left;border-bottom:1px solid var(--border)">Producto</th>
+            <th style="padding:6px 8px;font-size:10px;color:var(--muted);text-align:right;border-bottom:1px solid var(--border)">Precio</th>
+            <th style="padding:6px 8px;font-size:10px;color:var(--muted);text-align:center;border-bottom:1px solid var(--border)">Vendidos</th>
+            <th style="padding:6px 8px;font-size:10px;color:var(--muted);text-align:center;border-bottom:1px solid var(--border)">Stock</th>
+          </tr></thead>
+          <tbody>${otherRows}</tbody>
+        </table></div>` : '<div style="color:var(--muted);font-size:12px">Sin otras publicaciones</div>'}
+      </div>
+    </div>
+
+    ${item.description ? `<div style="margin-top:12px;background:var(--surface2);border-radius:8px;padding:12px;font-size:12px;color:var(--muted);max-height:80px;overflow:hidden">${item.description}...</div>` : ''}
+
+  </div>`;
+}
+async function loadCompetencia() {
+  const el = document.getElementById('competenciaContent');
+  el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">⏳ Cargando categorías...</div>';
+  try {
+    const client = getActiveClient();
+    if (!client || !client.ml_user_id) { el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">Sin cuenta conectada — seleccioná una cuenta en el topbar</div>'; return; }
+    const data = await apiCall('GET', `/api/competencia?uid=${client.ml_user_id}&client_id=${client.id}`);
+    renderCompetenciaCategorias((data && data.categories) || [], client);
+  } catch(e) {
+    el.innerHTML = `<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Error: ${e.message}</div>`;
+  }
+}
+
+function renderCompetenciaCategorias(cats, client) {
+  const el = document.getElementById('competenciaContent');
+  if (!cats.length) { el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">No se encontraron categorías</div>'; return; }
+
+  const uid = client.ml_user_id || client.userId;
+  const cid = client.id;
+  const cards = cats.map(c => `
+    <div onclick="loadCompetenciaDetalle('${c.id}','${c.name.replace(/'/g,"\\'")}',${uid},${cid})"
+         style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px 16px;cursor:pointer;transition:border-color 0.15s"
+         onmouseover="this.style.borderColor='var(--accent)'" onmouseout="this.style.borderColor='var(--border)'">
+      <div style="font-size:13px;font-weight:600;margin-bottom:4px">${c.name}</div>
+      <div style="font-size:11px;color:var(--muted)">${c.count} publicación${c.count!==1?'es':''} tuya${c.count!==1?'s':''}</div>
+      <div style="font-size:11px;color:var(--accent);margin-top:6px">Ver competidores →</div>
+    </div>`).join('');
+
+  el.innerHTML = `<div style="font-size:13px;color:var(--muted);margin-bottom:16px">Tus categorías con más publicaciones — hacé click para ver la competencia</div>
+  <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px">${cards}</div>`;
+}
+
+async function loadCompetenciaDetalle(catId, catName, uid, clientId) {
+  const el = document.getElementById('competenciaContent');
+  el.innerHTML = `<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">⏳ Analizando categoría <strong>${catName}</strong>...</div>`;
+  try {
+    const data = await apiCall('GET', `/api/competencia?uid=${uid}&client_id=${clientId}&category_id=${catId}`);
+    if (data) renderCompetenciaDetalle(data, uid);
+    else el.innerHTML = '<div style="color:var(--muted);padding:40px">Error al cargar categoría</div>';
+  } catch(e) {
+    el.innerHTML = `<div style="color:var(--muted);font-size:13px;padding:40px">Error: ${e.message}</div>`;
+  }
+}
+
+function renderCompetenciaDetalle(data, uid) {
+  const el = document.getElementById('competenciaContent');
+  const { category, price_stats, sellers, my_items, top_listings } = data;
+
+  const backBtn = `<button onclick="loadCompetencia()" style="padding:6px 14px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:12px;cursor:pointer;margin-bottom:16px">← Volver a categorías</button>`;
+
+  const priceCard = price_stats ? `<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px;margin-bottom:16px">
+    <div style="font-size:13px;font-weight:600;margin-bottom:12px">💰 Rango de precios — <span style="color:var(--accent)">${category.name}</span></div>
+    <div style="display:flex;gap:20px;flex-wrap:wrap">
+      ${[['Mínimo','$'+price_stats.min.toLocaleString('es-AR')],['Promedio','$'+price_stats.avg.toLocaleString('es-AR')],['Máximo','$'+price_stats.max.toLocaleString('es-AR')]].map(([l,v])=>`
+        <div><div style="font-size:11px;color:var(--muted)">${l}</div><div style="font-size:18px;font-weight:700;font-family:var(--font-b)">${v}</div></div>`).join('')}
+    </div>
+  </div>` : '';
+
+  // My items vs market
+  const myCard = my_items.length ? `<div style="background:#f0f4ff;border:1px solid #c7d2fe;border-radius:12px;padding:16px;margin-bottom:16px">
+    <div style="font-size:13px;font-weight:600;margin-bottom:10px">🎯 Tus publicaciones en esta categoría</div>
+    ${my_items.map(i => {
+      const diff = price_stats ? Math.round(((i.price - price_stats.avg) / price_stats.avg) * 100) : null;
+      const diffStr = diff != null ? `<span style="color:${Math.abs(diff)<10?'#16a34a':diff>0?'#dc2626':'#d97706'};font-size:11px;margin-left:8px">${diff>0?'+':''}${diff}% vs promedio</span>` : '';
+      return `<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid #c7d2fe;font-size:12px">
+        <span style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${i.title}</span>
+        <span style="font-weight:600">$${(i.price||0).toLocaleString('es-AR')}${diffStr}</span>
+      </div>`;
+    }).join('')}
+  </div>` : '';
+
+  // Top sellers
+  const sellersRows = (sellers||[]).map((s,idx) => {
+    const isMe = String(s.id) === String(uid);
+    return `<tr style="${isMe?'background:#f0f4ff':''}">
+      <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;font-weight:600">#${idx+1}</td>
+      <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px">
+        ${isMe?'<span style="color:#4338ca;font-weight:600">▶ </span>':''}${s.nickname}${isMe?' (vos)':''}
+      </td>
+      <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;text-align:center">${s.items.length}</td>
+      <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;text-align:right;font-weight:600">${s.total_sold.toLocaleString('es-AR')}</td>
+    </tr>`;
+  }).join('');
+
+  const topRows = (top_listings||[]).map((i,idx) => {
+    const isMe = i.seller && String(i.seller.id) === String(uid);
+    return `<tr style="${isMe?'background:#f0f4ff':''}">
+      <td style="padding:7px 10px;border-bottom:1px solid var(--border);font-size:11px;color:var(--muted)">${idx+1}</td>
+      <td style="padding:7px 10px;border-bottom:1px solid var(--border);font-size:12px;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+        <a href="${i.permalink||'#'}" target="_blank" style="color:var(--text);text-decoration:none">${i.title}</a>
+        ${isMe?'<span style="color:#4338ca;font-size:10px;font-weight:600;margin-left:6px">[Tuya]</span>':''}
+      </td>
+      <td style="padding:7px 10px;border-bottom:1px solid var(--border);font-size:12px;text-align:right;font-weight:600">$${(i.price||0).toLocaleString('es-AR')}</td>
+      <td style="padding:7px 10px;border-bottom:1px solid var(--border);font-size:12px;text-align:center">${i.sold_quantity||0}</td>
+      <td style="padding:7px 10px;border-bottom:1px solid var(--border);font-size:12px">${i.seller&&i.seller.nickname||'—'}</td>
+    </tr>`;
+  }).join('');
+
+  el.innerHTML = backBtn + priceCard + myCard +
+  `<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;flex-wrap:wrap">
+    <div>
+      <div style="font-size:13px;font-weight:600;margin-bottom:10px">🏆 Top vendedores</div>
+      <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse">
+        <thead><tr style="background:var(--surface2)">
+          <th style="padding:7px 10px;font-size:11px;color:var(--muted);border-bottom:1px solid var(--border)">#</th>
+          <th style="padding:7px 10px;font-size:11px;color:var(--muted);border-bottom:1px solid var(--border);text-align:left">Vendedor</th>
+          <th style="padding:7px 10px;font-size:11px;color:var(--muted);border-bottom:1px solid var(--border)">Pubs</th>
+          <th style="padding:7px 10px;font-size:11px;color:var(--muted);border-bottom:1px solid var(--border);text-align:right">Ventas</th>
+        </tr></thead>
+        <tbody>${sellersRows}</tbody>
+      </table></div>
+    </div>
+    <div>
+      <div style="font-size:13px;font-weight:600;margin-bottom:10px">📋 Top 20 publicaciones</div>
+      <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse">
+        <thead><tr style="background:var(--surface2)">
+          <th style="padding:7px 10px;font-size:11px;color:var(--muted);border-bottom:1px solid var(--border)">#</th>
+          <th style="padding:7px 10px;font-size:11px;color:var(--muted);border-bottom:1px solid var(--border);text-align:left">Título</th>
+          <th style="padding:7px 10px;font-size:11px;color:var(--muted);border-bottom:1px solid var(--border);text-align:right">Precio</th>
+          <th style="padding:7px 10px;font-size:11px;color:var(--muted);border-bottom:1px solid var(--border)">Vendidos</th>
+          <th style="padding:7px 10px;font-size:11px;color:var(--muted);border-bottom:1px solid var(--border)">Vendedor</th>
+        </tr></thead>
+        <tbody>${topRows}</tbody>
+      </table></div>
+    </div>
+  </div>`;
+}
+
+// ── DIAGNÓSTICO MENSUAL ───────────────────────────────────────────────────────
 
 // ── PROMOCIONES ───────────────────────────────────────────────────────────────
-app.get('/api/promociones', requireAuth, async (req, res) => {
+async function loadPromociones() {
+  const el = document.getElementById('promoContent');
+  el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">⏳ Consultando promociones...</div>';
   try {
-    const token = await getClientToken(parseInt(req.query.client_id));
-    if (!token) return res.status(403).json({ error: 'Sin token' });
-    const headers = { 'Authorization': `Bearer ${token}` };
-    const uid = req.query.uid;
-
-    // Try multiple promotion endpoints — ML has different ones depending on app level
-    const results = { raw: {}, promos: [], items_in_promo: {} };
-
-    // ── 1. Seller promotions ──────────────────────────────────────────────────
-    try {
-      const r = await fetch(`${ML_API}/seller-promotions/promotions?seller_id=${uid}&app_version=v2`, { headers }).then(r => r.json());
-      results.raw.seller_promotions = r;
-      console.log('[PROMOS] seller-promotions:', JSON.stringify(r).slice(0,300));
-    } catch(e) { results.raw.seller_promotions_err = e.message; }
-
-    // ── 2. Deals / campaigns ──────────────────────────────────────────────────
-    try {
-      const r = await fetch(`${ML_API}/seller-promotions/users/${uid}/promotions`, { headers }).then(r => r.json());
-      results.raw.user_promotions = r;
-      console.log('[PROMOS] user-promotions:', JSON.stringify(r).slice(0,300));
-    } catch(e) { results.raw.user_promotions_err = e.message; }
-
-    // ── 3. Discount campaigns ─────────────────────────────────────────────────
-    try {
-      const r = await fetch(`${ML_API}/campaigns?seller_id=${uid}`, { headers }).then(r => r.json());
-      results.raw.campaigns = r;
-      console.log('[PROMOS] campaigns:', JSON.stringify(r).slice(0,300));
-    } catch(e) { results.raw.campaigns_err = e.message; }
-
-    // ── Parse whichever endpoint worked ──────────────────────────────────────
-    const parsePromos = (data) => {
-      if (!data) return [];
-      const arr = data.results || data.promotions || data.data || (Array.isArray(data) ? data : []);
-      return arr.map(p => ({
-        id: p.id,
-        name: p.name || p.promotion_name || p.title || '—',
-        type: p.type || p.promotion_type || '—',
-        status: p.status || '—',
-        date_from: p.start_time || p.date_from || p.start_date || null,
-        date_to: p.finish_time || p.date_to || p.end_date || null,
-        discount_pct: p.action?.value || p.discount_percentage || null,
-        item_count: p.items_count || (p.items && p.items.length) || 0,
-      }));
-    };
-
-    const sp = results.raw.seller_promotions;
-    const up = results.raw.user_promotions;
-    results.promos = [
-      ...parsePromos(sp),
-      ...parsePromos(up),
-    ].filter((p, i, arr) => arr.findIndex(x => x.id === p.id) === i); // dedupe
-
-    res.json(results);
-  } catch(e) { console.error('[PROMOS]', e.message); res.status(500).json({ error: e.message }); }
-});
-
-// ── DEVOLUCIONES ──────────────────────────────────────────────────────────────
-// ── PREGUNTAS ─────────────────────────────────────────────────────────────────
-app.get('/api/preguntas', requireAuth, async (req, res) => {
-  try {
-    const token = await getClientToken(parseInt(req.query.client_id));
-    if (!token) return res.status(403).json({ error: 'Sin token' });
-    const headers = { 'Authorization': `Bearer ${token}` };
-    const uid = req.query.uid;
-    const now = new Date();
-    let dateFrom, dateTo;
-    if (req.query.date_from && req.query.date_to) {
-      dateFrom = new Date(req.query.date_from + 'T00:00:00');
-      dateTo   = new Date(req.query.date_to   + 'T23:59:59');
-    } else {
-      const days = parseInt(req.query.days) || 30;
-      dateFrom = new Date(now.getTime() - days * 24*60*60*1000);
-      dateTo   = now;
+    const client = getActiveClient();
+    if (!client || !client.ml_user_id) {
+      el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">Sin cuenta conectada — seleccioná una cuenta en el topbar</div>';
+      return;
     }
+    const data = await apiCall('GET', `/api/promociones?uid=${client.ml_user_id}&client_id=${client.id}`);
+    if (!data) { el.innerHTML = '<div style="color:var(--muted);padding:40px">Error al cargar</div>'; return; }
+    renderPromociones(data);
+  } catch(e) {
+    el.innerHTML = `<div style="color:var(--muted);font-size:13px;padding:40px">Error: ${e.message}</div>`;
+  }
+}
 
-    // ── 1. Fetch all answered questions in period ─────────────────────────────
-    let allQuestions = [];
-    let offset = 0;
-    while (true) {
-      const url = `${ML_API}/questions/search?seller_id=${uid}&status=ANSWERED&sort_fields=date_created&sort_types=DESC&limit=50&offset=${offset}`;
-      const r = await fetch(url, { headers }).then(r => r.json()).catch(() => ({}));
-      const qs = r.questions || r.data || [];
-      if (!qs.length) break;
-      // filter by period
-      const inRange = qs.filter(q => {
-        const d = new Date(q.date_created);
-        return d >= dateFrom && d <= dateTo;
-      });
-      allQuestions = allQuestions.concat(inRange);
-      // if all results are before dateFrom, stop
-      const oldest = new Date(qs[qs.length-1].date_created);
-      if (oldest < dateFrom || qs.length < 50) break;
-      offset += 50;
-      if (offset > 1000) break;
-    }
+function renderPromociones(data) {
+  const el = document.getElementById('promoContent');
+  const { promos, raw } = data;
 
-    // ── 2. Fetch unanswered questions ─────────────────────────────────────────
-    let unanswered = 0;
-    try {
-      const ur = await fetch(`${ML_API}/questions/search?seller_id=${uid}&status=UNANSWERED&limit=1`, { headers }).then(r => r.json());
-      unanswered = (ur.paging && ur.paging.total) || 0;
-    } catch(e) {}
+  const statusBadge = s => {
+    const map = { active: ['#dcfce7','#16a34a','Activa'], started: ['#dcfce7','#16a34a','Activa'],
+                  paused: ['#fef3c7','#d97706','Pausada'], finished: ['#f3f4f6','#6b7280','Finalizada'],
+                  expired: ['#f3f4f6','#6b7280','Expirada'] };
+    const [bg, fg, label] = map[s] || ['#f3f4f6','#6b7280', s||'—'];
+    return `<span style="background:${bg};color:${fg};padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600">${label}</span>`;
+  };
 
-    // ── 3. Calculate response times ───────────────────────────────────────────
-    const responseTimes = []; // in minutes
-    const byHour = { lv_business: [], lv_night: [], weekend: [] }; // arrays of minutes
+  const fmtDate = d => d ? new Date(d).toLocaleDateString('es-AR', {day:'2-digit',month:'short',year:'numeric'}) : '—';
 
-    allQuestions.forEach(q => {
-      if (!q.answer || !q.answer.date_created) return;
-      const asked  = new Date(q.date_created);
-      const answered = new Date(q.answer.date_created);
-      const mins = Math.round((answered - asked) / 60000);
-      if (mins < 0 || mins > 43200) return; // ignore >30 days (stale answers)
-      responseTimes.push(mins);
+  if (!promos || !promos.length) {
+    // Show raw response for debugging
+    el.innerHTML = `
+      <div style="background:#fef3c7;border:1px solid #fcd34d;border-radius:10px;padding:16px;margin-bottom:20px">
+        <div style="font-size:13px;font-weight:600;margin-bottom:6px">⚠ No se encontraron promociones activas</div>
+        <div style="font-size:12px;color:#92400e">Puede ser que esta cuenta no tenga promociones, o que la app no tenga permisos suficientes para verlas.</div>
+      </div>
+      <div style="font-size:12px;font-weight:600;color:var(--muted);margin-bottom:8px;text-transform:uppercase;letter-spacing:0.05em">Respuesta raw de la API (para diagnóstico)</div>
+      <pre style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:14px;font-size:11px;overflow-x:auto;white-space:pre-wrap;color:var(--text)">${JSON.stringify(raw, null, 2).slice(0, 3000)}</pre>`;
+    return;
+  }
 
-      const day  = asked.getDay(); // 0=Sun, 6=Sat
-      const hour = asked.getHours();
-      const isWeekend = day === 0 || day === 6;
-      const isBusinessHours = !isWeekend && hour >= 9 && hour < 18;
-      const isNight = !isWeekend && (hour >= 18 || hour < 9);
+  const rows = promos.map(p => `
+    <tr>
+      <td style="padding:10px 12px;border-bottom:1px solid var(--border);font-size:12px;font-weight:600;color:var(--accent)">${p.id||'—'}</td>
+      <td style="padding:10px 12px;border-bottom:1px solid var(--border);font-size:12px">${p.name}</td>
+      <td style="padding:10px 12px;border-bottom:1px solid var(--border);font-size:12px">${p.type}</td>
+      <td style="padding:10px 12px;border-bottom:1px solid var(--border)">${statusBadge(p.status)}</td>
+      <td style="padding:10px 12px;border-bottom:1px solid var(--border);font-size:12px;text-align:center">
+        ${p.discount_pct != null ? `<span style="font-size:16px;font-weight:700;color:#dc2626">-${p.discount_pct}%</span>` : '—'}
+      </td>
+      <td style="padding:10px 12px;border-bottom:1px solid var(--border);font-size:12px;text-align:center">${p.item_count || '—'}</td>
+      <td style="padding:10px 12px;border-bottom:1px solid var(--border);font-size:12px;color:var(--muted)">${fmtDate(p.date_from)}</td>
+      <td style="padding:10px 12px;border-bottom:1px solid var(--border);font-size:12px;color:var(--muted)">${fmtDate(p.date_to)}</td>
+    </tr>`).join('');
 
-      if (isBusinessHours) byHour.lv_business.push(mins);
-      else if (isNight)    byHour.lv_night.push(mins);
-      else                 byHour.weekend.push(mins);
-    });
+  const active = promos.filter(p => p.status === 'active' || p.status === 'started').length;
 
-    const avg = arr => arr.length ? Math.round(arr.reduce((a,b)=>a+b,0)/arr.length) : null;
-    const median = arr => {
-      if (!arr.length) return null;
-      const s = [...arr].sort((a,b)=>a-b);
-      return s[Math.floor(s.length/2)];
-    };
-    const fmtTime = mins => {
-      if (mins === null) return null;
-      if (mins === 0) return '< 1min';
-      if (mins < 60) return mins + 'min';
-      if (mins < 1440) return (mins/60).toFixed(1).replace('.0','') + 'hs';
-      return (mins/1440).toFixed(1).replace('.0','') + 'd';
-    };
-
-    const avgBusiness = avg(byHour.lv_business);
-    const avgNight    = avg(byHour.lv_night);
-    const avgWeekend  = avg(byHour.weekend);
-    const medianAll   = median(responseTimes);
-    console.log(`[PREGUNTAS] total=${allQuestions.length} lv_business=${byHour.lv_business.length}(avg=${avgBusiness}min) lv_night=${byHour.lv_night.length}(avg=${avgNight}min) weekend=${byHour.weekend.length}(avg=${avgWeekend}min)`);
-
-    // ── 4. Cross buyers: questions → orders ───────────────────────────────────
-    const questionBuyerIds = new Set(allQuestions.map(q => q.from && String(q.from.id)).filter(Boolean));
-
-    // Fetch orders in period
-    const fmt = d => new Date(d).toISOString().slice(0,19) + '.000-00:00';
-    const { orders } = await fetchAllOrders(uid, headers, fmt(dateFrom), fmt(dateTo));
-    const orderBuyerIds = new Set(orders.map(o => o.buyer && String(o.buyer.id)).filter(Boolean));
-
-    // Buyers who asked AND bought
-    const convertedBuyers = [...questionBuyerIds].filter(id => orderBuyerIds.has(id));
-    const ventasPostPregunta = convertedBuyers.length;
-
-    // Unique buyers who asked
-    const uniqueAskers = questionBuyerIds.size;
-    const tasaConversion = uniqueAskers > 0 ? parseFloat(((ventasPostPregunta / uniqueAskers) * 100).toFixed(1)) : 0;
-
-    res.json({
-      total_preguntas:    allQuestions.length,
-      respondidas:        allQuestions.filter(q => q.answer).length,
-      sin_responder:      unanswered,
-      compradores_unicos: uniqueAskers,
-      tiempo_promedio:    fmtTime(avg(responseTimes)),
-      tiempo_mediana:     fmtTime(medianAll),
-      tiempo_lv_business: fmtTime(avgBusiness),
-      tiempo_lv_noche:    fmtTime(avgNight),
-      tiempo_finde:       fmtTime(avgWeekend),
-      // raw minutes for frontend color coding
-      mins_lv_business:   avgBusiness,
-      mins_lv_noche:      avgNight,
-      mins_finde:         avgWeekend,
-      mins_mediana:       medianAll,
-      ventas_post_pregunta: ventasPostPregunta,
-      tasa_conversion:    tasaConversion,
-      total_compradores_periodo: orderBuyerIds.size,
-    });
-  } catch(e) { console.error('[PREGUNTAS]', e.message, e.stack); res.status(500).json({ error: e.message }); }
-});
-
-app.get('/api/devoluciones', requireAuth, async (req, res) => {
-  try {
-    const uid = req.query.uid;
-    const token = await getClientToken(parseInt(req.query.client_id));
-    if (!token) return res.status(403).json({ error: 'Sin token' });
-    const headers = { 'Authorization': `Bearer ${token}` };
-    const now2 = new Date();
-    let fromDate, toDate;
-    if (req.query.date_from && req.query.date_to) {
-      fromDate = req.query.date_from + 'T00:00:00';
-      toDate   = req.query.date_to   + 'T23:59:59';
-    } else {
-      const days = parseInt(req.query.days) || 30;
-      fromDate = new Date(now2.getTime() - days*24*60*60*1000).toISOString().slice(0,19);
-      toDate   = now2.toISOString().slice(0,19);
-    }
-    const fmt = d => new Date(d).toISOString().slice(0,19) + '.000-00:00';
-
-    // Fetch refunded orders
-    const url = `${ML_API}/orders/search?seller=${uid}&order.status=partially_refunded&sort=date_desc&limit=50&order.date_created.from=${encodeURIComponent(fmt(fromDate))}&order.date_created.to=${encodeURIComponent(fmt(toDate))}`;
-    const [refundedRes, cancelledRes] = await Promise.all([
-      fetch(url, { headers }).then(r => r.json()).catch(() => ({results:[]})),
-      fetch(`${ML_API}/orders/search?seller=${uid}&order.status=cancelled&sort=date_desc&limit=50&order.date_created.from=${encodeURIComponent(fmt(fromDate))}&order.date_created.to=${encodeURIComponent(fmt(toDate))}`, { headers }).then(r => r.json()).catch(() => ({results:[]}))
-    ]);
-
-    const refunded  = refundedRes.results  || [];
-    const cancelled = cancelledRes.results || [];
-
-    const mapOrder = o => ({
-      id: o.id,
-      date: o.date_created,
-      buyer: o.buyer && o.buyer.nickname,
-      amount: parseFloat(o.total_amount) || 0,
-      status: o.status,
-      items: (o.order_items||[]).map(oi => ({ title: oi.item && oi.item.title, qty: oi.quantity, price: oi.unit_price })),
-      cancel_reason: o.cancel_detail || null
-    });
-
-    const allDev = [...refunded.map(mapOrder), ...cancelled.map(mapOrder)];
-    const totalMonto = allDev.reduce((s,o) => s + o.amount, 0);
-
-    res.json({
-      devoluciones: allDev,
-      total: allDev.length,
-      monto_total: totalMonto,
-      canceladas: cancelled.length,
-      reembolsadas: refunded.length
-    });
-  } catch(e) { console.error('[DEVOLUCIONES]', e.message); res.status(500).json({ error: e.message }); }
-});
-app.get('/login', (req, res) => {
-  const error = req.query.error || '';
-  res.send(`<!DOCTYPE html><html><head>
-  <meta charset="UTF-8">
-  <title>ML Centro — Login</title>
-  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;700&display=swap" rel="stylesheet">
-  <style>
-    *{box-sizing:border-box;margin:0;padding:0}
-    body{font-family:Poppins,sans-serif;background:#F5F6FA;display:flex;align-items:center;justify-content:center;min-height:100vh}
-    .box{background:#fff;border-radius:20px;padding:44px 40px;width:380px;box-shadow:0 8px 32px rgba(0,0,0,.10)}
-    .logo{text-align:center;margin-bottom:32px}
-    .icon{width:48px;height:48px;background:#FFD600;border-radius:12px;display:flex;align-items:center;justify-content:center;margin:0 auto 16px;font-size:24px}
-    h1{font-size:22px;font-weight:700;color:#1A1D2E}
-    p{color:#8B90A7;font-size:13px;margin-top:4px}
-    label{display:block;font-size:11px;font-weight:600;color:#8B90A7;margin-bottom:6px;text-transform:uppercase;letter-spacing:.5px}
-    .field{margin-bottom:16px}
-    input{width:100%;background:#F0F2F8;border:1.5px solid #E4E7F0;border-radius:10px;padding:11px 14px;font-family:Poppins,sans-serif;font-size:14px;outline:none;color:#1A1D2E}
-    input:focus{border-color:#1A1D2E;background:#fff}
-    button{width:100%;background:#FFD600;border:none;border-radius:10px;padding:13px;font-family:Poppins,sans-serif;font-size:14px;font-weight:700;cursor:pointer;margin-top:8px;color:#1A1D2E}
-    .error{color:#FF4444;font-size:12px;margin-top:10px;text-align:center;font-weight:500}
-  </style>
-  </head><body>
-  <div class="box">
-    <div class="logo">
-      <div class="icon">📊</div>
-      <h1>ML Centro</h1>
-      <p>Dashboard de Mercado Libre</p>
+  el.innerHTML = `
+    <div style="display:flex;gap:12px;margin-bottom:20px;flex-wrap:wrap">
+      ${[['Total', promos.length, ''],['Activas', active, '#22c55e'],['Pausadas/expiradas', promos.length - active, '#6b7280']]
+        .map(([l,v,c]) => `<div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px 18px">
+          <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em">${l}</div>
+          <div style="font-size:22px;font-weight:700;font-family:var(--font-b);color:${c||'var(--text)'};margin-top:4px">${v}</div>
+        </div>`).join('')}
     </div>
-    <form method="POST" action="/login">
-      <div class="field"><label>Usuario</label><input name="username" type="text" autocomplete="username" required></div>
-      <div class="field"><label>Contraseña</label><input name="password" type="password" autocomplete="current-password" required></div>
-      <button type="submit">Ingresar</button>
-      ${error ? '<div class="error">' + error + '</div>' : ''}
-    </form>
-  </div>
-  </body></html>`);
-});
+    <div style="overflow-x:auto">
+    <table style="width:100%;border-collapse:collapse">
+      <thead><tr style="background:var(--surface2)">
+        <th style="padding:8px 12px;text-align:left;font-size:11px;font-weight:600;color:var(--muted);border-bottom:1px solid var(--border)">ID</th>
+        <th style="padding:8px 12px;text-align:left;font-size:11px;font-weight:600;color:var(--muted);border-bottom:1px solid var(--border)">Nombre</th>
+        <th style="padding:8px 12px;text-align:left;font-size:11px;font-weight:600;color:var(--muted);border-bottom:1px solid var(--border)">Tipo</th>
+        <th style="padding:8px 12px;text-align:left;font-size:11px;font-weight:600;color:var(--muted);border-bottom:1px solid var(--border)">Estado</th>
+        <th style="padding:8px 12px;text-align:center;font-size:11px;font-weight:600;color:var(--muted);border-bottom:1px solid var(--border)">Descuento</th>
+        <th style="padding:8px 12px;text-align:center;font-size:11px;font-weight:600;color:var(--muted);border-bottom:1px solid var(--border)">Ítems</th>
+        <th style="padding:8px 12px;text-align:left;font-size:11px;font-weight:600;color:var(--muted);border-bottom:1px solid var(--border)">Inicio</th>
+        <th style="padding:8px 12px;text-align:left;font-size:11px;font-weight:600;color:var(--muted);border-bottom:1px solid var(--border)">Fin</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>`;
+}
 
-app.post('/login', async (req, res) => {
+// ── TOKEN STATUS ──────────────────────────────────────────────────────────────
+let _tokenStatusInterval = null;
+
+async function loadTokenStatus() {
+  const el = document.getElementById('tokenStatusContent');
+  if (!el) return;
   try {
-    const { username, password } = req.body;
-    if (!username || !password) return res.redirect('/login?error=Completá+usuario+y+contraseña');
-    const hash = require('crypto').createHash('sha256').update(password).digest('hex');
-    const result = await pool.query('SELECT * FROM users WHERE username = $1 AND password_hash = $2', [username, hash]);
-    if (!result.rows.length) return res.redirect('/login?error=Usuario+o+contraseña+incorrectos');
-    const sessionId = require('crypto').randomBytes(32).toString('hex');
-    await pool.query('INSERT INTO sessions (id, user_id) VALUES ($1, $2)', [sessionId, result.rows[0].id]);
-    res.cookie('ml_session_id', sessionId, { maxAge: 7*24*60*60*1000, httpOnly: false, sameSite: 'lax', path: '/' });
-    res.cookie('ml_session_user', result.rows[0].username, { maxAge: 7*24*60*60*1000, httpOnly: false, sameSite: 'lax', path: '/' });
-    res.cookie('ml_session_role', result.rows[0].role, { maxAge: 7*24*60*60*1000, httpOnly: false, sameSite: 'lax', path: '/' });
-    res.send(`<!DOCTYPE html><html><head>
-  <meta charset="UTF-8">
-  <title>ML Centro</title>
-  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;700&display=swap" rel="stylesheet">
-  <style>
-    body{font-family:Poppins,sans-serif;background:#F5F6FA;display:flex;align-items:center;justify-content:center;min-height:100vh;flex-direction:column;gap:16px}
-    .box{background:#fff;border-radius:20px;padding:40px;text-align:center;box-shadow:0 8px 32px rgba(0,0,0,.10);width:360px}
-    h2{font-size:20px;font-weight:700;margin-bottom:8px}
-    p{color:#8B90A7;font-size:13px;margin-bottom:24px}
-    a{display:block;background:#FFD600;border-radius:10px;padding:13px;font-weight:700;font-size:14px;text-decoration:none;color:#1A1D2E}
-    code{background:#F0F2F8;padding:4px 8px;border-radius:6px;font-size:11px;word-break:break-all;display:block;margin-bottom:16px;text-align:left}
-  </style>
-  </head><body>
-  <div class="box">
-    <h2>✅ Login exitoso</h2>
-    <p>Tu sesión:</p>
-    <code>${sessionId}</code>
-    <a href="/?sid=${sessionId}">Entrar al Dashboard →</a>
-  </div>
-  </body></html>`);
-  } catch(e) { res.redirect('/login?error=' + encodeURIComponent(e.message)); }
-});
+    const data = await apiCall('GET', '/api/token-status');
+    if (!data) return;
+    renderTokenStatus(data);
+    // Auto-refresh every 60s while on this page
+    if (!_tokenStatusInterval) {
+      _tokenStatusInterval = setInterval(() => {
+        if (document.getElementById('page-tokens').classList.contains('active')) {
+          loadTokenStatus();
+        } else {
+          clearInterval(_tokenStatusInterval);
+          _tokenStatusInterval = null;
+        }
+      }, 60000);
+    }
+  } catch(e) {
+    el.innerHTML = `<div style="color:var(--muted);padding:40px">Error: ${e.message}</div>`;
+  }
+}
 
-// Keep old token-based endpoints for backward compatibility
-app.post('/api/token', async (req, res) => {
-  try {
-    const body = req.body;
-    const params = { grant_type: body.grant_type||'authorization_code', client_id: body.client_id, client_secret: body.client_secret };
-    if (body.grant_type === 'refresh_token') { params.refresh_token = body.refresh_token; }
-    else { params.code = body.code; params.redirect_uri = body.redirect_uri; }
-    const r = await fetch(`${ML_API}/oauth/token`, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(params).toString() });
-    res.json(await r.json());
-  } catch(e) { res.status(500).json({ error: e.message }); }
-});
+function renderTokenStatus(data) {
+  const el = document.getElementById('tokenStatusContent');
+  const timeEl = document.getElementById('tokenStatusTime');
+  if (timeEl) timeEl.textContent = 'Actualizado: ' + new Date(data.server_time).toLocaleTimeString('es-AR');
 
-initDB().then(() => {
-  app.listen(PORT, () => console.log(`Puerto ${PORT}`));
-}).catch(e => { console.error('DB init error:', e); process.exit(1); });
+  const fmtTime = mins => {
+    if (mins === null) return '—';
+    if (mins < 0) return `Expirado hace ${Math.abs(mins) < 60 ? Math.abs(mins)+'min' : (Math.abs(mins)/60).toFixed(1)+'hs'}`;
+    if (mins < 60) return `${mins} min`;
+    return `${(mins/60).toFixed(1)} hs`;
+  };
+
+  const statusCfg = {
+    ok:           { bg: '#f0fdf4', border: '#86efac', color: '#16a34a', label: '✓ OK',       barColor: '#22c55e' },
+    warning:      { bg: '#fffbeb', border: '#fcd34d', color: '#d97706', label: '⚠ Pronto',   barColor: '#f59e0b' },
+    critical:     { bg: '#fef2f2', border: '#fca5a5', color: '#dc2626', label: '🚨 Crítico', barColor: '#ef4444' },
+    expired:      { bg: '#fef2f2', border: '#fca5a5', color: '#dc2626', label: '✗ Expirado', barColor: '#dc2626' },
+    no_connected: { bg: 'var(--surface2)', border: 'var(--border)', color: 'var(--muted)', label: '— Sin conectar', barColor: '#ccc' },
+    unknown:      { bg: 'var(--surface2)', border: 'var(--border)', color: 'var(--muted)', label: '? Desconocido',  barColor: '#ccc' },
+  };
+
+  const cards = data.clients.map(c => {
+    const cfg = statusCfg[c.status] || statusCfg.unknown;
+    const maxMins = 360; // 6hs
+    const pct = c.mins_left === null ? 0 : Math.max(0, Math.min(100, (c.mins_left / maxMins) * 100));
+    const lastUp = c.last_updated ? new Date(c.last_updated).toLocaleString('es-AR', {day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}) : '—';
+
+    return `<div style="background:${cfg.bg};border:1.5px solid ${cfg.border};border-radius:12px;padding:16px 18px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+        <div style="font-size:14px;font-weight:600;font-family:var(--font-b)">${c.name}</div>
+        <span style="font-size:11px;font-weight:600;color:${cfg.color};background:white;padding:2px 8px;border-radius:4px;border:1px solid ${cfg.border}">${cfg.label}</span>
+      </div>
+      <div style="background:#e5e7eb;border-radius:4px;height:6px;margin-bottom:10px;overflow:hidden">
+        <div style="background:${cfg.barColor};height:100%;width:${pct}%;border-radius:4px;transition:width 0.5s"></div>
+      </div>
+      <div style="font-size:22px;font-weight:700;font-family:var(--font-b);color:${cfg.color};margin-bottom:6px">${fmtTime(c.mins_left)}</div>
+      <div style="font-size:11px;color:#888;display:flex;flex-direction:column;gap:3px">
+        <span>ML ID: ${c.ml_user_id || '—'}</span>
+        <span>Última renovación: ${lastUp}</span>
+        <span>Refresh token: ${c.has_refresh_token ? '<span style="color:#16a34a;font-weight:600">✓ Permanente</span>' : '<span style="color:#6366f1;font-weight:600">↻ Auto-renovación cada 6hs</span>'}</span>
+      </div>
+      ${c.status === 'expired' || c.status === 'critical' ? `
+        <button onclick="quickReconnect(${c.id},'${c.name}')"
+          style="margin-top:10px;width:100%;padding:6px;background:#dc2626;color:#fff;border:none;border-radius:7px;font-size:12px;font-weight:600;cursor:pointer">
+          🔗 Renovar ahora
+        </button>` : ''}
+    </div>`;
+  }).join('');
+
+  const expired = data.clients.filter(c => c.status === 'expired' || c.status === 'critical').length;
+  const ok = data.clients.filter(c => c.status === 'ok').length;
+
+  el.innerHTML = `
+    <div style="display:flex;gap:12px;margin-bottom:20px;flex-wrap:wrap">
+      ${[
+        ['Total cuentas', data.clients.length, ''],
+        ['OK', ok, '#22c55e'],
+        ['Requieren atención', expired, expired > 0 ? '#dc2626' : '#22c55e'],
+      ].map(([l,v,c]) => `<div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px 18px">
+        <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em">${l}</div>
+        <div style="font-size:22px;font-weight:700;font-family:var(--font-b);color:${c||'var(--text)'};margin-top:4px">${v}</div>
+      </div>`).join('')}
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px">${cards}</div>
+    <div style="margin-top:16px;font-size:11px;color:var(--muted);text-align:center">Se actualiza automáticamente cada 60 segundos · El servidor renueva tokens automáticamente cuando quedan menos de 3hs</div>`;
+}
+
+// ── BOOT ──────────────────────────────────────────────────────────────────────
+window.addEventListener('DOMContentLoaded', () => {
+  const datEl = document.getElementById('currentDate');
+  if (datEl) datEl.textContent = new Date().toLocaleDateString('es-AR', {day:'2-digit',month:'long',year:'numeric'});
+  // Read sid from URL first - keep it in URL until app fully loads
+  const urlParams = new URLSearchParams(window.location.search);
+  const urlSession = urlParams.get('sid');
+  if (urlSession) {
+    _sessionId = urlSession;
+    // Don't clean URL yet - keep sid available for all apiCalls during init
+  } else {
+    _sessionId = getCookie('ml_session_id') || null;
+  }
+  _sessionUser = getCookie('ml_session_user') || 'admin';
+  _sessionRole = getCookie('ml_session_role') || 'admin';
+
+  if (_sessionId) {
+    showAppScreen();
+    // Clean URL after a delay to ensure all calls already have the session
+    setTimeout(() => {
+      window.history.replaceState({}, document.title, window.location.pathname);
+    }, 5000);
+    initApp();
+    // Check token expiry every 30 minutes
+    setInterval(() => { if (allClients.length) checkTokenWarnings(); }, 30 * 60 * 1000);
+  } else {
+    showLoginScreen();
+  }
+});
+</script>
+</body>
+</html>
