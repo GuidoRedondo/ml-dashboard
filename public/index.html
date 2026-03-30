@@ -5399,71 +5399,81 @@ function renderCatVentas(data) {
   const fmtN = n => '$' + Math.round(n).toLocaleString('es-AR');
   const rankColor = r => !r ? 'var(--muted)' : r <= 5 ? '#00e676' : r <= 20 ? '#ff9100' : '#ff5252';
   const rankLabel = r => !r ? '+200' : `#${r}`;
-
   const totalRevenue = categories.reduce((s, c) => s + c.revenue, 0);
 
   const rows = categories.map((cat, ci) => {
     const pct = totalRevenue > 0 ? (cat.revenue / totalRevenue * 100).toFixed(1) : '0';
+
     const itemRows = cat.items.map(item => {
       const rColor = rankColor(item.ranking);
-      return `<tr style="background:rgba(255,255,255,.015);border-bottom:1px solid var(--border)">
-        <td style="padding:6px 10px 6px 30px;font-size:11px;color:var(--muted)">
+      return `<tr style="background:rgba(99,102,241,.05);border-bottom:1px solid var(--border)">
+        <td style="padding:7px 10px 7px 30px;font-size:11px;color:var(--muted)">
           <a href="https://articulo.mercadolibre.com.ar/${item.id}" target="_blank" style="color:var(--accent);text-decoration:none">${item.id}</a>
         </td>
-        <td style="padding:6px 10px;font-size:12px;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${item.title}">${item.title}</td>
-        <td style="padding:6px 10px;text-align:right;font-size:12px;font-weight:600">${fmtN(item.revenue)}</td>
-        <td style="padding:6px 10px;text-align:right;font-size:12px">${item.units}</td>
-        <td style="padding:6px 10px;text-align:center;font-size:13px;font-weight:700;color:${rColor}">${rankLabel(item.ranking)}</td>
+        <td style="padding:7px 10px;font-size:12px;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${item.title}">${item.title}</td>
+        <td style="padding:7px 10px;text-align:right;font-size:12px;font-weight:600">${fmtN(item.revenue)}</td>
+        <td style="padding:7px 10px;text-align:right;font-size:12px">${item.units}</td>
+        <td style="padding:7px 10px;text-align:center;font-size:13px;font-weight:700;color:${rColor}">${rankLabel(item.ranking)}</td>
+        <td colspan="2"></td>
+      </tr>`;
+    }).join('');
+
+    const compRows = (cat.top_sellers || []).map(s => {
+      const isMe = s.isMe;
+      return `<tr style="background:${isMe?'rgba(99,102,241,.08)':'rgba(255,255,255,.01)'};border-bottom:1px solid var(--border)">
+        <td colspan="2" style="padding:7px 10px 7px 30px;font-size:12px;${isMe?'color:#6366f1;font-weight:700':'color:var(--text)'}">
+          ${isMe?'▶ ':''}#${s.rank} ${s.nickname}${isMe?' (vos)':''}
+        </td>
+        <td style="padding:7px 10px;text-align:right;font-size:12px;color:var(--muted)">${s.items} pub${s.items!==1?'s':''}</td>
+        <td style="padding:7px 10px;text-align:right;font-size:12px;font-weight:600">${s.sold.toLocaleString('es-AR')} uds</td>
+        <td colspan="3"></td>
       </tr>`;
     }).join('');
 
     return `
       <tr style="border-bottom:1px solid var(--border);cursor:pointer;background:var(--surface2)"
-          onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'':'none'">
+          onclick="const next=this.nextElementSibling;next.style.display=next.style.display===\'none\'?\'\':'none'">
         <td style="padding:10px;font-size:12px;color:var(--muted)">${ci+1}</td>
         <td style="padding:10px;font-size:13px;font-weight:600">${cat.name}</td>
         <td style="padding:10px;text-align:right;font-size:13px;font-weight:700;color:var(--accent)">${fmtN(cat.revenue)}</td>
         <td style="padding:10px;text-align:right;font-size:12px">${cat.units}</td>
         <td style="padding:10px;text-align:center;font-size:12px;color:var(--muted)">${cat.items.length} pub${cat.items.length!==1?'s':''}</td>
         <td style="padding:10px;text-align:right;font-size:12px;color:var(--muted)">${pct}%</td>
-        <td style="padding:10px;text-align:center;font-size:11px;color:var(--muted)">▼ ver</td>
+        <td style="padding:10px;text-align:right;font-size:11px;color:var(--muted)">${(cat.total_listings||0).toLocaleString('es-AR')} en ML</td>
+        <td style="padding:10px;text-align:center;font-size:11px;color:var(--muted)">▼</td>
       </tr>
       <tr style="display:none">
-        <td colspan="7" style="padding:0">
-          <table style="width:100%;border-collapse:collapse">
-            <thead><tr style="background:var(--surface)">
-              <th style="padding:6px 10px 6px 30px;text-align:left;font-size:11px;color:var(--muted)">MLA</th>
-              <th style="padding:6px 10px;text-align:left;font-size:11px;color:var(--muted)">Publicación</th>
-              <th style="padding:6px 10px;text-align:right;font-size:11px;color:var(--muted)">Facturación</th>
-              <th style="padding:6px 10px;text-align:right;font-size:11px;color:var(--muted)">Unidades</th>
-              <th style="padding:6px 10px;text-align:center;font-size:11px;color:var(--muted)">Ranking</th>
-            </tr></thead>
-            <tbody>${itemRows}</tbody>
-          </table>
+        <td colspan="8" style="padding:0">
+          <table style="width:100%;border-collapse:collapse"><tbody>
+            ${cat.items.length ? `<tr style="background:var(--surface)"><td colspan="7" style="padding:6px 10px 4px 30px;font-size:11px;font-weight:600;color:#6366f1">TUS PUBLICACIONES</td></tr>${itemRows}` : ''}
+            ${cat.top_sellers?.length ? `<tr style="background:var(--surface)"><td colspan="7" style="padding:6px 10px 4px 30px;font-size:11px;font-weight:600;color:var(--muted)">TOP VENDEDORES (primeras 200 posiciones · ${(cat.market_sold_visible||0).toLocaleString('es-AR')} uds visibles)</td></tr>${compRows}` : ''}
+          </tbody></table>
         </td>
       </tr>`;
   }).join('');
 
   el.innerHTML = `
-    <div style="font-size:12px;color:var(--muted);margin-bottom:12px">${categories.length} categorías · ${from} → ${to} · Click en fila para ver publicaciones</div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:12px">${categories.length} categorías · ${from} → ${to} · Click en fila para expandir</div>
     <div class="kpi-card" style="padding:0;overflow:hidden">
       <div style="overflow-x:auto">
         <table style="width:100%;border-collapse:collapse">
           <thead><tr style="background:var(--surface2);border-bottom:2px solid var(--border)">
             <th style="padding:10px;text-align:left;font-size:11px;font-weight:600;color:var(--muted)">#</th>
             <th style="padding:10px;text-align:left;font-size:11px;font-weight:600;color:var(--muted)">Categoría</th>
-            <th style="padding:10px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Facturación</th>
-            <th style="padding:10px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Unidades</th>
-            <th style="padding:10px;text-align:center;font-size:11px;font-weight:600;color:var(--muted)">Publicaciones</th>
-            <th style="padding:10px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">% Total</th>
-            <th style="padding:10px;text-align:center;font-size:11px;font-weight:600;color:var(--muted)"></th>
+            <th style="padding:10px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Mi Facturación</th>
+            <th style="padding:10px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Mis Unidades</th>
+            <th style="padding:10px;text-align:center;font-size:11px;font-weight:600;color:var(--muted)">Mis Pubs</th>
+            <th style="padding:10px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">% Mi Total</th>
+            <th style="padding:10px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Total en ML</th>
+            <th style="padding:10px"></th>
           </tr></thead>
           <tbody>${rows}</tbody>
         </table>
       </div>
     </div>
-    <div style="font-size:11px;color:var(--muted);margin-top:10px">
-      Ranking = posición en resultados de búsqueda de la categoría · 🟢 Top 5 · 🟡 Top 20 · 🔴 +20 · +200 = no encontrado en primeras 200 posiciones
+    <div style="font-size:11px;color:var(--muted);margin-top:10px;display:flex;flex-wrap:wrap;gap:16px">
+      <span>Ranking = posición en listado ML por relevancia · 🟢 Top 5 · 🟡 Top 20 · 🔴 +20 · +200 = fuera de primeras 200 posiciones</span>
+      <span>Total en ML = cantidad de publicaciones activas en la categoría</span>
     </div>`;
 }
 
