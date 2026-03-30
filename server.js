@@ -1172,22 +1172,52 @@ app.get('/api/ads-anuncios', requireAuth, async (req, res) => {
       });
     }
 
-    // ── 3. Nombres de campañas ───────────────────────────────────────────────
-    const campIds = [...new Set(allItems.map(i => i.campaign_id).filter(Boolean))];
-    for (const cid of campIds) {
-      try {
-        const c = await fetch(`${ML_API}/advertising/${siteId}/advertisers/${advId}/product_ads/campaigns/${cid}`, { headers: h2 }).then(r => r.json());
-        campaignMap[cid] = c.name || `Campaña ${cid}`;
-      } catch(e) {}
-    }
+    // ── 3. Nombres de campañas via /campaigns/search ────────────────────────
+    try {
+      let campOffset = 0;
+      while (true) {
+        const url = `${ML_API}/advertising/${siteId}/advertisers/${advId}/product_ads/campaigns/search?limit=50&offset=${campOffset}`;
+        const data = await fetch(url, { headers: h2 }).then(r => r.json()).catch(() => ({}));
+        (data.results || []).forEach(c => { campaignMap[c.id] = c.name || `Campaña ${c.id}`; });
+        if ((data.results || []).length < 50) break;
+        campOffset += 50;
+        if (campOffset > 500) break;
+      }
+    } catch(e) {}
 
-    // ── 4. Armar respuesta ───────────────────────────────────────────────────
-    const result = allItems.map(i => ({
-      ...i,
-      title:    titleMap[i.item_id] || i.item_id,
-      campaign: campaignMap[i.campaign_id] || `Campaña ${i.campaign_id || '—'}`,
-      tacos:    i.inversion, // sin facturación total por ítem disponible aquí
-    })).sort((a, b) => b.inversion - a.inversion);
+    // ── 4. Ventas totales por ítem para TACOS real ────────────────────────────
+    // Usar órdenes del período para calcular facturación total por MLA
+    const uid = user.id;
+    const headers = { 'Authorization': `Bearer ${token}` };
+    const fmt = d => d.toISOString().slice(0,19) + '.000-00:00';
+    const dateFrom = new Date(fromDate + 'T00:00:00');
+    const dateTo   = new Date(toDate   + 'T23:59:59');
+    const revenueByItem = {};
+    try {
+      const { orders } = await fetchAllOrders(uid, headers, fmt(dateFrom), fmt(dateTo));
+      orders.forEach(order => {
+        (order.order_items || []).forEach(oi => {
+          const id = oi.item?.id;
+          if (!id) return;
+          revenueByItem[id] = (revenueByItem[id] || 0) + (parseFloat(oi.unit_price)||0) * (oi.quantity||0);
+        });
+      });
+    } catch(e) {}
+
+    // ── 5. Armar respuesta ───────────────────────────────────────────────────
+    const result = allItems.map(i => {
+      const totalRevenue = revenueByItem[i.item_id] || 0;
+      const tacos = i.inversion > 0 && totalRevenue > 0 ? (i.inversion / totalRevenue * 100) : null;
+      const ctr   = i.clics > 0 && i.impresiones > 0 ? (i.clics / i.impresiones * 100) : 0;
+      return {
+        ...i,
+        title:          titleMap[i.item_id] || i.item_id,
+        campaign:       campaignMap[i.campaign_id] || (i.campaign_id ? `#${i.campaign_id}` : '—'),
+        tacos,
+        ctr,
+        facturacion_total: totalRevenue,
+      };
+    }).sort((a, b) => b.inversion - a.inversion);
 
     res.json({ items: result, from: fromDate, to: toDate });
   } catch(e) {
