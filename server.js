@@ -922,23 +922,46 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
     const totalEgresos = totalSaleFee + totalTaxes + totalSellerShip + totalCancelled + adsSpend;
     const netoML = (totalFacturacion + totalBuyerShip) - totalEgresos;
 
+    // Revenue del período anterior por ítem (para tendencia)
+    const prevRevenueByItem = {};
+    prevData.orders.forEach(order => {
+      (order.order_items || []).forEach(oi => {
+        const id = oi.item?.id;
+        if (!id) return;
+        prevRevenueByItem[id] = (prevRevenueByItem[id] || 0) + (parseFloat(oi.unit_price)||0) * (oi.quantity||0);
+      });
+    });
+
+    // Visitas y conversión por ítem (de topItems que ya los tiene)
+    const visitsMap = {};
+    topItems.forEach(i => { visitsMap[i.id] = { visits: i.visits, conversion: i.conversion }; });
+
     // By-product breakdown for rentabilidad table
     const byProduct = Object.values(byItem)
       .sort((a, b) => b.revenue - a.revenue)
-      .map(i => ({
-        id:              i.id,
-        title:           i.title,
-        revenue:         i.revenue,
-        units:           i.units,
-        comision:        i.comision || (i.revenue > 0 ? (i.revenue - i.net) : 0),
-        impuestos:       i.impuestos || 0,
-        envio_cobrado:   i.envio_cobrado,
-        envio_pagado:    i.envio_pagado,
-        resultado_envio: i.envio_cobrado - i.envio_pagado,
-        ads:             i.ads || 0,
-        neto:            i.net,
-        pct_neto:        i.revenue > 0 ? ((i.net / i.revenue) * 100).toFixed(1) : '0'
-      }));
+      .map(i => {
+        const prevRev = prevRevenueByItem[i.id] || 0;
+        const trend   = prevRev > 0 ? ((i.revenue - prevRev) / prevRev * 100) : null;
+        const vis     = visitsMap[i.id] || {};
+        return {
+          id:              i.id,
+          title:           i.title,
+          revenue:         i.revenue,
+          revenue_prev:    prevRev,
+          trend_pct:       trend !== null ? parseFloat(trend.toFixed(1)) : null,
+          units:           i.units,
+          visits:          vis.visits || 0,
+          conversion:      vis.conversion || 0,
+          comision:        i.comision || (i.revenue > 0 ? (i.revenue - i.net) : 0),
+          impuestos:       i.impuestos || 0,
+          envio_cobrado:   i.envio_cobrado,
+          envio_pagado:    i.envio_pagado,
+          resultado_envio: i.envio_cobrado - i.envio_pagado,
+          ads:             i.ads || 0,
+          neto:            i.net,
+          pct_neto:        i.revenue > 0 ? ((i.net / i.revenue) * 100).toFixed(1) : '0'
+        };
+      });
 
     const rentabilidad = {
       facturacion:      totalFacturacion,
@@ -1409,6 +1432,24 @@ app.get('/api/items-full', requireAuth, async (req, res) => {
       Object.assign(visitsMap, await fetchVisits(soldItemIds.slice(i, i+20), effectiveDays, headers));
     }
 
+    // ── 6b. Clips — solo ítems activos (en paralelo, máx 200) ───────────────
+    const clipsSet = new Set();
+    try {
+      const activeToCheck = activeIds.slice(0, 200);
+      const CLIP_BATCH = 10;
+      for (let i = 0; i < activeToCheck.length; i += CLIP_BATCH) {
+        const batch = activeToCheck.slice(i, i + CLIP_BATCH);
+        await Promise.all(batch.map(async id => {
+          try {
+            const data = await fetch(`${ML_API}/marketplace/items/${id}/clips`, { headers }).then(r => r.json());
+            const clips = data.clips || data.results || (Array.isArray(data) ? data : []);
+            if (clips.length > 0) clipsSet.add(id);
+          } catch(e) {}
+        }));
+      }
+    } catch(e) {}
+    console.log(`[CLIPS] ${clipsSet.size} items con clips de ${activeIds.length} activos`);
+
     // ── 7. Build final items list ────────────────────────────────────────────
     // Use item detail status as source of truth (more reliable than search endpoint)
     const itemsWithSales = Object.values(salesByItem).map(item => {
@@ -1439,7 +1480,8 @@ app.get('/api/items-full', requireAuth, async (req, res) => {
         adsClicks: ads.clicks||0, adsImpressions: ads.impressions||0,
         adsSales: ads.adsSales||0, adsCost: ads.adsCost||0,
         adsConversion: ads.clicks > 0 ? parseFloat(((ads.adsUnits||0)/ads.clicks*100).toFixed(1)) : 0,
-        problems, hasProblems: problems.length > 0
+        problems, hasProblems: problems.length > 0,
+        has_clip: clipsSet.has(item.id)
       };
     });
 
@@ -1470,11 +1512,10 @@ app.get('/api/items-full', requireAuth, async (req, res) => {
         adsClicks: ads.clicks||0, adsImpressions: ads.impressions||0,
         adsSales: ads.adsSales||0, adsCost: ads.adsCost||0,
         adsConversion: ads.clicks > 0 ? parseFloat(((ads.adsUnits||0)/ads.clicks*100).toFixed(1)) : 0,
-        problems, hasProblems: problems.length > 0
+        problems, hasProblems: problems.length > 0,
+        has_clip: clipsSet.has(id)
       };
     });
-
-    const items = [...itemsWithSales, ...itemsNoSales].sort((a,b) => b.revenue - a.revenue);
 
     // ── 8. Summary stats ─────────────────────────────────────────────────────
     const summary = {
