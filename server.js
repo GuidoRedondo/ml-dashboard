@@ -1186,15 +1186,14 @@ app.get('/api/ads-anuncios', requireAuth, async (req, res) => {
     } catch(e) {}
 
     // ── 4. Ventas totales por ítem para TACOS real ────────────────────────────
-    // Usar órdenes del período para calcular facturación total por MLA
     const uid = user.id;
-    const headers = { 'Authorization': `Bearer ${token}` };
+    const authHeaders = { 'Authorization': `Bearer ${token}` };
     const fmt = d => d.toISOString().slice(0,19) + '.000-00:00';
     const dateFrom = new Date(fromDate + 'T00:00:00');
     const dateTo   = new Date(toDate   + 'T23:59:59');
     const revenueByItem = {};
     try {
-      const { orders } = await fetchAllOrders(uid, headers, fmt(dateFrom), fmt(dateTo));
+      const { orders } = await fetchAllOrders(uid, authHeaders, fmt(dateFrom), fmt(dateTo));
       orders.forEach(order => {
         (order.order_items || []).forEach(oi => {
           const id = oi.item?.id;
