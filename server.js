@@ -367,20 +367,31 @@ app.get('/oauth/callback', async (req, res) => {
 
 // Refresh token — usa refresh_token (dura 6 meses). Si no hay, el token está muerto.
 async function refreshClientToken(client) {
+  // Advisory lock por cliente — evita race condition si dos procesos intentan refrescar a la vez
+  const lockRes = await pool.query('SELECT pg_try_advisory_lock($1) AS locked', [client.id]);
+  if (!lockRes.rows[0].locked) {
+    console.log(`Refresh ya en curso para client ${client.id} (${client.name}) — skip`);
+    return false;
+  }
   try {
-    // El refresh_token de ML dura 6 meses y es de un solo uso.
-    // Si no hay refresh_token, no podemos renovar sin intervención del usuario.
-    if (!client.refresh_token) {
-      console.warn(`No hay refresh_token para ${client.name} — requiere reconexión manual`);
+    // Releer el cliente desde DB para tener el refresh_token más fresco
+    const freshRes = await pool.query('SELECT * FROM clients WHERE id = $1', [client.id]);
+    const fresh = freshRes.rows[0];
+
+    if (!fresh?.refresh_token) {
+      console.warn(`No hay refresh_token para ${fresh?.name || client.name} — requiere reconexión manual`);
       return false;
     }
 
-    const { app_id, client_secret } = getMLCredentials(client);
+    const { app_id, client_secret } = getMLCredentials(fresh);
+    const masked = `${fresh.refresh_token.slice(0,6)}...${fresh.refresh_token.slice(-4)}`;
+    console.log(`Refreshing client ${fresh.id} (${fresh.name}) token=${masked}`);
+
     const body = new URLSearchParams({
       grant_type: 'refresh_token',
       client_id: app_id,
       client_secret,
-      refresh_token: client.refresh_token
+      refresh_token: fresh.refresh_token
     });
     const tokenRes = await fetch(`${ML_API}/oauth/token`, {
       method: 'POST',
@@ -388,36 +399,45 @@ async function refreshClientToken(client) {
       body: body.toString()
     });
     const tokens = await tokenRes.json();
-    if (tokens.error) {
-      console.error(`Refresh failed for client ${client.id} (${client.name}): ${tokens.error} - ${tokens.message}`);
-      // Si el token expiró definitivamente, marcarlo como desconectado
+
+    if (!tokenRes.ok || tokens.error) {
+      console.error(`Refresh failed for client ${fresh.id} (${fresh.name}): HTTP=${tokenRes.status} error=${tokens.error} msg=${tokens.message}`);
       if (tokens.error === 'invalid_grant' || tokens.error === 'invalid_token') {
         await pool.query(
           `UPDATE clients SET access_token = NULL, token_expires_at = NULL, updated_at = NOW() WHERE id = $1`,
-          [client.id]
+          [fresh.id]
         );
-        console.error(`⚠️  Token expirado definitivamente para ${client.name} — requiere reconexión`);
+        console.error(`⚠️  Token inválido definitivamente para ${fresh.name} — requiere reconexión`);
       }
       return false;
     }
+
+    // NO usar fallback al refresh_token viejo — si ML no devuelve uno nuevo, falla
+    if (!tokens.refresh_token) {
+      console.error(`ML no devolvió refresh_token nuevo para ${fresh.name} — abortando`);
+      return false;
+    }
+
     const expiresAt = new Date(Date.now() + (tokens.expires_in || 21600) * 1000);
     await pool.query(
       `UPDATE clients SET access_token = $1, refresh_token = $2, token_expires_at = $3, updated_at = NOW() WHERE id = $4`,
-      [tokens.access_token, tokens.refresh_token || client.refresh_token, expiresAt, client.id]
+      [tokens.access_token, tokens.refresh_token, expiresAt, fresh.id]
     );
-    console.log(`✅ Token refreshed for client ${client.id} (${client.name}), new expiry: ${expiresAt.toISOString()}, has_refresh: ${!!tokens.refresh_token}`);
+    console.log(`✅ Token refreshed for client ${fresh.id} (${fresh.name}), expires: ${expiresAt.toISOString()}`);
     return tokens.access_token;
   } catch(e) {
     console.error(`Refresh error for client ${client.id}:`, e.message);
     return false;
+  } finally {
+    await pool.query('SELECT pg_advisory_unlock($1)', [client.id]);
   }
 }
 
-// Auto-refresh tokens every 30 min — refresh 3 hours before expiry to stay ahead of the 6hs window
+// Auto-refresh cada 5 minutos — renueva solo tokens que vencen en menos de 10 minutos
 setInterval(async () => {
   try {
     const result = await pool.query(
-      `SELECT * FROM clients WHERE active = true AND access_token IS NOT NULL AND token_expires_at < NOW() + INTERVAL '5 hours 30 minutes'`
+      `SELECT * FROM clients WHERE active = true AND refresh_token IS NOT NULL AND token_expires_at < NOW() + INTERVAL '10 minutes'`
     );
     if (result.rows.length) {
       console.log(`Auto-refresh: ${result.rows.length} tokens expiring soon — refreshing now`);
@@ -437,7 +457,7 @@ setTimeout(async () => {
       const exp = client.token_expires_at ? new Date(client.token_expires_at) : null;
       const hoursLeft = exp ? (exp - new Date()) / (1000*60*60) : -1;
       console.log(`  ${client.name}: expires in ${hoursLeft.toFixed(1)}hs`);
-      if (hoursLeft < 4) {
+      if (hoursLeft < 0.17) { // menos de 10 minutos
         console.log(`  → Refreshing ${client.name}...`);
         await refreshClientToken(client);
       }
