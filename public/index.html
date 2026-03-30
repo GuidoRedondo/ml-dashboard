@@ -527,6 +527,9 @@ tbody td {
       <div class="nav-item" data-page="logistica" onclick="showPage('logistica',this);loadLogistica()">
         <span class="nav-icon">🚚</span> Logística
       </div>
+      <div class="nav-item" data-page="escalabilidad" onclick="showPage('escalabilidad',this);loadEscalabilidad()">
+        <span class="nav-icon">🚀</span> Escalabilidad
+      </div>
       <div class="nav-item" data-page="competencia" onclick="showPage('competencia',this);loadCompetencia()">
         <span class="nav-icon">🏆</span> Competencia
       </div>
@@ -772,6 +775,22 @@ tbody td {
       </div>
       <div id="logisticaContent"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Cargando...</div></div>
       <div id="fullStockContent" style="display:none"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Seleccioná la pestaña Stock FULL para cargar</div></div>
+    </div>
+
+    <!-- ESCALABILIDAD -->
+    <div class="page" id="page-escalabilidad">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap">
+        <h2 style="margin:0;font-family:var(--font-b);flex:1">🚀 Escalabilidad de Productos</h2>
+        <div style="display:flex;align-items:center;gap:8px">
+          <span style="font-size:12px;color:var(--muted)">Margen mínimo:</span>
+          <input type="number" id="escMinMargen" value="30" min="0" max="100"
+            style="width:56px;padding:4px 8px;border:1px solid var(--border);border-radius:6px;background:var(--surface2);color:var(--text);font-size:13px;font-weight:700;text-align:center"
+            oninput="renderEscalabilidad()">
+          <span style="font-size:12px;color:var(--muted)">%</span>
+          <button class="sync-btn" onclick="loadEscalabilidad()">🔄 Actualizar</button>
+        </div>
+      </div>
+      <div id="escalabilidadContent"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Sincronizá primero para ver los datos</div></div>
     </div>
 
     <!-- COMPETENCIA -->
@@ -5065,6 +5084,225 @@ function renderCompetidorFicha(data, el) {
 
   </div>`;
 }
+// ── ESCALABILIDAD ─────────────────────────────────────────────────────────────
+let _escData = null;
+
+function loadEscalabilidad() {
+  const el = document.getElementById('escalabilidadContent');
+  if (!el) return;
+  const connected = state.accounts.filter(a => a.data && a.data.rentabilidad);
+  if (!connected.length) {
+    el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Sincronizá primero para ver los datos</div>';
+    return;
+  }
+
+  // Merge by_product de todas las cuentas
+  const allProducts = {};
+  connected.forEach(acc => {
+    (acc.data.rentabilidad.by_product || []).forEach(p => {
+      if (!allProducts[p.id]) {
+        allProducts[p.id] = { ...p };
+      } else {
+        allProducts[p.id].revenue        += p.revenue || 0;
+        allProducts[p.id].revenue_prev   += p.revenue_prev || 0;
+        allProducts[p.id].units          += p.units || 0;
+        allProducts[p.id].visits         += p.visits || 0;
+        allProducts[p.id].neto           += p.neto || 0;
+        allProducts[p.id].comision       += p.comision || 0;
+        allProducts[p.id].impuestos      += p.impuestos || 0;
+        allProducts[p.id].ads            += p.ads || 0;
+        allProducts[p.id].resultado_envio += p.resultado_envio || 0;
+      }
+    });
+  });
+
+  // FULL activo (del stock FULL si está cargado)
+  const fullSet = new Set();
+  if (window._fullStockData?.items) {
+    window._fullStockData.items.filter(i => i.is_full && i.stock_full > 0).forEach(i => fullSet.add(i.id));
+  }
+
+  // Cargar CMV
+  const client = getActiveClient();
+  const { date_from, date_to } = getDateRange();
+  apiCall('GET', `/api/reporte/items-vendidos?client_id=${client?.id}&date_from=${date_from}&date_to=${date_to}`)
+    .then(costsData => {
+      const costsMap = {};
+      (costsData?.items || []).forEach(i => { if (i.costo_unit) costsMap[i.mla_id] = parseFloat(i.costo_unit) || 0; });
+      _escData = { products: allProducts, fullSet, costsMap };
+      renderEscalabilidad();
+    })
+    .catch(() => {
+      _escData = { products: allProducts, fullSet, costsMap: {} };
+      renderEscalabilidad();
+    });
+}
+
+function renderEscalabilidad() {
+  const el = document.getElementById('escalabilidadContent');
+  if (!_escData) return;
+  const { products, fullSet, costsMap } = _escData;
+  const minMargen = parseFloat(document.getElementById('escMinMargen')?.value) || 30;
+
+  const fmtN = n => '$' + Math.round(Math.abs(n)).toLocaleString('es-AR');
+  const fmtP = (n, dec=1) => n != null ? n.toFixed(dec) + '%' : '—';
+
+  const maxRevenue = Math.max(...Object.values(products).map(x => x.revenue), 1);
+
+  const items = Object.values(products).filter(p => p.revenue > 0).map(p => {
+    const costoUnit   = costsMap[p.id] ?? null;
+    const cmv         = costoUnit != null ? costoUnit * p.units : 0;
+    // Margen real: neto - CMV - ads (si hay CMV, sino usa neto sin CMV)
+    const margenBase  = costoUnit != null
+      ? ((p.neto - cmv) / p.revenue * 100)
+      : (p.revenue > 0 ? (p.neto / p.revenue * 100) : 0);
+    const margenReal  = margenBase - ((p.ads||0) / p.revenue * 100);
+    const hasCMV      = costoUnit != null;
+
+    // Conversión: unidades / visitas
+    const conversion  = p.visits > 0 ? (p.units / p.visits * 100) : null;
+
+    // Tendencia: variación vs período anterior
+    const trend       = p.revenue_prev > 0 ? ((p.revenue - p.revenue_prev) / p.revenue_prev * 100) : null;
+
+    // FULL activo
+    const hasFull     = fullSet.has(p.id);
+
+    // ── Score 0–100 ──────────────────────────────────────────────────────────
+    // 40% margen (relativo al umbral mínimo configurado)
+    const scoreMargen = Math.min(100, Math.max(0, (margenReal / (minMargen * 2)) * 100));
+    // 30% volumen relativo al producto con más facturación
+    const scoreVol    = (p.revenue / maxRevenue) * 100;
+    // 15% tendencia (50 = neutro, +50 = +100%, -50 = -100%)
+    const scoreTrend  = trend != null ? Math.min(100, Math.max(0, 50 + trend * 0.5)) : 50;
+    // 15% conversión (2% conversión = 100pts, escalado)
+    const scoreConv   = conversion != null ? Math.min(100, conversion * 20) : 40;
+
+    const score = Math.round(scoreMargen*0.40 + scoreVol*0.30 + scoreTrend*0.15 + scoreConv*0.15);
+
+    // ── Semáforo ─────────────────────────────────────────────────────────────
+    let tag, tagColor, tagBg;
+    if (margenReal >= minMargen && score >= 55) {
+      tag = '🟢 Escalar'; tagColor = '#16a34a'; tagBg = 'rgba(22,163,74,.12)';
+    } else if (margenReal >= minMargen * 0.65 && score >= 35) {
+      tag = '🟡 Optimizar'; tagColor = '#d97706'; tagBg = 'rgba(217,119,6,.12)';
+    } else {
+      tag = '🔴 Revisar'; tagColor = '#dc2626'; tagBg = 'rgba(220,38,38,.10)';
+    }
+
+    return { ...p, margenReal, hasCMV, conversion, trend, hasFull, score, tag, tagColor, tagBg, cmv };
+  });
+
+  // Ordenamiento
+  if (!window._escSort) window._escSort = { col: 'score', asc: false };
+  const { col, asc } = window._escSort;
+  items.sort((a, b) => {
+    const va = typeof a[col] === 'string' ? a[col] : (a[col] ?? -999);
+    const vb = typeof b[col] === 'string' ? b[col] : (b[col] ?? -999);
+    if (typeof va === 'string') return asc ? va.localeCompare(vb) : vb.localeCompare(va);
+    return asc ? va - vb : vb - va;
+  });
+
+  const escalar   = items.filter(i => i.tag.includes('Escalar')).length;
+  const optimizar = items.filter(i => i.tag.includes('Optimizar')).length;
+  const revisar   = items.filter(i => i.tag.includes('Revisar')).length;
+  const conFull   = items.filter(i => i.hasFull).length;
+  const conCMV    = items.filter(i => i.hasCMV).length;
+
+  const th = (c, label, align='right') => {
+    const active = window._escSort?.col === c;
+    const arrow  = active ? (window._escSort.asc ? ' ↑' : ' ↓') : '';
+    return `<th onclick="sortEscalabilidad('${c}')" style="padding:8px 10px;text-align:${align};font-size:11px;font-weight:600;color:${active?'var(--accent)':'var(--muted)'};border-bottom:2px solid var(--border);cursor:pointer;user-select:none;white-space:nowrap">${label}${arrow}</th>`;
+  };
+
+  const rows = items.map((p, i) => {
+    const trendTxt  = p.trend != null ? (p.trend >= 0 ? `▲ +${p.trend.toFixed(1)}%` : `▼ ${p.trend.toFixed(1)}%`) : '—';
+    const trendCol  = p.trend == null ? 'var(--muted)' : p.trend >= 5 ? '#00e676' : p.trend >= -5 ? '#ff9100' : '#ff5252';
+    const convTxt   = p.conversion != null ? p.conversion.toFixed(1)+'%' : '—';
+    const convCol   = p.conversion == null ? 'var(--muted)' : p.conversion >= 3 ? '#00e676' : p.conversion >= 1 ? '#ff9100' : '#ff5252';
+    const margenCol = p.margenReal >= minMargen ? '#00e676' : p.margenReal >= minMargen*0.65 ? '#ff9100' : '#ff5252';
+    const margenTxt = p.hasCMV ? fmtP(p.margenReal) : `~${fmtP(p.margenReal)} *`;
+    const scoreBar  = `<div style="display:flex;align-items:center;gap:6px">
+      <div style="flex:1;height:4px;background:var(--border);border-radius:2px">
+        <div style="width:${p.score}%;height:100%;background:${p.tagColor};border-radius:2px"></div>
+      </div>
+      <span style="font-weight:700;font-size:12px;color:${p.tagColor};min-width:28px">${p.score}</span>
+    </div>`;
+
+    return `<tr style="border-bottom:1px solid var(--border);${i%2===0?'background:rgba(255,255,255,.015)':''}">
+      <td style="padding:8px 10px">
+        <span style="display:inline-block;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:700;background:${p.tagBg};color:${p.tagColor}">${p.tag}</span>
+      </td>
+      <td style="padding:8px 14px;min-width:120px">${scoreBar}</td>
+      <td style="padding:8px 10px;font-size:12px;max-width:240px">
+        <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${p.title}">${p.title}</div>
+        <a href="https://articulo.mercadolibre.com.ar/${p.id}" target="_blank" style="color:var(--muted);font-size:10px;text-decoration:none">${p.id}</a>
+      </td>
+      <td style="padding:8px 10px;text-align:right;font-size:12px;font-weight:600">${fmtN(p.revenue)}</td>
+      <td style="padding:8px 10px;text-align:right;font-size:12px">${p.units}</td>
+      <td style="padding:8px 10px;text-align:right;font-size:13px;font-weight:700;color:${margenCol}">${margenTxt}</td>
+      <td style="padding:8px 10px;text-align:right;font-size:12px;font-weight:600;color:${trendCol}">${trendTxt}</td>
+      <td style="padding:8px 10px;text-align:right;font-size:12px;color:${convCol}">${convTxt}</td>
+      <td style="padding:8px 10px;text-align:center;font-size:13px">${p.hasFull ? '<span style="color:#6366f1;font-weight:700">FULL</span>' : '<span style="color:var(--muted)">—</span>'}</td>
+    </tr>`;
+  }).join('');
+
+  el.innerHTML = `
+    <!-- KPIs resumen -->
+    <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-bottom:20px">
+      ${[
+        ['Total',      items.length,  'var(--text)',  '📋'],
+        ['🟢 Escalar',  escalar,      '#16a34a',      ''],
+        ['🟡 Optimizar',optimizar,    '#d97706',      ''],
+        ['🔴 Revisar',  revisar,      '#dc2626',      ''],
+        ['Con FULL',   conFull,       '#6366f1',      '📦'],
+      ].map(([l,v,c,ic]) => `
+        <div class="kpi-card" style="padding:14px;border-top:3px solid ${c}">
+          <div class="kpi-label">${ic} ${l}</div>
+          <div style="font-size:28px;font-weight:700;font-family:var(--font-b);color:${c};margin-top:4px">${v}</div>
+        </div>`).join('')}
+    </div>
+
+    <!-- Tabla -->
+    <div class="kpi-card" style="padding:0;overflow:hidden">
+      <div style="overflow-x:auto">
+        <table style="width:100%;border-collapse:collapse;font-size:12px">
+          <thead>
+            <tr style="background:var(--surface2)">
+              ${th('tag',        'Estado',      'left')}
+              ${th('score',      'Score',       'left')}
+              ${th('title',      'Producto',    'left')}
+              ${th('revenue',    'Facturación')}
+              ${th('units',      'Unidades')}
+              ${th('margenReal', '% Margen')}
+              ${th('trend',      'Tendencia')}
+              ${th('conversion', 'Conversión')}
+              ${th('hasFull',    'FULL')}
+            </tr>
+          </thead>
+          <tbody>${rows || '<tr><td colspan="9" style="padding:40px;text-align:center;color:var(--muted)">Sin datos</td></tr>'}</tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Leyenda -->
+    <div style="font-size:11px;color:var(--muted);margin-top:12px;display:flex;flex-wrap:wrap;gap:16px">
+      <span>Score = 40% margen · 30% volumen · 15% tendencia · 15% conversión</span>
+      <span>🟢 Escalar: margen ≥${minMargen}% y score ≥55</span>
+      <span>🟡 Optimizar: margen ≥${(minMargen*0.65).toFixed(0)}% y score ≥35</span>
+      <span>* Sin CMV cargado — margen estimado (sin costo de producto)</span>
+      ${conCMV < items.length ? `<span style="color:#ff9100">⚠ ${items.length - conCMV} productos sin CMV — cargalos en Rentabilidad para mayor precisión</span>` : ''}
+    </div>`;
+}
+
+function sortEscalabilidad(col) {
+  if (!window._escSort) window._escSort = { col: 'score', asc: false };
+  if (window._escSort.col === col) window._escSort.asc = !window._escSort.asc;
+  else { window._escSort.col = col; window._escSort.asc = false; }
+  renderEscalabilidad();
+}
+
+
 async function loadCompetencia() {
   const el = document.getElementById('competenciaContent');
   el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">⏳ Cargando categorías...</div>';
