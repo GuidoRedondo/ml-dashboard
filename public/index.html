@@ -683,12 +683,24 @@ tbody td {
       <div id="rentabilidadContent"><div style="color:var(--muted);font-size:13px;padding:20px;text-align:center">Sincronizá primero para ver los datos</div></div>
     </div>
 
-    <!-- ADS -->
-    <div class="page" id="page-ads">
-      <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px;flex-wrap:wrap">
+    <!-- ADS -->\n    <div class="page" id="page-ads">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap">
         <h2 style="margin:0;font-family:var(--font-b);flex:1">Publicidad</h2>
+        <button class="sync-btn" id="adsRefreshBtn" onclick="refreshAdsTab()">🔄 Actualizar</button>
+      </div>
+      <!-- Tabs -->
+      <div style="display:flex;gap:0;border-bottom:2px solid var(--border);margin-bottom:20px">
+        <button id="tab-ads-campanas" onclick="switchAdsTab('campanas')"
+          style="padding:8px 18px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--accent);border-bottom:2px solid var(--accent);margin-bottom:-2px;font-family:var(--font-b)">
+          📊 Campañas
+        </button>
+        <button id="tab-ads-anuncios" onclick="switchAdsTab('anuncios')"
+          style="padding:8px 18px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-2px;font-family:var(--font-b)">
+          📋 Anuncios
+        </button>
       </div>
       <div id="adsContent"></div>
+      <div id="adsAnunciosContent" style="display:none"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Seleccioná la pestaña Anuncios para cargar</div></div>
     </div>
 
     <!-- DIAGNÓSTICO MENSUAL -->
@@ -3319,6 +3331,133 @@ setInterval(() => {
 
 function setAdsRange(el, days) { setQuickRange(days); }
 
+
+// ── ADS TABS ──────────────────────────────────────────────────────────────────
+let _adsActiveTab = 'campanas';
+let _adsAnunciosData = null;
+let _adsAnunciosSort = { col: 'inversion', asc: false };
+
+function switchAdsTab(tab) {
+  _adsActiveTab = tab;
+  const tabs = { campanas: 'adsContent', anuncios: 'adsAnunciosContent' };
+  Object.keys(tabs).forEach(t => {
+    document.getElementById(tabs[t]).style.display = t === tab ? '' : 'none';
+    const btn = document.getElementById(`tab-ads-${t}`);
+    if (btn) {
+      btn.style.color        = t === tab ? 'var(--accent)' : 'var(--muted)';
+      btn.style.borderBottom = t === tab ? '2px solid var(--accent)' : '2px solid transparent';
+    }
+  });
+  if (tab === 'anuncios' && !_adsAnunciosData) loadAdsAnuncios();
+}
+
+function refreshAdsTab() {
+  if (_adsActiveTab === 'anuncios') {
+    _adsAnunciosData = null;
+    loadAdsAnuncios();
+  } else {
+    loadAds();
+  }
+}
+
+async function loadAdsAnuncios() {
+  const el = document.getElementById('adsAnunciosContent');
+  el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">⏳ Cargando anuncios...</div>';
+  try {
+    const client = getActiveClient();
+    if (!client) { el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">Sin cuenta conectada</div>'; return; }
+    const range = getDateRange();
+    const data = await apiCall('GET', `/api/ads-anuncios?client_id=${client.id}&date_from=${range.date_from}&date_to=${range.date_to}`);
+    if (!data) { el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">Error al cargar</div>'; return; }
+    _adsAnunciosData = data;
+    renderAdsAnuncios(data);
+  } catch(e) {
+    el.innerHTML = `<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Error: ${e.message}</div>`;
+  }
+}
+
+function sortAdsAnuncios(col) {
+  if (_adsAnunciosSort.col === col) _adsAnunciosSort.asc = !_adsAnunciosSort.asc;
+  else { _adsAnunciosSort.col = col; _adsAnunciosSort.asc = false; }
+  if (_adsAnunciosData) renderAdsAnuncios(_adsAnunciosData);
+}
+
+function renderAdsAnuncios(data) {
+  const el = document.getElementById('adsAnunciosContent');
+  const { items, from, to } = data;
+  if (!items || !items.length) {
+    el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">No hay anuncios en el período</div>';
+    return;
+  }
+
+  const fmt  = n => { const a=Math.abs(n), s=n<0?'-':''; if(a>=1000000) return s+'$'+(a/1000000).toFixed(2)+'M'; if(a>=1000) return s+'$'+(a/1000).toFixed(1)+'K'; return s+'$'+Math.round(a).toLocaleString('es-AR'); };
+  const fmtN = n => n != null ? n.toLocaleString('es-AR') : '—';
+  const fmtP = n => n != null && n > 0 ? n.toFixed(2)+'%' : '—';
+  const fmtX = n => n != null && n > 0 ? n.toFixed(2)+'x' : '—';
+
+  // Ordenar
+  const { col, asc } = _adsAnunciosSort;
+  const sorted = [...items].sort((a, b) => {
+    const va = typeof a[col] === 'string' ? a[col].toLowerCase() : (a[col] || 0);
+    const vb = typeof b[col] === 'string' ? b[col].toLowerCase() : (b[col] || 0);
+    if (typeof va === 'string') return asc ? va.localeCompare(vb) : vb.localeCompare(va);
+    return asc ? va - vb : vb - va;
+  });
+
+  const th = (c, label, align='right') => {
+    const active = _adsAnunciosSort.col === c;
+    const arrow  = active ? (_adsAnunciosSort.asc ? ' ↑' : ' ↓') : '';
+    return `<th onclick="sortAdsAnuncios('${c}')" style="padding:8px 10px;text-align:${align};font-size:11px;font-weight:600;color:${active?'var(--accent)':'var(--muted)'};border-bottom:1px solid var(--border);cursor:pointer;user-select:none;white-space:nowrap">${label}${arrow}</th>`;
+  };
+
+  const acosColor = v => !v || v<=0 ? 'var(--muted)' : v<=15 ? '#00e676' : v<=25 ? '#ff9100' : '#ff5252';
+  const roasColor = v => !v || v<=0 ? 'var(--muted)' : v>=6 ? '#00e676' : v>=3 ? '#ff9100' : '#ff5252';
+
+  const rows = sorted.map((i, idx) => `
+    <tr style="border-bottom:1px solid var(--border);${idx%2===0?'background:rgba(255,255,255,.02)':''}">
+      <td style="padding:7px 10px;font-size:12px;white-space:nowrap">
+        <a href="https://articulo.mercadolibre.com.ar/${i.item_id}" target="_blank" style="color:var(--accent);text-decoration:none;font-weight:600">${i.item_id}</a>
+      </td>
+      <td style="padding:7px 10px;font-size:12px;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${i.title}">${i.title}</td>
+      <td style="padding:7px 10px;font-size:11px;color:var(--muted);white-space:nowrap;max-width:130px;overflow:hidden;text-overflow:ellipsis">${i.campaign}</td>
+      <td style="padding:7px 10px;text-align:right;font-size:12px;font-weight:700;color:${acosColor(i.tacos)}">${fmtP(i.tacos)}</td>
+      <td style="padding:7px 10px;text-align:right;font-size:12px;font-weight:700;color:${roasColor(i.roas)}">${fmtX(i.roas)}</td>
+      <td style="padding:7px 10px;text-align:right;font-size:12px;color:#ff9100">${fmt(i.inversion)}</td>
+      <td style="padding:7px 10px;text-align:right;font-size:12px;color:#00e676">${fmt(i.ingresos)}</td>
+      <td style="padding:7px 10px;text-align:right;font-size:12px">${fmtN(i.ventas)}</td>
+      <td style="padding:7px 10px;text-align:right;font-size:12px">${fmtP(i.ctr)}</td>
+      <td style="padding:7px 10px;text-align:right;font-size:12px">${fmtP(i.cvr)}</td>
+      <td style="padding:7px 10px;text-align:right;font-size:12px;color:var(--muted)">${(i.impresiones||0).toLocaleString('es-AR')}</td>
+      <td style="padding:7px 10px;text-align:right;font-size:12px">${fmtN(i.clics)}</td>
+      <td style="padding:7px 10px;text-align:right;font-size:12px;color:var(--muted)">${fmt(i.cpc)}</td>
+    </tr>`).join('');
+
+  el.innerHTML = `
+    <div style="font-size:12px;color:var(--muted);margin-bottom:12px">${items.length} anuncios · ${from} → ${to}</div>
+    <div style="overflow-x:auto">
+      <table style="width:100%;border-collapse:collapse">
+        <thead><tr style="background:var(--surface2)">
+          ${th('item_id',    'MLA',         'left')}
+          ${th('title',      'Título',      'left')}
+          ${th('campaign',   'Campaña',     'left')}
+          ${th('tacos',      'TACOS')}
+          ${th('roas',       'ROAS')}
+          ${th('inversion',  'Inversión')}
+          ${th('ingresos',   'Ingresos')}
+          ${th('ventas',     'Ventas')}
+          ${th('ctr',        'CTR')}
+          ${th('cvr',        'Conversión')}
+          ${th('impresiones','Impresiones')}
+          ${th('clics',      'Clics')}
+          ${th('cpc',        'CPC')}
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+    <div style="font-size:11px;color:var(--muted);margin-top:10px">
+      TACOS = Inversión / Ingresos · ROAS = Ingresos / Inversión · CTR = Clics / Impresiones · Conversión = Ventas / Clics · Click en columnas para ordenar
+    </div>`;
+}
 
 async function loadAds() {
   const el = document.getElementById('adsContent');
