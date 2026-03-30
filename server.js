@@ -1438,6 +1438,7 @@ app.get('/api/items-full', requireAuth, async (req, res) => {
     const clipsSet = new Set();
     Object.entries(itemDetailsMap).forEach(([id, detail]) => {
       if (detail.video_id) clipsSet.add(id);
+      if (id === 'MLA896860553') console.log(`[CLIP_TARGET] id=${id} video_id=${detail.video_id} keys=${Object.keys(detail).join(',')}`);
     });
     console.log(`[CLIPS] ${clipsSet.size} items con video/clip de ${allIds.length} total`);
 
