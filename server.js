@@ -2552,6 +2552,109 @@ app.put('/api/logistica/full-stock/:item_id', requireAuth, async (req, res) => {
 
 // ── COMPETENCIA ───────────────────────────────────────────────────────────────
 // ── ANÁLISIS DE PUBLICACIÓN COMPETIDOR ───────────────────────────────────────
+app.get('/api/categorias-ventas', requireAuth, async (req, res) => {
+  try {
+    const clientId = parseInt(req.query.client_id);
+    const token = await getClientToken(clientId);
+    if (!token) return res.status(403).json({ error: 'Sin token' });
+
+    const headers  = { 'Authorization': `Bearer ${token}` };
+    const user     = await fetch(`${ML_API}/users/me`, { headers }).then(r => r.json());
+    const uid      = user.id;
+    const siteId   = user.site_id || 'MLA';
+
+    const fromDate = req.query.date_from || new Date(Date.now() - 30*24*60*60*1000).toISOString().slice(0,10);
+    const toDate   = req.query.date_to   || new Date().toISOString().slice(0,10);
+    const fmt      = d => d.toISOString().slice(0,19) + '.000-00:00';
+
+    // ── 1. Ventas por ítem del período ───────────────────────────────────────
+    const { orders } = await fetchAllOrders(uid, headers,
+      fmt(new Date(fromDate + 'T00:00:00')),
+      fmt(new Date(toDate   + 'T23:59:59'))
+    );
+
+    const salesByItem = {};
+    orders.forEach(order => {
+      (order.order_items || []).forEach(oi => {
+        const id = oi.item?.id;
+        if (!id) return;
+        if (!salesByItem[id]) salesByItem[id] = { id, title: oi.item?.title || id, units: 0, revenue: 0 };
+        salesByItem[id].units   += oi.quantity || 0;
+        salesByItem[id].revenue += (parseFloat(oi.unit_price)||0) * (oi.quantity||0);
+      });
+    });
+
+    if (!Object.keys(salesByItem).length) return res.json({ categories: [] });
+
+    // ── 2. Categorías de cada ítem (batch) ───────────────────────────────────
+    const itemIds   = Object.keys(salesByItem);
+    const catByItem = {};
+    for (let i = 0; i < itemIds.length; i += 20) {
+      const batch = itemIds.slice(i, i + 20);
+      const data  = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,category_id,title`, { headers }).then(r => r.json()).catch(() => []);
+      (Array.isArray(data) ? data : []).forEach(r => {
+        if (r.code === 200 && r.body) catByItem[r.body.id] = r.body.category_id;
+      });
+    }
+
+    // ── 3. Agrupar por categoría ──────────────────────────────────────────────
+    const catMap = {};
+    itemIds.forEach(id => {
+      const catId = catByItem[id];
+      if (!catId) return;
+      if (!catMap[catId]) catMap[catId] = { id: catId, name: catId, items: [], revenue: 0, units: 0 };
+      catMap[catId].items.push({ ...salesByItem[id], category_id: catId });
+      catMap[catId].revenue += salesByItem[id].revenue;
+      catMap[catId].units   += salesByItem[id].units;
+    });
+
+    // ── 4. Nombres de categorías ──────────────────────────────────────────────
+    const catIds = Object.keys(catMap);
+    await Promise.all(catIds.map(async catId => {
+      try {
+        const cat = await fetch(`${ML_API}/categories/${catId}`, { headers }).then(r => r.json());
+        catMap[catId].name = cat.name || catId;
+      } catch(e) {}
+    }));
+
+    // ── 5. Ranking de cada publicación en su categoría ───────────────────────
+    // Busca el ítem en los resultados de búsqueda de la categoría (máx 200 posiciones)
+    for (const catId of catIds) {
+      const cat = catMap[catId];
+      for (const item of cat.items) {
+        try {
+          let ranking = null;
+          let found   = false;
+          for (let offset = 0; offset < 200 && !found; offset += 50) {
+            const url  = `${ML_API}/sites/${siteId}/search?category=${catId}&limit=50&offset=${offset}`;
+            const data = await fetch(url, { headers }).then(r => r.json()).catch(() => ({}));
+            const results = data.results || [];
+            const idx = results.findIndex(r => r.id === item.id);
+            if (idx !== -1) {
+              ranking = offset + idx + 1;
+              found   = true;
+            }
+            if (results.length < 50) break;
+          }
+          item.ranking = ranking; // null = no está en top 200
+        } catch(e) { item.ranking = null; }
+      }
+    }
+
+    const categories = Object.values(catMap)
+      .sort((a, b) => b.revenue - a.revenue)
+      .map(c => ({
+        ...c,
+        items: c.items.sort((a, b) => b.revenue - a.revenue)
+      }));
+
+    res.json({ categories, from: fromDate, to: toDate });
+  } catch(e) {
+    console.error('[CAT_VENTAS]', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.get('/api/competencia/item', requireAuth, async (req, res) => {
   try {
     const { item_id, client_id } = req.query;
