@@ -2617,28 +2617,51 @@ app.get('/api/categorias-ventas', requireAuth, async (req, res) => {
       } catch(e) {}
     }));
 
-    // ── 5. Ranking de cada publicación en su categoría ───────────────────────
-    // Busca el ítem en los resultados de búsqueda de la categoría (máx 200 posiciones)
+    // ── 5. Para cada categoría: ranking de cada pub + datos de mercado ────────
     for (const catId of catIds) {
       const cat = catMap[catId];
-      for (const item of cat.items) {
-        try {
-          let ranking = null;
-          let found   = false;
-          for (let offset = 0; offset < 200 && !found; offset += 50) {
-            const url  = `${ML_API}/sites/${siteId}/search?category=${catId}&limit=50&offset=${offset}`;
-            const data = await fetch(url, { headers }).then(r => r.json()).catch(() => ({}));
-            const results = data.results || [];
-            const idx = results.findIndex(r => r.id === item.id);
-            if (idx !== -1) {
-              ranking = offset + idx + 1;
-              found   = true;
-            }
-            if (results.length < 50) break;
-          }
-          item.ranking = ranking; // null = no está en top 200
-        } catch(e) { item.ranking = null; }
-      }
+
+      // Fetch búsqueda de la categoría ordenada por relevancia (default ML)
+      // Acumulamos todos los resultados para: ranking, total listados, top competidores
+      let allResults = [];
+      let totalListings = 0;
+      try {
+        for (let offset = 0; offset < 200; offset += 50) {
+          const url  = `${ML_API}/sites/${siteId}/search?category=${catId}&limit=50&offset=${offset}`;
+          const data = await fetch(url, { headers }).then(r => r.json()).catch(() => ({}));
+          if (offset === 0) totalListings = data.paging?.total || 0;
+          const results = data.results || [];
+          allResults = allResults.concat(results);
+          if (results.length < 50) break;
+        }
+      } catch(e) {}
+
+      // Ranking de cada publicación propia
+      cat.items.forEach(item => {
+        const idx = allResults.findIndex(r => r.id === item.id);
+        item.ranking = idx !== -1 ? idx + 1 : null;
+      });
+
+      // Datos del mercado
+      cat.total_listings = totalListings;
+
+      // Top 5 vendedores por sold_quantity en los resultados visibles
+      const sellerMap = {};
+      allResults.forEach(r => {
+        const sid   = r.seller?.id;
+        const snick = r.seller?.nickname || String(sid);
+        if (!sid) return;
+        if (!sellerMap[sid]) sellerMap[sid] = { id: sid, nickname: snick, sold: 0, items: 0, isMe: String(sid) === String(uid) };
+        sellerMap[sid].sold  += r.sold_quantity || 0;
+        sellerMap[sid].items += 1;
+      });
+      cat.top_sellers = Object.values(sellerMap)
+        .sort((a, b) => b.sold - a.sold)
+        .slice(0, 8)
+        .map((s, i) => ({ ...s, rank: i + 1 }));
+
+      // Total sold_quantity visible (aproximación del mercado)
+      cat.market_sold_visible = allResults.reduce((s, r) => s + (r.sold_quantity || 0), 0);
     }
 
     const categories = Object.values(catMap)
