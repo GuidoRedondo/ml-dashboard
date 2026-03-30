@@ -1442,6 +1442,7 @@ app.get('/api/items-full', requireAuth, async (req, res) => {
         await Promise.all(batch.map(async id => {
           try {
             const data = await fetch(`${ML_API}/marketplace/items/${id}/clips`, { headers }).then(r => r.json());
+            if (activeToCheck.indexOf(id) < 2) console.log(`[CLIPS_DEBUG] id=${id} response=${JSON.stringify(data).slice(0,200)}`);
             const clips = data.clips || data.results || (Array.isArray(data) ? data : []);
             if (clips.length > 0) clipsSet.add(id);
           } catch(e) {}
