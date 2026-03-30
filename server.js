@@ -2618,25 +2618,33 @@ app.get('/api/categorias-ventas', requireAuth, async (req, res) => {
     }));
 
     // ── 5. Para cada categoría: ranking de cada pub + datos de mercado ────────
+    // La búsqueda de ML es pública — no requiere auth del usuario
+    const pubHeaders = {};
+    try {
+      const appToken = await getAppToken(clientId);
+      if (appToken) pubHeaders['Authorization'] = `Bearer ${appToken}`;
+    } catch(e) {}
+
     for (const catId of catIds) {
       const cat = catMap[catId];
 
-      // Fetch búsqueda de la categoría ordenada por relevancia (default ML)
-      // Acumulamos todos los resultados para: ranking, total listados, top competidores
       let allResults = [];
       let totalListings = 0;
       try {
         for (let offset = 0; offset < 200; offset += 50) {
           const url  = `${ML_API}/sites/${siteId}/search?category=${catId}&limit=50&offset=${offset}`;
-          const data = await fetch(url, { headers }).then(r => r.json()).catch(() => ({}));
-          if (offset === 0) totalListings = data.paging?.total || 0;
+          const data = await fetch(url, { headers: pubHeaders }).then(r => r.json()).catch(() => ({}));
+          if (offset === 0) {
+            totalListings = data.paging?.total || 0;
+            console.log(`[CAT_SEARCH] catId=${catId} total=${totalListings} results=${(data.results||[]).length} error=${data.error||''}`);
+          }
           const results = data.results || [];
           allResults = allResults.concat(results);
           if (results.length < 50) break;
         }
-      } catch(e) {}
+      } catch(e) { console.log(`[CAT_SEARCH_ERR] ${e.message}`); }
 
-      // Ranking de cada publicación propia
+      // Ranking: buscar el ítem en la categoría. Si no aparece, buscar por seller
       cat.items.forEach(item => {
         const idx = allResults.findIndex(r => r.id === item.id);
         item.ranking = idx !== -1 ? idx + 1 : null;
