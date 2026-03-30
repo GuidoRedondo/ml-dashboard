@@ -1355,7 +1355,7 @@ app.get('/api/items-full', requireAuth, async (req, res) => {
     for (let i = 0; i < allIds.length; i += 20) {
       const batch = allIds.slice(i, i+20);
       try {
-        const data = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,title,price,status,sub_status,available_quantity,listing_type_id,category_id,shipping,pictures,condition,catalog_listing`, { headers }).then(r => r.json());
+        const data = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,title,price,status,sub_status,available_quantity,listing_type_id,category_id,shipping,pictures,condition,catalog_listing,video_id`, { headers }).then(r => r.json());
         (Array.isArray(data) ? data : []).forEach(r => {
           if (r.code === 200 && r.body) itemDetailsMap[r.body.id] = r.body;
         });
@@ -1432,24 +1432,14 @@ app.get('/api/items-full', requireAuth, async (req, res) => {
       Object.assign(visitsMap, await fetchVisits(soldItemIds.slice(i, i+20), effectiveDays, headers));
     }
 
-    // ── 6b. Clips — solo ítems activos (en paralelo, máx 200) ───────────────
+    // ── 6b. Clips — detectar via video_id en item detail (ya cargado en itemDetailsMap)
+    // El endpoint /marketplace/items/$id/clips requiere app certificada (403)
+    // Alternativa: el item detail incluye `video_id` si tiene clip/video
     const clipsSet = new Set();
-    try {
-      const activeToCheck = activeIds.slice(0, 200);
-      const CLIP_BATCH = 10;
-      for (let i = 0; i < activeToCheck.length; i += CLIP_BATCH) {
-        const batch = activeToCheck.slice(i, i + CLIP_BATCH);
-        await Promise.all(batch.map(async id => {
-          try {
-            const data = await fetch(`${ML_API}/marketplace/items/${id}/clips`, { headers }).then(r => r.json());
-            if (activeToCheck.indexOf(id) < 2) console.log(`[CLIPS_DEBUG] id=${id} response=${JSON.stringify(data).slice(0,200)}`);
-            const clips = data.clips || data.results || (Array.isArray(data) ? data : []);
-            if (clips.length > 0) clipsSet.add(id);
-          } catch(e) {}
-        }));
-      }
-    } catch(e) {}
-    console.log(`[CLIPS] ${clipsSet.size} items con clips de ${activeIds.length} activos`);
+    Object.entries(itemDetailsMap).forEach(([id, detail]) => {
+      if (detail.video_id) clipsSet.add(id);
+    });
+    console.log(`[CLIPS] ${clipsSet.size} items con video/clip de ${allIds.length} total`);
 
     // ── 7. Build final items list ────────────────────────────────────────────
     // Use item detail status as source of truth (more reliable than search endpoint)
@@ -1517,6 +1507,8 @@ app.get('/api/items-full', requireAuth, async (req, res) => {
         has_clip: clipsSet.has(id)
       };
     });
+
+    const items = [...itemsWithSales, ...itemsNoSales].sort((a,b) => b.revenue - a.revenue);
 
     // ── 8. Summary stats ─────────────────────────────────────────────────────
     const summary = {
