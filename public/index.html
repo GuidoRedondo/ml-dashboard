@@ -3376,6 +3376,34 @@ async function loadAdsAnuncios() {
   }
 }
 
+function exportAdsAnunciosExcel() {
+  if (!_adsAnunciosData?.items?.length) { showToast('Sin datos para exportar'); return; }
+  const { items, from, to } = _adsAnunciosData;
+  const client = getActiveClient();
+  const XLSX = window.XLSX;
+  const rows = items.map(i => ({
+    'MLA':          i.item_id,
+    'Título':       i.title,
+    'Campaña':      i.campaign,
+    'TACOS (%)':    i.tacos != null ? parseFloat(i.tacos.toFixed(2)) : '',
+    'ROAS':         i.roas > 0 ? parseFloat(i.roas.toFixed(2)) : '',
+    'Inversión':    Math.round(i.inversion),
+    'Ingresos Ads': Math.round(i.ingresos),
+    'Ventas':       i.ventas,
+    'CTR (%)':      i.ctr > 0 ? parseFloat(i.ctr.toFixed(3)) : '',
+    'Conversión (%)': i.cvr > 0 ? parseFloat(i.cvr.toFixed(2)) : '',
+    'Impresiones':  i.impresiones,
+    'Clics':        i.clics,
+    'CPC':          Math.round(i.cpc),
+  }));
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.json_to_sheet(rows);
+  ws['!cols'] = [18,40,20,11,8,12,14,9,9,14,13,9,10].map(w => ({ wch: w }));
+  XLSX.utils.book_append_sheet(wb, ws, 'Anuncios');
+  XLSX.writeFile(wb, `Anuncios_${(client?.name||'').replace(/\s+/g,'_')}_${from}_${to}.xlsx`);
+  showToast('✅ Excel descargado');
+}
+
 function sortAdsAnuncios(col) {
   if (_adsAnunciosSort.col === col) _adsAnunciosSort.asc = !_adsAnunciosSort.asc;
   else { _adsAnunciosSort.col = col; _adsAnunciosSort.asc = false; }
@@ -3420,7 +3448,7 @@ function renderAdsAnuncios(data) {
       </td>
       <td style="padding:7px 10px;font-size:12px;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${i.title}">${i.title}</td>
       <td style="padding:7px 10px;font-size:11px;color:var(--muted);white-space:nowrap;max-width:130px;overflow:hidden;text-overflow:ellipsis">${i.campaign}</td>
-      <td style="padding:7px 10px;text-align:right;font-size:12px;font-weight:700;color:${acosColor(i.tacos)}">${fmtP(i.tacos)}</td>
+      <td style="padding:7px 10px;text-align:right;font-size:12px;font-weight:700;color:${acosColor(i.tacos)}">${i.tacos != null ? fmtP(i.tacos) : '—'}</td>
       <td style="padding:7px 10px;text-align:right;font-size:12px;font-weight:700;color:${roasColor(i.roas)}">${fmtX(i.roas)}</td>
       <td style="padding:7px 10px;text-align:right;font-size:12px;color:#ff9100">${fmt(i.inversion)}</td>
       <td style="padding:7px 10px;text-align:right;font-size:12px;color:#00e676">${fmt(i.ingresos)}</td>
@@ -3433,7 +3461,10 @@ function renderAdsAnuncios(data) {
     </tr>`).join('');
 
   el.innerHTML = `
-    <div style="font-size:12px;color:var(--muted);margin-bottom:12px">${items.length} anuncios · ${from} → ${to}</div>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+      <div style="font-size:12px;color:var(--muted)">${items.length} anuncios · ${from} → ${to}</div>
+      <button onclick="exportAdsAnunciosExcel()" style="padding:6px 14px;border:none;border-radius:8px;background:#16a34a;color:#fff;font-size:12px;font-weight:600;cursor:pointer">📥 Exportar Excel</button>
+    </div>
     <div style="overflow-x:auto">
       <table style="width:100%;border-collapse:collapse">
         <thead><tr style="background:var(--surface2)">
