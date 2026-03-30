@@ -596,7 +596,7 @@ tbody td {
     </header>
 
     <!-- TOKEN EXPIRY WARNING BAR -->
-    <div id="tokenWarningBar" style="display:none;background:#fef3c7;border-bottom:1px solid #fcd34d;padding:8px 24px;display:flex;align-items:center;gap:12px;flex-wrap:wrap"></div>
+    <div id="tokenWarningBar" style="display:none"></div>
 
     <!-- DASHBOARD -->
     <div class="page active" id="page-dashboard">
@@ -686,7 +686,8 @@ tbody td {
       <div id="rentabilidadContent"><div style="color:var(--muted);font-size:13px;padding:20px;text-align:center">Sincronizá primero para ver los datos</div></div>
     </div>
 
-    <!-- ADS -->\n    <div class="page" id="page-ads">
+    <!-- ADS -->
+    <div class="page" id="page-ads">
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap">
         <h2 style="margin:0;font-family:var(--font-b);flex:1">Publicidad</h2>
         <button class="sync-btn" id="adsRefreshBtn" onclick="refreshAdsTab()">🔄 Actualizar</button>
@@ -1047,12 +1048,9 @@ function checkTokenWarnings() {
     <span style="font-size:16px">⚠️</span>
     <span style="font-size:12px;color:#92400e;font-weight:600">Token por vencer:</span>
     <span style="font-size:12px;color:#92400e">${expiring.map(c => c.name).join(', ')}</span>
-    <div style="display:flex;gap:8px;margin-left:auto;flex-wrap:wrap">
-      ${expiring.map(c => `
-        <button onclick="quickReconnect(${c.id},'${c.name}')"
-          style="padding:4px 12px;background:#d97706;color:#fff;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer">
-          🔗 Renovar ${c.name}
-        </button>`).join('')}
+    <div style="display:flex;gap:8px;margin-left:auto;flex-wrap:wrap;align-items:center">
+      ${expiring.map(c => `<button onclick="quickReconnect(${c.id},'${c.name}')" style="padding:4px 12px;background:#d97706;color:#fff;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer">🔗 Renovar ${c.name}</button>`).join('')}
+      <button onclick="document.getElementById('tokenWarningBar').style.display='none'" style="padding:4px 8px;background:none;color:#92400e;border:1px solid #92400e;border-radius:6px;font-size:12px;cursor:pointer">✕</button>
     </div>`;
 }
 
