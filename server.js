@@ -1438,15 +1438,15 @@ app.get('/api/items-full', requireAuth, async (req, res) => {
     const clipsSet = new Set();
     Object.entries(itemDetailsMap).forEach(([id, detail]) => {
       if (detail.video_id) clipsSet.add(id);
-      if (id === 'MLA896860553') {
-        // Probar endpoint individual para ver campos completos
-        try {
-          const full = await fetch(`${ML_API}/items/${id}`, { headers }).then(r => r.json());
-          console.log(`[CLIP_TARGET_FULL] video_id=${full.video_id} tags=${JSON.stringify(full.tags)} attributes_clip=${JSON.stringify((full.attributes||[]).find(a=>a.id==='VIDEO_URL' || a.id==='CLIP'))} sub_status=${full.sub_status}`);
-        } catch(e) {}
-      }
     });
     console.log(`[CLIPS] ${clipsSet.size} items con video/clip de ${allIds.length} total`);
+    // Debug ítem específico con endpoint individual
+    if (itemDetailsMap['MLA896860553']) {
+      try {
+        const full = await fetch(`${ML_API}/items/MLA896860553`, { headers }).then(r => r.json());
+        console.log(`[CLIP_TARGET_FULL] video_id=${full.video_id} tags=${JSON.stringify((full.tags||[]).slice(0,5))} sub_status=${JSON.stringify(full.sub_status)}`);
+      } catch(e) {}
+    }
 
     // ── 7. Build final items list ────────────────────────────────────────────
     // Use item detail status as source of truth (more reliable than search endpoint)
