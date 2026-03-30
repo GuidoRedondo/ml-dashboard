@@ -5258,7 +5258,9 @@ function renderEscalabilidad() {
       const convTxt  = p.conversion != null ? p.conversion.toFixed(1)+'%' : '—';
       const convCol  = p.conversion == null ? 'var(--muted)' : p.conversion >= 3 ? '#00e676' : p.conversion >= 1 ? '#ff9100' : '#ff5252';
       const mCol     = p.margenReal >= minMargen ? '#00e676' : p.margenReal >= minMargen*0.65 ? '#ff9100' : '#ff5252';
-      const margenTxt = `${p.hasCMV ? '' : '~'}${fmtP(p.margenReal)}`;
+      const margenTxt = p.hasCMV
+        ? `<span style="color:${mCol}">${fmtP(p.margenReal)}</span>`
+        : `<span style="color:#a78bfa">${fmtP(p.margenReal)}<sup style="font-size:9px">*</sup></span>`;
       const tagLabel = p.tag === 'escalar' ? '🟢 Escalar' : p.tag === 'optimizar' ? '🟡 Optimizar' : '🔴 Revisar';
       const pctAdsCol = p.pctAds > 15 ? '#ff5252' : p.pctAds > 8 ? '#ff9100' : '#00e676';
       const scoreBar = `<div style="display:flex;align-items:center;gap:6px">
@@ -5278,7 +5280,7 @@ function renderEscalabilidad() {
         </td>
         <td style="padding:8px 10px;text-align:right;font-size:12px;font-weight:600">${fmtN(p.revenue)}</td>
         <td style="padding:8px 10px;text-align:right;font-size:12px">${p.units}</td>
-        <td style="padding:8px 10px;text-align:right;font-size:13px;font-weight:700;color:${mCol}">${margenTxt}</td>
+        <td style="padding:8px 10px;text-align:right;font-size:13px;font-weight:700">${margenTxt}</td>
         <td style="padding:8px 10px;text-align:right;font-size:12px;font-weight:600;color:${trendCol}">${trendTxt}</td>
         <td style="padding:8px 10px;text-align:right;font-size:12px;color:${convCol}">${convTxt}</td>
         <td style="padding:8px 10px;text-align:right;font-size:12px;color:${p.pctAds>0?pctAdsCol:'var(--muted)'}">${p.pctAds>0?fmtP(p.pctAds):'—'}</td>
@@ -5310,6 +5312,7 @@ function renderEscalabilidad() {
     <div style="font-size:11px;color:var(--muted);margin-top:12px;display:flex;flex-wrap:wrap;gap:16px">
       <span>Score = 40% margen · 30% volumen · 15% tendencia · 15% conversión</span>
       <span>% Ads = inversión ads / facturación del ítem</span>
+      <span><sup>*</sup> <span style="color:#a78bfa">Margen sin CMV</span> — no descuenta el costo del producto. Cargalo en Rentabilidad para mayor precisión.</span>
       <span style="color:#ff9100">⚠ FULL y conversión requieren sincronización de Logística</span>
     </div>`;
 }
