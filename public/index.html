@@ -5445,8 +5445,24 @@ function renderCatVentas(data) {
       <tr style="display:none">
         <td colspan="8" style="padding:0">
           <table style="width:100%;border-collapse:collapse"><tbody>
-            ${cat.items.length ? `<tr style="background:var(--surface)"><td colspan="7" style="padding:6px 10px 4px 30px;font-size:11px;font-weight:600;color:#6366f1">TUS PUBLICACIONES</td></tr>${itemRows}` : ''}
-            ${cat.top_sellers?.length ? `<tr style="background:var(--surface)"><td colspan="7" style="padding:6px 10px 4px 30px;font-size:11px;font-weight:600;color:var(--muted)">TOP VENDEDORES (primeras 200 posiciones · ${(cat.market_sold_visible||0).toLocaleString('es-AR')} uds visibles)</td></tr>${compRows}` : ''}
+            ${cat.items.length ? `
+              <tr style="background:rgba(99,102,241,.08)">
+                <td style="padding:5px 10px 5px 30px;font-size:10px;font-weight:700;color:#6366f1;text-transform:uppercase">TUS PUBLICACIONES</td>
+                <td style="padding:5px 10px;font-size:10px;font-weight:600;color:var(--muted)">Título</td>
+                <td style="padding:5px 10px;text-align:right;font-size:10px;font-weight:600;color:var(--muted)">Facturación</td>
+                <td style="padding:5px 10px;text-align:right;font-size:10px;font-weight:600;color:var(--muted)">Unidades</td>
+                <td style="padding:5px 10px;text-align:center;font-size:10px;font-weight:600;color:var(--muted)">Ranking ML</td>
+                <td colspan="2"></td>
+              </tr>
+              ${itemRows}` : ''}
+            ${cat.top_sellers?.length ? `
+              <tr style="background:rgba(255,255,255,.04)">
+                <td colspan="2" style="padding:5px 10px 5px 30px;font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase">TOP VENDEDORES — primeras 200 posiciones · ${(cat.market_sold_visible||0).toLocaleString('es-AR')} uds vendidas visibles</td>
+                <td style="padding:5px 10px;text-align:right;font-size:10px;font-weight:600;color:var(--muted)">Publicaciones</td>
+                <td style="padding:5px 10px;text-align:right;font-size:10px;font-weight:600;color:var(--muted)">Uds vendidas</td>
+                <td colspan="3"></td>
+              </tr>
+              ${compRows}` : ''}
           </tbody></table>
         </td>
       </tr>`;
