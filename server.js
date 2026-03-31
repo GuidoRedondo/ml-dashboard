@@ -2617,52 +2617,41 @@ app.get('/api/categorias-ventas', requireAuth, async (req, res) => {
       } catch(e) {}
     }));
 
-    // ── 5. Para cada categoría: ranking de cada pub + datos de mercado ────────
+    // ── 5. Para cada categoría: total en ML + ranking via items del usuario ───
     for (const catId of catIds) {
       const cat = catMap[catId];
 
-      let allResults = [];
       let totalListings = 0;
+      let allResults    = [];
+
+      // Total de publicaciones en la categoría (endpoint de categoría, no búsqueda)
+      try {
+        const catData = await fetch(`${ML_API}/categories/${catId}`, { headers }).then(r => r.json()).catch(() => ({}));
+        totalListings = catData.total_items_in_this_category || 0;
+      } catch(e) {}
+
+      // Ranking: buscar posición en resultados de búsqueda con token del usuario
+      // Usamos seller_id + category para obtener el ranking relativo
       try {
         for (let offset = 0; offset < 200; offset += 50) {
-          const url  = `${ML_API}/sites/${siteId}/search?category=${catId}&limit=50&offset=${offset}`;
+          const url  = `${ML_API}/sites/${siteId}/search?seller_id=${uid}&category=${catId}&limit=50&offset=${offset}`;
           const data = await fetch(url, { headers }).then(r => r.json()).catch(() => ({}));
-          if (offset === 0) {
-            totalListings = data.paging?.total || 0;
-            console.log(`[CAT_SEARCH] catId=${catId} total=${totalListings} results=${(data.results||[]).length} error=${data.error||''}`);
-          }
+          if (offset === 0) console.log(`[CAT_RANK] catId=${catId} total=${data.paging?.total} results=${(data.results||[]).length} error=${data.error||''}`);
           const results = data.results || [];
           allResults = allResults.concat(results);
           if (results.length < 50) break;
         }
-      } catch(e) { console.log(`[CAT_SEARCH_ERR] ${e.message}`); }
+      } catch(e) {}
 
-      // Ranking: buscar el ítem en la categoría. Si no aparece, buscar por seller
+      // Ranking de cada ítem propio (posición entre tus propias pubs en la categoría)
       cat.items.forEach(item => {
         const idx = allResults.findIndex(r => r.id === item.id);
         item.ranking = idx !== -1 ? idx + 1 : null;
       });
 
-      // Datos del mercado
-      cat.total_listings = totalListings;
-
-      // Top 5 vendedores por sold_quantity en los resultados visibles
-      const sellerMap = {};
-      allResults.forEach(r => {
-        const sid   = r.seller?.id;
-        const snick = r.seller?.nickname || String(sid);
-        if (!sid) return;
-        if (!sellerMap[sid]) sellerMap[sid] = { id: sid, nickname: snick, sold: 0, items: 0, isMe: String(sid) === String(uid) };
-        sellerMap[sid].sold  += r.sold_quantity || 0;
-        sellerMap[sid].items += 1;
-      });
-      cat.top_sellers = Object.values(sellerMap)
-        .sort((a, b) => b.sold - a.sold)
-        .slice(0, 8)
-        .map((s, i) => ({ ...s, rank: i + 1 }));
-
-      // Total sold_quantity visible (aproximación del mercado)
-      cat.market_sold_visible = allResults.reduce((s, r) => s + (r.sold_quantity || 0), 0);
+      cat.total_listings     = totalListings;
+      cat.market_sold_visible = 0;
+      cat.top_sellers        = []; // Sin acceso a búsqueda general por categoría
     }
 
     const categories = Object.values(catMap)
