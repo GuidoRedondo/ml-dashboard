@@ -2618,7 +2618,6 @@ app.get('/api/categorias-ventas', requireAuth, async (req, res) => {
     }));
 
     // ── 5. Para cada categoría: ranking de cada pub + datos de mercado ────────
-    // La búsqueda de ML es pública — no requiere auth
     for (const catId of catIds) {
       const cat = catMap[catId];
 
@@ -2627,8 +2626,7 @@ app.get('/api/categorias-ventas', requireAuth, async (req, res) => {
       try {
         for (let offset = 0; offset < 200; offset += 50) {
           const url  = `${ML_API}/sites/${siteId}/search?category=${catId}&limit=50&offset=${offset}`;
-          // Sin Authorization header — búsqueda pública
-          const data = await fetch(url).then(r => r.json()).catch(() => ({}));
+          const data = await fetch(url, { headers }).then(r => r.json()).catch(() => ({}));
           if (offset === 0) {
             totalListings = data.paging?.total || 0;
             console.log(`[CAT_SEARCH] catId=${catId} total=${totalListings} results=${(data.results||[]).length} error=${data.error||''}`);
