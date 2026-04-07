@@ -220,7 +220,10 @@ app.post('/api/login', async (req, res) => {
   try {
     const { username, password } = req.body;
     const hash = crypto.createHash('sha256').update(password).digest('hex');
-    const result = await pool.query('SELECT * FROM users WHERE username = $1 AND password_hash = $2', [username, hash]);
+    const result = await pool.query(
+      'SELECT * FROM users WHERE (username = $1 OR email = $1) AND password_hash = $2',
+      [username, hash]
+    );
     if (!result.rows.length) return res.status(401).json({ error: 'Usuario o contraseña incorrectos' });
     const user = result.rows[0];
     const sessionId = crypto.randomBytes(32).toString('hex');
@@ -254,7 +257,23 @@ app.post('/api/change-password', requireAuth, async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
-// ── USER MANAGEMENT ───────────────────────────────────────────────────────────
+// Endpoint para obtener usuario actual con permisos
+app.get('/api/me', requireAuth, async (req, res) => {
+  try {
+    const permsRes = await pool.query('SELECT section, enabled FROM user_permissions WHERE user_id = $1', [req.user.id]);
+    const permissions = permsRes.rows.reduce((m, r) => { m[r.section] = r.enabled; return m; }, {});
+    res.json({
+      id: req.user.id,
+      username: req.user.username,
+      email: req.user.email,
+      role: req.user.role,
+      client_id: req.user.client_id,
+      permissions
+    });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+
 const requireAdmin = (req, res, next) => {
   if (req.user?.role !== 'admin') return res.status(403).json({ error: 'Solo admins' });
   next();
