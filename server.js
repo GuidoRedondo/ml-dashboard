@@ -42,10 +42,24 @@ async function initDB() {
     CREATE TABLE IF NOT EXISTS users (
       id SERIAL PRIMARY KEY,
       username VARCHAR(50) UNIQUE NOT NULL,
+      email VARCHAR(100),
       password_hash VARCHAR(64) NOT NULL,
-      role VARCHAR(20) DEFAULT 'consultant',
+      role VARCHAR(20) DEFAULT 'colaborador',
+      client_id INTEGER REFERENCES clients(id) ON DELETE SET NULL,
       created_at TIMESTAMP DEFAULT NOW()
     );
+    CREATE TABLE IF NOT EXISTS user_permissions (
+      id SERIAL PRIMARY KEY,
+      user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+      section VARCHAR(50) NOT NULL,
+      enabled BOOLEAN DEFAULT true,
+      UNIQUE(user_id, section)
+    );
+    -- Migrar columna role si existe con valor viejo
+    DO $$ BEGIN
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS email VARCHAR(100);
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS client_id INTEGER REFERENCES clients(id) ON DELETE SET NULL;
+    EXCEPTION WHEN OTHERS THEN NULL; END $$;
     CREATE TABLE IF NOT EXISTS clients (
       id SERIAL PRIMARY KEY,
       name VARCHAR(100) NOT NULL,
@@ -208,13 +222,18 @@ app.post('/api/login', async (req, res) => {
     const hash = crypto.createHash('sha256').update(password).digest('hex');
     const result = await pool.query('SELECT * FROM users WHERE username = $1 AND password_hash = $2', [username, hash]);
     if (!result.rows.length) return res.status(401).json({ error: 'Usuario o contraseña incorrectos' });
+    const user = result.rows[0];
     const sessionId = crypto.randomBytes(32).toString('hex');
-    await pool.query('INSERT INTO sessions (id, user_id) VALUES ($1, $2)', [sessionId, result.rows[0].id]);
-    // Set cookie server-side so it works regardless of localStorage/cookie settings
+    await pool.query('INSERT INTO sessions (id, user_id) VALUES ($1, $2)', [sessionId, user.id]);
+
+    // Permisos del usuario
+    const permsRes = await pool.query('SELECT section, enabled FROM user_permissions WHERE user_id = $1', [user.id]);
+    const permissions = permsRes.rows.reduce((m, r) => { m[r.section] = r.enabled; return m; }, {});
+
     res.cookie('ml_session_id', sessionId, { maxAge: 7*24*60*60*1000, httpOnly: false, sameSite: 'lax', path: '/' });
-    res.cookie('ml_session_user', result.rows[0].username, { maxAge: 7*24*60*60*1000, httpOnly: false, sameSite: 'lax', path: '/' });
-    res.cookie('ml_session_role', result.rows[0].role, { maxAge: 7*24*60*60*1000, httpOnly: false, sameSite: 'lax', path: '/' });
-    res.json({ sessionId, username: result.rows[0].username, role: result.rows[0].role });
+    res.cookie('ml_session_user', user.username, { maxAge: 7*24*60*60*1000, httpOnly: false, sameSite: 'lax', path: '/' });
+    res.cookie('ml_session_role', user.role, { maxAge: 7*24*60*60*1000, httpOnly: false, sameSite: 'lax', path: '/' });
+    res.json({ sessionId, username: user.username, role: user.role, client_id: user.client_id, permissions });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -234,6 +253,89 @@ app.post('/api/change-password', requireAuth, async (req, res) => {
     res.json({ ok: true });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
+
+// ── USER MANAGEMENT ───────────────────────────────────────────────────────────
+const requireAdmin = (req, res, next) => {
+  if (req.user?.role !== 'admin') return res.status(403).json({ error: 'Solo admins' });
+  next();
+};
+
+// Listar usuarios
+app.get('/api/users', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT u.id, u.username, u.email, u.role, u.client_id, u.created_at,
+             c.name as client_name,
+             json_agg(json_build_object('section', p.section, 'enabled', p.enabled)) FILTER (WHERE p.section IS NOT NULL) as permissions
+      FROM users u
+      LEFT JOIN clients c ON u.client_id = c.id
+      LEFT JOIN user_permissions p ON u.id = p.user_id
+      GROUP BY u.id, c.name
+      ORDER BY u.created_at
+    `);
+    res.json(result.rows);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// Crear usuario
+app.post('/api/users', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { username, email, password, role, client_id } = req.body;
+    if (!username || !password || !role) return res.status(400).json({ error: 'Faltan campos' });
+    const hash = crypto.createHash('sha256').update(password).digest('hex');
+    const result = await pool.query(
+      'INSERT INTO users (username, email, password_hash, role, client_id) VALUES ($1, $2, $3, $4, $5) RETURNING id, username, role',
+      [username, email||null, hash, role, client_id||null]
+    );
+    res.json({ ok: true, user: result.rows[0] });
+  } catch(e) {
+    if (e.code === '23505') return res.status(400).json({ error: 'El usuario ya existe' });
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Editar usuario
+app.put('/api/users/:id', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { username, email, password, role, client_id } = req.body;
+    if (password) {
+      const hash = crypto.createHash('sha256').update(password).digest('hex');
+      await pool.query('UPDATE users SET username=$1, email=$2, password_hash=$3, role=$4, client_id=$5 WHERE id=$6',
+        [username, email||null, hash, role, client_id||null, req.params.id]);
+    } else {
+      await pool.query('UPDATE users SET username=$1, email=$2, role=$3, client_id=$4 WHERE id=$5',
+        [username, email||null, role, client_id||null, req.params.id]);
+    }
+    res.json({ ok: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// Eliminar usuario
+app.delete('/api/users/:id', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    if (parseInt(req.params.id) === req.user.id) return res.status(400).json({ error: 'No podés eliminarte a vos mismo' });
+    await pool.query('DELETE FROM users WHERE id = $1', [req.params.id]);
+    res.json({ ok: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// Actualizar permisos de un usuario
+app.put('/api/users/:id/permissions', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { permissions } = req.body; // { dashboard: true, publicidad: false, ... }
+    const userId = parseInt(req.params.id);
+    await pool.query('DELETE FROM user_permissions WHERE user_id = $1', [userId]);
+    for (const [section, enabled] of Object.entries(permissions)) {
+      await pool.query(
+        'INSERT INTO user_permissions (user_id, section, enabled) VALUES ($1, $2, $3)',
+        [userId, section, enabled]
+      );
+    }
+    res.json({ ok: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+
 
 // ── CLIENT MANAGEMENT ─────────────────────────────────────────────────────────
 app.get('/api/token-status', requireAuth, async (req, res) => {
