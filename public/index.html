@@ -547,6 +547,9 @@ tbody td {
       <div style="height:1px;background:var(--border);margin:12px 0"></div>
 
       <div class="nav-section-label">GESTIÓN</div>
+      <div class="nav-item" id="nav-usuarios" data-page="usuarios" onclick="showPage('usuarios',this);loadUsuarios()">
+        <span class="nav-icon">👤</span> Usuarios
+      </div>
       <div class="nav-item" data-page="clientes" onclick="showPage('clientes',this);renderClientsList()">
         <span class="nav-icon">👥</span> Clientes
       </div>
@@ -871,6 +874,59 @@ tbody td {
     </div>
 
     <!-- TOKENS -->
+    <!-- USUARIOS -->
+    <div class="page" id="page-usuarios">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px;flex-wrap:wrap">
+        <h2 style="margin:0;font-family:var(--font-b);flex:1">👤 Gestión de Usuarios</h2>
+        <button onclick="abrirModalUsuario()" style="padding:8px 18px;background:var(--accent);color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer">+ Nuevo usuario</button>
+      </div>
+      <div id="usuariosContent"><div style="color:var(--muted);padding:40px;text-align:center">Cargando...</div></div>
+    </div>
+
+    <!-- MODAL USUARIO -->
+    <div id="modalUsuario" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:1000;align-items:center;justify-content:center">
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:28px;width:480px;max-width:95vw;max-height:90vh;overflow-y:auto">
+        <h3 style="margin:0 0 20px;font-family:var(--font-b)" id="modalUsuarioTitle">Nuevo usuario</h3>
+        <div style="display:flex;flex-direction:column;gap:14px">
+          <div>
+            <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">Usuario *</label>
+            <input id="uUsername" type="text" placeholder="ej: yakka_client" style="width:100%;box-sizing:border-box;padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px">
+          </div>
+          <div>
+            <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">Email</label>
+            <input id="uEmail" type="email" placeholder="email@ejemplo.com" style="width:100%;box-sizing:border-box;padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px">
+          </div>
+          <div>
+            <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">Contraseña <span id="uPassNote" style="color:var(--muted)">(dejar vacío para no cambiar)</span></label>
+            <input id="uPassword" type="password" placeholder="Contraseña" style="width:100%;box-sizing:border-box;padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px">
+          </div>
+          <div>
+            <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">Rol *</label>
+            <select id="uRole" onchange="onRoleChange()" style="width:100%;padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px">
+              <option value="colaborador">Colaborador</option>
+              <option value="cliente">Cliente</option>
+              <option value="admin">Admin</option>
+            </select>
+          </div>
+          <div id="uClientRow">
+            <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">Cuenta ML asociada</label>
+            <select id="uClientId" style="width:100%;padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px">
+              <option value="">— Seleccioná una cuenta —</option>
+            </select>
+          </div>
+          <!-- Permisos por sección -->
+          <div id="uPermsRow">
+            <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:8px">Secciones habilitadas</label>
+            <div id="uPermsGrid" style="display:grid;grid-template-columns:1fr 1fr;gap:8px"></div>
+          </div>
+        </div>
+        <div style="display:flex;gap:10px;margin-top:20px;justify-content:flex-end">
+          <button onclick="cerrarModalUsuario()" style="padding:8px 18px;border:1px solid var(--border);background:none;color:var(--text);border-radius:8px;font-size:13px;cursor:pointer">Cancelar</button>
+          <button onclick="guardarUsuario()" style="padding:8px 18px;background:var(--accent);color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer">Guardar</button>
+        </div>
+      </div>
+    </div>
+
     <div class="page" id="page-tokens">
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px">
         <h2 style="margin:0;font-family:var(--font-b);flex:1">🔑 Estado de Tokens</h2>
@@ -5709,6 +5765,155 @@ function renderPromociones(data) {
 
 // ── TOKEN STATUS ──────────────────────────────────────────────────────────────
 let _tokenStatusInterval = null;
+
+// ── GESTIÓN DE USUARIOS ────────────────────────────────────────────────────────
+const SECCIONES = [
+  { id: 'dashboard',    label: '📊 Dashboard' },
+  { id: 'performance',  label: '📈 Performance' },
+  { id: 'publicaciones',label: '📋 Publicaciones' },
+  { id: 'ventas',       label: '🛒 Ventas' },
+  { id: 'rentabilidad', label: '💰 Rentabilidad' },
+  { id: 'publicidad',   label: '📣 Publicidad' },
+  { id: 'diagnostico',  label: '🩺 Diagnóstico' },
+  { id: 'fotos',        label: '📷 Fotos' },
+  { id: 'logistica',    label: '🚚 Logística' },
+  { id: 'escalabilidad',label: '🚀 Escalabilidad' },
+  { id: 'competencia',  label: '🏆 Competencia' },
+  { id: 'reporte',      label: '📊 Reporte Financiero' },
+];
+
+let _editingUserId = null;
+
+async function loadUsuarios() {
+  const el = document.getElementById('usuariosContent');
+  el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">⏳ Cargando...</div>';
+  try {
+    const users = await apiCall('GET', '/api/users');
+    if (!users) return;
+    if (!users.length) {
+      el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">Sin usuarios creados</div>';
+      return;
+    }
+    const roleColor = r => r === 'admin' ? '#6366f1' : r === 'colaborador' ? '#00e676' : '#ff9100';
+    const roleLabel = r => r === 'admin' ? 'Admin' : r === 'colaborador' ? 'Colaborador' : 'Cliente';
+    const rows = users.map(u => `
+      <tr style="border-bottom:1px solid var(--border)">
+        <td style="padding:10px;font-size:13px;font-weight:600">${u.username}</td>
+        <td style="padding:10px;font-size:12px;color:var(--muted)">${u.email || '—'}</td>
+        <td style="padding:10px">
+          <span style="padding:3px 10px;border-radius:20px;font-size:11px;font-weight:700;background:${roleColor(u.role)}22;color:${roleColor(u.role)}">${roleLabel(u.role)}</span>
+        </td>
+        <td style="padding:10px;font-size:12px;color:var(--muted)">${u.client_name || '—'}</td>
+        <td style="padding:10px;font-size:12px;color:var(--muted)">${u.permissions ? u.permissions.filter(p=>p.enabled).length + '/' + SECCIONES.length + ' secciones' : 'Todas'}</td>
+        <td style="padding:10px;text-align:right">
+          <button onclick="abrirModalUsuario(${JSON.stringify(u).replace(/"/g,'&quot;')})" style="padding:5px 12px;border:1px solid var(--border);background:none;color:var(--text);border-radius:6px;font-size:12px;cursor:pointer;margin-right:6px">✏️ Editar</button>
+          <button onclick="eliminarUsuario(${u.id},'${u.username}')" style="padding:5px 12px;border:none;background:#ff525222;color:#ff5252;border-radius:6px;font-size:12px;cursor:pointer">🗑</button>
+        </td>
+      </tr>`).join('');
+
+    el.innerHTML = `
+      <div class="kpi-card" style="padding:0;overflow:hidden">
+        <table style="width:100%;border-collapse:collapse">
+          <thead><tr style="background:var(--surface2);border-bottom:2px solid var(--border)">
+            <th style="padding:10px;text-align:left;font-size:11px;font-weight:600;color:var(--muted)">Usuario</th>
+            <th style="padding:10px;text-align:left;font-size:11px;font-weight:600;color:var(--muted)">Email</th>
+            <th style="padding:10px;text-align:left;font-size:11px;font-weight:600;color:var(--muted)">Rol</th>
+            <th style="padding:10px;text-align:left;font-size:11px;font-weight:600;color:var(--muted)">Cuenta ML</th>
+            <th style="padding:10px;text-align:left;font-size:11px;font-weight:600;color:var(--muted)">Permisos</th>
+            <th style="padding:10px"></th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>`;
+  } catch(e) {
+    el.innerHTML = `<div style="color:var(--muted);padding:40px;text-align:center">Error: ${e.message}</div>`;
+  }
+}
+
+function onRoleChange() {
+  const role = document.getElementById('uRole').value;
+  document.getElementById('uClientRow').style.display = role === 'cliente' ? '' : 'none';
+  document.getElementById('uPermsRow').style.display = role !== 'admin' ? '' : 'none';
+}
+
+function abrirModalUsuario(user = null) {
+  _editingUserId = user?.id || null;
+  document.getElementById('modalUsuarioTitle').textContent = user ? 'Editar usuario' : 'Nuevo usuario';
+  document.getElementById('uPassNote').style.display = user ? '' : 'none';
+  document.getElementById('uUsername').value = user?.username || '';
+  document.getElementById('uEmail').value = user?.email || '';
+  document.getElementById('uPassword').value = '';
+  document.getElementById('uRole').value = user?.role || 'colaborador';
+
+  // Poblar select de clientes
+  const sel = document.getElementById('uClientId');
+  sel.innerHTML = '<option value="">— Seleccioná una cuenta —</option>';
+  allClients.forEach(c => {
+    const opt = document.createElement('option');
+    opt.value = c.id;
+    opt.textContent = c.name;
+    if (user?.client_id == c.id) opt.selected = true;
+    sel.appendChild(opt);
+  });
+
+  // Permisos
+  const grid = document.getElementById('uPermsGrid');
+  const permsMap = {};
+  if (user?.permissions) user.permissions.forEach(p => { permsMap[p.section] = p.enabled; });
+  grid.innerHTML = SECCIONES.map(s => `
+    <label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer">
+      <input type="checkbox" id="perm_${s.id}" ${permsMap[s.id] !== false ? 'checked' : ''}>
+      ${s.label}
+    </label>`).join('');
+
+  onRoleChange();
+  const modal = document.getElementById('modalUsuario');
+  modal.style.display = 'flex';
+}
+
+function cerrarModalUsuario() {
+  document.getElementById('modalUsuario').style.display = 'none';
+  _editingUserId = null;
+}
+
+async function guardarUsuario() {
+  const username = document.getElementById('uUsername').value.trim();
+  const email    = document.getElementById('uEmail').value.trim();
+  const password = document.getElementById('uPassword').value;
+  const role     = document.getElementById('uRole').value;
+  const client_id = document.getElementById('uClientId').value || null;
+
+  if (!username) { showToast('⚠ El usuario es obligatorio'); return; }
+  if (!_editingUserId && !password) { showToast('⚠ La contraseña es obligatoria'); return; }
+
+  // Permisos
+  const permissions = {};
+  SECCIONES.forEach(s => {
+    permissions[s.id] = document.getElementById(`perm_${s.id}`)?.checked ?? true;
+  });
+
+  try {
+    if (_editingUserId) {
+      await apiCall('PUT', `/api/users/${_editingUserId}`, { username, email, password: password||undefined, role, client_id });
+      await apiCall('PUT', `/api/users/${_editingUserId}/permissions`, { permissions });
+    } else {
+      const res = await apiCall('POST', '/api/users', { username, email, password, role, client_id });
+      if (res?.user?.id) await apiCall('PUT', `/api/users/${res.user.id}/permissions`, { permissions });
+    }
+    showToast('✅ Usuario guardado');
+    cerrarModalUsuario();
+    loadUsuarios();
+  } catch(e) { showToast(`❌ Error: ${e.message}`); }
+}
+
+async function eliminarUsuario(id, username) {
+  if (!confirm(`¿Eliminar usuario "${username}"?`)) return;
+  try {
+    await apiCall('DELETE', `/api/users/${id}`);
+    showToast('✅ Usuario eliminado');
+    loadUsuarios();
+  } catch(e) { showToast(`❌ Error: ${e.message}`); }
+}
 
 async function loadTokenStatus() {
   const el = document.getElementById('tokenStatusContent');
