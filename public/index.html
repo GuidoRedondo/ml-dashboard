@@ -806,9 +806,14 @@ tbody td {
           style="padding:8px 18px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-2px;font-family:var(--font-b)">
           🔠 Curva ABC
         </button>
+        <button id="tab-esc-prior" onclick="switchEscTab('prior')"
+          style="padding:8px 18px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-2px;font-family:var(--font-b)">
+          🎯 Prioridades
+        </button>
       </div>
       <div id="escalabilidadContent"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Sincronizá primero para ver los datos</div></div>
       <div id="escAbcContent" style="display:none"></div>
+      <div id="escPriorContent" style="display:none"></div>
     </div>
 
     <!-- COMPETENCIA -->
@@ -5239,9 +5244,9 @@ let _escActiveTab = 'ranking';
 
 function switchEscTab(tab) {
   _escActiveTab = tab;
-  ['ranking','abc'].forEach(t => {
+  ['ranking','abc','prior'].forEach(t => {
     const btn = document.getElementById(`tab-esc-${t}`);
-    const ids = { ranking: 'escalabilidadContent', abc: 'escAbcContent' };
+    const ids = { ranking: 'escalabilidadContent', abc: 'escAbcContent', prior: 'escPriorContent' };
     const el  = document.getElementById(ids[t]);
     if (el)  el.style.display  = t === tab ? '' : 'none';
     if (btn) {
@@ -5249,17 +5254,138 @@ function switchEscTab(tab) {
       btn.style.borderBottom = t === tab ? '2px solid var(--accent)' : '2px solid transparent';
     }
   });
-  // Mostrar/ocultar margen mínimo (solo relevante en ranking)
   const mw = document.getElementById('escMargenWrap');
   if (mw) mw.style.display = tab === 'ranking' ? '' : 'none';
 
-  if (tab === 'abc') renderCurvaABC();
+  if (tab === 'abc')   renderCurvaABC();
+  if (tab === 'prior') renderPrioridades();
 }
 
+
 function refreshEscTab() {
-  if (_escActiveTab === 'abc') renderCurvaABC();
+  if (_escActiveTab === 'abc')   renderCurvaABC();
+  else if (_escActiveTab === 'prior') renderPrioridades();
   else loadEscalabilidad();
 }
+
+function renderPrioridades() {
+  const el = document.getElementById('escPriorContent');
+  const connected = state.accounts.filter(a => a.data && a.data.rentabilidad);
+  if (!connected.length) {
+    el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">Sincronizá primero para ver los datos</div>';
+    return;
+  }
+
+  // Merge productos con facturación y margen
+  const allProducts = {};
+  connected.forEach(acc => {
+    (acc.data.rentabilidad.by_product || []).forEach(p => {
+      if (!allProducts[p.id]) {
+        allProducts[p.id] = { ...p, hasCMV: p.margin_pct != null && p.cmv > 0 };
+      } else {
+        allProducts[p.id].revenue += p.revenue || 0;
+        allProducts[p.id].units   += p.units   || 0;
+        allProducts[p.id].cmv     += p.cmv     || 0;
+      }
+    });
+  });
+
+  // Calcular ABC
+  const sorted = Object.values(allProducts).filter(p => p.revenue > 0).sort((a,b) => b.revenue - a.revenue);
+  const totalRevenue = sorted.reduce((s,p) => s + p.revenue, 0);
+  let acum = 0;
+  sorted.forEach(p => {
+    acum += p.revenue;
+    const pctAcum = totalRevenue > 0 ? acum / totalRevenue * 100 : 0;
+    p.clase = pctAcum <= 80 ? 'A' : pctAcum <= 95 ? 'B' : 'C';
+    // Margen: usar margin_pct si tiene CMV, sino margen sobre neto ML
+    p.margen = p.hasCMV && p.margin_pct != null ? p.margin_pct
+      : (p.net_ml > 0 ? Math.round((p.net_ml / p.revenue) * 100) : null);
+    p.sinCMV = !p.hasCMV;
+  });
+
+  // Definir prioridad y recomendación
+  function getPrioridad(p) {
+    const c = p.clase;
+    const m = p.margen;
+    if (m === null) return { orden: 5, label: '⚪ Sin datos', accion: 'Cargar CMV para analizar', color: 'var(--muted)', bg: 'rgba(255,255,255,.04)' };
+    if (c === 'A' && m >= 20) return { orden: 1, label: '🚀 Escalar',         accion: 'Producto estrella — invertir en ads y stock',     color: '#00e676', bg: 'rgba(0,230,118,.08)' };
+    if (c === 'A' && m >= 10) return { orden: 2, label: '🔧 Optimizar A',     accion: 'Alto volumen, margen mejorable — revisar costos',  color: '#ff9100', bg: 'rgba(255,145,0,.08)' };
+    if (c === 'A' && m <  10) return { orden: 2, label: '🔴 Urgente',         accion: 'Alto volumen con margen crítico — acción inmediata',color: '#ff5252', bg: 'rgba(255,82,82,.08)' };
+    if (c === 'B' && m >= 20) return { orden: 3, label: '📈 Crecer',          accion: 'Buen margen — trabajar para pasar a clase A',      color: '#00e676', bg: 'rgba(0,230,118,.06)' };
+    if (c === 'B' && m >= 10) return { orden: 3, label: '🔧 Optimizar B',     accion: 'Margen moderado — mejorar precio o reducir costo',  color: '#ff9100', bg: 'rgba(255,145,0,.06)' };
+    if (c === 'B' && m <  10) return { orden: 4, label: '⚠️ Revisar B',       accion: 'Bajo margen en clase B — evaluar continuidad',     color: '#ff5252', bg: 'rgba(255,82,82,.06)' };
+    if (c === 'C' && m >= 20) return { orden: 3, label: '💎 Potencial',       accion: 'Buen margen pero bajo volumen — impulsar visibilidad',color: '#6366f1', bg: 'rgba(99,102,241,.08)' };
+    if (c === 'C' && m >= 10) return { orden: 4, label: '👀 Monitorear',      accion: 'Bajo impacto — mantener sin invertir más',         color: '#ff9100', bg: 'rgba(255,145,0,.04)' };
+    return                     { orden: 4, label: '⛔ Discontinuar',   accion: 'Bajo volumen y margen crítico — evaluar dar de baja', color: '#ff5252', bg: 'rgba(255,82,82,.04)' };
+  }
+
+  sorted.forEach(p => { p.prior = getPrioridad(p); });
+  const porPrioridad = [...sorted].sort((a,b) => a.prior.orden - b.prior.orden || b.revenue - a.revenue);
+
+  // KPIs por prioridad
+  const kpiData = [
+    { orden:1, label:'🚀 Escalar',   color:'#00e676' },
+    { orden:2, label:'🔴/🔧 Optimizar A', color:'#ff5252' },
+    { orden:3, label:'📈/💎 Crecer', color:'#6366f1' },
+    { orden:4, label:'⚠️ Revisar/Discontinuar', color:'#ff9100' },
+    { orden:5, label:'⚪ Sin CMV',   color:'var(--muted)' },
+  ];
+  const fmtN = n => '$' + Math.round(n).toLocaleString('es-AR');
+  const claseColor = c => c==='A'?'#00e676':c==='B'?'#ff9100':'#ff5252';
+
+  const kpis = kpiData.map(k => {
+    const items = sorted.filter(p => p.prior.orden === k.orden);
+    const rev   = items.reduce((s,p) => s+p.revenue, 0);
+    return `<div class="kpi-card" style="padding:14px;border-top:3px solid ${k.color}">
+      <div class="kpi-label" style="font-size:11px">${k.label}</div>
+      <div style="font-size:20px;font-weight:700;color:${k.color};font-family:var(--font-b);margin-top:4px">${items.length} productos</div>
+      <div style="font-size:12px;color:var(--muted);margin-top:2px">${fmtN(rev)}</div>
+    </div>`;
+  }).join('');
+
+  const rows = porPrioridad.map(p => {
+    const margenStr = p.margen != null ? p.margen + '%' + (p.sinCMV ? '*' : '') : '—';
+    const margenColor = p.margen == null ? 'var(--muted)' : p.margen >= 20 ? '#00e676' : p.margen >= 10 ? '#ff9100' : '#ff5252';
+    return `<tr style="border-bottom:1px solid var(--border);background:${p.prior.bg}">
+      <td style="padding:8px 10px;text-align:center">
+        <span style="padding:2px 8px;border-radius:20px;font-size:11px;font-weight:700;background:${claseColor(p.clase)}22;color:${claseColor(p.clase)}">${p.clase}</span>
+      </td>
+      <td style="padding:8px 10px;font-size:12px;max-width:220px">
+        <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${p.title}">${p.title}</div>
+        <div style="font-size:10px;color:var(--muted)">${p.id}</div>
+      </td>
+      <td style="padding:8px 10px;text-align:right;font-size:13px;font-weight:700">${fmtN(p.revenue)}</td>
+      <td style="padding:8px 10px;text-align:right;font-size:13px;font-weight:700;color:${margenColor}">${margenStr}</td>
+      <td style="padding:8px 10px">
+        <span style="font-size:12px;font-weight:600;color:${p.prior.color}">${p.prior.label}</span>
+        <div style="font-size:10px;color:var(--muted);margin-top:2px">${p.prior.accion}</div>
+      </td>
+    </tr>`;
+  }).join('');
+
+  el.innerHTML = `
+    <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-bottom:20px">${kpis}</div>
+    <div class="kpi-card" style="padding:0;overflow:hidden">
+      <div style="overflow-x:auto">
+        <table style="width:100%;border-collapse:collapse">
+          <thead><tr style="background:var(--surface2);border-bottom:2px solid var(--border)">
+            <th style="padding:8px 10px;text-align:center;font-size:11px;font-weight:600;color:var(--muted)">Clase</th>
+            <th style="padding:8px 10px;text-align:left;font-size:11px;font-weight:600;color:var(--muted)">Producto</th>
+            <th style="padding:8px 10px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Facturación</th>
+            <th style="padding:8px 10px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Margen</th>
+            <th style="padding:8px 10px;text-align:left;font-size:11px;font-weight:600;color:var(--muted)">Prioridad y acción</th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    </div>
+    <div style="font-size:11px;color:var(--muted);margin-top:10px;display:flex;gap:20px;flex-wrap:wrap">
+      <span>Ordenado por prioridad de acción → facturación</span>
+      <span>* Margen sin CMV cargado (estimado sobre neto ML)</span>
+    </div>`;
+}
+
 
 function renderCurvaABC() {
   const el = document.getElementById('escAbcContent');
