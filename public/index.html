@@ -3402,9 +3402,19 @@ function initApp() {
   const btn = document.getElementById('qr-'+days);
   if (btn) btn.classList.add('active');
 
+  // Cargar permisos frescos del servidor y aplicar
+  apiCall('GET', '/api/me').then(me => {
+    if (me?.permissions) {
+      _userPermissions = me.permissions;
+      localStorage.setItem('ml_permissions', JSON.stringify(me.permissions));
+    }
+    if (me?.client_id) setCookie('ml_session_client', me.client_id, 7);
+    applyPermissions();
+  });
+
   // Load clients from server
   loadClients().then(() => applyPermissions());
-  applyPermissions(); // aplicar de inmediato también
+  applyPermissions();
   showPage('dashboard', document.querySelector('.nav-item[data-page="dashboard"]'));
 }
 
