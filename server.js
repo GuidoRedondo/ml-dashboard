@@ -305,7 +305,7 @@ app.get('/api/clients/:id/auth-link', requireAuth, async (req, res) => {
     const client = result.rows[0];
     const redirectUri = process.env.REDIRECT_URI || 'https://ml-dashboard-production.up.railway.app/oauth/callback';
     const { app_id } = getMLCredentials(client);
-    const link = `https://auth.mercadolibre.com.ar/authorization?response_type=code&client_id=${app_id}&redirect_uri=${encodeURIComponent(redirectUri)}&state=${client.id}&scope=offline_access%20read%20write&prompt=consent&approval_prompt=force`;
+    const link = `https://auth.mercadolibre.com.ar/authorization?response_type=code&client_id=${app_id}&redirect_uri=${encodeURIComponent(redirectUri)}&state=${client.id}`;
     res.json({ link });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
