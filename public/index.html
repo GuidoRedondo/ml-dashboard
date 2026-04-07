@@ -5270,226 +5270,152 @@ function refreshEscTab() {
 
 function renderPrioridades() {
   const el = document.getElementById('escPriorContent');
+
+  // Necesitamos _escData (del ranking) para tener el score
+  if (!_escData) {
+    el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">Abrí primero la pestaña 🚀 Ranking para cargar los datos</div>';
+    return;
+  }
+
   const connected = state.accounts.filter(a => a.data && a.data.rentabilidad);
   if (!connected.length) {
     el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">Sincronizá primero para ver los datos</div>';
     return;
   }
 
-  // Merge productos con facturación y margen
-  const allProducts = {};
+  // Obtener facturación por producto (para ABC)
+  const revByProduct = {};
   connected.forEach(acc => {
     (acc.data.rentabilidad.by_product || []).forEach(p => {
-      if (!allProducts[p.id]) {
-        allProducts[p.id] = { ...p, hasCMV: p.margin_pct != null && p.cmv > 0 };
-      } else {
-        allProducts[p.id].revenue += p.revenue || 0;
-        allProducts[p.id].units   += p.units   || 0;
-        allProducts[p.id].cmv     += p.cmv     || 0;
-      }
+      revByProduct[p.id] = (revByProduct[p.id] || 0) + (p.revenue || 0);
     });
   });
 
-  // Calcular ABC
-  const sorted = Object.values(allProducts).filter(p => p.revenue > 0).sort((a,b) => b.revenue - a.revenue);
-  const totalRevenue = sorted.reduce((s,p) => s + p.revenue, 0);
+  // Calcular ABC sobre todos los productos con ventas
+  const sorted = Object.entries(revByProduct)
+    .filter(([,r]) => r > 0)
+    .sort(([,a],[,b]) => b - a);
+  const totalRevenue = sorted.reduce((s,[,r]) => s + r, 0);
   let acum = 0;
-  sorted.forEach(p => {
-    acum += p.revenue;
+  const claseByProduct = {};
+  sorted.forEach(([id, rev]) => {
+    acum += rev;
     const pctAcum = totalRevenue > 0 ? acum / totalRevenue * 100 : 0;
-    p.clase = pctAcum <= 80 ? 'A' : pctAcum <= 95 ? 'B' : 'C';
-    // Margen: usar margin_pct si tiene CMV, sino margen sobre neto ML
-    p.margen = p.hasCMV && p.margin_pct != null ? p.margin_pct
-      : (p.net_ml > 0 ? Math.round((p.net_ml / p.revenue) * 100) : null);
-    p.sinCMV = !p.hasCMV;
+    claseByProduct[id] = pctAcum <= 80 ? 'A' : pctAcum <= 95 ? 'B' : 'C';
   });
 
-  // Definir prioridad y recomendación
-  function getPrioridad(p) {
-    const c = p.clase;
-    const m = p.margen;
-    if (m === null) return { orden: 5, label: '⚪ Sin datos', accion: 'Cargar CMV para analizar', color: 'var(--muted)', bg: 'rgba(255,255,255,.04)' };
-    if (c === 'A' && m >= 20) return { orden: 1, label: '🚀 Escalar',         accion: 'Producto estrella — invertir en ads y stock',     color: '#00e676', bg: 'rgba(0,230,118,.08)' };
-    if (c === 'A' && m >= 10) return { orden: 2, label: '🔧 Optimizar A',     accion: 'Alto volumen, margen mejorable — revisar costos',  color: '#ff9100', bg: 'rgba(255,145,0,.08)' };
-    if (c === 'A' && m <  10) return { orden: 2, label: '🔴 Urgente',         accion: 'Alto volumen con margen crítico — acción inmediata',color: '#ff5252', bg: 'rgba(255,82,82,.08)' };
-    if (c === 'B' && m >= 20) return { orden: 3, label: '📈 Crecer',          accion: 'Buen margen — trabajar para pasar a clase A',      color: '#00e676', bg: 'rgba(0,230,118,.06)' };
-    if (c === 'B' && m >= 10) return { orden: 3, label: '🔧 Optimizar B',     accion: 'Margen moderado — mejorar precio o reducir costo',  color: '#ff9100', bg: 'rgba(255,145,0,.06)' };
-    if (c === 'B' && m <  10) return { orden: 4, label: '⚠️ Revisar B',       accion: 'Bajo margen en clase B — evaluar continuidad',     color: '#ff5252', bg: 'rgba(255,82,82,.06)' };
-    if (c === 'C' && m >= 20) return { orden: 3, label: '💎 Potencial',       accion: 'Buen margen pero bajo volumen — impulsar visibilidad',color: '#6366f1', bg: 'rgba(99,102,241,.08)' };
-    if (c === 'C' && m >= 10) return { orden: 4, label: '👀 Monitorear',      accion: 'Bajo impacto — mantener sin invertir más',         color: '#ff9100', bg: 'rgba(255,145,0,.04)' };
-    return                     { orden: 4, label: '⛔ Discontinuar',   accion: 'Bajo volumen y margen crítico — evaluar dar de baja', color: '#ff5252', bg: 'rgba(255,82,82,.04)' };
-  }
+  // Cruzar con score de escalabilidad (_escData ya tiene todo calculado)
+  const minMargen = parseFloat(document.getElementById('escMinMargen')?.value) || 30;
+  const { products, costsMap } = _escData;
+  const maxRevenue = Math.max(...Object.values(products).map(x => x.revenue), 1);
 
-  sorted.forEach(p => { p.prior = getPrioridad(p); });
-  const porPrioridad = [...sorted].sort((a,b) => a.prior.orden - b.prior.orden || b.revenue - a.revenue);
+  const allItems = Object.values(products).filter(p => p.revenue > 0).map(p => {
+    const costoUnit  = costsMap[p.id] != null ? costsMap[p.id] : null;
+    const hasCMV     = costoUnit != null;
+    const cmv        = hasCMV ? costoUnit * p.units : null;
+    const margenReal = p.revenue > 0
+      ? hasCMV
+        ? ((p.neto - cmv - (p.ads||0)) / p.revenue * 100)
+        : ((p.neto - (p.ads||0)) / p.revenue * 100)
+      : 0;
+    const trend      = p.trend_pct != null ? p.trend_pct : (p.revenue_prev > 0 ? ((p.revenue - p.revenue_prev) / p.revenue_prev * 100) : null);
+    const conversion = p.visits > 0 ? (p.units / p.visits * 100) : null;
+    const scoreMargen = Math.min(100, Math.max(0, (margenReal / (minMargen * 2)) * 100));
+    const scoreVol    = (p.revenue / maxRevenue) * 100;
+    const scoreTrend  = trend != null ? Math.min(100, Math.max(0, 50 + trend * 0.5)) : 50;
+    const scoreConv   = conversion != null ? Math.min(100, conversion * 20) : 40;
+    const score       = Math.round(scoreMargen*0.40 + scoreVol*0.30 + scoreTrend*0.15 + scoreConv*0.15);
+    let semaforo, semaColor;
+    if (margenReal >= minMargen && score >= 55)                       { semaforo = '🟢'; semaColor = '#16a34a'; }
+    else if (margenReal >= minMargen * 0.65 && score >= 35)           { semaforo = '🟡'; semaColor = '#d97706'; }
+    else                                                               { semaforo = '🔴'; semaColor = '#dc2626'; }
+    const clase = claseByProduct[p.id] || 'C';
+    return { ...p, hasCMV, margenReal, score, semaforo, semaColor, clase };
+  }).sort((a,b) => {
+    // Orden: clase A → B → C, dentro de cada clase por score desc
+    const co = ['A','B','C'].indexOf(a.clase) - ['A','B','C'].indexOf(b.clase);
+    return co !== 0 ? co : b.score - a.score;
+  });
 
-  // KPIs por prioridad
-  const kpiData = [
-    { orden:1, label:'🚀 Escalar',   color:'#00e676' },
-    { orden:2, label:'🔴/🔧 Optimizar A', color:'#ff5252' },
-    { orden:3, label:'📈/💎 Crecer', color:'#6366f1' },
-    { orden:4, label:'⚠️ Revisar/Discontinuar', color:'#ff9100' },
-    { orden:5, label:'⚪ Sin CMV',   color:'var(--muted)' },
-  ];
+  // Filter state
+  if (!window._abcFilter) window._abcFilter = 'todos';
   const fmtN = n => '$' + Math.round(n).toLocaleString('es-AR');
-  const claseColor = c => c==='A'?'#00e676':c==='B'?'#ff9100':'#ff5252';
+  const claseColor = { A: '#00e676', B: '#ff9100', C: '#ff5252' };
+  const claseBg    = { A: 'rgba(0,230,118,.12)', B: 'rgba(255,145,0,.12)', C: 'rgba(255,82,82,.12)' };
 
-  const kpis = kpiData.map(k => {
-    const items = sorted.filter(p => p.prior.orden === k.orden);
-    const rev   = items.reduce((s,p) => s+p.revenue, 0);
-    return `<div class="kpi-card" style="padding:14px;border-top:3px solid ${k.color}">
-      <div class="kpi-label" style="font-size:11px">${k.label}</div>
-      <div style="font-size:20px;font-weight:700;color:${k.color};font-family:var(--font-b);margin-top:4px">${items.length} productos</div>
-      <div style="font-size:12px;color:var(--muted);margin-top:2px">${fmtN(rev)}</div>
+  // KPI cards
+  const counts = { A: 0, B: 0, C: 0 };
+  const revs   = { A: 0, B: 0, C: 0 };
+  allItems.forEach(p => { counts[p.clase]++; revs[p.clase] += p.revenue; });
+  const totalItems = allItems.length;
+
+  const cards = ['todos','A','B','C'].map(f => {
+    const isActive = window._abcFilter === f;
+    if (f === 'todos') {
+      return `<div onclick="window._abcFilter='todos';renderPrioridades()"
+        style="background:var(--surface);border:2px solid ${isActive?'var(--accent)':'var(--border)'};border-radius:12px;padding:14px 18px;cursor:pointer;transition:all .15s">
+        <div style="font-size:12px;color:var(--muted);font-weight:600">TODAS</div>
+        <div style="font-size:22px;font-weight:700;font-family:var(--font-b);margin-top:4px">${totalItems}</div>
+        <div style="font-size:11px;color:var(--muted);margin-top:2px">${fmtN(totalRevenue)}</div>
+      </div>`;
+    }
+    const pct = totalRevenue > 0 ? (revs[f]/totalRevenue*100).toFixed(0) : 0;
+    return `<div onclick="window._abcFilter='${f}';renderPrioridades()"
+      style="background:var(--surface);border:2px solid ${isActive?claseColor[f]:'var(--border)'};border-radius:12px;padding:14px 18px;cursor:pointer;transition:all .15s">
+      <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">
+        <span style="padding:2px 10px;border-radius:20px;font-size:12px;font-weight:700;background:${claseBg[f]};color:${claseColor[f]}">Clase ${f}</span>
+        <span style="font-size:11px;color:var(--muted)">${pct}% facturación</span>
+      </div>
+      <div style="font-size:22px;font-weight:700;font-family:var(--font-b);color:${claseColor[f]}">${counts[f]} productos</div>
+      <div style="font-size:11px;color:var(--muted);margin-top:2px">${fmtN(revs[f])}</div>
     </div>`;
   }).join('');
 
-  const rows = porPrioridad.map(p => {
-    const margenStr = p.margen != null ? p.margen + '%' + (p.sinCMV ? '*' : '') : '—';
-    const margenColor = p.margen == null ? 'var(--muted)' : p.margen >= 20 ? '#00e676' : p.margen >= 10 ? '#ff9100' : '#ff5252';
-    return `<tr style="border-bottom:1px solid var(--border);background:${p.prior.bg}">
-      <td style="padding:8px 10px;text-align:center">
-        <span style="padding:2px 8px;border-radius:20px;font-size:11px;font-weight:700;background:${claseColor(p.clase)}22;color:${claseColor(p.clase)}">${p.clase}</span>
+  // Tabla filtrada
+  const filtered = window._abcFilter === 'todos' ? allItems : allItems.filter(p => p.clase === window._abcFilter);
+
+  const rows = filtered.map(p => {
+    const pct = totalRevenue > 0 ? (p.revenue/totalRevenue*100).toFixed(1) : '0';
+    const margenStr = p.margenReal != null ? Math.round(p.margenReal) + '%' + (p.hasCMV ? '' : '*') : '—';
+    const margenColor = p.margenReal >= minMargen ? '#00e676' : p.margenReal >= minMargen*0.65 ? '#ff9100' : '#ff5252';
+    return `<tr style="border-bottom:1px solid var(--border)">
+      <td style="padding:9px 10px;text-align:center">
+        <span style="padding:3px 12px;border-radius:20px;font-size:12px;font-weight:700;background:${claseBg[p.clase]};color:${claseColor[p.clase]}">${p.clase}</span>
       </td>
-      <td style="padding:8px 10px;font-size:12px;max-width:220px">
-        <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${p.title}">${p.title}</div>
+      <td style="padding:9px 10px;max-width:260px">
+        <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px" title="${p.title}">${p.title}</div>
         <div style="font-size:10px;color:var(--muted)">${p.id}</div>
       </td>
-      <td style="padding:8px 10px;text-align:right;font-size:13px;font-weight:700">${fmtN(p.revenue)}</td>
-      <td style="padding:8px 10px;text-align:right;font-size:13px;font-weight:700;color:${margenColor}">${margenStr}</td>
-      <td style="padding:8px 10px">
-        <span style="font-size:12px;font-weight:600;color:${p.prior.color}">${p.prior.label}</span>
-        <div style="font-size:10px;color:var(--muted);margin-top:2px">${p.prior.accion}</div>
+      <td style="padding:9px 10px;text-align:right;font-size:13px;font-weight:700">${fmtN(p.revenue)}</td>
+      <td style="padding:9px 10px;text-align:right;font-size:12px;color:var(--muted)">${pct}%</td>
+      <td style="padding:9px 10px;text-align:right;font-size:13px;font-weight:700;color:${margenColor}">${margenStr}</td>
+      <td style="padding:9px 10px;text-align:center">
+        <span title="Score: ${p.score}" style="font-size:18px;cursor:default">${p.semaforo}</span>
+        <div style="font-size:10px;color:var(--muted)">${p.score} pts</div>
       </td>
     </tr>`;
   }).join('');
 
   el.innerHTML = `
-    <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-bottom:20px">${kpis}</div>
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px">${cards}</div>
     <div class="kpi-card" style="padding:0;overflow:hidden">
       <div style="overflow-x:auto">
         <table style="width:100%;border-collapse:collapse">
           <thead><tr style="background:var(--surface2);border-bottom:2px solid var(--border)">
-            <th style="padding:8px 10px;text-align:center;font-size:11px;font-weight:600;color:var(--muted)">Clase</th>
-            <th style="padding:8px 10px;text-align:left;font-size:11px;font-weight:600;color:var(--muted)">Producto</th>
-            <th style="padding:8px 10px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Facturación</th>
-            <th style="padding:8px 10px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Margen</th>
-            <th style="padding:8px 10px;text-align:left;font-size:11px;font-weight:600;color:var(--muted)">Prioridad y acción</th>
+            <th style="padding:9px 10px;text-align:center;font-size:11px;font-weight:600;color:var(--muted)">Clase</th>
+            <th style="padding:9px 10px;text-align:left;font-size:11px;font-weight:600;color:var(--muted)">Producto</th>
+            <th style="padding:9px 10px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Facturación</th>
+            <th style="padding:9px 10px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">% Total</th>
+            <th style="padding:9px 10px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Margen</th>
+            <th style="padding:9px 10px;text-align:center;font-size:11px;font-weight:600;color:var(--muted)">Escalabilidad</th>
           </tr></thead>
           <tbody>${rows}</tbody>
         </table>
       </div>
     </div>
     <div style="font-size:11px;color:var(--muted);margin-top:10px;display:flex;gap:20px;flex-wrap:wrap">
-      <span>Ordenado por prioridad de acción → facturación</span>
-      <span>* Margen sin CMV cargado (estimado sobre neto ML)</span>
-    </div>`;
-}
-
-
-function renderCurvaABC() {
-  const el = document.getElementById('escAbcContent');
-  const connected = state.accounts.filter(a => a.data && a.data.rentabilidad);
-  if (!connected.length) {
-    el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">Sincronizá primero para ver los datos</div>';
-    return;
-  }
-
-  // Merge productos de todas las cuentas
-  const allProducts = {};
-  connected.forEach(acc => {
-    (acc.data.rentabilidad.by_product || []).forEach(p => {
-      if (!allProducts[p.id]) allProducts[p.id] = { ...p };
-      else {
-        allProducts[p.id].revenue += p.revenue || 0;
-        allProducts[p.id].units   += p.units   || 0;
-      }
-    });
-  });
-
-  // Ordenar por facturación desc
-  const products = Object.values(allProducts)
-    .filter(p => p.revenue > 0)
-    .sort((a, b) => b.revenue - a.revenue);
-
-  const totalRevenue = products.reduce((s, p) => s + p.revenue, 0);
-
-  // Calcular curva ABC
-  let acum = 0;
-  const classified = products.map((p, i) => {
-    acum += p.revenue;
-    const pctAcum = totalRevenue > 0 ? (acum / totalRevenue * 100) : 0;
-    const clase   = pctAcum <= 80 ? 'A' : pctAcum <= 95 ? 'B' : 'C';
-    return { ...p, pctAcum, clase, rank: i + 1 };
-  });
-
-  const byClase = {
-    A: classified.filter(p => p.clase === 'A'),
-    B: classified.filter(p => p.clase === 'B'),
-    C: classified.filter(p => p.clase === 'C'),
-  };
-
-  const fmtN = n => '$' + Math.round(n).toLocaleString('es-AR');
-  const claseStyle = {
-    A: { color: '#00e676', bg: 'rgba(0,230,118,.12)', label: '🟢 A' },
-    B: { color: '#ff9100', bg: 'rgba(255,145,0,.12)',  label: '🟡 B' },
-    C: { color: '#ff5252', bg: 'rgba(255,82,82,.12)',  label: '🔴 C' },
-  };
-
-  // KPIs
-  const kpis = ['A','B','C'].map(c => {
-    const st = claseStyle[c];
-    const items = byClase[c];
-    const rev   = items.reduce((s,p) => s+p.revenue, 0);
-    const pct   = totalRevenue > 0 ? (rev/totalRevenue*100).toFixed(1) : '0';
-    return `<div class="kpi-card" style="padding:16px;border-top:3px solid ${st.color}">
-      <div class="kpi-label">${st.label} — ${items.length} productos</div>
-      <div style="font-size:22px;font-weight:700;color:${st.color};font-family:var(--font-b);margin-top:6px">${fmtN(rev)}</div>
-      <div style="font-size:12px;color:var(--muted);margin-top:4px">${pct}% de la facturación</div>
-    </div>`;
-  }).join('');
-
-  // Tabla
-  const rows = classified.map((p, i) => {
-    const st = claseStyle[p.clase];
-    return `<tr style="border-bottom:1px solid var(--border);${i%2===0?'background:rgba(255,255,255,.015)':''}">
-      <td style="padding:8px 10px;text-align:center;font-size:12px;color:var(--muted)">${p.rank}</td>
-      <td style="padding:8px 10px;text-align:center">
-        <span style="padding:3px 10px;border-radius:20px;font-size:12px;font-weight:700;background:${st.bg};color:${st.color}">${st.label}</span>
-      </td>
-      <td style="padding:8px 10px;font-size:12px;max-width:250px">
-        <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${p.title}">${p.title}</div>
-        <div style="font-size:10px;color:var(--muted)">${p.id}</div>
-      </td>
-      <td style="padding:8px 10px;text-align:right;font-size:13px;font-weight:700">${fmtN(p.revenue)}</td>
-      <td style="padding:8px 10px;text-align:right;font-size:12px">${p.units}</td>
-      <td style="padding:8px 10px;text-align:right;font-size:12px;color:var(--muted)">${(p.revenue/totalRevenue*100).toFixed(1)}%</td>
-      <td style="padding:8px 10px;text-align:right;font-size:12px;color:${p.clase==='A'?'#00e676':p.clase==='B'?'#ff9100':'var(--muted)'}">${p.pctAcum.toFixed(1)}%</td>
-    </tr>`;
-  }).join('');
-
-  el.innerHTML = `
-    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:20px">${kpis}</div>
-    <div class="kpi-card" style="padding:0;overflow:hidden">
-      <div style="overflow-x:auto">
-        <table style="width:100%;border-collapse:collapse;font-size:12px">
-          <thead><tr style="background:var(--surface2);border-bottom:2px solid var(--border)">
-            <th style="padding:8px 10px;text-align:center;font-size:11px;font-weight:600;color:var(--muted)">#</th>
-            <th style="padding:8px 10px;text-align:center;font-size:11px;font-weight:600;color:var(--muted)">Clase</th>
-            <th style="padding:8px 10px;text-align:left;font-size:11px;font-weight:600;color:var(--muted)">Producto</th>
-            <th style="padding:8px 10px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Facturación</th>
-            <th style="padding:8px 10px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Unidades</th>
-            <th style="padding:8px 10px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">% Individual</th>
-            <th style="padding:8px 10px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">% Acumulado</th>
-          </tr></thead>
-          <tbody>${rows}</tbody>
-        </table>
-      </div>
-    </div>
-    <div style="font-size:11px;color:var(--muted);margin-top:10px;display:flex;gap:20px;flex-wrap:wrap">
-      <span>🟢 A = primeros productos que suman el 80% de la facturación</span>
-      <span>🟡 B = siguiente 15% (acumulado 80–95%)</span>
-      <span>🔴 C = último 5% (acumulado 95–100%)</span>
+      <span>🟢 Escalar · 🟡 Optimizar · 🔴 Revisar — semáforo configurado en pestaña Ranking</span>
+      <span>* Margen sin CMV cargado</span>
     </div>`;
 }
 
