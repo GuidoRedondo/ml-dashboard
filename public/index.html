@@ -1086,6 +1086,8 @@ async function handleLogin() {
     setCookie('ml_session_id', data.sessionId, 7);
     setCookie('ml_session_user', data.username, 7);
     setCookie('ml_session_role', data.role, 7);
+    if (data.client_id) setCookie('ml_session_client', data.client_id, 7);
+    if (data.permissions) localStorage.setItem('ml_permissions', JSON.stringify(data.permissions));
     // Redirect with session in URL to survive any redirect
     window.location.href = window.location.pathname + '?sid=' + data.sessionId;
   } catch(e) {
@@ -3341,6 +3343,48 @@ function exportPerformanceExcel() {
   showToast('✅ Excel descargado');
 }
 
+// ── PERMISOS ───────────────────────────────────────────────────────────────────
+let _userPermissions = null;
+
+function getUserPermissions() {
+  if (_userPermissions) return _userPermissions;
+  try { _userPermissions = JSON.parse(localStorage.getItem('ml_permissions') || 'null'); } catch(e) {}
+  return _userPermissions;
+}
+
+function canSeeSection(sectionId) {
+  const role = getSessionRole();
+  if (role === 'admin' || role === 'consultant' || role === 'colaborador') return true;
+  const perms = getUserPermissions();
+  if (!perms) return true; // sin permisos definidos = todo habilitado
+  return perms[sectionId] !== false;
+}
+
+function applyPermissions() {
+  const role = getSessionRole();
+  const isGestion = role === 'admin' || role === 'consultant';
+
+  // Ocultar sección GESTIÓN para no-admins
+  document.querySelectorAll('.nav-section-label').forEach(el => {
+    if (el.textContent.trim() === 'GESTIÓN') {
+      el.style.display = isGestion ? '' : 'none';
+    }
+  });
+  document.querySelectorAll('[data-page="usuarios"],[data-page="clientes"],[data-page="tokens"],[data-page="reputacion"]').forEach(el => {
+    el.style.display = isGestion ? '' : 'none';
+  });
+
+  // Ocultar secciones según permisos para clientes
+  if (role === 'cliente') {
+    const secciones = ['dashboard','performance','publicaciones','ventas','rentabilidad',
+      'publicidad','diagnostico','fotos','logistica','escalabilidad','competencia','reporte'];
+    secciones.forEach(s => {
+      const navEl = document.querySelector(`[data-page="${s}"]`);
+      if (navEl) navEl.style.display = canSeeSection(s) ? '' : 'none';
+    });
+  }
+}
+
 function initApp() {
   // Initialize date pickers with default range (30 days)
   const savedRange = localStorage.getItem('ml_rangeDays');
@@ -3359,7 +3403,8 @@ function initApp() {
   if (btn) btn.classList.add('active');
 
   // Load clients from server
-  loadClients();
+  loadClients().then(() => applyPermissions());
+  applyPermissions(); // aplicar de inmediato también
   showPage('dashboard', document.querySelector('.nav-item[data-page="dashboard"]'));
 }
 
