@@ -594,7 +594,7 @@ tbody td {
         </div>
         <span id="sessionUser">Usuario</span>
         <button class="logout-btn" onclick="logout()">Salir</button>
-        <button class="sync-btn" id="syncBtn" onclick="syncAll()" style="display:none">⟳ Sincronizar</button>
+        <button class="sync-btn" id="syncBtn" onclick="syncAll()">⟳ Sincronizar</button>
       </div>
     </header>
 
@@ -2873,7 +2873,7 @@ function setQuickRange(days) {
   });
   state.rangeDays = days;
   localStorage.setItem('ml_rangeDays', days);
-  loadAllData();
+  syncAll();
 }
 
 function applyGlobalRange() {
@@ -2881,13 +2881,13 @@ function applyGlobalRange() {
   const to   = document.getElementById('globalDateTo')?.value;
   if (!from || !to) return;
   if (from > to) { showToast('⚠️ La fecha de inicio debe ser anterior a la de fin'); return; }
-  // Deactivate quick range buttons
   ['7','30','60','90'].forEach(d => {
     const btn = document.getElementById('qr-'+d);
     if (btn) btn.classList.remove('active');
   });
   state.rangeDays = null;
-  loadAllData();
+  // Sincronizar automáticamente al cambiar fechas
+  syncAll();
 }
 
 function setRange(el, days) { setQuickRange(days); } // backwards compat
