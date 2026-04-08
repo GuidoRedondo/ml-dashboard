@@ -1264,7 +1264,7 @@ app.get('/api/ads', requireAuth, async (req, res) => {
     const summary = data.metrics_summary || {};
 
     res.json({
-      summary: { spend: summary.cost||0, clicks: summary.clicks||0, impressions: summary.prints||0, sales: summary.total_amount||0, acos: summary.cost&&summary.total_amount?((summary.cost/summary.total_amount)*100).toFixed(1):null, roas: summary.cost&&summary.total_amount?(summary.total_amount/summary.cost).toFixed(2):null },
+      summary: { spend: summary.cost||0, clicks: summary.clicks||0, impressions: summary.prints||0, sales: summary.total_amount||0, units: summary.units_quantity||0, acos: summary.cost&&summary.total_amount?((summary.cost/summary.total_amount)*100).toFixed(1):null, roas: summary.cost&&summary.total_amount?(summary.total_amount/summary.cost).toFixed(2):null },
       campaigns: campaigns.map(c => {
         const m = c.metrics || {};
         const spend = m.cost||0, sales = m.total_amount||0;
