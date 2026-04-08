@@ -1065,6 +1065,23 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
     topItems.forEach(i => { visitsMap[i.id] = { visits: i.visits, conversion: i.conversion }; });
 
     // By-product breakdown for rentabilidad table
+    // Fetch SKU for all items in byItem
+    const byItemIds = Object.keys(byItem);
+    const skuMapDash = {};
+    for (let i = 0; i < byItemIds.length; i += 20) {
+      const batch = byItemIds.slice(i, i + 20);
+      try {
+        const data = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,seller_custom_field,attributes`, { headers }).then(r => r.json());
+        (Array.isArray(data) ? data : []).forEach(r => {
+          if (r.code !== 200 || !r.body) return;
+          const b = r.body;
+          skuMapDash[b.id] = b.seller_custom_field
+            || b.attributes?.find(a => a.id === 'SELLER_SKU')?.value_name
+            || null;
+        });
+      } catch(e) {}
+    }
+
     const byProduct = Object.values(byItem)
       .sort((a, b) => b.revenue - a.revenue)
       .map(i => {
@@ -1074,6 +1091,7 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
         return {
           id:              i.id,
           title:           i.title,
+          sku:             skuMapDash[i.id] || null,
           revenue:         i.revenue,
           revenue_prev:    prevRev,
           trend_pct:       trend !== null ? parseFloat(trend.toFixed(1)) : null,
@@ -2101,7 +2119,6 @@ app.get('/api/reporte/items-vendidos', requireAuth, async (req, res) => {
             || b.attributes?.find(a => a.id === 'SELLER_SKU')?.value_name
             || b.variations?.[0]?.attributes?.find(a => a.id === 'SELLER_SKU')?.value_name
             || null;
-          if (i === 0) console.log(`[SKU_DEBUG] item=${b.id} seller_custom_field=${b.seller_custom_field} attrs=${JSON.stringify(b.attributes?.find(a=>a.id==='SELLER_SKU'))} → sku=${sku}`);
           skuMap[b.id] = sku;
         });
       } catch(e) {}
