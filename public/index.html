@@ -2806,14 +2806,14 @@ async function descargarCMVRentabilidad() {
     const wsData = [
       [`COSTOS DE PRODUCTOS — ${client.name} | ${date_from} → ${date_to}`],
       ['⚠ Completá la columna "Costo Unitario (ARS)". Guardá y subí el archivo para actualizar.'],
-      ['MLA', 'Título', 'Costo Unitario (ARS)', 'Unidades vendidas', 'Facturación (ARS)', 'Notas'],
+      ['MLA', 'Título', 'SKU', 'Costo Unitario (ARS)', 'Unidades vendidas', 'Facturación (ARS)', 'Notas'],
       ...(data.items || []).map(i => [
-        i.mla_id, i.title, i.costo_unit || '', i.units, Math.round(i.revenue), i.notas || ''
+        i.mla_id, i.title, i.sku || '', i.costo_unit || '', i.units, Math.round(i.revenue), i.notas || ''
       ])
     ];
     const wb = XLSX.utils.book_new();
     const ws = XLSX.utils.aoa_to_sheet(wsData);
-    ws['!cols'] = [{ wch: 18 }, { wch: 50 }, { wch: 22 }, { wch: 18 }, { wch: 20 }, { wch: 25 }];
+    ws['!cols'] = [{ wch: 18 }, { wch: 50 }, { wch: 20 }, { wch: 22 }, { wch: 18 }, { wch: 20 }, { wch: 25 }];
     XLSX.utils.book_append_sheet(wb, ws, 'CMV');
     XLSX.writeFile(wb, `CMV_${client.name.replace(/\s+/g,'_')}_${date_from}.xlsx`);
     showToast('✅ Excel descargado');
@@ -4854,7 +4854,8 @@ function renderReporteCostos(data, clientId) {
   const rows = items.map((item, idx) => `
     <tr>
       <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;color:var(--accent)">${item.mla_id}</td>
-      <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${item.title}</td>
+      <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${item.title}</td>
+      <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;color:var(--muted)">${item.sku || '—'}</td>
       <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;text-align:center;font-weight:600">${item.units.toLocaleString('es-AR')}</td>
       <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;text-align:right">$${Math.round(item.revenue).toLocaleString('es-AR')}</td>
       <td style="padding:8px 10px;border-bottom:1px solid var(--border);text-align:right">
@@ -4884,6 +4885,7 @@ function renderReporteCostos(data, clientId) {
       <thead><tr style="background:var(--surface2)">
         <th style="padding:8px 10px;font-size:11px;color:var(--muted);text-align:left;border-bottom:1px solid var(--border)">MLA</th>
         <th style="padding:8px 10px;font-size:11px;color:var(--muted);text-align:left;border-bottom:1px solid var(--border)">Producto</th>
+        <th style="padding:8px 10px;font-size:11px;color:var(--muted);text-align:left;border-bottom:1px solid var(--border)">SKU</th>
         <th style="padding:8px 10px;font-size:11px;color:var(--muted);text-align:center;border-bottom:1px solid var(--border)">Unidades</th>
         <th style="padding:8px 10px;font-size:11px;color:var(--muted);text-align:right;border-bottom:1px solid var(--border)">Facturación</th>
         <th style="padding:8px 10px;font-size:11px;color:var(--muted);text-align:right;border-bottom:1px solid var(--border)">Costo unitario $</th>
