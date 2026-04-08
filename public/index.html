@@ -4700,9 +4700,10 @@ async function descargarTemplateExcel() {
     const wsData = [
       [`PLANILLA DE COSTOS — ${clientName} | ${period.date_from} → ${period.date_to}`],
       ["⚠  Completá la columna 'Costo Unitario (ARS)' — celdas en amarillo. Guardá y subí el archivo al dashboard."],
-      ['MLA', 'Descripción', 'Costo Unitario (ARS)', 'Unidades vendidas', 'Facturación (ARS)', 'Notas'],
+      ['MLA', 'SKU', 'Descripción', 'Costo Unitario (ARS)', 'Unidades vendidas', 'Facturación (ARS)', 'Notas'],
       ...(data.items || []).map(i => [
         i.mla_id,
+        i.sku || '',
         i.title,
         i.costo_unit || '',
         i.units,
@@ -4713,7 +4714,7 @@ async function descargarTemplateExcel() {
 
     const wb = XLSX.utils.book_new();
     const ws = XLSX.utils.aoa_to_sheet(wsData);
-    ws['!cols'] = [{ wch: 18 }, { wch: 50 }, { wch: 22 }, { wch: 18 }, { wch: 20 }, { wch: 25 }];
+    ws['!cols'] = [{ wch: 18 }, { wch: 20 }, { wch: 50 }, { wch: 22 }, { wch: 18 }, { wch: 20 }, { wch: 25 }];
     ws['!freeze'] = { xSplit: 0, ySplit: 3 };
     XLSX.utils.book_append_sheet(wb, ws, 'Costos');
     XLSX.writeFile(wb, `Costos_${clientName.replace(/\s+/g,'_')}_${period.mes}.xlsx`);
@@ -4744,12 +4745,19 @@ async function importarCostosExcel(input) {
     }
     if (headerRow === -1) { showToast('❌ No se encontró la fila de encabezados'); input.value=''; return; }
 
+    // Mapear columnas por nombre (compatible con formato viejo y nuevo con SKU)
+    const headers = rows[headerRow].map(h => String(h).trim().toLowerCase());
+    const colMLA    = headers.findIndex(h => h.includes('mla'));
+    const colTitle  = headers.findIndex(h => h.includes('descrip') || h.includes('título') || h.includes('titulo'));
+    const colCosto  = headers.findIndex(h => h.includes('costo'));
+    const colNotas  = headers.findIndex(h => h.includes('nota'));
+
     const costos = [];
     rows.slice(headerRow + 1).forEach(row => {
-      const mla_id = String(row[0]||'').trim();
-      const title  = String(row[1]||'').trim();
-      const costo  = parseFloat(String(row[2]||'').replace(/[,$\s]/g,''))||0;
-      const notas  = String(row[5]||'').trim();
+      const mla_id = String(row[colMLA]||'').trim();
+      const title  = colTitle >= 0 ? String(row[colTitle]||'').trim() : '';
+      const costo  = colCosto >= 0 ? parseFloat(String(row[colCosto]||'').replace(/[,$\s]/g,''))||0 : 0;
+      const notas  = colNotas >= 0 ? String(row[colNotas]||'').trim() : '';
       if (mla_id.startsWith('MLA') && costo > 0) {
         costos.push({ mla_id, title, costo_unit: costo, notas });
       }
