@@ -648,9 +648,18 @@ tbody td {
 
     <!-- PERFORMANCE -->
     <div class="page" id="page-performance">
-      <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px;flex-wrap:wrap">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap">
         <h2 style="margin:0;font-family:var(--font-b);flex:1">Performance por publicación</h2>
         <button class="sync-btn" onclick="exportPerformanceExcel()">📥 Excel</button>
+      </div>
+      <!-- Buscador por MLA -->
+      <div style="display:flex;gap:10px;align-items:center;margin-bottom:16px">
+        <input id="perfMlaInput" type="text" placeholder="Buscar por MLA o título para filtrar el análisis..."
+          style="flex:1;padding:8px 14px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px;outline:none"
+          oninput="onPerfMlaSearch(this.value)"
+          onkeydown="if(event.key==='Escape'){this.value='';onPerfMlaSearch('')}">
+        <button onclick="document.getElementById('perfMlaInput').value='';onPerfMlaSearch('')"
+          style="padding:7px 14px;border:1px solid var(--border);border-radius:8px;background:none;color:var(--muted);font-size:12px;cursor:pointer">✕ Limpiar</button>
       </div>
       <div id="performanceContent"></div>
     </div>
@@ -3007,6 +3016,14 @@ function loadSavedData() {
 function setPerfRange(el, days) { setQuickRange(days); }
 
 
+// ── PERFORMANCE MLA FILTER ────────────────────────────────────────────────────
+let _perfMlaFilter = null;
+
+function onPerfMlaSearch(val) {
+  _perfMlaFilter = val.trim().toLowerCase() || null;
+  loadPerformance();
+}
+
 function loadPerformance() {
   if (window._perfModeFilter === undefined) window._perfModeFilter = null;
   const el = document.getElementById('performanceContent');
@@ -3041,11 +3058,16 @@ function loadPerformance() {
     // by_mode always shows full picture (for the pie itself)
     Object.entries(perf.by_mode || {}).forEach(([k,v]) => { byMode[k] = (byMode[k]||0) + v; });
 
-    // Top15
+    // Top15 — filtrar por MLA si hay búsqueda
     const modeTop = f && perf.top15_by_mode && perf.top15_by_mode[f];
-    console.log('[PERF_FILTER] modeTop=', !!modeTop, f ? 'using filtered' : 'using all');
-    top15Rev.push(  ...(modeTop ? modeTop.revenue : (perf.top15_revenue || [])));
-    top15Units.push(...(modeTop ? modeTop.units   : (perf.top15_units   || [])));
+    let revItems   = modeTop ? modeTop.revenue : (perf.top15_revenue || []);
+    let unitsItems = modeTop ? modeTop.units   : (perf.top15_units   || []);
+    if (_perfMlaFilter) {
+      revItems   = revItems.filter(i => (i.id||'').toLowerCase().includes(_perfMlaFilter) || (i.titulo||i.title||'').toLowerCase().includes(_perfMlaFilter));
+      unitsItems = unitsItems.filter(i => (i.id||'').toLowerCase().includes(_perfMlaFilter) || (i.titulo||i.title||'').toLowerCase().includes(_perfMlaFilter));
+    }
+    top15Rev.push(  ...revItems);
+    top15Units.push(...unitsItems);
   });
 
   const fmt = n => { const sign = n < 0 ? '-' : ''; return sign + '$' + Math.round(Math.abs(n)).toLocaleString('es-AR'); };
@@ -3244,6 +3266,10 @@ function loadPerformance() {
   const modeColors = ['#2196F3','#00e676','#FFD700','#ff9100','#e91e63','#9c27b0'];
 
   el.innerHTML = `
+    ${_perfMlaFilter ? `<div style="background:rgba(99,102,241,.12);border:1px solid #6366f1;border-radius:10px;padding:10px 16px;margin-bottom:14px;font-size:13px;display:flex;align-items:center;gap:10px">
+      <span>🔍 Mostrando análisis filtrado por: <strong>${_perfMlaFilter}</strong></span>
+      ${top15Rev.length === 0 ? '<span style="color:#ff5252;margin-left:8px">— Sin resultados</span>' : ''}
+    </div>` : ''}
     <!-- ROW 1: Forma de entrega + Provincia -->
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
       <div class="kpi-card" style="padding:18px">
@@ -3267,17 +3293,6 @@ function loadPerformance() {
       ${hourChart(byHour)}
     </div>
 
-    <!-- ROW 3: Top 15 Facturación + Top 15 Unidades -->
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
-      <div class="kpi-card" style="padding:18px">
-        <div class="kpi-label" style="margin-bottom:14px">🏆 Top 15 — Facturación ${window._perfModeFilter ? '<span style="color:#ff9100;font-size:11px">· '+window._perfModeFilter+'</span>' : ''}</div>
-        ${top15Table(top15Rev, 'revenue', fmt, 'Facturación', totalRevenue)}
-      </div>
-      <div class="kpi-card" style="padding:18px">
-        <div class="kpi-label" style="margin-bottom:14px">📦 Top 15 — Unidades vendidas ${window._perfModeFilter ? '<span style="color:#ff9100;font-size:11px">· '+window._perfModeFilter+'</span>' : ''}</div>
-        ${top15Table(top15Units, 'units', v => v.toLocaleString('es-AR')+' u.', 'Unidades', totalUnitsAll)}
-      </div>
-    </div>
   `;
 
   // Load preguntas async after render
