@@ -1185,11 +1185,27 @@ function renderClientSelector() {
       if (activeClientId) dropdown.value = activeClientId;
     }
   } else {
-    // Client: auto-select their own account
-    const myClient = allClients.find(c => c.active && c.ml_user_id);
-    if (myClient) {
-      activeClientId = myClient.id;
-      loadDashboardData();
+    // Cliente/colaborador: usar el client_id del cookie (puesto por /api/me)
+    const myClientId = parseInt(getCookie('ml_session_client')) || 0;
+    const role = getSessionRole();
+    if (role === 'cliente' && myClientId) {
+      // Para clientes: SIEMPRE forzar su cuenta, nunca mezclar
+      if (activeClientId !== myClientId) {
+        state.accounts = [];
+        _escData = null;
+        activeClientId = myClientId;
+        loadDashboardData();
+      }
+    } else {
+      // Colaborador: auto-seleccionar si hay una sola cuenta o restaurar activa
+      const myClient = allClients.find(c => c.id === myClientId && c.active && c.ml_user_id)
+        || (allClients.length === 1 ? allClients[0] : null);
+      if (myClient && myClient.active && myClient.ml_user_id && activeClientId !== myClient.id) {
+        state.accounts = [];
+        _escData = null;
+        activeClientId = myClient.id;
+        loadDashboardData();
+      }
     }
   }
 }
@@ -3450,7 +3466,17 @@ function initApp() {
       _userPermissions = me.permissions;
       localStorage.setItem('ml_permissions', JSON.stringify(me.permissions));
     }
-    if (me?.client_id) setCookie('ml_session_client', me.client_id, 7);
+    if (me?.client_id) {
+      setCookie('ml_session_client', me.client_id, 7);
+      // Para clientes: forzar limpieza y auto-selección correcta
+      const role = getSessionRole();
+      if (role === 'cliente') {
+        state.accounts = [];
+        _escData = null;
+        activeClientId = me.client_id;
+        loadDashboardData();
+      }
+    }
     applyPermissions();
   });
 
