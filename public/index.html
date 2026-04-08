@@ -1138,13 +1138,14 @@ async function loadClients() {
 
 function checkTokenWarnings() {
   const bar = document.getElementById('tokenWarningBar');
-  if (!bar) return;
-  const now = new Date();
+  if (!bar) { return; }
+  // Con refresh token activo no necesitamos advertir — se renueva automáticamente
   const expiring = allClients.filter(c => {
     if (!c.ml_user_id || !c.token_expires_at) return false;
+    if (c.has_refresh_token) return false; // tiene refresh, se renueva solo
     const exp = new Date(c.token_expires_at);
-    const hoursLeft = (exp - now) / (1000 * 60 * 60);
-    return hoursLeft < 2; // warn when less than 2 hours left
+    const hoursLeft = (exp - new Date()) / (1000 * 60 * 60);
+    return hoursLeft < 2;
   });
   if (!expiring.length) { bar.style.display = 'none'; return; }
   bar.style.display = 'flex';
@@ -1214,6 +1215,11 @@ async function onAccountSelect(value) {
 
 async function selectClient(clientId, el) {
   activeClientId = clientId;
+  // Limpiar datos del cliente anterior
+  state.accounts = [];
+  _escData = null;
+  _catVentasLoaded = false;
+  window._abcFilter = 'todos';
   document.querySelectorAll('#clientSelector .nav-item').forEach(n => n.classList.remove('active'));
   if (el) el.classList.add('active');
   await loadDashboardData();
@@ -5285,6 +5291,99 @@ function refreshEscTab() {
   if (_escActiveTab === 'abc')   renderCurvaABC();
   else if (_escActiveTab === 'prior') renderPrioridades();
   else loadEscalabilidad();
+}
+
+function renderCurvaABC() {
+  const el = document.getElementById('escAbcContent');
+  const connected = state.accounts.filter(a => a.data && a.data.rentabilidad);
+  if (!connected.length) {
+    el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">Sincronizá primero para ver los datos</div>';
+    return;
+  }
+
+  const allProducts = {};
+  connected.forEach(acc => {
+    (acc.data.rentabilidad.by_product || []).forEach(p => {
+      if (!allProducts[p.id]) allProducts[p.id] = { ...p };
+      else {
+        allProducts[p.id].revenue += p.revenue || 0;
+        allProducts[p.id].units   += p.units   || 0;
+      }
+    });
+  });
+
+  const products = Object.values(allProducts).filter(p => p.revenue > 0).sort((a,b) => b.revenue - a.revenue);
+  const totalRevenue = products.reduce((s,p) => s + p.revenue, 0);
+
+  let acum = 0;
+  const classified = products.map((p, i) => {
+    acum += p.revenue;
+    const pctAcum = totalRevenue > 0 ? (acum / totalRevenue * 100) : 0;
+    const clase   = pctAcum <= 80 ? 'A' : pctAcum <= 95 ? 'B' : 'C';
+    return { ...p, pctAcum, clase, rank: i + 1 };
+  });
+
+  const byClase = { A: classified.filter(p=>p.clase==='A'), B: classified.filter(p=>p.clase==='B'), C: classified.filter(p=>p.clase==='C') };
+  const fmtN = n => '$' + Math.round(n).toLocaleString('es-AR');
+  const claseStyle = {
+    A: { color:'#00e676', bg:'rgba(0,230,118,.12)', label:'🟢 A' },
+    B: { color:'#ff9100', bg:'rgba(255,145,0,.12)',  label:'🟡 B' },
+    C: { color:'#ff5252', bg:'rgba(255,82,82,.12)',  label:'🔴 C' },
+  };
+
+  const kpis = ['A','B','C'].map(c => {
+    const st = claseStyle[c];
+    const items = byClase[c];
+    const rev   = items.reduce((s,p) => s+p.revenue, 0);
+    const pct   = totalRevenue > 0 ? (rev/totalRevenue*100).toFixed(1) : '0';
+    return `<div class="kpi-card" style="padding:16px;border-top:3px solid ${st.color}">
+      <div class="kpi-label">${st.label} — ${items.length} productos</div>
+      <div style="font-size:22px;font-weight:700;color:${st.color};font-family:var(--font-b);margin-top:6px">${fmtN(rev)}</div>
+      <div style="font-size:12px;color:var(--muted);margin-top:4px">${pct}% de la facturación</div>
+    </div>`;
+  }).join('');
+
+  const rows = classified.map((p, i) => {
+    const st = claseStyle[p.clase];
+    return `<tr style="border-bottom:1px solid var(--border);${i%2===0?'background:rgba(255,255,255,.015)':''}">
+      <td style="padding:8px 10px;text-align:center;font-size:12px;color:var(--muted)">${p.rank}</td>
+      <td style="padding:8px 10px;text-align:center">
+        <span style="padding:3px 10px;border-radius:20px;font-size:12px;font-weight:700;background:${st.bg};color:${st.color}">${st.label}</span>
+      </td>
+      <td style="padding:8px 10px;font-size:12px;max-width:250px">
+        <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${p.title}">${p.title}</div>
+        <div style="font-size:10px;color:var(--muted)">${p.id}</div>
+      </td>
+      <td style="padding:8px 10px;text-align:right;font-size:13px;font-weight:700">${fmtN(p.revenue)}</td>
+      <td style="padding:8px 10px;text-align:right;font-size:12px">${p.units}</td>
+      <td style="padding:8px 10px;text-align:right;font-size:12px;color:var(--muted)">${(p.revenue/totalRevenue*100).toFixed(1)}%</td>
+      <td style="padding:8px 10px;text-align:right;font-size:12px;color:${p.clase==='A'?'#00e676':p.clase==='B'?'#ff9100':'var(--muted)'}">${p.pctAcum.toFixed(1)}%</td>
+    </tr>`;
+  }).join('');
+
+  el.innerHTML = `
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:20px">${kpis}</div>
+    <div class="kpi-card" style="padding:0;overflow:hidden">
+      <div style="overflow-x:auto">
+        <table style="width:100%;border-collapse:collapse;font-size:12px">
+          <thead><tr style="background:var(--surface2);border-bottom:2px solid var(--border)">
+            <th style="padding:8px 10px;text-align:center;font-size:11px;font-weight:600;color:var(--muted)">#</th>
+            <th style="padding:8px 10px;text-align:center;font-size:11px;font-weight:600;color:var(--muted)">Clase</th>
+            <th style="padding:8px 10px;text-align:left;font-size:11px;font-weight:600;color:var(--muted)">Producto</th>
+            <th style="padding:8px 10px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Facturación</th>
+            <th style="padding:8px 10px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Unidades</th>
+            <th style="padding:8px 10px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">% Individual</th>
+            <th style="padding:8px 10px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">% Acumulado</th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    </div>
+    <div style="font-size:11px;color:var(--muted);margin-top:10px;display:flex;gap:20px;flex-wrap:wrap">
+      <span>🟢 A = productos que suman el 80% de la facturación</span>
+      <span>🟡 B = siguiente 15% (acumulado 80–95%)</span>
+      <span>🔴 C = último 5% (acumulado 95–100%)</span>
+    </div>`;
 }
 
 function renderPrioridades() {
