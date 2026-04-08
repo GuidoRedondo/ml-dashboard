@@ -1800,7 +1800,7 @@ function updateDashboard() {
     totalUnits    += s.total_units    || 0;
     totalRecibido += s.importe_recibido || 0;
     totalAds      += s.ads_spend      || 0;
-    if (s.conversion_rate) convRates.push(parseFloat(s.conversion_rate));
+    if (s.conversion_rate != null) convRates.push(parseFloat(s.conversion_rate));
     if (s.change) {
       ['amount','orders','visits','conversion','units','ticket'].forEach(k => {
         if (s.change[k] != null) changes[k].push(parseFloat(s.change[k]));
@@ -2872,12 +2872,13 @@ function sortRent(col) {
 
 function sortPubs(col) {
   if (!window._pubsData) return;
-  const asc = window._pubsSortCol === col && !window._pubsSortAsc;
+  const asc = window._pubsSortCol === col ? !window._pubsSortAsc : false;
   window._pubsSortCol = col; window._pubsSortAsc = asc;
   window._pubsData.sort((a, b) => {
-    const va = a[col], vb = b[col];
+    const va = a[col] ?? (typeof a[col] === 'string' ? '' : -Infinity);
+    const vb = b[col] ?? (typeof b[col] === 'string' ? '' : -Infinity);
     if (typeof va === 'string') return asc ? va.localeCompare(vb) : vb.localeCompare(va);
-    return asc ? va - vb : vb - va;
+    return asc ? (va - vb) : (vb - va);
   });
   const body = document.getElementById('pubsBody');
   if (body) body.innerHTML = buildPubRows(window._pubsData);
@@ -3641,6 +3642,18 @@ function exportAdsAnunciosExcel() {
   showToast('✅ Excel descargado');
 }
 
+function filterAdsAnuncios(val) {
+  const q = val.toLowerCase();
+  let count = 0;
+  document.querySelectorAll('#adsAnunciosContent tr[data-search]').forEach(row => {
+    const show = !q || row.dataset.search.includes(q);
+    row.style.display = show ? '' : 'none';
+    if (show) count++;
+  });
+  const cnt = document.getElementById('adsAnunciosCount');
+  if (cnt) cnt.textContent = (q ? count : (_adsAnunciosData?.items?.length || 0)) + ' anuncios';
+}
+
 function sortAdsAnuncios(col) {
   if (_adsAnunciosSort.col === col) _adsAnunciosSort.asc = !_adsAnunciosSort.asc;
   else { _adsAnunciosSort.col = col; _adsAnunciosSort.asc = false; }
@@ -3679,7 +3692,7 @@ function renderAdsAnuncios(data) {
   const roasColor = v => !v || v<=0 ? 'var(--muted)' : v>=6 ? '#00e676' : v>=3 ? '#ff9100' : '#ff5252';
 
   const rows = sorted.map((i, idx) => `
-    <tr style="border-bottom:1px solid var(--border);${idx%2===0?'background:rgba(255,255,255,.02)':''}">
+    <tr data-search="${(i.item_id + ' ' + i.title).toLowerCase()}" style="border-bottom:1px solid var(--border);${idx%2===0?'background:rgba(255,255,255,.02)':''}">
       <td style="padding:7px 10px;font-size:12px;white-space:nowrap">
         <a href="https://articulo.mercadolibre.com.ar/${i.item_id}" target="_blank" style="color:var(--accent);text-decoration:none;font-weight:600">${i.item_id}</a>
       </td>
@@ -3698,8 +3711,11 @@ function renderAdsAnuncios(data) {
     </tr>`).join('');
 
   el.innerHTML = `
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
-      <div style="font-size:12px;color:var(--muted)">${items.length} anuncios · ${from} → ${to}</div>
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap">
+      <input id="adsAnuncioSearch" type="text" placeholder="Buscar por título o MLA..."
+        oninput="filterAdsAnuncios(this.value)"
+        style="flex:1;min-width:220px;padding:7px 12px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px;outline:none">
+      <div style="font-size:12px;color:var(--muted)" id="adsAnunciosCount">${items.length} anuncios · ${from} → ${to}</div>
       <button onclick="exportAdsAnunciosExcel()" style="padding:6px 14px;border:none;border-radius:8px;background:#16a34a;color:#fff;font-size:12px;font-weight:600;cursor:pointer">📥 Exportar Excel</button>
     </div>
     <div style="overflow-x:auto">
