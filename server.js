@@ -389,12 +389,19 @@ app.get('/api/token-status', requireAuth, async (req, res) => {
 
 app.get('/api/clients', requireAuth, async (req, res) => {
   try {
-    const result = await pool.query(
-      `SELECT id, name, ml_user_id, site_id, active, token_expires_at, updated_at,
-       (refresh_token IS NOT NULL AND refresh_token != '') AS has_refresh_token
-       FROM clients ORDER BY name`
-    );
-    // Map has_refresh_token → refresh_token boolean for frontend
+    let query, params = [];
+    if (req.user.role === 'cliente' && req.user.client_id) {
+      // Cliente solo ve su propia cuenta
+      query = `SELECT id, name, ml_user_id, site_id, active, token_expires_at, updated_at,
+               (refresh_token IS NOT NULL AND refresh_token != '') AS has_refresh_token
+               FROM clients WHERE id = $1`;
+      params = [req.user.client_id];
+    } else {
+      query = `SELECT id, name, ml_user_id, site_id, active, token_expires_at, updated_at,
+               (refresh_token IS NOT NULL AND refresh_token != '') AS has_refresh_token
+               FROM clients ORDER BY name`;
+    }
+    const result = await pool.query(query, params);
     const rows = result.rows.map(r => ({ ...r, refresh_token: r.has_refresh_token }));
     res.json(rows);
   } catch(e) { res.status(500).json({ error: e.message }); }
@@ -2187,35 +2194,20 @@ app.get('/api/reporte/pyl', requireAuth, async (req, res) => {
       egreso_impuestos += parseFloat(o.taxes?.amount)||0;
     });
 
-    // Shipping costs
+    // Shipping costs — usar /costs endpoint que es el correcto
     const shipIds = [...new Set(orders.map(o=>o.shipping?.id).filter(Boolean))];
     let egreso_envio_vendedor = 0;
-    const sampleSize = Math.min(shipIds.length, 200);
-    for (let i=0; i<sampleSize; i+=10) {
+    for (let i=0; i<shipIds.length; i+=10) {
       const batch = shipIds.slice(i,i+10);
       await Promise.all(batch.map(async sid => {
         try {
-          const s = await fetch(`${ML_API}/shipments/${sid}`, {headers}).then(r=>r.json());
-          const baseCost = parseFloat(s.base_cost)||0;
-          const costNet  = parseFloat(s.cost?.net)||0;
-          const costGross= parseFloat(s.cost?.gross)||0;
-          const costSpec = parseFloat(s.cost?.special)||0;
-          const costDisc = parseFloat(s.cost?.discount)||0;
-          const recvCost = parseFloat(s.receiver_cost)||0;
-          ingreso_envio_comprador += recvCost;
-          let sellerCost = 0;
-          if (recvCost >= baseCost && baseCost > 0) sellerCost = 0;
-          else if (costNet > 0) sellerCost = costNet;
-          else if (costGross > 0) sellerCost = Math.max(0, costGross - costSpec - costDisc - recvCost);
-          egreso_envio_vendedor += sellerCost;
+          const costs = await fetch(`${ML_API}/shipments/${sid}/costs`, {headers}).then(r=>r.json());
+          const receiverCost = parseFloat(costs.receiver?.cost) || 0;
+          const senderCost   = parseFloat(costs.senders?.[0]?.cost) || 0;
+          ingreso_envio_comprador += receiverCost;
+          egreso_envio_vendedor   += senderCost;
         } catch(e){}
       }));
-    }
-    // Scale if sampled
-    if (shipIds.length > sampleSize && sampleSize > 0) {
-      const scale = shipIds.length / sampleSize;
-      egreso_envio_vendedor *= scale;
-      ingreso_envio_comprador *= scale;
     }
 
     // PADS
