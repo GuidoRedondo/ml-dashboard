@@ -1168,7 +1168,7 @@ async function quickReconnect(clientId, name) {
 
 function renderClientSelector() {
   const role = getSessionRole();
-  const isAdmin = role === 'admin' || role === 'consultant';
+  const isAdmin = role === 'admin' || role === 'consultant' || role === 'colaborador';
 
   if (isAdmin) {
     // Show dropdown in topbar
