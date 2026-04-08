@@ -1087,7 +1087,7 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
           resultado_envio: i.envio_cobrado - i.envio_pagado,
           ads:             i.ads || 0,
           neto:            i.net,
-          pct_neto:        i.revenue > 0 ? ((i.net / i.revenue) * 100).toFixed(1) : '0'
+          pct_recibido:        i.revenue > 0 ? ((i.net / i.revenue) * 100).toFixed(1) : '0'
         };
       });
 
@@ -1150,7 +1150,7 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
       }
 
       const neto     = facturacion - comision - impuestos - envio_vendedor;
-      const pct_neto = facturacion > 0 ? ((neto/facturacion)*100).toFixed(1) : '0';
+      const pct_recibido = facturacion > 0 ? ((neto/facturacion)*100).toFixed(1) : '0';
       const productos   = (order.order_items||[]).map(oi => ({
         id: oi.item&&oi.item.id, title: oi.item&&oi.item.title,
         qty: oi.quantity||1, price: parseFloat(oi.unit_price)||0
@@ -1158,7 +1158,7 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
       return {
         id: order.id, date: order.date_created, status: order.status,
         facturacion, comision, impuestos, envio_vendedor, envio_comprador,
-        neto, pct_neto, productos,
+        neto, pct_recibido, productos,
         mode: shipData ? shipData.mode : (shipId ? 'Sin datos' : 'Sin envío'),
       };
     }).sort((a,b) => new Date(b.date) - new Date(a.date));
@@ -2282,8 +2282,9 @@ app.get('/api/reporte/pyl', requireAuth, async (req, res) => {
       gastos_fijos: { items: gastos, total: total_gastos_fijos },
       utilidad_final,
       margenes: {
-        neto_ml: facturacion>0 ? (resultado_neto_ml/facturacion*100).toFixed(1) : 0,
-        utilidad_final: facturacion>0 ? (utilidad_final/facturacion*100).toFixed(1) : 0,
+        pct_recibido:   facturacion>0 ? (resultado_neto_ml/facturacion*100).toFixed(1) : 0,
+        margen:         facturacion>0 ? (utilidad_final/facturacion*100).toFixed(1) : 0,
+        rentabilidad:   cmv_total>0   ? (utilidad_final/cmv_total*100).toFixed(1) : null,
       },
       items_detalle,
     };
