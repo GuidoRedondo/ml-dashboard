@@ -2428,10 +2428,17 @@ function renderRentabilidad(R, allProducts, costsMap) {
     const costoUnit = costsMap[p.id] ?? null;
     const cmv = costoUnit != null ? costoUnit * p.units : null;
     if (cmv != null) cmvTotal += cmv;
-    const margen = p.revenue > 0 && cmv != null
-      ? ((p.revenue - p.comision - (p.impuestos||0) - cmv - (p.resultado_envio < 0 ? -p.resultado_envio : 0)) / p.revenue * 100)
+    const utilidad = cmv != null
+      ? p.revenue - p.comision - (p.impuestos||0) - cmv - (p.resultado_envio < 0 ? -p.resultado_envio : 0) - (p.ads||0)
+      : null;
+    const margen = p.revenue > 0 && utilidad != null
+      ? utilidad / p.revenue * 100
       : (p.revenue > 0 ? (p.neto / p.revenue * 100) : 0);
-    return { ...p, costo_unit: costoUnit, cmv, margen: parseFloat(margen.toFixed(1)) };
+    const rentabilidad = cmv != null && cmv > 0 && utilidad != null
+      ? utilidad / cmv * 100
+      : null;
+    const hasCMV = cmv != null;
+    return { ...p, costo_unit: costoUnit, cmv, utilidad, margen: parseFloat(margen.toFixed(1)), rentabilidad: rentabilidad != null ? parseFloat(rentabilidad.toFixed(1)) : null, hasCMV };
   });
 
   const utilidad_final = R.neto_ml - cmvTotal;
@@ -2512,7 +2519,9 @@ function renderRentabilidad(R, allProducts, costsMap) {
               ${th('impuestos',   'Impuestos')}
               ${th('_ads',        'Inv. Ads')}
               ${th('resultado_envio', 'Res. Envío')}
-              ${th('margen',      '% Margen')}
+              ${th('utilidad',    'Utilidad $')}
+              ${th('margen',      'Margen %')}
+              ${th('rentabilidad','Rentabilidad %')}
               ${th('pct_total',   '% Total')}
             </tr>
           </thead>
@@ -2534,7 +2543,15 @@ function renderRentabilidad(R, allProducts, costsMap) {
                 <td style="padding:7px 6px;text-align:right;color:#ff5252">${(p.impuestos||0)>0?fmtM(-(p.impuestos||0)):'$0'}</td>
                 <td style="padding:7px 6px;text-align:right;color:${(p.ads||0)>0?'#ff9100':'var(--muted)'}">${(p.ads||0)>0?fmtM(-p.ads):'—'}</td>
                 <td style="padding:7px 6px;text-align:right;color:${resEnvioColor}">${fmtM(p.resultado_envio||0)}</td>
-                <td style="padding:7px 6px;text-align:right;font-weight:700;color:${margenColor(p.margen)}">${p.margen}%</td>
+                <td style="padding:7px 6px;text-align:right;font-weight:700;color:${p.utilidad!=null?(p.utilidad>=0?'#00e676':'#ff5252'):'var(--muted)'}">
+                  ${p.utilidad != null ? fmtM(p.utilidad) : '—'}
+                </td>
+                <td style="padding:7px 6px;text-align:right;font-weight:700;color:${margenColor(p.margen)}">
+                  ${p.hasCMV ? p.margen + '%' : '<span style="color:var(--muted);font-size:10px">% rec. ' + p.margen + '%</span>'}
+                </td>
+                <td style="padding:7px 6px;text-align:right;font-weight:700;color:${p.rentabilidad!=null?(p.rentabilidad>=0?'#00e676':'#ff5252'):'var(--muted)'}">
+                  ${p.rentabilidad != null ? p.rentabilidad + '%' : '—'}
+                </td>
                 <td style="padding:7px 6px;text-align:right;color:var(--muted)">${pct(p.revenue, base)}</td>
               </tr>`;
             }).join('')}
@@ -2662,7 +2679,7 @@ function renderVentas(orders) {
         <td style="padding:8px 10px;text-align:right;font-size:12px;color:#ff5252">${o.impuestos > 0 ? fmtM(-o.impuestos) : '<span style="color:var(--muted)">—</span>'}</td>
         <td style="padding:8px 10px;text-align:right;font-size:12px;color:${resEnvio>=0?'#00e676':'#ff5252'}" title="Cobrado al comprador: ${fmtM(o.envio_comprador)} / Pagado: ${fmtM(o.envio_vendedor)}">${fmtM(resEnvio)}</td>
         <td style="padding:8px 10px;text-align:right;font-size:12px;color:${parseFloat(o.neto)>=0?'#00e676':'#ff5252'};font-weight:700">${fmtM(o.neto)}</td>
-        <td style="padding:8px 10px;text-align:right;font-size:12px;font-weight:700;color:${pctColor(o.pct_neto)}">${o.pct_neto}%</td>
+        <td style="padding:8px 10px;text-align:right;font-size:12px;font-weight:700;color:${pctColor(o.pct_recibido)}">${o.pct_recibido}%</td>
         <td style="padding:8px 10px;text-align:right;font-size:11px;color:var(--muted)">${o.mode||'—'}</td>
       </tr>`;
   }).join('');
@@ -2742,22 +2759,29 @@ async function descargarTablaRentabilidad() {
   const rows = products.map((p, i) => {
     const costoUnit = costsMap[p.id] ?? null;
     const cmv = costoUnit != null ? costoUnit * p.units : null;
-    const margen = p.revenue > 0
-      ? ((p.revenue - (p.comision||0) - (p.impuestos||0) - (cmv||0)) / p.revenue * 100).toFixed(1)
-      : '—';
+    const utilidad = cmv != null
+      ? p.revenue - (p.comision||0) - (p.impuestos||0) - cmv - (p.resultado_envio < 0 ? -p.resultado_envio : 0) - (p.ads||0)
+      : null;
+    const margen = p.revenue > 0 && utilidad != null
+      ? (utilidad / p.revenue * 100).toFixed(1)
+      : p.revenue > 0 ? (p.neto / p.revenue * 100).toFixed(1) : '—';
+    const rentabilidad = cmv != null && cmv > 0 && utilidad != null
+      ? (utilidad / cmv * 100).toFixed(1) : '';
     return {
-      '#':             i + 1,
-      'MLA':           p.id,
-      'Título':        p.title,
-      'Facturación':   Math.round(p.revenue),
-      'Unidades':      p.units,
-      'CMV':           cmv != null ? Math.round(cmv) : '',
-      'Comisión ML':   Math.round(p.comision || 0),
-      'Impuestos':     Math.round(p.impuestos || 0),
-      'Inv. Ads':      Math.round(p.ads || 0),
-      'Res. Envío':    Math.round(p.resultado_envio || 0),
-      '% Margen':      margen,
-      '% Total':       base > 0 ? (p.revenue / base * 100).toFixed(1) : '—',
+      '#':               i + 1,
+      'MLA':             p.id,
+      'Título':          p.title,
+      'Facturación':     Math.round(p.revenue),
+      'Unidades':        p.units,
+      'CMV':             cmv != null ? Math.round(cmv) : '',
+      'Comisión ML':     Math.round(p.comision || 0),
+      'Impuestos':       Math.round(p.impuestos || 0),
+      'Inv. Ads':        Math.round(p.ads || 0),
+      'Res. Envío':      Math.round(p.resultado_envio || 0),
+      'Utilidad $':      utilidad != null ? Math.round(utilidad) : '',
+      'Margen %':        margen,
+      'Rentabilidad %':  rentabilidad,
+      '% Total':         base > 0 ? (p.revenue / base * 100).toFixed(1) : '—',
     };
   });
 
@@ -5059,8 +5083,9 @@ function renderPyL(pyl) {
         ${[
           ['Facturación', fmtM(pyl.ingresos.facturacion), ''],
           ['Órdenes', pyl.ordenes.toLocaleString('es-AR'), ''],
-          ['Margen Neto ML', fmtP(pyl.margenes.neto_ml), pyl.resultado_neto_ml>=0?'#16a34a':'#dc2626'],
-          ['Margen Final', fmtP(pyl.margenes.utilidad_final), pyl.utilidad_final>=0?'#16a34a':'#dc2626'],
+          ['% Recibido', fmtP(pyl.margenes.pct_recibido), pyl.resultado_neto_ml>=0?'#16a34a':'#dc2626'],
+          ['Margen %', fmtP(pyl.margenes.margen), pyl.utilidad_final>=0?'#16a34a':'#dc2626'],
+          ['Rentabilidad %', pyl.margenes.rentabilidad != null ? fmtP(pyl.margenes.rentabilidad) : '—', pyl.margenes.rentabilidad>0?'#16a34a':'#dc2626'],
           ['CMV', fmtM(pyl.cmv.total), '#d97706'],
           ['Gastos Fijos', fmtM(pyl.gastos_fijos.total), '#6366f1'],
           ['Utilidad Final', fmtM(pyl.utilidad_final), pyl.utilidad_final>=0?'#16a34a':'#dc2626'],
@@ -5117,8 +5142,9 @@ async function exportarReporteExcel() {
     ['TOTAL GASTOS FIJOS', -pyl.gastos_fijos.total],
     [],
     ['UTILIDAD FINAL', pyl.utilidad_final],
-    ['Margen Neto ML %', pyl.margenes.neto_ml + '%'],
-    ['Margen Utilidad Final %', pyl.margenes.utilidad_final + '%'],
+    ['% Recibido', pyl.margenes.pct_recibido + '%'],
+    ['Margen %', pyl.margenes.margen + '%'],
+    ['Rentabilidad %', pyl.margenes.rentabilidad != null ? pyl.margenes.rentabilidad + '%' : 'Sin CMV'],
   ];
   const ws1 = XLSX.utils.aoa_to_sheet(pylData);
   XLSX.utils.book_append_sheet(wb, ws1, 'P&L');
@@ -5791,7 +5817,7 @@ function renderEscalabilidad() {
             ${th('title','Producto','left')}
             ${th('revenue','Facturación')}
             ${th('units','Unidades')}
-            ${th('margenReal','% Margen')}
+            ${th('margenReal','Margen %')}
             ${th('trend','Tendencia')}
             ${th('conversion','Conversión')}
             ${th('pctAds','% Ads')}
