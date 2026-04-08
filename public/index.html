@@ -4898,6 +4898,10 @@ function renderReporteCostos(data, clientId) {
           style="padding:3px 12px;border-radius:20px;border:1px solid #16a34a;background:none;color:#16a34a;font-size:12px;cursor:pointer;font-weight:600">
           Con costo (${items.length - faltanCosto})
         </button>
+        <button onclick="descargarSinCosto('${clientId}')"
+          style="padding:3px 12px;border-radius:20px;border:1px solid #ff9100;background:none;color:#ff9100;font-size:12px;cursor:pointer;font-weight:600">
+          📥 Descargar sin costo
+        </button>
         <span style="font-size:12px;color:${completenessColor};font-weight:600">${data.completeness}% completado</span>
       </div>
       <button onclick="guardarCostos('${clientId}')" style="padding:6px 16px;background:var(--accent);color:#fff;border:none;border-radius:8px;font-size:13px;cursor:pointer">💾 Guardar costos</button>
@@ -4916,6 +4920,28 @@ function renderReporteCostos(data, clientId) {
       </tr></thead>
       <tbody>${rows}</tbody>
     </table></div>`;
+}
+
+function descargarSinCosto(clientId) {
+  if (!_reporteItems || !_reporteItems.length) { showToast('⚠ Cargá los productos primero'); return; }
+  const sinCosto = _reporteItems.filter(i => !i.has_cost);
+  if (!sinCosto.length) { showToast('✅ Todos los productos tienen costo cargado'); return; }
+  const client = allClients.find(c => String(c.id) === String(clientId));
+  const clientName = client ? client.name : 'Cliente';
+  const XLSX = window.XLSX;
+  const hoy = new Date().toISOString().slice(0,10);
+  const wsData = [
+    ['SIN COSTO — ' + clientName + ' | ' + sinCosto.length + ' productos'],
+    ['Completa la columna Costo Unitario (ARS). Guarda y sube el archivo al dashboard.'],
+    ['MLA', 'SKU', 'Descripcion', 'Unidades vendidas', 'Facturacion (ARS)', 'Costo Unitario (ARS)', 'Notas'],
+    ...sinCosto.map(i => [i.mla_id, i.sku || '', i.title, i.units, Math.round(i.revenue), '', ''])
+  ];
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.aoa_to_sheet(wsData);
+  ws['!cols'] = [{wch:18},{wch:20},{wch:50},{wch:18},{wch:20},{wch:22},{wch:25}];
+  XLSX.utils.book_append_sheet(wb, ws, 'Sin Costo');
+  XLSX.writeFile(wb, 'SinCosto_' + clientName.replace(/\s+/g,'_') + '_' + hoy + '.xlsx');
+  showToast('Excel con ' + sinCosto.length + ' productos sin costo descargado');
 }
 
 function filtrarReporteCostos(filtro, btn) {
