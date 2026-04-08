@@ -2093,15 +2093,15 @@ app.get('/api/reporte/items-vendidos', requireAuth, async (req, res) => {
     for (let i = 0; i < itemIds.length; i += 20) {
       const batch = itemIds.slice(i, i + 20);
       try {
-        const data = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,seller_custom_field,variations`, { headers }).then(r => r.json());
+        const data = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,seller_custom_field,attributes,variations`, { headers }).then(r => r.json());
         (Array.isArray(data) ? data : []).forEach(r => {
           if (r.code !== 200 || !r.body) return;
           const b = r.body;
-          // SKU del ítem o de la primera variación
           const sku = b.seller_custom_field
+            || b.attributes?.find(a => a.id === 'SELLER_SKU')?.value_name
             || b.variations?.[0]?.attributes?.find(a => a.id === 'SELLER_SKU')?.value_name
             || null;
-          if (i === 0) console.log(`[SKU_DEBUG] item=${b.id} seller_custom_field=${b.seller_custom_field} var0_attrs=${JSON.stringify(b.variations?.[0]?.attributes?.slice(0,3))} → sku=${sku}`);
+          if (i === 0) console.log(`[SKU_DEBUG] item=${b.id} seller_custom_field=${b.seller_custom_field} attrs=${JSON.stringify(b.attributes?.find(a=>a.id==='SELLER_SKU'))} → sku=${sku}`);
           skuMap[b.id] = sku;
         });
       } catch(e) {}
