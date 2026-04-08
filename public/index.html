@@ -1075,6 +1075,15 @@ function logout() {
   deleteCookie('ml_session_id');
   deleteCookie('ml_session_user');
   deleteCookie('ml_session_role');
+  deleteCookie('ml_session_client');
+  localStorage.removeItem('ml_permissions');
+  // Limpiar datos en memoria
+  state.accounts = [];
+  _escData = null;
+  _catVentasLoaded = false;
+  _userPermissions = null;
+  activeClientId = null;
+  allClients = [];
   showLoginScreen();
 }
 
@@ -1186,12 +1195,18 @@ function renderClientSelector() {
 
 async function onAccountSelect(value) {
   if (!value) {
-    // Clear dashboard
     state.accounts = [];
+    _escData = null;
+    _catVentasLoaded = false;
     updateDashboard();
     return;
   }
   activeClientId = parseInt(value);
+  // Limpiar datos del cliente anterior
+  state.accounts = [];
+  _escData = null;
+  _catVentasLoaded = false;
+  window._abcFilter = 'todos';
   const syncBtn = document.getElementById('syncBtn');
   if (syncBtn) syncBtn.style.display = '';
   await loadDashboardData();
@@ -1214,6 +1229,10 @@ async function loadDashboardData() {
     showToast('⚠️ No hay cuentas conectadas para mostrar');
     return;
   }
+
+  // Limpiar datos calculados para evitar mezcla entre clientes
+  _escData = null;
+  window._abcFilter = 'todos';
 
   showToast('⏳ Sincronizando...');
   const { date_from, date_to } = getDateRange();
