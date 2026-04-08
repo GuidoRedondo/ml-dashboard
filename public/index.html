@@ -4685,40 +4685,39 @@ let _reporteItems = [], _reportePyl = null;
 
 async function descargarTemplateExcel() {
   const clientId = getReporteClientId();
-  const period = getReportePeriod();
-  if (!clientId || !period) { showToast('⚠ Seleccioná cliente y mes primero'); return; }
+  if (!clientId) { showToast('⚠ Seleccioná cliente primero'); return; }
 
-  showToast('⏳ Generando template...');
+  showToast('⏳ Cargando todas las publicaciones activas...');
   try {
-    const data = await apiCall('GET', `/api/reporte/items-vendidos?client_id=${clientId}&date_from=${period.date_from}&date_to=${period.date_to}`);
+    const data = await apiCall('GET', `/api/reporte/items-activos?client_id=${clientId}`);
     if (!data) return;
 
     const client = allClients.find(c => String(c.id) === String(clientId));
     const clientName = client?.name || 'Cliente';
     const XLSX = window.XLSX;
+    const hoy = new Date().toISOString().slice(0,10);
 
     const wsData = [
-      [`PLANILLA DE COSTOS — ${clientName} | ${period.date_from} → ${period.date_to}`],
-      ["⚠  Completá la columna 'Costo Unitario (ARS)' — celdas en amarillo. Guardá y subí el archivo al dashboard."],
-      ['MLA', 'SKU', 'Descripción', 'Costo Unitario (ARS)', 'Unidades vendidas', 'Facturación (ARS)', 'Notas'],
+      [`PLANILLA DE COSTOS — ${clientName} | ${data.items.length} publicaciones activas`],
+      ["⚠  Completá la columna 'Costo Unitario (ARS)'. Guardá y subí el archivo al dashboard."],
+      ['MLA', 'SKU', 'Descripción', 'Precio actual', 'Stock', 'Costo Unitario (ARS)', 'Notas'],
       ...(data.items || []).map(i => [
         i.mla_id,
         i.sku || '',
         i.title,
+        i.price || '',
+        i.stock || '',
         i.costo_unit || '',
-        i.units,
-        Math.round(i.revenue),
         i.notas || '',
       ])
     ];
 
     const wb = XLSX.utils.book_new();
     const ws = XLSX.utils.aoa_to_sheet(wsData);
-    ws['!cols'] = [{ wch: 18 }, { wch: 20 }, { wch: 50 }, { wch: 22 }, { wch: 18 }, { wch: 20 }, { wch: 25 }];
-    ws['!freeze'] = { xSplit: 0, ySplit: 3 };
+    ws['!cols'] = [{ wch: 18 }, { wch: 20 }, { wch: 50 }, { wch: 16 }, { wch: 10 }, { wch: 22 }, { wch: 25 }];
     XLSX.utils.book_append_sheet(wb, ws, 'Costos');
-    XLSX.writeFile(wb, `Costos_${clientName.replace(/\s+/g,'_')}_${period.mes}.xlsx`);
-    showToast('✅ Template descargado');
+    XLSX.writeFile(wb, `Costos_${clientName.replace(/\s+/g,'_')}_${hoy}.xlsx`);
+    showToast(`✅ Excel con ${data.items.length} publicaciones descargado`);
   } catch(e) { showToast(`❌ Error: ${e.message}`); }
 }
 
@@ -4863,7 +4862,7 @@ function renderReporteCostos(data, clientId) {
   const completenessColor = data.completeness === 100 ? '#16a34a' : data.completeness > 70 ? '#d97706' : '#dc2626';
 
   const rows = items.map((item, idx) => `
-    <tr>
+    <tr data-hascosto="${item.has_cost?'1':'0'}">
       <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;color:var(--accent)">${item.mla_id}</td>
       <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${item.title}</td>
       <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;color:var(--muted)">${item.sku || '—'}</td>
@@ -4885,11 +4884,23 @@ function renderReporteCostos(data, clientId) {
 
   el.innerHTML = `
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:8px">
-      <div style="font-size:13px;color:var(--muted)">${items.length} productos · ${data.total_orders} órdenes</div>
-      <div style="display:flex;align-items:center;gap:10px">
-        <span style="font-size:12px;color:${completenessColor};font-weight:600">${data.completeness}% con costo cargado${faltanCosto>0?' · '+faltanCosto+' sin costo':''}</span>
-        <button onclick="guardarCostos('${clientId}')" style="padding:6px 16px;background:var(--accent);color:#fff;border:none;border-radius:8px;font-size:13px;cursor:pointer">💾 Guardar costos</button>
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <span style="font-size:13px;color:var(--muted)">${items.length} productos</span>
+        <button onclick="filtrarReporteCostos('todos',this)" id="filtro-todos"
+          style="padding:3px 12px;border-radius:20px;border:1px solid var(--accent);background:var(--accent);color:#fff;font-size:12px;cursor:pointer;font-weight:600">
+          Todos (${items.length})
+        </button>
+        <button onclick="filtrarReporteCostos('sin_costo',this)" id="filtro-sin_costo"
+          style="padding:3px 12px;border-radius:20px;border:1px solid #dc2626;background:none;color:#dc2626;font-size:12px;cursor:pointer;font-weight:600">
+          Sin costo (${faltanCosto})
+        </button>
+        <button onclick="filtrarReporteCostos('con_costo',this)" id="filtro-con_costo"
+          style="padding:3px 12px;border-radius:20px;border:1px solid #16a34a;background:none;color:#16a34a;font-size:12px;cursor:pointer;font-weight:600">
+          Con costo (${items.length - faltanCosto})
+        </button>
+        <span style="font-size:12px;color:${completenessColor};font-weight:600">${data.completeness}% completado</span>
       </div>
+      <button onclick="guardarCostos('${clientId}')" style="padding:6px 16px;background:var(--accent);color:#fff;border:none;border-radius:8px;font-size:13px;cursor:pointer">💾 Guardar costos</button>
     </div>
     <div style="overflow-x:auto">
     <table style="width:100%;border-collapse:collapse">
@@ -4905,6 +4916,25 @@ function renderReporteCostos(data, clientId) {
       </tr></thead>
       <tbody>${rows}</tbody>
     </table></div>`;
+}
+
+function filtrarReporteCostos(filtro, btn) {
+  // Actualizar botones activos
+  ['todos','sin_costo','con_costo'].forEach(f => {
+    const b = document.getElementById(`filtro-${f}`);
+    if (!b) return;
+    const isActive = f === filtro;
+    const colors = { todos: 'var(--accent)', sin_costo: '#dc2626', con_costo: '#16a34a' };
+    b.style.background = isActive ? colors[f] : 'none';
+    b.style.color = isActive ? '#fff' : colors[f];
+  });
+  // Filtrar filas
+  document.querySelectorAll('#reporteCostosContent tr[data-hascosto]').forEach(tr => {
+    const hascosto = tr.dataset.hascosto === '1';
+    if (filtro === 'todos') tr.style.display = '';
+    else if (filtro === 'sin_costo') tr.style.display = hascosto ? 'none' : '';
+    else if (filtro === 'con_costo') tr.style.display = hascosto ? '' : 'none';
+  });
 }
 
 function updateCmvRow(mlaId, units) {
