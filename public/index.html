@@ -3810,6 +3810,7 @@ async function loadAds() {
   const salesShareNum = totalSales && totalRevenue ? (totalSales / totalRevenue) * 100 : null;
   const ctrNum = totalClicks && totalImpr ? (totalClicks / totalImpr) * 100 : null;
   const cpcNum = totalSpend && totalClicks ? totalSpend / totalClicks : null;
+  const convAdsNum = totalClicks && totalSales ? (totalSales / totalClicks) * 100 : null;
 
   // Update dashboard TACOS KPI if visible
   const kpiTacosEl = document.getElementById('kpiTacos');
@@ -3826,6 +3827,7 @@ async function loadAds() {
       <div class="kpi-card"><div class="kpi-label">📈 TACOS</div><div class="kpi-value">${tacos}</div><div class="kpi-sub">${tacosNum ? (tacosNum <= 8 ? '✅ Excelente' : tacosNum <= 15 ? '⚠️ Aceptable' : '🔴 Alto') : 'Gasto / Facturación total'}</div></div>
       <div class="kpi-card"><div class="kpi-label">🔄 ROAS</div><div class="kpi-value">${roas}</div></div>
       <div class="kpi-card"><div class="kpi-label">👆 CLICKS</div><div class="kpi-value">${totalClicks.toLocaleString('es-AR')}</div><div class="kpi-sub">CTR: ${ctrNum ? ctrNum.toFixed(2)+'%' : '—'} · CPC: ${cpcNum ? '$'+Math.round(cpcNum).toLocaleString('es-AR') : '—'}</div></div>
+      <div class="kpi-card"><div class="kpi-label">🎯 CONV. ADS</div><div class="kpi-value">${convAdsNum ? convAdsNum.toFixed(1)+'%' : '—'}</div><div class="kpi-sub">Ventas Ads / Clics</div></div>
       <div class="kpi-card"><div class="kpi-label">👁 IMPRESIONES</div><div class="kpi-value">${totalImpr >= 1000000 ? Math.round(totalImpr/1000000)+'M' : totalImpr >= 1000 ? Math.round(totalImpr/1000)+'K' : totalImpr.toLocaleString('es-AR')}</div></div>
       <div class="kpi-card"><div class="kpi-label">💰 % VENTAS CON ADS</div><div class="kpi-value">${salesShareNum ? salesShareNum.toFixed(1)+'%' : '—'}</div><div class="kpi-sub">${salesShareNum ? (salesShareNum >= 50 ? '🔥 Muy dependiente de Ads' : salesShareNum >= 30 ? '⚠️ Moderado' : '✅ Saludable') : 'Ventas Ads / Facturación total'}</div></div>
     </div>`;
