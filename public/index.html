@@ -3763,7 +3763,7 @@ async function loadAds() {
     return '$' + Math.round(n).toLocaleString('es-AR');
   }
 
-  let allCampaigns = [], totalSpend = 0, totalSales = 0, totalClicks = 0, totalImpr = 0;
+  let allCampaigns = [], totalSpend = 0, totalSales = 0, totalClicks = 0, totalImpr = 0, totalUnitsAds = 0;
   let hasError = false, errorMsg = '';
 
   await Promise.all(connected.map(async acc => {
@@ -3780,6 +3780,7 @@ async function loadAds() {
         totalSales  += data.summary.sales || 0;
         totalClicks += data.summary.clicks || 0;
         totalImpr   += data.summary.impressions || 0;
+        totalUnitsAds += data.summary.units || 0;
       }
       (data.campaigns || []).forEach(c => allCampaigns.push({ ...c, cuenta: acc.name, color: acc.color }));
     } catch(e) {
@@ -3810,7 +3811,7 @@ async function loadAds() {
   const salesShareNum = totalSales && totalRevenue ? (totalSales / totalRevenue) * 100 : null;
   const ctrNum = totalClicks && totalImpr ? (totalClicks / totalImpr) * 100 : null;
   const cpcNum = totalSpend && totalClicks ? totalSpend / totalClicks : null;
-  const convAdsNum = totalClicks && totalSales ? (totalSales / totalClicks) * 100 : null;
+  const convAdsNum = totalClicks && totalUnitsAds ? (totalUnitsAds / totalClicks) * 100 : null;
 
   // Update dashboard TACOS KPI if visible
   const kpiTacosEl = document.getElementById('kpiTacos');
@@ -3822,7 +3823,7 @@ async function loadAds() {
   const kpiCardsHtml = `
     <div class="kpi-grid" style="margin-bottom:20px">
       <div class="kpi-card"><div class="kpi-label">💸 GASTO TOTAL</div><div class="kpi-value">${fmt(totalSpend)}</div><div class="kpi-sub">${range.date_from} → ${range.date_to}</div></div>
-      <div class="kpi-card"><div class="kpi-label">🛒 VENTAS ADS</div><div class="kpi-value">${fmt(totalSales)}</div></div>
+      <div class="kpi-card"><div class="kpi-label">🛒 VENTAS ADS</div><div class="kpi-value">${fmt(totalSales)}</div><div class="kpi-sub">${totalUnitsAds > 0 ? totalUnitsAds.toLocaleString('es-AR') + ' unidades' : ''}</div></div>
       <div class="kpi-card"><div class="kpi-label">📊 ACOS</div><div class="kpi-value">${acos}</div><div class="kpi-sub">${acosNum ? (acosNum <= 15 ? '✅ Excelente' : acosNum <= 25 ? '⚠️ Aceptable' : '🔴 Alto') : ''}</div></div>
       <div class="kpi-card"><div class="kpi-label">📈 TACOS</div><div class="kpi-value">${tacos}</div><div class="kpi-sub">${tacosNum ? (tacosNum <= 8 ? '✅ Excelente' : tacosNum <= 15 ? '⚠️ Aceptable' : '🔴 Alto') : 'Gasto / Facturación total'}</div></div>
       <div class="kpi-card"><div class="kpi-label">🔄 ROAS</div><div class="kpi-value">${roas}</div></div>
