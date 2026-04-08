@@ -2153,6 +2153,68 @@ app.get('/api/reporte/items-vendidos', requireAuth, async (req, res) => {
 });
 
 // POST /api/reporte/costos — guardar costos de productos
+// GET /api/reporte/items-activos — todas las publicaciones activas con SKU y costos guardados
+app.get('/api/reporte/items-activos', requireAuth, async (req, res) => {
+  try {
+    const { client_id } = req.query;
+    const token = await getClientToken(parseInt(client_id));
+    if (!token) return res.status(403).json({ error: 'Sin token' });
+    const headers = { 'Authorization': `Bearer ${token}` };
+
+    const clientRes = await pool.query('SELECT ml_user_id FROM clients WHERE id=$1', [client_id]);
+    const uid = clientRes.rows[0]?.ml_user_id;
+    if (!uid) return res.status(400).json({ error: 'Cliente sin ML User ID' });
+
+    // Traer todos los ítems activos
+    let allItemIds = [];
+    let offset = 0;
+    while (true) {
+      const data = await fetch(`${ML_API}/users/${uid}/items/search?status=active&limit=100&offset=${offset}`, { headers }).then(r => r.json()).catch(() => ({}));
+      const results = data.results || [];
+      allItemIds = allItemIds.concat(results);
+      if (results.length < 100) break;
+      offset += 100;
+    }
+
+    // Fetch detalles en batches de 20 (título + SKU)
+    const itemsMap = {};
+    for (let i = 0; i < allItemIds.length; i += 20) {
+      const batch = allItemIds.slice(i, i + 20);
+      try {
+        const data = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,title,seller_custom_field,attributes,price,available_quantity`, { headers }).then(r => r.json());
+        (Array.isArray(data) ? data : []).forEach(r => {
+          if (r.code !== 200 || !r.body) return;
+          const b = r.body;
+          const sku = b.seller_custom_field
+            || b.attributes?.find(a => a.id === 'SELLER_SKU')?.value_name
+            || null;
+          itemsMap[b.id] = { mla_id: b.id, title: b.title, sku, price: b.price, stock: b.available_quantity };
+        });
+      } catch(e) {}
+    }
+
+    // Costos guardados
+    const costsRes = await pool.query('SELECT mla_id, costo_unit, notas FROM product_costs WHERE client_id=$1', [client_id]);
+    const costsMap = {};
+    costsRes.rows.forEach(r => { costsMap[r.mla_id] = { costo_unit: parseFloat(r.costo_unit)||0, notas: r.notas }; });
+
+    const items = Object.values(itemsMap).map(i => ({
+      ...i,
+      costo_unit: costsMap[i.mla_id]?.costo_unit ?? null,
+      notas: costsMap[i.mla_id]?.notas || '',
+      has_cost: costsMap[i.mla_id] != null,
+    })).sort((a, b) => (a.title || '').localeCompare(b.title || ''));
+
+    const completeness = items.length > 0
+      ? Math.round(items.filter(i => i.has_cost).length / items.length * 100) : 0;
+
+    res.json({ items, completeness });
+  } catch(e) {
+    console.error('[ITEMS ACTIVOS]', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.post('/api/reporte/costos', requireAuth, async (req, res) => {
   try {
     const { client_id, costos } = req.body; // costos: [{mla_id, title, costo_unit, notas}]
