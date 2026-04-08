@@ -862,8 +862,7 @@ tbody td {
       </div>
       <!-- Config bar -->
       <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:14px 18px;margin-bottom:16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap">
-        <select id="reporteClientSel" style="padding:6px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px;min-width:160px"></select>
-        <select id="reporteMesSel" style="padding:6px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px"></select>
+        <select id="reporteClientSel" style="padding:6px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px;min-width:160px"></select>        <select id="reporteMesSel" style="padding:6px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px"></select>
         <button onclick="loadReporteItems()" style="padding:7px 16px;background:var(--accent);color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer">📋 Cargar productos</button>
         <button onclick="descargarTemplateExcel()" style="padding:7px 16px;background:#6366f1;color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer">📥 Descargar Excel</button>
         <label style="padding:7px 16px;background:#0ea5e9;color:#fff;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer">
@@ -4657,7 +4656,7 @@ function exportFullStockExcel() {
 let _reporteItems = [], _reportePyl = null;
 
 async function descargarTemplateExcel() {
-  const clientId = document.getElementById('reporteClientSel')?.value;
+  const clientId = getReporteClientId();
   const period = getReportePeriod();
   if (!clientId || !period) { showToast('⚠ Seleccioná cliente y mes primero'); return; }
 
@@ -4695,7 +4694,7 @@ async function descargarTemplateExcel() {
 }
 
 async function importarCostosExcel(input) {
-  const clientId = document.getElementById('reporteClientSel')?.value;
+  const clientId = getReporteClientId();
   if (!clientId) { showToast('⚠ Seleccioná un cliente primero'); input.value=''; return; }
   const file = input.files[0];
   if (!file) return;
@@ -4742,15 +4741,22 @@ async function importarCostosExcel(input) {
 }
 
 function initReporte() {
-  // Populate client selector
+  // Populate client selector — ocultar para rol cliente
   const sel = document.getElementById('reporteClientSel');
+  const role = getSessionRole();
   if (sel) {
-    sel.innerHTML = '';
-    allClients.filter(c => c.ml_user_id && c.active).forEach(c => {
-      const o = document.createElement('option');
-      o.value = c.id; o.textContent = c.name;
-      sel.appendChild(o);
-    });
+    if (role === 'cliente') {
+      sel.style.display = 'none'; // cliente siempre usa su propia cuenta
+    } else {
+      sel.style.display = '';
+      sel.innerHTML = '';
+      allClients.filter(c => c.ml_user_id && c.active).forEach(c => {
+        const o = document.createElement('option');
+        o.value = c.id; o.textContent = c.name;
+        if (activeClientId && c.id === activeClientId) o.selected = true;
+        sel.appendChild(o);
+      });
+    }
   }
   // Populate month selector — last 6 months
   const msel = document.getElementById('reporteMesSel');
@@ -4788,8 +4794,14 @@ function getReportePeriod() {
   };
 }
 
+function getReporteClientId() {
+  const role = getSessionRole();
+  if (role === 'cliente') return activeClientId;
+  return parseInt(getReporteClientId()) || activeClientId;
+}
+
 async function loadReporteItems() {
-  const clientId = document.getElementById('reporteClientSel')?.value;
+  const clientId = getReporteClientId();
   const period = getReportePeriod();
   if (!clientId || !period) return;
   const el = document.getElementById('reporteCostosContent');
@@ -4964,7 +4976,7 @@ async function guardarGastos(clientId, mes) {
 }
 
 async function generarPyL() {
-  const clientId = document.getElementById('reporteClientSel')?.value;
+  const clientId = getReporteClientId();
   const period = getReportePeriod();
   if (!clientId || !period) return;
 
