@@ -2257,13 +2257,14 @@ async function loadPublicaciones() {
           <th style="cursor:pointer" onclick="sortPubs('id')">MLA ↕</th>
           <th style="cursor:pointer" onclick="sortPubs('title')">Título ↕</th>
           <th style="cursor:pointer" onclick="sortPubs('status')">Estado ↕</th>
-          <th>Ads</th>
           <th style="text-align:center;cursor:pointer" onclick="sortPubs('is_full')">FULL ↕</th>
           <th style="text-align:right;cursor:pointer" onclick="sortPubs('available_quantity')">Stock ↕</th>
           <th style="text-align:right;cursor:pointer" onclick="sortPubs('ritmo')">Ritmo/día ↕</th>
+          <th style="text-align:right;cursor:pointer" onclick="sortPubs('cobertura')">Cobertura ↕</th>
+          <th>Ads</th>
           <th style="text-align:right;cursor:pointer" onclick="sortPubs('units')">Unidades ↕</th>
           <th style="text-align:right;cursor:pointer" onclick="sortPubs('revenue')">Facturación ↕</th>
-          <th style="text-align:right;cursor:pointer" onclick="sortPubs('adsSales')">Ventas Ads ↕</th>
+          <th style="text-align:right;cursor:pointer" onclick="sortPubs('adsSales')">Fact. Ads ↕</th>
           <th style="text-align:right;cursor:pointer" onclick="sortPubs('revenueShare')">% Aporte ↕</th>
           <th style="text-align:right;cursor:pointer" onclick="sortPubs('visits')">Visitas ↕</th>
           <th style="text-align:right;cursor:pointer" onclick="sortPubs('conversion')">Conv. ↕</th>
@@ -2307,24 +2308,11 @@ function buildPubRows(items, fmt, dias) {
       ? '<span style="background:rgba(0,188,212,.15);color:#00bcd4;padding:2px 7px;border-radius:4px;font-size:11px;font-weight:600">FULL</span>'
       : '<span style="color:var(--muted);font-size:11px">—</span>';
     const stockColor = (item.available_quantity||0) <= 3 ? '#ff5252' : (item.available_quantity||0) <= 10 ? '#ff9100' : '#00e676';
+    const cobertura = ritmo > 0 && item.available_quantity > 0 ? Math.round(item.available_quantity / ritmo) : null;
+    const coberturaStr = cobertura != null ? cobertura + 'd' : '—';
+    const coberColor = cobertura == null ? 'var(--muted)' : cobertura <= 7 ? '#ff5252' : cobertura <= 21 ? '#ff9100' : '#00e676';
 
-    return '<tr class="pub-row" data-status="' + item.status + '" data-hassales="' + item.hasSales + '" data-hasproblems="' + item.hasProblems + '" data-isfull="' + (item.is_full?'1':'0') + '" data-search="' + (item.title + item.id + (item.cuenta||'')).toLowerCase() + '">'
-      + '<td style="font-size:11px"><span style="color:var(--muted);cursor:pointer" title="Click para copiar" onclick="copyMLA(this,\'' + item.id + '\')">' + item.id + '</span></td>'
-      + '<td style="max-width:240px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="' + item.title + '">' + item.title + '</td>'
-      + '<td>' + statusTag + '</td>'
-      + '<td style="text-align:center">' + fullTag + '</td>'
-      + '<td style="text-align:right;font-weight:700;color:' + stockColor + '">' + (item.available_quantity != null ? item.available_quantity.toLocaleString('es-AR') : '—') + '</td>'
-      + '<td style="text-align:right;font-size:12px;font-weight:700;color:' + ritmoColor + '">' + (ritmo > 0 ? ritmo : '—') + '</td>'
-      + '<td>' + adsTag + '</td>'
-      + '<td style="text-align:right;color:#00e676;font-weight:700">' + (item.units || '—') + '</td>'
-      + '<td style="text-align:right;color:var(--yellow);font-weight:700">' + (item.revenue > 0 ? fmt(item.revenue) : '—') + '</td>'
-      + '<td style="text-align:right;color:#00e676;font-weight:600">' + (item.adsSales > 0 ? fmt(item.adsSales) : '—') + '</td>'
-      + '<td style="text-align:right;font-size:12px">' + (item.revenueShare > 0 ? item.revenueShare + '%' : '—') + '</td>'
-      + '<td style="text-align:right">' + (item.visits > 0 ? item.visits.toLocaleString('es-AR') : '—') + '</td>'
-      + '<td style="text-align:right;font-size:13px;font-weight:700;color:' + convColor + '">' + (item.conversion > 0 ? item.conversion + '%' : '—') + '</td>'
-      + '<td style="text-align:right">' + (item.adsClicks > 0 ? item.adsClicks.toLocaleString('es-AR') : '—') + '</td>'
-      + '<td style="text-align:right;font-size:13px;font-weight:700;color:' + adsConvColor + '">' + (item.adsConversion > 0 ? item.adsConversion + '%' : '—') + '</td>'
-      + '</tr>';
+    return '<tr class="pub-row" data-status="' + item.status + '" data-hassales="' + item.hasSales + '" data-hasproblems="' + item.hasProblems + '" data-isfull="' + (item.is_full?'1':'0') + '" data-search="' + (item.title + item.id + (item.cuenta||'')).toLowerCase() + '">'      + '<td style="font-size:11px"><span style="color:var(--muted);cursor:pointer" title="Click para copiar" onclick="copyMLA(this,\'' + item.id + '\')">'      + item.id + '</span></td>'      + '<td style="max-width:240px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="' + item.title + '">' + item.title + '</td>'      + '<td>' + statusTag + '</td>'      + '<td style="text-align:center">' + fullTag + '</td>'      + '<td style="text-align:right;font-weight:700;color:' + stockColor + '">' + (item.available_quantity != null ? item.available_quantity.toLocaleString('es-AR') : '—') + '</td>'      + '<td style="text-align:right;font-size:12px;font-weight:700;color:' + ritmoColor + '">' + (ritmo > 0 ? ritmo : '—') + '</td>'      + '<td style="text-align:right;font-size:12px;color:' + coberColor + '">' + coberturaStr + '</td>'      + '<td>' + adsTag + '</td>'      + '<td style="text-align:right;color:#00e676;font-weight:700">' + (item.units || '—') + '</td>'      + '<td style="text-align:right;color:var(--yellow);font-weight:700">' + (item.revenue > 0 ? fmt(item.revenue) : '—') + '</td>'      + '<td style="text-align:right;color:#00e676;font-weight:600">' + (item.adsSales > 0 ? fmt(item.adsSales) : '—') + '</td>'      + '<td style="text-align:right;font-size:12px">' + (item.revenueShare > 0 ? item.revenueShare + '%' : '—') + '</td>'      + '<td style="text-align:right">' + (item.visits > 0 ? item.visits.toLocaleString('es-AR') : '—') + '</td>'      + '<td style="text-align:right;font-size:13px;font-weight:700;color:' + convColor + '">' + (item.conversion > 0 ? item.conversion + '%' : '—') + '</td>'      + '<td style="text-align:right">' + (item.adsClicks > 0 ? item.adsClicks.toLocaleString('es-AR') : '—') + '</td>'      + '<td style="text-align:right;font-size:13px;font-weight:700;color:' + adsConvColor + '">' + (item.adsConversion > 0 ? item.adsConversion + '%' : '—') + '</td>'      + '</tr>';
   }).join('');
 }
 
