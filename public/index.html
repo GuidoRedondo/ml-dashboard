@@ -5453,21 +5453,36 @@ function loadTendencia() {
 
   // Cargar items-full para tener stock, FULL y datos completos
   const range = getDateRange();
-  Promise.all(connected.map(acc =>
-    apiCall('GET', `/api/items-full?client_id=${acc.id}&date_from=${range.date_from}&date_to=${range.date_to}`)
-      .then(data => ({ accId: acc.id, items: data?.items || [] }))
-      .catch(() => ({ accId: acc.id, items: [] }))
-  )).then(results => {
+  const client = getActiveClient();
+
+  Promise.all([
+    // items-full para stock, FULL, ads
+    ...connected.map(acc =>
+      apiCall('GET', `/api/items-full?client_id=${acc.id}&date_from=${range.date_from}&date_to=${range.date_to}`)
+        .then(data => ({ type: 'items', accId: acc.id, items: data?.items || [] }))
+        .catch(() => ({ type: 'items', accId: acc.id, items: [] }))
+    ),
+    // costos guardados para calcular margen
+    client ? apiCall('GET', `/api/reporte/items-vendidos?client_id=${client.id}&date_from=${range.date_from}&date_to=${range.date_to}`)
+      .then(data => ({ type: 'costos', items: data?.items || [] }))
+      .catch(() => ({ type: 'costos', items: [] })) : Promise.resolve({ type: 'costos', items: [] })
+  ]).then(results => {
     const pubMap = {};
-    results.forEach(r => r.items.forEach(i => { pubMap[i.id] = i; }));
+    const costsMap = {};
+    results.forEach(r => {
+      if (r.type === 'items') r.items.forEach(i => { pubMap[i.id] = i; });
+      if (r.type === 'costos') r.items.forEach(i => { if (i.costo_unit) costsMap[i.mla_id] = parseFloat(i.costo_unit); });
+    });
     window._tendPubMap = pubMap;
-    renderTendencia(connected, pubMap);
+    window._tendCostsMap = costsMap;
+    renderTendencia(connected, pubMap, costsMap);
   });
 }
 
-function renderTendencia(connected, pubMap) {
+function renderTendencia(connected, pubMap, costsMap) {
   const el = document.getElementById('tendenciaContent');
   if (!pubMap) pubMap = {};
+  if (!costsMap) costsMap = window._tendCostsMap || {};
   const minMargen = parseFloat(document.getElementById('escMinMargen')?.value) || 30;
   const dias = Math.max(1, Math.round((new Date(getDateRange().date_to) - new Date(getDateRange().date_from)) / (1000*60*60*24)));
 
@@ -5495,13 +5510,19 @@ function renderTendencia(connected, pubMap) {
     const pub   = pubMap[p.id] || {};
     const ritmo = p.units > 0 ? p.units / dias : 0;
     const cobertura = ritmo > 0 && pub.available_quantity > 0 ? Math.round(pub.available_quantity / ritmo) : null;
+    // Calcular margen real con CMV si está disponible
+    const costoUnit = costsMap[p.id] ?? null;
+    const cmv = costoUnit != null ? costoUnit * p.units : null;
+    const margen = p.revenue > 0 && cmv != null
+      ? parseFloat(((p.revenue - (p.comision||0) - (p.impuestos||0) - cmv - (p.ads||0) - Math.max(0, -(p.resultado_envio||0))) / p.revenue * 100).toFixed(1))
+      : (p.pct_recibido != null ? parseFloat(p.pct_recibido) : null);
     const item = {
       id: p.id, title: p.title, revenue: p.revenue, units: p.units,
       visits: p.visits, conversion: parseFloat(conv.toFixed(1)),
       trend, revenue_prev: p.revenue_prev,
       hasAds: pub.hasAds || false, is_full: pub.is_full || false,
       available_quantity: pub.available_quantity ?? null,
-      cobertura, margen: p.margen ?? null,
+      cobertura, margen,
     };
     if (p.revenue === 0) {
       dormido.push(item);
@@ -5555,7 +5576,7 @@ function renderTendencia(connected, pubMap) {
     window._tendSort[alertId] = { col, asc: s.col === col ? !s.asc : false };
     // Rerenderizar sin refetchear
     const connected = state.accounts.filter(a => a.data && a.data.rentabilidad);
-    renderTendencia(connected, window._tendPubMap || {});
+    renderTendencia(connected, window._tendPubMap || {}, window._tendCostsMap || {});
     setTimeout(() => document.getElementById('tend-' + alertId)?.scrollIntoView({ behavior: 'smooth' }), 50);
   };
 
