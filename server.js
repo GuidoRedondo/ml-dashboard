@@ -793,12 +793,11 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
     const soldItemIds = Object.keys(salesByItem);
     let totalVisits = 0, prevTotalVisits = 0, topItems = [];
 
-    // Fetchear visitas para todos los ítems (con y sin ventas)
-    const visitsIds = allIds.length > 0 ? allIds : soldItemIds;
-    if (visitsIds.length > 0) {
+    // Fetchear visitas para ítems con ventas
+    if (soldItemIds.length > 0) {
       const allVisitsMap = {}, allPrevVisitsMap = {};
-      for (let i = 0; i < visitsIds.length; i += 20) {
-        const batch = visitsIds.slice(i, i+20);
+      for (let i = 0; i < soldItemIds.length; i += 20) {
+        const batch = soldItemIds.slice(i, i + 20);
         const [vm, pvm] = await Promise.all([fetchVisits(batch, effectiveDays, headers), fetchVisits(batch, effectiveDays * 2, headers)]);
         Object.assign(allVisitsMap, vm); Object.assign(allPrevVisitsMap, pvm);
       }
@@ -809,7 +808,6 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
         const conv = curVisits > 0 ? ((item.units / curVisits) * 100).toFixed(1) : '0.0';
         return { ...item, visits: curVisits, conversion: parseFloat(conv) };
       }).sort((a, b) => b.revenue - a.revenue);
-      // Guardar visitsMap para usarlo en ítems sin ventas
       Object.assign(visitsMap, allVisitsMap);
     }
 
