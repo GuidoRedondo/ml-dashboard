@@ -5456,102 +5456,113 @@ function renderCompetidorFicha(data, el) {
 async function loadPanelConsultores() {
   const el = document.getElementById('panelConsultoresContent');
   if (!el) return;
-
-  // Solo visible para admin y colaborador
   const role = getSessionRole();
-  if (role === 'cliente') {
-    el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">Sin acceso</div>';
-    return;
-  }
-
+  if (role === 'cliente') { el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">Sin acceso</div>'; return; }
   const clients = allClients.filter(c => c.active && c.ml_user_id);
-  if (!clients.length) {
-    el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">Sin clientes conectados</div>';
-    return;
-  }
-
-  el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">⏳ Cargando datos de ' + clients.length + ' clientes...</div>';
-
+  if (!clients.length) { el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">Sin clientes conectados</div>'; return; }
+  el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">\u23f3 Cargando datos de ' + clients.length + ' clientes...</div>';
   const range = getDateRange();
-  const params = `date_from=${range.date_from}&date_to=${range.date_to}`;
-
+  const params = 'date_from=' + range.date_from + '&date_to=' + range.date_to;
   const results = await Promise.all(clients.map(async c => {
     try {
-      const data = await apiCall('GET', `/api/dashboard?client_id=${c.id}&${params}`);
-      return { client: c, data };
-    } catch(e) { return { client: c, data: null }; }
+      const [data, adsData] = await Promise.all([
+        apiCall('GET', '/api/dashboard?client_id=' + c.id + '&' + params),
+        apiCall('GET', '/api/ads?client_id=' + c.id + '&' + params).catch(() => null)
+      ]);
+      return { client: c, data, adsData };
+    } catch(e) { return { client: c, data: null, adsData: null }; }
   }));
-
+  window._panelResults = results;
+  window._panelRange = range;
+  if (!window._panelSort) window._panelSort = { col: 'revenue', asc: false };
   renderPanelConsultores(results, range);
 }
 
 function renderPanelConsultores(results, range) {
   const el = document.getElementById('panelConsultoresContent');
-  const fmt  = n => '$' + Math.round(Math.abs(n)).toLocaleString('es-AR');
+  const fmt  = n => '$' + Math.round(Math.abs(n||0)).toLocaleString('es-AR');
   const fmtP = n => n != null ? (n > 0 ? '+' : '') + parseFloat(n).toFixed(1) + '%' : null;
 
-  function delta(val, pct) {
+  function deltaSpan(pct) {
     if (pct == null) return '';
-    const color = pct > 0 ? '#00e676' : pct < 0 ? '#ff5252' : 'var(--muted)';
-    return `<span style="font-size:10px;color:${color};margin-left:4px">${fmtP(pct)}</span>`;
+    const color = parseFloat(pct) > 0 ? '#00e676' : parseFloat(pct) < 0 ? '#ff5252' : 'var(--muted)';
+    return `<div style="font-size:11px;color:${color}">${fmtP(pct)}</div>`;
   }
 
-  function kpi(label, value, d) {
+  function kpi(value, d) {
     return `<td style="padding:10px 14px;text-align:right;white-space:nowrap">
       <div style="font-size:13px;font-weight:700">${value}</div>
-      <div style="font-size:10px;color:var(--muted)">${label}</div>
-      ${d ? `<div style="font-size:10px">${delta('', d)}</div>` : ''}
+      ${deltaSpan(d)}
     </td>`;
   }
 
-  const rows = results.map(({ client, data }) => {
-    if (!data || !data.stats) {
-      return `<tr style="border-bottom:1px solid var(--border)">
-        <td style="padding:10px 14px;font-size:13px;font-weight:600">${client.name}</td>
-        <td colspan="7" style="padding:10px 14px;font-size:12px;color:var(--muted)">Sin datos — sincronizá primero</td>
-      </tr>`;
-    }
-    const s = data.stats;
+  const rowData = results.map(({ client, data: d, adsData }) => {
+    if (!d || !d.stats) return { client, empty: true };
+    const s = d.stats;
     const ch = s.change || {};
-    const tacos = s.ads_spend && s.total_amount ? (s.ads_spend / s.total_amount * 100).toFixed(1) + '%' : '—';
-    const pctAds = s.ads_sales && s.total_amount ? (s.ads_sales / s.total_amount * 100).toFixed(1) + '%' : '—';
-    const ticket = s.total_orders > 0 ? fmt(s.total_amount / s.total_orders) : '—';
-    const conv   = s.conversion_rate != null ? parseFloat(s.conversion_rate).toFixed(1) + '%' : '—';
+    const adsSales = adsData && adsData.summary ? (adsData.summary.sales || 0) : 0;
+    const pctAds = adsSales && s.total_amount ? parseFloat((adsSales / s.total_amount * 100).toFixed(1)) : null;
+    const tacos = s.ads_spend && s.total_amount ? parseFloat((s.ads_spend / s.total_amount * 100).toFixed(1)) : null;
+    const ticket = s.total_orders > 0 ? Math.round(s.total_amount / s.total_orders) : 0;
+    const conv = s.conversion_rate != null ? parseFloat(parseFloat(s.conversion_rate).toFixed(1)) : null;
+    return { client, empty: false, revenue: s.total_amount||0, orders: s.total_orders||0, ticket, visits: s.total_visits||0, conv, tacos, pctAds, ch };
+  });
 
+  window._sortPanel = function(c) {
+    const s = window._panelSort || {};
+    window._panelSort = { col: c, asc: s.col === c ? !s.asc : false };
+    renderPanelConsultores(window._panelResults, window._panelRange);
+  };
+
+  const { col, asc } = window._panelSort || { col: 'revenue', asc: false };
+  const sorted = [...rowData].sort((a, b) => {
+    if (a.empty && b.empty) return 0;
+    if (a.empty) return 1;
+    if (b.empty) return -1;
+    const va = col === 'name' ? a.client.name : (a[col] ?? -Infinity);
+    const vb = col === 'name' ? b.client.name : (b[col] ?? -Infinity);
+    if (typeof va === 'string') return asc ? va.localeCompare(vb) : vb.localeCompare(va);
+    return asc ? va - vb : vb - va;
+  });
+
+  function th(c, label) {
+    const s = window._panelSort || {};
+    const active = s.col === c;
+    const arrow = active ? (s.asc ? ' ↑' : ' ↓') : ' ↕';
+    return `<th onclick="window._sortPanel('${c}')" style="padding:10px 14px;text-align:right;font-size:11px;font-weight:600;color:${active?'var(--accent)':'var(--muted)'};cursor:pointer;user-select:none;white-space:nowrap">${label}${arrow}</th>`;
+  }
+
+  const rows = sorted.map(r => {
+    if (r.empty) return `<tr style="border-bottom:1px solid var(--border)">
+      <td style="padding:10px 14px;font-size:13px;font-weight:600">${r.client.name}</td>
+      <td colspan="7" style="padding:10px 14px;font-size:12px;color:var(--muted)">Sin datos — sincronizá primero</td>
+    </tr>`;
     return `<tr style="border-bottom:1px solid var(--border)" onmouseover="this.style.background='var(--surface2)'" onmouseout="this.style.background=''">
       <td style="padding:10px 14px">
-        <div style="font-size:13px;font-weight:700">${client.name}</div>
+        <div style="font-size:13px;font-weight:700">${r.client.name}</div>
         <div style="font-size:10px;color:var(--muted)">${range.date_from} → ${range.date_to}</div>
       </td>
-      ${kpi('Facturación', fmt(s.total_amount||0), ch.amount)}
-      ${kpi('Ventas', (s.total_orders||0).toLocaleString('es-AR'), ch.orders)}
-      ${kpi('Ticket prom.', ticket, ch.ticket)}
-      ${kpi('Visitas', (s.total_visits||0).toLocaleString('es-AR'), ch.visits)}
-      ${kpi('Conversión', conv, ch.conversion)}
-      ${kpi('TACOS', tacos, null)}
-      ${kpi('% Ads', pctAds, null)}
+      ${kpi(fmt(r.revenue), r.ch.amount)}
+      ${kpi(r.orders.toLocaleString('es-AR'), r.ch.orders)}
+      ${kpi(r.ticket > 0 ? fmt(r.ticket) : '—', r.ch.ticket)}
+      ${kpi(r.visits > 0 ? r.visits.toLocaleString('es-AR') : '—', r.ch.visits)}
+      ${kpi(r.conv != null ? r.conv + '%' : '—', r.ch.conversion)}
+      ${kpi(r.tacos != null ? r.tacos + '%' : '—', null)}
+      ${kpi(r.pctAds != null ? r.pctAds + '%' : '—', null)}
     </tr>`;
   }).join('');
 
   el.innerHTML = `
-    <div style="font-size:12px;color:var(--muted);margin-bottom:12px">${results.length} clientes · Los % muestran variación vs período anterior</div>
-    <div class="kpi-card" style="padding:0;overflow:hidden">
-      <div style="overflow-x:auto">
-        <table style="width:100%;border-collapse:collapse">
-          <thead><tr style="background:var(--surface2);border-bottom:2px solid var(--border)">
-            <th style="padding:10px 14px;text-align:left;font-size:11px;font-weight:600;color:var(--muted)">Cliente</th>
-            <th style="padding:10px 14px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Facturación</th>
-            <th style="padding:10px 14px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Ventas</th>
-            <th style="padding:10px 14px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Ticket prom.</th>
-            <th style="padding:10px 14px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Visitas</th>
-            <th style="padding:10px 14px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Conversión</th>
-            <th style="padding:10px 14px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">TACOS</th>
-            <th style="padding:10px 14px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">% Ventas Ads</th>
-          </tr></thead>
-          <tbody>${rows}</tbody>
-        </table>
-      </div>
-    </div>`;
+    <div style="font-size:12px;color:var(--muted);margin-bottom:12px">${results.length} clientes · Los % muestran variación vs período anterior · Click encabezado para ordenar</div>
+    <div class="kpi-card" style="padding:0;overflow:hidden"><div style="overflow-x:auto">
+      <table style="width:100%;border-collapse:collapse">
+        <thead><tr style="background:var(--surface2);border-bottom:2px solid var(--border)">
+          <th onclick="window._sortPanel('name')" style="padding:10px 14px;text-align:left;font-size:11px;font-weight:600;color:${col==='name'?'var(--accent)':'var(--muted)'};cursor:pointer;user-select:none">Cliente${col==='name'?(asc?' ↑':' ↓'):' ↕'}</th>
+          ${th('revenue','Facturación')}${th('orders','Ventas')}${th('ticket','Ticket prom.')}${th('visits','Visitas')}${th('conv','Conversión')}${th('tacos','TACOS')}${th('pctAds','% Fact. Ads')}
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div></div>`;
 }
 
 // ── TENDENCIA ──────────────────────────────────────────────────────────────────
