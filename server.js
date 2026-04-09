@@ -808,7 +808,6 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
         const conv = curVisits > 0 ? ((item.units / curVisits) * 100).toFixed(1) : '0.0';
         return { ...item, visits: curVisits, conversion: parseFloat(conv) };
       }).sort((a, b) => b.revenue - a.revenue);
-      Object.assign(visitsMap, allVisitsMap);
     }
 
     const curConv = totalVisits > 0 ? ((curData.orders.length / totalVisits) * 100).toFixed(1) : 0;
