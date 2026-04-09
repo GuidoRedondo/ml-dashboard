@@ -2232,14 +2232,14 @@ async function loadPublicaciones() {
         </div>
       </div>
 
-      <!-- Con problemas -->
+      <!-- FULL -->
       <div class="kpi-card" style="padding:18px;cursor:pointer;border:2px solid transparent;transition:border .2s"
-           onclick="filterPubs('problems',this)" id="pubFilterProblems">
-        <div class="kpi-label">A mejorar (con problemas)</div>
-        <div style="font-size:28px;font-weight:800;color:#ff9100;margin:8px 0">${totalSummary.withProblems.toLocaleString('es-AR')}</div>
-        <div style="font-size:12px;color:var(--muted)">${pctProblems}% del total</div>
+           onclick="filterPubs('full',this)" id="pubFilterFull">
+        <div class="kpi-label">Con FULL activo</div>
+        <div style="font-size:28px;font-weight:800;color:#00bcd4;margin:8px 0">${allItems.filter(i=>i.is_full).length.toLocaleString('es-AR')}</div>
+        <div style="font-size:12px;color:var(--muted)">${(allItems.filter(i=>i.is_full).length/Math.max(allItems.length,1)*100).toFixed(0)}% del total</div>
         <div style="background:var(--surface2);border-radius:4px;height:4px;margin-top:10px">
-          <div style="background:#ff9100;height:100%;width:${Math.min(pctProblems,100)}%;border-radius:4px"></div>
+          <div style="background:#00bcd4;height:100%;width:${Math.min(allItems.filter(i=>i.is_full).length/Math.max(allItems.length,1)*100,100)}%;border-radius:4px"></div>
         </div>
       </div>
     </div>`;
@@ -2257,8 +2257,10 @@ async function loadPublicaciones() {
           <th style="cursor:pointer" onclick="sortPubs('id')">MLA ↕</th>
           <th style="cursor:pointer" onclick="sortPubs('title')">Título ↕</th>
           <th style="cursor:pointer" onclick="sortPubs('status')">Estado ↕</th>
-          <th>Problemas</th>
           <th>Ads</th>
+          <th style="text-align:center;cursor:pointer" onclick="sortPubs('is_full')">FULL ↕</th>
+          <th style="text-align:right;cursor:pointer" onclick="sortPubs('available_quantity')">Stock ↕</th>
+          <th style="text-align:right;cursor:pointer" onclick="sortPubs('ritmo')">Ritmo/día ↕</th>
           <th style="text-align:right;cursor:pointer" onclick="sortPubs('units')">Unidades ↕</th>
           <th style="text-align:right;cursor:pointer" onclick="sortPubs('revenue')">Facturación ↕</th>
           <th style="text-align:right;cursor:pointer" onclick="sortPubs('adsSales')">Ventas Ads ↕</th>
@@ -2267,15 +2269,15 @@ async function loadPublicaciones() {
           <th style="text-align:right;cursor:pointer" onclick="sortPubs('conversion')">Conv. ↕</th>
           <th style="text-align:right;cursor:pointer" onclick="sortPubs('adsClicks')">Clicks Ads ↕</th>
           <th style="text-align:right;cursor:pointer" onclick="sortPubs('adsConversion')">Conv. Ads ↕</th>
-          <th style="text-align:center;cursor:pointer" onclick="sortPubs('has_clip')">🎬 Clip ↕</th>
         </tr></thead>
-        <tbody id="pubsBody">${buildPubRows(allItems, fmt)}</tbody>
+        <tbody id="pubsBody">${buildPubRows(allItems, fmt, Math.max(1, Math.round((new Date(range2.date_to) - new Date(range2.date_from)) / (1000*60*60*24))))}</tbody>
       </table>
     </div>`;
 }
 
-function buildPubRows(items, fmt) {
+function buildPubRows(items, fmt, dias) {
   if (!fmt) fmt = n => { const sign = n < 0 ? '-' : ''; return sign + '$' + Math.round(Math.abs(n)).toLocaleString('es-AR'); };
+  if (!dias) dias = 30;
   return items.map(item => {
     const adsTag = item.hasAds
       ? '<span style="background:rgba(255,180,0,.15);color:#ffb400;padding:2px 7px;border-radius:4px;font-size:11px;font-weight:600">📣 Sí</span>'
@@ -2299,13 +2301,20 @@ function buildPubRows(items, fmt) {
 
     const convColor    = item.conversion    >= 3 ? '#00e676' : item.conversion    >= 1 ? '#ff9100' : item.conversion    > 0 ? '#ff4d4d' : 'var(--muted)';
     const adsConvColor = item.adsConversion >= 5 ? '#00e676' : item.adsConversion >= 2 ? '#ff9100' : item.adsConversion > 0 ? '#ff4d4d' : 'var(--muted)';
+    const ritmo = item.units > 0 ? (item.units / dias).toFixed(1) : 0;
+    const ritmoColor = ritmo >= 3 ? '#00e676' : ritmo >= 1 ? '#ff9100' : ritmo > 0 ? '#ff5252' : 'var(--muted)';
+    const fullTag = item.is_full
+      ? '<span style="background:rgba(0,188,212,.15);color:#00bcd4;padding:2px 7px;border-radius:4px;font-size:11px;font-weight:600">FULL</span>'
+      : '<span style="color:var(--muted);font-size:11px">—</span>';
+    const stockColor = (item.available_quantity||0) <= 3 ? '#ff5252' : (item.available_quantity||0) <= 10 ? '#ff9100' : '#00e676';
 
-    return '<tr class="pub-row" data-status="' + item.status + '" data-hassales="' + item.hasSales + '" data-hasproblems="' + item.hasProblems + '" data-search="' + (item.title + item.id + (item.cuenta||'')).toLowerCase() + '">'
+    return '<tr class="pub-row" data-status="' + item.status + '" data-hassales="' + item.hasSales + '" data-hasproblems="' + item.hasProblems + '" data-isfull="' + (item.is_full?'1':'0') + '" data-search="' + (item.title + item.id + (item.cuenta||'')).toLowerCase() + '">'
       + '<td style="font-size:11px"><span style="color:var(--muted);cursor:pointer" title="Click para copiar" onclick="copyMLA(this,\'' + item.id + '\')">' + item.id + '</span></td>'
       + '<td style="max-width:240px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="' + item.title + '">' + item.title + '</td>'
-
       + '<td>' + statusTag + '</td>'
-      + '<td>' + problemsTag + '</td>'
+      + '<td style="text-align:center">' + fullTag + '</td>'
+      + '<td style="text-align:right;font-weight:700;color:' + stockColor + '">' + (item.available_quantity != null ? item.available_quantity.toLocaleString('es-AR') : '—') + '</td>'
+      + '<td style="text-align:right;font-size:12px;font-weight:700;color:' + ritmoColor + '">' + (ritmo > 0 ? ritmo : '—') + '</td>'
       + '<td>' + adsTag + '</td>'
       + '<td style="text-align:right;color:#00e676;font-weight:700">' + (item.units || '—') + '</td>'
       + '<td style="text-align:right;color:var(--yellow);font-weight:700">' + (item.revenue > 0 ? fmt(item.revenue) : '—') + '</td>'
@@ -2315,7 +2324,6 @@ function buildPubRows(items, fmt) {
       + '<td style="text-align:right;font-size:13px;font-weight:700;color:' + convColor + '">' + (item.conversion > 0 ? item.conversion + '%' : '—') + '</td>'
       + '<td style="text-align:right">' + (item.adsClicks > 0 ? item.adsClicks.toLocaleString('es-AR') : '—') + '</td>'
       + '<td style="text-align:right;font-size:13px;font-weight:700;color:' + adsConvColor + '">' + (item.adsConversion > 0 ? item.adsConversion + '%' : '—') + '</td>'
-      + '<td style="text-align:center;font-size:14px">' + (item.has_clip ? '🎬' : '<span style="color:var(--muted)">—</span>') + '</td>'
       + '</tr>';
   }).join('');
 }
@@ -2323,7 +2331,7 @@ function buildPubRows(items, fmt) {
 function filterPubs(type, cardEl) {
   window._pubsFilter = type;
   // Highlight active card
-  ['pubFilterActive','pubFilterInactive','pubFilterSales','pubFilterProblems'].forEach(id => {
+  ['pubFilterActive','pubFilterInactive','pubFilterSales','pubFilterFull'].forEach(id => {
     const c = document.getElementById(id);
     if (c) c.style.border = '2px solid transparent';
   });
@@ -2342,7 +2350,7 @@ function applyPubsFilter() {
       f === 'active'   ? row.dataset.status === 'active' :
       f === 'inactive' ? (row.dataset.status === 'inactive' || row.dataset.status === 'paused') :
       f === 'sales'    ? row.dataset.hassales === 'true' :
-      f === 'problems' ? row.dataset.hasproblems === 'true' : true;
+      f === 'full'     ? row.dataset.isfull === '1' : true;
     const matchSearch = !q || row.dataset.search.includes(q);
     const show = matchFilter && matchSearch;
     row.style.display = show ? '' : 'none';
