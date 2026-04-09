@@ -2415,12 +2415,7 @@ app.get('/api/debug/item', requireAuth, async (req, res) => {
     } catch(e) { mplayResult = { error: e.message }; }
 
     res.json({ 
-      tags: item.tags, 
-      video_id: item.video_id, 
-      deal_ids: item.deal_ids,
-      channels: item.channels,
-      sub_status: item.sub_status,
-      item_relations: item.item_relations,
+      full_item: item,
       clips_endpoint: clipsResult,
       marketplace_clips: mplayResult
     });
