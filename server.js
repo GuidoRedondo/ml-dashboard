@@ -793,10 +793,12 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
     const soldItemIds = Object.keys(salesByItem);
     let totalVisits = 0, prevTotalVisits = 0, topItems = [];
 
-    if (soldItemIds.length > 0) {
+    // Fetchear visitas para todos los ítems (con y sin ventas)
+    const visitsIds = allIds.length > 0 ? allIds : soldItemIds;
+    if (visitsIds.length > 0) {
       const allVisitsMap = {}, allPrevVisitsMap = {};
-      for (let i = 0; i < soldItemIds.length; i += 20) {
-        const batch = soldItemIds.slice(i, i + 20);
+      for (let i = 0; i < visitsIds.length; i += 20) {
+        const batch = visitsIds.slice(i, i+20);
         const [vm, pvm] = await Promise.all([fetchVisits(batch, effectiveDays, headers), fetchVisits(batch, effectiveDays * 2, headers)]);
         Object.assign(allVisitsMap, vm); Object.assign(allPrevVisitsMap, pvm);
       }
@@ -807,6 +809,8 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
         const conv = curVisits > 0 ? ((item.units / curVisits) * 100).toFixed(1) : '0.0';
         return { ...item, visits: curVisits, conversion: parseFloat(conv) };
       }).sort((a, b) => b.revenue - a.revenue);
+      // Guardar visitsMap para usarlo en ítems sin ventas
+      Object.assign(visitsMap, allVisitsMap);
     }
 
     const curConv = totalVisits > 0 ? ((curData.orders.length / totalVisits) * 100).toFixed(1) : 0;
@@ -1572,10 +1576,11 @@ app.get('/api/items-full', requireAuth, async (req, res) => {
     }
     console.log(`[ADS] Found ${Object.keys(adsByItem).length} items with ads out of ${allIds.length} total`);
 
-    // ── 6. Visits (only items with sales) ───────────────────────────────────
+    // ── 6. Visits (todos los ítems, con y sin ventas) ───────────────────────
     const visitsMap = {};
-    for (let i = 0; i < Math.min(soldItemIds.length, 300); i += 20) {
-      Object.assign(visitsMap, await fetchVisits(soldItemIds.slice(i, i+20), effectiveDays, headers));
+    const allVisitIds = allIds.length > 0 ? allIds : soldItemIds;
+    for (let i = 0; i < allVisitIds.length; i += 20) {
+      Object.assign(visitsMap, await fetchVisits(allVisitIds.slice(i, i+20), effectiveDays, headers));
     }
 
     // ── 6b. Clips — detectar via video_id en item detail (ya cargado en itemDetailsMap)
@@ -1644,7 +1649,9 @@ app.get('/api/items-full', requireAuth, async (req, res) => {
         is_full: isFull,
         is_flex: isFlex,
         units: 0, revenue: 0, hasSales: false,
-        revenueShare: 0, visits: 0, conversion: 0,
+        revenueShare: 0,
+        visits: visitsMap[id] || 0,
+        conversion: 0,
         hasAds: ads.hasAds||false, adsStatus: ads.adsStatus||null,
         adsClicks: ads.clicks||0, adsImpressions: ads.impressions||0,
         adsSales: ads.adsSales||0, adsCost: ads.adsCost||0,
