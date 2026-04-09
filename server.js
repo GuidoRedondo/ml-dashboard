@@ -2394,6 +2394,17 @@ app.get('/api/reporte/pyl', requireAuth, async (req, res) => {
 });
 
 // ── DEBUG: inspect a specific order's shipment ───────────────────────────────
+app.get('/api/debug/item', requireAuth, async (req, res) => {
+  try {
+    const { item_id, client_id } = req.query;
+    const token = await getClientToken(parseInt(client_id));
+    if (!token) return res.status(403).json({ error: 'Sin token' });
+    const headers = { 'Authorization': `Bearer ${token}` };
+    const item = await fetch(`${ML_API}/items/${item_id}`, { headers }).then(r => r.json());
+    res.json({ keys: Object.keys(item), tags: item.tags, video_id: item.video_id, deals: item.deals, sub_status: item.sub_status, channels: item.channels });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
 app.get('/api/debug/billing', requireAuth, async (req, res) => {
   try {
     const { client_id, date_from, date_to } = req.query;
