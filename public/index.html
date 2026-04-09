@@ -5449,11 +5449,25 @@ function loadTendencia() {
     el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Sincronizá primero para ver alertas</div>';
     return;
   }
-  renderTendencia(connected);
+  el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">⏳ Cargando alertas...</div>';
+
+  // Cargar items-full para tener stock, FULL y datos completos
+  const range = getDateRange();
+  Promise.all(connected.map(acc =>
+    apiCall('GET', `/api/items-full?client_id=${acc.id}&date_from=${range.date_from}&date_to=${range.date_to}`)
+      .then(data => ({ accId: acc.id, items: data?.items || [] }))
+      .catch(() => ({ accId: acc.id, items: [] }))
+  )).then(results => {
+    const pubMap = {};
+    results.forEach(r => r.items.forEach(i => { pubMap[i.id] = i; }));
+    window._tendPubMap = pubMap;
+    renderTendencia(connected, pubMap);
+  });
 }
 
-function renderTendencia(connected) {
+function renderTendencia(connected, pubMap) {
   const el = document.getElementById('tendenciaContent');
+  if (!pubMap) pubMap = {};
   const minMargen = parseFloat(document.getElementById('escMinMargen')?.value) || 30;
   const dias = Math.max(1, Math.round((new Date(getDateRange().date_to) - new Date(getDateRange().date_from)) / (1000*60*60*24)));
 
@@ -5468,12 +5482,6 @@ function renderTendencia(connected) {
         allProducts[p.id].visits       += p.visits || 0;
       }
     });
-  });
-
-  // Cruzar con publicaciones para stock, FULL, ads
-  const pubMap = {};
-  state.accounts.forEach(acc => {
-    if (acc.data?.items_full) acc.data.items_full.forEach(i => { pubMap[i.id] = i; });
   });
 
   const fmtN = n => '$' + Math.round(n).toLocaleString('es-AR');
@@ -5528,9 +5536,40 @@ function renderTendencia(connected) {
       <div style="font-size:11px;color:var(--muted);margin-top:2px">${a.desc}</div>
     </div>`).join('');
 
+  // Sort state por sección
+  if (!window._tendSort) window._tendSort = {};
+
+  function sortedItems(items, alertId) {
+    const s = window._tendSort[alertId] || { col: null, asc: false };
+    if (!s.col) return items;
+    return [...items].sort((a, b) => {
+      const va = a[s.col] ?? -Infinity;
+      const vb = b[s.col] ?? -Infinity;
+      if (typeof va === 'string') return s.asc ? va.localeCompare(vb) : vb.localeCompare(va);
+      return s.asc ? va - vb : vb - va;
+    });
+  }
+
+  window._sortTend = function(alertId, col) {
+    const s = window._tendSort[alertId] || { col: null, asc: false };
+    window._tendSort[alertId] = { col, asc: s.col === col ? !s.asc : false };
+    // Rerenderizar sin refetchear
+    const connected = state.accounts.filter(a => a.data && a.data.rentabilidad);
+    renderTendencia(connected, window._tendPubMap || {});
+    setTimeout(() => document.getElementById('tend-' + alertId)?.scrollIntoView({ behavior: 'smooth' }), 50);
+  };
+
+  function thSort(alertId, col, label, align='right') {
+    const s = window._tendSort[alertId] || {};
+    const active = s.col === col;
+    const arrow = active ? (s.asc ? ' ↑' : ' ↓') : ' ↕';
+    return `<th onclick="window._sortTend('${alertId}','${col}')" style="padding:8px 10px;text-align:${align};font-size:11px;font-weight:600;color:${active?'var(--accent)':'var(--muted)'};cursor:pointer;user-select:none;white-space:nowrap">${label}${arrow}</th>`;
+  }
+
   function buildTable(items, a) {
     if (!items.length) return '<div style="color:var(--muted);font-size:13px;padding:20px;text-align:center">Sin alertas en este período ✓</div>';
-    const rows = items.map(i => {
+    const sorted = sortedItems(items, a.id);
+    const rows = sorted.map(i => {
       const trendStr = i.trend != null ? (i.trend > 0 ? '+' : '') + i.trend.toFixed(0) + '%' : '—';
       const trendColor = i.trend > 0 ? '#00e676' : '#ff5252';
       const margenStr = i.margen != null ? i.margen + '%' : '—';
@@ -5552,21 +5591,21 @@ function renderTendencia(connected) {
         <td style="padding:8px 10px;text-align:right;font-size:12px;font-weight:700;color:${margenColor}">${margenStr}</td>
       </tr>`;
     }).join('');
-    const extraTh = a.id === 'boom' || a.id === 'caida' ? '<th style="padding:8px 10px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Tendencia</th>' :
-                    a.id === 'stock' ? '<th style="padding:8px 10px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Cobertura</th>' : '';
+    const extraTh = a.id === 'boom' || a.id === 'caida' ? thSort(a.id, 'trend', 'Tendencia') :
+                    a.id === 'stock' ? thSort(a.id, 'cobertura', 'Cobertura') : '';
     return `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse">
       <thead><tr style="background:var(--surface2);border-bottom:2px solid var(--border)">
-        <th style="padding:8px 10px;text-align:left;font-size:11px;font-weight:600;color:var(--muted)">MLA</th>
-        <th style="padding:8px 10px;text-align:left;font-size:11px;font-weight:600;color:var(--muted)">Título</th>
-        <th style="padding:8px 10px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Facturación</th>
-        <th style="padding:8px 10px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Visitas</th>
-        <th style="padding:8px 10px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Ventas</th>
-        <th style="padding:8px 10px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Conversión</th>
+        ${thSort(a.id, 'id',                 'MLA',         'left')}
+        ${thSort(a.id, 'title',              'Título',      'left')}
+        ${thSort(a.id, 'revenue',            'Facturación')}
+        ${thSort(a.id, 'visits',             'Visitas')}
+        ${thSort(a.id, 'units',              'Ventas')}
+        ${thSort(a.id, 'conversion',         'Conversión')}
         ${extraTh}
-        <th style="padding:8px 10px;text-align:center;font-size:11px;font-weight:600;color:var(--muted)">Ads</th>
-        <th style="padding:8px 10px;text-align:center;font-size:11px;font-weight:600;color:var(--muted)">FULL</th>
-        <th style="padding:8px 10px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Stock</th>
-        <th style="padding:8px 10px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Margen</th>
+        ${thSort(a.id, 'hasAds',             'Ads',         'center')}
+        ${thSort(a.id, 'is_full',            'FULL',        'center')}
+        ${thSort(a.id, 'available_quantity', 'Stock')}
+        ${thSort(a.id, 'margen',             'Margen')}
       </tr></thead><tbody>${rows}</tbody></table></div>`;
   }
 
