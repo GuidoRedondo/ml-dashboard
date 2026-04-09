@@ -500,6 +500,9 @@ tbody td {
 
     <nav class="nav">
       <div class="nav-section-label">PRINCIPAL</div>
+      <div class="nav-item" id="nav-panel-consultores" data-page="panel-consultores" onclick="showPage('panel-consultores',this);loadPanelConsultores()">
+        <span class="nav-icon">🎯</span> Panel Clientes
+      </div>
       <div class="nav-item active" data-page="dashboard" onclick="showPage('dashboard',this)">
         <span class="nav-icon">📊</span> Dashboard
       </div>
@@ -605,6 +608,15 @@ tbody td {
     <div id="tokenWarningBar" style="display:none"></div>
 
     <!-- DASHBOARD -->
+    <!-- PANEL CLIENTES -->
+    <div class="page" id="page-panel-consultores">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px">
+        <h2 style="margin:0;font-family:var(--font-b);flex:1">🎯 Panel de Clientes</h2>
+        <button class="sync-btn" onclick="loadPanelConsultores()">🔄 Actualizar todos</button>
+      </div>
+      <div id="panelConsultoresContent"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Cargando...</div></div>
+    </div>
+
     <div class="page active" id="page-dashboard">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:20px;flex-wrap:wrap">
         <div id="accountTabs" style="display:flex;gap:8px;flex-wrap:wrap;flex:1">
@@ -3479,7 +3491,7 @@ function applyPermissions() {
       el.style.display = isGestion ? '' : 'none';
     }
   });
-  document.querySelectorAll('[data-page="usuarios"],[data-page="clientes"],[data-page="tokens"],[data-page="reputacion"]').forEach(el => {
+  document.querySelectorAll('[data-page="usuarios"],[data-page="clientes"],[data-page="tokens"],[data-page="reputacion"],[data-page="panel-consultores"]').forEach(el => {
     el.style.display = isGestion ? '' : 'none';
   });
 
@@ -5440,6 +5452,108 @@ function renderCompetidorFicha(data, el) {
 
   </div>`;
 }
+// ── PANEL CLIENTES ────────────────────────────────────────────────────────────
+async function loadPanelConsultores() {
+  const el = document.getElementById('panelConsultoresContent');
+  if (!el) return;
+
+  // Solo visible para admin y colaborador
+  const role = getSessionRole();
+  if (role === 'cliente') {
+    el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">Sin acceso</div>';
+    return;
+  }
+
+  const clients = allClients.filter(c => c.active && c.ml_user_id);
+  if (!clients.length) {
+    el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">Sin clientes conectados</div>';
+    return;
+  }
+
+  el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">⏳ Cargando datos de ' + clients.length + ' clientes...</div>';
+
+  const range = getDateRange();
+  const params = `date_from=${range.date_from}&date_to=${range.date_to}`;
+
+  const results = await Promise.all(clients.map(async c => {
+    try {
+      const data = await apiCall('GET', `/api/dashboard?client_id=${c.id}&${params}`);
+      return { client: c, data };
+    } catch(e) { return { client: c, data: null }; }
+  }));
+
+  renderPanelConsultores(results, range);
+}
+
+function renderPanelConsultores(results, range) {
+  const el = document.getElementById('panelConsultoresContent');
+  const fmt  = n => '$' + Math.round(Math.abs(n)).toLocaleString('es-AR');
+  const fmtP = n => n != null ? (n > 0 ? '+' : '') + parseFloat(n).toFixed(1) + '%' : null;
+
+  function delta(val, pct) {
+    if (pct == null) return '';
+    const color = pct > 0 ? '#00e676' : pct < 0 ? '#ff5252' : 'var(--muted)';
+    return `<span style="font-size:10px;color:${color};margin-left:4px">${fmtP(pct)}</span>`;
+  }
+
+  function kpi(label, value, d) {
+    return `<td style="padding:10px 14px;text-align:right;white-space:nowrap">
+      <div style="font-size:13px;font-weight:700">${value}</div>
+      <div style="font-size:10px;color:var(--muted)">${label}</div>
+      ${d ? `<div style="font-size:10px">${delta('', d)}</div>` : ''}
+    </td>`;
+  }
+
+  const rows = results.map(({ client, data }) => {
+    if (!data || !data.stats) {
+      return `<tr style="border-bottom:1px solid var(--border)">
+        <td style="padding:10px 14px;font-size:13px;font-weight:600">${client.name}</td>
+        <td colspan="7" style="padding:10px 14px;font-size:12px;color:var(--muted)">Sin datos — sincronizá primero</td>
+      </tr>`;
+    }
+    const s = data.stats;
+    const ch = s.change || {};
+    const tacos = s.ads_spend && s.total_amount ? (s.ads_spend / s.total_amount * 100).toFixed(1) + '%' : '—';
+    const pctAds = s.ads_sales && s.total_amount ? (s.ads_sales / s.total_amount * 100).toFixed(1) + '%' : '—';
+    const ticket = s.total_orders > 0 ? fmt(s.total_amount / s.total_orders) : '—';
+    const conv   = s.conversion_rate != null ? parseFloat(s.conversion_rate).toFixed(1) + '%' : '—';
+
+    return `<tr style="border-bottom:1px solid var(--border)" onmouseover="this.style.background='var(--surface2)'" onmouseout="this.style.background=''">
+      <td style="padding:10px 14px">
+        <div style="font-size:13px;font-weight:700">${client.name}</div>
+        <div style="font-size:10px;color:var(--muted)">${range.date_from} → ${range.date_to}</div>
+      </td>
+      ${kpi('Facturación', fmt(s.total_amount||0), ch.amount)}
+      ${kpi('Ventas', (s.total_orders||0).toLocaleString('es-AR'), ch.orders)}
+      ${kpi('Ticket prom.', ticket, ch.ticket)}
+      ${kpi('Visitas', (s.total_visits||0).toLocaleString('es-AR'), ch.visits)}
+      ${kpi('Conversión', conv, ch.conversion)}
+      ${kpi('TACOS', tacos, null)}
+      ${kpi('% Ads', pctAds, null)}
+    </tr>`;
+  }).join('');
+
+  el.innerHTML = `
+    <div style="font-size:12px;color:var(--muted);margin-bottom:12px">${results.length} clientes · Los % muestran variación vs período anterior</div>
+    <div class="kpi-card" style="padding:0;overflow:hidden">
+      <div style="overflow-x:auto">
+        <table style="width:100%;border-collapse:collapse">
+          <thead><tr style="background:var(--surface2);border-bottom:2px solid var(--border)">
+            <th style="padding:10px 14px;text-align:left;font-size:11px;font-weight:600;color:var(--muted)">Cliente</th>
+            <th style="padding:10px 14px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Facturación</th>
+            <th style="padding:10px 14px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Ventas</th>
+            <th style="padding:10px 14px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Ticket prom.</th>
+            <th style="padding:10px 14px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Visitas</th>
+            <th style="padding:10px 14px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Conversión</th>
+            <th style="padding:10px 14px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">TACOS</th>
+            <th style="padding:10px 14px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">% Ventas Ads</th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    </div>`;
+}
+
 // ── TENDENCIA ──────────────────────────────────────────────────────────────────
 function loadTendencia() {
   const el = document.getElementById('tendenciaContent');
