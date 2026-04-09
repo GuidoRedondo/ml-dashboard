@@ -2401,7 +2401,29 @@ app.get('/api/debug/item', requireAuth, async (req, res) => {
     if (!token) return res.status(403).json({ error: 'Sin token' });
     const headers = { 'Authorization': `Bearer ${token}` };
     const item = await fetch(`${ML_API}/items/${item_id}`, { headers }).then(r => r.json());
-    res.json({ keys: Object.keys(item), tags: item.tags, video_id: item.video_id, deals: item.deals, sub_status: item.sub_status, channels: item.channels });
+    
+    // Intentar endpoint de clips
+    let clipsResult = null;
+    try {
+      clipsResult = await fetch(`${ML_API}/items/${item_id}/clips`, { headers }).then(r => r.json());
+    } catch(e) { clipsResult = { error: e.message }; }
+    
+    // Intentar marketplace clips
+    let mplayResult = null;
+    try {
+      mplayResult = await fetch(`${ML_API}/marketplace/items/${item_id}/clips`, { headers }).then(r => r.json());
+    } catch(e) { mplayResult = { error: e.message }; }
+
+    res.json({ 
+      tags: item.tags, 
+      video_id: item.video_id, 
+      deal_ids: item.deal_ids,
+      channels: item.channels,
+      sub_status: item.sub_status,
+      item_relations: item.item_relations,
+      clips_endpoint: clipsResult,
+      marketplace_clips: mplayResult
+    });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
