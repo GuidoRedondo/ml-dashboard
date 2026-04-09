@@ -709,7 +709,7 @@ async function fetchAllOrders(uid, headers, fromStr, toStr) {
     let amount = 0;
     all.forEach(o => { amount += parseFloat(o.total_amount) || 0; });
     if (total > 50) {
-      const maxPages = Math.min(Math.ceil(total / 50), 100); // up to 5000 orders
+      const maxPages = Math.min(Math.ceil(total / 50), 300); // up to 15000 orders
       for (let b = 1; b < maxPages; b += 5) {
         const end = Math.min(b + 5, maxPages);
         const batch = await Promise.all(Array.from({length: end - b}, (_, i) =>
