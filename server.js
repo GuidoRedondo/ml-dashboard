@@ -2424,6 +2424,7 @@ app.get('/api/item-fees', requireAuth, async (req, res) => {
 app.get('/api/competencia/diagnostico', requireAuth, async (req, res) => {
   try {
     const { item_id, client_id } = req.query;
+    console.log(`[DIAG] Request: item_id=${item_id} client_id=${client_id}`);
     const token = await getClientToken(parseInt(client_id));
     if (!token) return res.status(403).json({ error: 'Sin token' });
     const h = { 'Authorization': `Bearer ${token}` };
