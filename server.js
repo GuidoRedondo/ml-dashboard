@@ -2436,9 +2436,11 @@ app.get('/api/competencia/diagnostico', requireAuth, async (req, res) => {
     const categoryId = item.category_id;
     const sellerId   = item.seller_id;
 
-    // 2. Buscar por título para encontrar posición y competidores
-    // Usar las primeras 4 palabras del título para mayor precisión
-    const titleWords = item.title.split(' ').slice(0, 4).join(' ');
+    // 2. Buscar por título limpio (sin caracteres especiales)
+    const cleanTitle = item.title
+      .replace(/[^\w\s\u00C0-\u024F]/g, ' ')  // quitar caracteres especiales
+      .replace(/\s+/g, ' ').trim();
+    const titleWords = cleanTitle.split(' ').filter(w => w.length > 2).slice(0, 5).join(' ');
     const query = encodeURIComponent(titleWords);
     const searchUrl = `${ML_API}/sites/MLA/search?q=${query}&limit=50`;
     const searchRes = await fetch(searchUrl, { headers: h }).then(r => r.json());
