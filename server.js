@@ -2435,16 +2435,18 @@ app.get('/api/competencia/diagnostico', requireAuth, async (req, res) => {
     const categoryId = item.category_id;
     const sellerId   = item.seller_id;
 
-    // 2. Top resultados de la categoría (búsqueda por seller para ver posición propia)
-    const searchUrl = `${ML_API}/sites/MLA/search?seller_id=${sellerId}&category=${categoryId}&limit=50`;
-    const ownSearch = await fetch(searchUrl, { headers: h }).then(r => r.json());
-    const ownResults = ownSearch.results || [];
-    const ownPosition = ownResults.findIndex(r => r.id === item_id);
+    // 2. Buscar por título para encontrar posición y competidores
+    // (búsqueda por categoría sola da 403 sin certificación)
+    const query = encodeURIComponent(item.title.split(' ').slice(0, 6).join(' '));
+    const searchUrl = `${ML_API}/sites/MLA/search?q=${query}&limit=50`;
+    const searchRes = await fetch(searchUrl, { headers: h }).then(r => r.json());
+    const allResults = searchRes.results || [];
 
-    // 3. Top competidores en la categoría (búsqueda general)
-    const catSearchUrl = `${ML_API}/sites/MLA/search?category=${categoryId}&limit=20&sort=relevance`;
-    const catSearch = await fetch(catSearchUrl, { headers: h }).then(r => r.json());
-    const competitors = (catSearch.results || []).filter(r => r.seller_id !== sellerId).slice(0, 10);
+    // Posición propia en los resultados
+    const ownPosition = allResults.findIndex(r => r.id === item_id);
+
+    // Top competidores (excluyendo propias publicaciones)
+    const competitors = allResults.filter(r => r.seller?.id !== sellerId && r.seller_id !== sellerId).slice(0, 10);
 
     // 4. Datos del seller propio
     const sellerData = await fetch(`${ML_API}/users/${sellerId}`, { headers: h }).then(r => r.json());
@@ -2481,7 +2483,8 @@ app.get('/api/competencia/diagnostico', requireAuth, async (req, res) => {
         power_seller: sellerData.seller_reputation?.power_seller_status,
       },
       own_position: ownPosition >= 0 ? ownPosition + 1 : null,
-      own_total: ownResults.length,
+      own_total: allResults.length,
+      search_total: searchRes.paging?.total || 0,
       competitors: competitors.map(c => {
         const sid = c.seller?.id || c.seller_id;
         const sd = sellerDetails[sid] || {};
@@ -2499,7 +2502,7 @@ app.get('/api/competencia/diagnostico', requireAuth, async (req, res) => {
           seller_transactions: sd.seller_reputation?.transactions?.completed,
         };
       }),
-      category_total: catSearch.paging?.total || 0,
+      category_total: searchRes.paging?.total || 0,
     });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
