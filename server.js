@@ -905,7 +905,7 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
         const id    = oi.item && oi.item.id;
         const title = oi.item && oi.item.title;
         if (!id) return;
-        if (!byItem[id]) byItem[id] = { id, title: title || id, revenue: 0, units: 0, net: 0, orders: 0, envio_cobrado: 0, envio_pagado: 0, impuestos: 0, comision: 0, ads: 0 };
+        if (!byItem[id]) byItem[id] = { id, title: title || id, revenue: 0, units: 0, net: 0, orders: 0, envio_cobrado: 0, envio_pagado: 0, envio_pagado_no_flex: 0, units_no_flex: 0, impuestos: 0, comision: 0, ads: 0 };
 
         // Also track per mode
         if (!byItemPerMode[mode])     byItemPerMode[mode] = {};
@@ -931,6 +931,12 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
         byItem[id].orders        += 1;
         byItem[id].envio_cobrado += itemBuyerShip;
         byItem[id].envio_pagado  += itemShip;
+        // Excluir FLEX del promedio de costo de envío (FLEX no tiene costo para el vendedor)
+        const isFlex = (mode || '').toLowerCase().includes('flex') || (mode || '').toLowerCase() === 'me1';
+        if (!isFlex) {
+          byItem[id].envio_pagado_no_flex += itemShip;
+          byItem[id].units_no_flex        += oi.quantity || 0;
+        }
         byItem[id].impuestos     += itemTax;
         byItem[id].comision      += itemSaleFee;
 
@@ -1101,9 +1107,11 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
           conversion:      vis.conversion || 0,
           comision:        i.comision || (i.revenue > 0 ? (i.revenue - i.net) : 0),
           impuestos:       i.impuestos || 0,
-          envio_cobrado:   i.envio_cobrado,
-          envio_pagado:    i.envio_pagado,
-          resultado_envio: i.envio_cobrado - i.envio_pagado,
+          envio_cobrado:        i.envio_cobrado,
+          envio_pagado:         i.envio_pagado,
+          envio_pagado_no_flex: i.envio_pagado_no_flex || 0,
+          units_no_flex:        i.units_no_flex || 0,
+          resultado_envio:      i.envio_cobrado - i.envio_pagado,
           ads:             i.ads || 0,
           neto:            i.net,
           pct_recibido:        i.revenue > 0 ? ((i.net / i.revenue) * 100).toFixed(1) : '0'
