@@ -870,6 +870,10 @@ tbody td {
           style="padding:8px 18px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-2px;font-family:var(--font-b)">
           🏆 Mercado
         </button>
+        <button id="tab-comp-diagnostico" onclick="switchCompTab('diagnostico')"
+          style="padding:8px 18px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-2px;font-family:var(--font-b)">
+          🔍 Diagnóstico
+        </button>
       </div>
       <!-- Tab: Mis Categorías -->
       <div id="comp-tab-categorias">
@@ -891,6 +895,10 @@ tbody td {
           <div id="compAnalisisResult"></div>
         </div>
         <div id="competenciaContent"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Cargando categorías...</div></div>
+      </div>
+      <!-- Tab: Diagnóstico -->
+      <div id="comp-tab-diagnostico" style="display:none">
+        <div id="diagContent"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Seleccioná un MLA para analizar</div></div>
       </div>
     </div>
 
@@ -4545,29 +4553,6 @@ function diagGetLast3Months() {
   return months;
 }
 
-function loadDiagnostico() {
-  const sel = document.getElementById('diagClientSel');
-  if (!sel) return;
-  sel.innerHTML = '';
-  const clients = allClients.filter(c => c.ml_user_id && c.active);
-  clients.forEach(c => {
-    const opt = document.createElement('option');
-    opt.value = c.id; opt.textContent = c.name;
-    sel.appendChild(opt);
-  });
-  if (!sel.options.length) {
-    apiCall('GET', '/api/clients').then(data => {
-      (data || []).forEach(c => {
-        const opt = document.createElement('option');
-        opt.value = c.id; opt.textContent = c.name;
-        sel.appendChild(opt);
-      });
-      diagCargarDatos();
-    });
-    return;
-  }
-  diagCargarDatos();
-}
 
 async function diagCargarDatos() {
   const clientId = document.getElementById('diagClientSel')?.value;
@@ -6817,13 +6802,145 @@ function sortEscalabilidad(col) {
 }
 
 
+// ── DIAGNÓSTICO COMPETIDORES ──────────────────────────────────────────────────
+function loadDiagnostico() {
+  const el = document.getElementById('diagContent');
+  if (!el) return;
+  const client = getActiveClient();
+  if (!client) { el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">Seleccioná una cuenta</div>'; return; }
+
+  const connected = state.accounts.filter(a => a.data);
+  if (!connected.length) { el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">Sincronizá primero</div>'; return; }
+
+  // Armar lista de publicaciones propias
+  const items = [];
+  connected.forEach(acc => {
+    (acc.data.rentabilidad?.by_product || []).forEach(p => {
+      if (!items.find(i => i.id === p.id)) items.push({ id: p.id, title: p.title, revenue: p.revenue });
+    });
+  });
+  items.sort((a,b) => b.revenue - a.revenue);
+
+  const opciones = items.map(p => `<option value="${p.id}">${p.id} · ${(p.title||'').substring(0,60)}</option>`).join('');
+
+  el.innerHTML = `
+    <div style="display:flex;gap:10px;align-items:center;margin-bottom:20px;flex-wrap:wrap">
+      <select id="diagMLA" style="flex:1;padding:9px 12px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px">
+        <option value="">— Seleccioná una publicación —</option>
+        ${opciones}
+      </select>
+      <button onclick="runDiagnostico()" class="sync-btn" style="padding:9px 20px">🔍 Analizar</button>
+    </div>
+    <div id="diagResultado"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Seleccioná un MLA y presioná Analizar</div></div>`;
+}
+
+async function runDiagnostico() {
+  const mla = document.getElementById('diagMLA')?.value;
+  const el  = document.getElementById('diagResultado');
+  const client = getActiveClient();
+  if (!mla || !client) return;
+
+  el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">⏳ Analizando competencia...</div>';
+
+  try {
+    const data = await apiCall('GET', `/api/competencia/diagnostico?item_id=${mla}&client_id=${client.id}`);
+    renderDiagnostico(data);
+  } catch(e) {
+    el.innerHTML = `<div style="color:#ff5252;padding:20px;text-align:center">Error: ${e.message}</div>`;
+  }
+}
+
+function renderDiagnostico(d) {
+  const el = document.getElementById('diagResultado');
+  const fmt = n => '$' + Math.round(n||0).toLocaleString('es-AR');
+  const item = d.item;
+  const seller = d.seller;
+
+  // Nivel de reputación a color
+  const repColor = {'green': '#00e676', 'light_green': '#76ff03', 'yellow': '#FFD700', 'orange': '#ff9100', 'red': '#ff5252'};
+  const repLabel = {'green': '🟢 Verde', 'light_green': '🟡 Verde claro', 'yellow': '🟡 Amarillo', 'orange': '🟠 Naranja', 'red': '🔴 Rojo'};
+
+  // Card propia
+  const propiaHtml = `
+    <div class="kpi-card" style="padding:20px;margin-bottom:16px">
+      <div style="display:flex;align-items:flex-start;gap:16px;flex-wrap:wrap">
+        <div style="flex:1;min-width:200px">
+          <div style="font-size:11px;color:var(--muted);margin-bottom:4px">TU PUBLICACIÓN</div>
+          <div style="font-size:14px;font-weight:700;margin-bottom:12px">${item.title}</div>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px">
+            ${kpiSmall('💰 Precio', fmt(item.price))}
+            ${kpiSmall('📦 Vendidos', (item.sold_quantity||0).toLocaleString('es-AR'))}
+            ${kpiSmall('🖼 Fotos', item.pictures)}
+            ${kpiSmall('🎬 Video', item.video_id ? '✅ Sí' : '❌ No')}
+            ${kpiSmall('🚚 FULL', item.shipping?.logistic_type === 'fulfillment' ? '✅ Sí' : '❌ No')}
+            ${kpiSmall('📍 Posición propia', d.own_position ? `#${d.own_position} de ${d.own_total}` : 'N/D')}
+          </div>
+        </div>
+        <div style="min-width:160px">
+          <div style="font-size:11px;color:var(--muted);margin-bottom:4px">REPUTACIÓN</div>
+          <div style="font-size:20px;font-weight:700;color:${repColor[seller.level]||'var(--muted)'}">${repLabel[seller.level]||seller.level||'—'}</div>
+          <div style="font-size:12px;color:var(--muted);margin-top:4px">${(seller.transactions||0).toLocaleString('es-AR')} ventas · ${seller.positive ? (seller.positive*100).toFixed(0)+'% positivas' : ''}</div>
+          ${seller.power_seller ? `<div style="font-size:11px;color:#FFD700;margin-top:4px">⭐ ${seller.power_seller}</div>` : ''}
+        </div>
+      </div>
+    </div>`;
+
+  // Tabla de competidores
+  const rows = d.competitors.map((c, i) => {
+    const priceDiff = item.price > 0 ? ((c.price - item.price) / item.price * 100).toFixed(1) : null;
+    const priceDiffColor = priceDiff > 0 ? '#00e676' : '#ff5252';
+    const priceDiffStr = priceDiff ? `<span style="font-size:11px;color:${priceDiffColor};margin-left:4px">${priceDiff > 0 ? '+' : ''}${priceDiff}%</span>` : '';
+    return `<tr style="border-bottom:1px solid var(--border)">
+      <td style="padding:8px 10px;font-size:12px;font-weight:700;color:var(--muted)">#${i+1}</td>
+      <td style="padding:8px 10px;font-size:12px;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${c.title}">
+        <a href="https://articulo.mercadolibre.com.ar/${c.id.replace('MLA','MLA-')}" target="_blank" style="color:var(--text);text-decoration:none">${c.title}</a>
+      </td>
+      <td style="padding:8px 10px;text-align:right;font-size:13px;font-weight:700">${fmt(c.price)}${priceDiffStr}</td>
+      <td style="padding:8px 10px;text-align:right;font-size:12px">${(c.sold_quantity||0).toLocaleString('es-AR')}</td>
+      <td style="padding:8px 10px;text-align:center;font-size:12px">${c.shipping_full ? '<span style="color:#00bcd4;font-weight:600;font-size:11px">FULL</span>' : c.shipping_free ? '<span style="color:#00e676;font-size:11px">✓ Gratis</span>' : '—'}</td>
+      <td style="padding:8px 10px;text-align:center;font-size:12px;color:${repColor[c.seller_level]||'var(--muted)'}">${repLabel[c.seller_level]?.split(' ')[0] || '—'}</td>
+      <td style="padding:8px 10px;text-align:right;font-size:11px;color:var(--muted)">${(c.seller_transactions||0).toLocaleString('es-AR')}</td>
+    </tr>`;
+  }).join('');
+
+  const tablaHtml = `
+    <div class="kpi-card" style="padding:0;overflow:hidden">
+      <div style="padding:14px 18px;border-bottom:1px solid var(--border);font-size:13px;font-weight:600">
+        🏆 Top competidores en la categoría <span style="color:var(--muted);font-weight:400;font-size:12px">(${d.category_total.toLocaleString('es-AR')} publicaciones en total)</span>
+      </div>
+      <div style="overflow-x:auto">
+        <table style="width:100%;border-collapse:collapse">
+          <thead><tr style="background:var(--surface2)">
+            <th style="padding:8px 10px;font-size:11px;color:var(--muted);font-weight:600">#</th>
+            <th style="padding:8px 10px;font-size:11px;color:var(--muted);font-weight:600;text-align:left">Publicación</th>
+            <th style="padding:8px 10px;font-size:11px;color:var(--muted);font-weight:600;text-align:right">Precio</th>
+            <th style="padding:8px 10px;font-size:11px;color:var(--muted);font-weight:600;text-align:right">Vendidos</th>
+            <th style="padding:8px 10px;font-size:11px;color:var(--muted);font-weight:600;text-align:center">Envío</th>
+            <th style="padding:8px 10px;font-size:11px;color:var(--muted);font-weight:600;text-align:center">Reputación</th>
+            <th style="padding:8px 10px;font-size:11px;color:var(--muted);font-weight:600;text-align:right">Ventas seller</th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    </div>`;
+
+  el.innerHTML = propiaHtml + tablaHtml;
+}
+
+function kpiSmall(label, value) {
+  return `<div style="background:var(--surface2);border-radius:8px;padding:8px 12px">
+    <div style="font-size:10px;color:var(--muted)">${label}</div>
+    <div style="font-size:14px;font-weight:700;margin-top:2px">${value}</div>
+  </div>`;
+}
+
 // ── COMPETENCIA TABS ──────────────────────────────────────────────────────────
 let _compActiveTab = 'categorias';
 let _catVentasLoaded = false;
 
 function switchCompTab(tab) {
   _compActiveTab = tab;
-  ['categorias','mercado'].forEach(t => {
+  ['categorias','mercado','diagnostico'].forEach(t => {
     const el  = document.getElementById(`comp-tab-${t}`);
     const btn = document.getElementById(`tab-comp-${t}`);
     if (el)  el.style.display  = t === tab ? '' : 'none';
@@ -6833,7 +6950,8 @@ function switchCompTab(tab) {
     }
   });
   if (tab === 'categorias' && !_catVentasLoaded) loadCatVentas();
-  if (tab === 'mercado')    loadCompetencia();
+  if (tab === 'mercado')     loadCompetencia();
+  if (tab === 'diagnostico') loadDiagnostico();
 }
 
 async function loadCatVentas() {
