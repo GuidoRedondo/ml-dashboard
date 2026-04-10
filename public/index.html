@@ -2452,6 +2452,16 @@ async function loadSimulador() {
     });
   });
 
+  // Cargar costos guardados para prellenar CMV
+  const range = getDateRange();
+  const costsData = await apiCall('GET', `/api/reporte/items-vendidos?client_id=${client.id}&date_from=${range.date_from}&date_to=${range.date_to}`).catch(() => null);
+  const costsMap = {};
+  (costsData?.items || []).forEach(i => { if (i.costo_unit) costsMap[i.mla_id] = parseFloat(i.costo_unit)||0; });
+
+  // Agregar costo_unit a cada producto
+  Object.values(allProducts).forEach(p => { p.costo_unit = costsMap[p.id] || 0; });
+  pubItems.forEach(p => { p.costo_unit = costsMap[p.id] || 0; });
+
   const allItems = [...sorted, ...pubItems];
   window._simItems = allItems;
   window._simClient = client;
@@ -2575,6 +2585,18 @@ async function onSimMLAChange(id) {
   if (!item || !client) return;
 
   document.getElementById('simMLAInfo').textContent = item.title || '';
+
+  // CMV desde la DB si está cargado
+  const cmvInput = document.getElementById('simCMV');
+  if (item.costo_unit && item.costo_unit > 0) {
+    cmvInput.value = item.costo_unit;
+    cmvInput.style.borderColor = '#00e676';
+    cmvInput.title = 'Costo cargado desde la base de datos';
+  } else {
+    cmvInput.value = 0;
+    cmvInput.style.borderColor = '';
+    cmvInput.title = '';
+  }
 
   // Comisión promedio histórica del ítem
   const comisionInfo = document.getElementById('simComisionInfo');
