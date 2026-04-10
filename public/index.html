@@ -701,6 +701,7 @@ tbody td {
         <button id="vf-flex"     onclick="setVentasMode('flex')"     class="vf-btn">⚡ Flex</button>
         <button id="vf-correo"   onclick="setVentasMode('correo')"   class="vf-btn">📮 Correo / Colecta</button>
         <button id="vf-coordinar" onclick="setVentasMode('coordinar')" class="vf-btn">🤝 A coordinar</button>
+        <button id="vf-punto"    onclick="setVentasMode('punto')"    class="vf-btn">📍 Punto de entrega</button>
       </div>
       <div id="ventasContent"><div style="color:var(--muted);font-size:13px;padding:20px;text-align:center">Sincronizá primero para ver los datos</div></div>
     </div>
@@ -3099,10 +3100,28 @@ function loadVentas() {
     return;
   }
 
-  // Merge orders from all accounts, re-sort by date desc
+  // Construir mapa de CMV por MLA desde by_product
+  const costoMap = {};
+  connected.forEach(acc => {
+    (acc.data.rentabilidad?.by_product || []).forEach(p => {
+      if (p.costo_unit) costoMap[p.id] = parseFloat(p.costo_unit);
+    });
+  });
+  // También desde product_costs si están en state
+  if (window._ventasCostsMap) Object.assign(costoMap, window._ventasCostsMap);
+
+  // Merge orders, agregar CMV y utilidad por orden
   const allOrders = [];
   connected.forEach(acc => {
-    (acc.data.orders_detail || []).forEach(o => allOrders.push({ ...o, _account: acc.name }));
+    (acc.data.orders_detail || []).forEach(o => {
+      const cmvOrden = (o.productos || []).reduce((s, p) => {
+        const c = costoMap[p.id];
+        return s + (c ? c * (p.quantity || 1) : 0);
+      }, 0);
+      const hasCMV = cmvOrden > 0;
+      const utilidad = hasCMV ? o.neto - cmvOrden : null;
+      allOrders.push({ ...o, _account: acc.name, cmv: cmvOrden, hasCMV, utilidad });
+    });
   });
   allOrders.sort((a,b) => new Date(b.date) - new Date(a.date));
   window._ventasData = allOrders;
@@ -3112,7 +3131,7 @@ function loadVentas() {
 function setVentasMode(mode) {
   window._ventasMode = mode;
   window._ventasPage = 0;
-  ['all','FULL','flex','correo','coordinar'].forEach(m => {
+  ['all','FULL','flex','correo','coordinar','punto'].forEach(m => {
     const btn = document.getElementById('vf-'+m);
     if (btn) btn.classList.toggle('vf-active', m === mode);
   });
@@ -3131,6 +3150,7 @@ function filterVentas() {
     if (mode === 'flex')      return m.includes('flex');
     if (mode === 'correo')    return m.includes('correo') || m.includes('colecta') || m.includes('collect') || m.includes('xd');
     if (mode === 'coordinar') return m.includes('coordinar') || m.includes('sin envío') || m.includes('sin datos') || m.includes('retiro') || m.includes('pickup');
+    if (mode === 'punto')     return m.includes('punto') || m.includes('drop') || m.includes('entrega');
     return true;
   };
 
@@ -3208,6 +3228,8 @@ function renderVentas(orders) {
         <td style="padding:8px 10px;text-align:right;font-size:12px;color:${resEnvio>=0?'#00e676':'#ff5252'}" title="Cobrado al comprador: ${fmtM(o.envio_comprador)} / Pagado: ${fmtM(o.envio_vendedor)}">${fmtM(resEnvio)}</td>
         <td style="padding:8px 10px;text-align:right;font-size:12px;color:${parseFloat(o.neto)>=0?'#00e676':'#ff5252'};font-weight:700">${fmtM(o.neto)}</td>
         <td style="padding:8px 10px;text-align:right;font-size:12px;font-weight:700;color:${pctColor(o.pct_recibido)}">${o.pct_recibido}%</td>
+        <td style="padding:8px 10px;text-align:right;font-size:12px;font-weight:700;color:#d97706">${o.hasCMV ? fmtM(-o.cmv) : '<span style="color:var(--muted)">—</span>'}</td>
+        <td style="padding:8px 10px;text-align:right;font-size:12px;font-weight:700;color:${o.utilidad!=null?(o.utilidad>=0?'#00e676':'#ff5252'):'var(--muted)'}">${o.utilidad!=null ? fmtM(o.utilidad) : '—'}</td>
         <td style="padding:8px 10px;text-align:right;font-size:11px;color:var(--muted)">${o.mode||'—'}</td>
       </tr>`;
   }).join('');
@@ -3227,7 +3249,7 @@ function renderVentas(orders) {
         <table style="width:100%;border-collapse:collapse">
           <thead>
             <tr style="border-bottom:2px solid rgba(255,255,255,.1)">
-              ${['Fecha','# Orden','Producto','Facturación','Comisión','Impuestos','Res. Envío','Neto','% Neto','Modo envío'].map(h => `<th ${thStyle(h)}>${h}</th>`).join('')}
+              ${['Fecha','# Orden','Producto','Facturación','Comisión','Impuestos','Res. Envío','Neto','% Neto','CMV','Utilidad','Modo envío'].map(h => `<th ${thStyle(h)}>${h}</th>`).join('')}
             </tr>
           </thead>
           <tbody>${rows}</tbody>
@@ -5707,6 +5729,8 @@ function renderPyL(pyl) {
           ['Margen %', fmtP(pyl.margenes.margen), pyl.utilidad_final>=0?'#16a34a':'#dc2626'],
           ['Rentabilidad %', pyl.margenes.rentabilidad != null ? fmtP(pyl.margenes.rentabilidad) : '—', pyl.margenes.rentabilidad>0?'#16a34a':'#dc2626'],
           ['CMV', fmtM(pyl.cmv.total), '#d97706'],
+          ['Contribución Marginal', fmtM(pyl.ingresos.facturacion - pyl.egresos_ml.comision - pyl.egresos_ml.envio_vendedor - pyl.egresos_ml.publicidad - pyl.cmv.total), (pyl.ingresos.facturacion - pyl.egresos_ml.comision - pyl.egresos_ml.envio_vendedor - pyl.egresos_ml.publicidad - pyl.cmv.total)>=0?'#16a34a':'#dc2626'],
+          ['IVA a pagar', fmtM(Math.max(0, pyl.ingresos.facturacion/1.21*0.21 - (pyl.egresos_ml.comision + pyl.egresos_ml.envio_vendedor)/1.21*0.21 - pyl.cmv.total/1.21*0.21)), '#6366f1'],
           ['Gastos Fijos', fmtM(pyl.gastos_fijos.total), '#6366f1'],
           ['Utilidad Final', fmtM(pyl.utilidad_final), pyl.utilidad_final>=0?'#16a34a':'#dc2626'],
         ].map(([l,v,c]) => `<div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px 14px">
