@@ -898,7 +898,7 @@ tbody td {
       </div>
       <!-- Tab: Diagnóstico -->
       <div id="comp-tab-diagnostico" style="display:none">
-        <div id="diagContent"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Seleccioná un MLA para analizar</div></div>
+        <div id="compDiagContent"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Seleccioná un MLA para analizar</div></div>
       </div>
     </div>
 
@@ -6804,7 +6804,7 @@ function sortEscalabilidad(col) {
 
 // ── DIAGNÓSTICO COMPETIDORES ──────────────────────────────────────────────────
 async function loadDiagnostico() {
-  const el = document.getElementById('diagContent');
+  const el = document.getElementById('compDiagContent');
   if (!el) return;
   const client = getActiveClient();
   if (!client) { el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">Seleccioná una cuenta</div>'; return; }
@@ -7589,4 +7589,3 @@ window.addEventListener('DOMContentLoaded', () => {
 </script>
 </body>
 </html>
-  
