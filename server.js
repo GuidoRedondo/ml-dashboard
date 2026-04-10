@@ -2420,6 +2420,90 @@ app.get('/api/item-fees', requireAuth, async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
+// ── DIAGNÓSTICO COMPETIDORES ──────────────────────────────────────────────────
+app.get('/api/competencia/diagnostico', requireAuth, async (req, res) => {
+  try {
+    const { item_id, client_id } = req.query;
+    const token = await getClientToken(parseInt(client_id));
+    if (!token) return res.status(403).json({ error: 'Sin token' });
+    const h = { 'Authorization': `Bearer ${token}` };
+
+    // 1. Datos del ítem propio
+    const item = await fetch(`${ML_API}/items/${item_id}`, { headers: h }).then(r => r.json());
+    if (!item.id) return res.status(404).json({ error: 'Ítem no encontrado' });
+
+    const categoryId = item.category_id;
+    const sellerId   = item.seller_id;
+
+    // 2. Top resultados de la categoría (búsqueda por seller para ver posición propia)
+    const searchUrl = `${ML_API}/sites/MLA/search?seller_id=${sellerId}&category=${categoryId}&limit=50`;
+    const ownSearch = await fetch(searchUrl, { headers: h }).then(r => r.json());
+    const ownResults = ownSearch.results || [];
+    const ownPosition = ownResults.findIndex(r => r.id === item_id);
+
+    // 3. Top competidores en la categoría (búsqueda general)
+    const catSearchUrl = `${ML_API}/sites/MLA/search?category=${categoryId}&limit=20&sort=relevance`;
+    const catSearch = await fetch(catSearchUrl, { headers: h }).then(r => r.json());
+    const competitors = (catSearch.results || []).filter(r => r.seller_id !== sellerId).slice(0, 10);
+
+    // 4. Datos del seller propio
+    const sellerData = await fetch(`${ML_API}/users/${sellerId}`, { headers: h }).then(r => r.json());
+
+    // 5. Datos de sellers competidores (en batch)
+    const sellerIds = [...new Set(competitors.map(c => c.seller?.id || c.seller_id).filter(Boolean))];
+    const sellerDetails = {};
+    await Promise.all(sellerIds.slice(0, 5).map(async sid => {
+      try {
+        const s = await fetch(`${ML_API}/users/${sid}`, { headers: h }).then(r => r.json());
+        sellerDetails[sid] = s;
+      } catch(e) {}
+    }));
+
+    res.json({
+      item: {
+        id: item.id,
+        title: item.title,
+        price: item.price,
+        sold_quantity: item.sold_quantity,
+        available_quantity: item.available_quantity,
+        pictures: item.pictures?.length || 0,
+        video_id: item.video_id,
+        condition: item.condition,
+        listing_type: item.listing_type_id,
+        category_id: categoryId,
+        shipping: item.shipping,
+      },
+      seller: {
+        id: sellerId,
+        level: sellerData.seller_reputation?.level_id,
+        transactions: sellerData.seller_reputation?.transactions?.completed,
+        positive: sellerData.seller_reputation?.transactions?.ratings?.positive,
+        power_seller: sellerData.seller_reputation?.power_seller_status,
+      },
+      own_position: ownPosition >= 0 ? ownPosition + 1 : null,
+      own_total: ownResults.length,
+      competitors: competitors.map(c => {
+        const sid = c.seller?.id || c.seller_id;
+        const sd = sellerDetails[sid] || {};
+        return {
+          id: c.id,
+          title: c.title,
+          price: c.price,
+          sold_quantity: c.sold_quantity || 0,
+          pictures: c.thumbnail ? 1 : 0,
+          listing_type: c.listing_type_id,
+          shipping_free: c.shipping?.free_shipping,
+          shipping_full: c.shipping?.logistic_type === 'fulfillment',
+          seller_id: sid,
+          seller_level: sd.seller_reputation?.level_id,
+          seller_transactions: sd.seller_reputation?.transactions?.completed,
+        };
+      }),
+      category_total: catSearch.paging?.total || 0,
+    });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
 app.get('/api/debug/shipping', requireAuth, async (req, res) => {
   try {
     const { item_id, client_id } = req.query;
