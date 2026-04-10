@@ -2490,6 +2490,11 @@ function renderSimulador(items, client) {
               style="padding:4px 12px;border-radius:6px;border:1px solid var(--border);background:${f==='Todos'?'var(--accent)':'var(--surface2)'};color:var(--text);font-size:12px;cursor:pointer">${f}</button>`).join('')}
           </div>
 
+          <!-- Buscador -->
+          <input id="simBuscar" type="text" placeholder="Buscar por MLA, SKU o título..."
+            oninput="filterSimSearch(this.value)"
+            style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:12px;margin-bottom:8px;box-sizing:border-box;outline:none">
+
           <select id="simMLA" onchange="onSimMLAChange(this.value)"
             style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:12px;margin-bottom:4px">
             <option value="">— Seleccioná una publicación —</option>
@@ -2563,6 +2568,22 @@ function simInput(id, label, suffix, type, val) {
   </div>`;
 }
 
+function filterSimSearch(val) {
+  const q = val.toLowerCase().trim();
+  const sel = document.getElementById('simMLA');
+  if (!sel) return;
+  const abcActivo = document.querySelector('[id^="simABC"][style*="var(--accent)"]')?.id?.replace('simABC','') || 'Todos';
+  Array.from(sel.options).forEach(opt => {
+    if (!opt.value) return;
+    const item = (window._simItems || []).find(p => p.id === opt.value);
+    const matchABC = abcActivo === 'Todos' || opt.dataset.abc === abcActivo;
+    const matchQ = !q || opt.value.toLowerCase().includes(q) 
+      || (opt.text || '').toLowerCase().includes(q)
+      || ((item?.sku || '')).toLowerCase().includes(q);
+    opt.style.display = matchABC && matchQ ? '' : 'none';
+  });
+}
+
 function filterSimABC(f) {
   ['Todos','A','B','C','—'].forEach(x => {
     const b = document.getElementById('simABC' + x);
@@ -2604,9 +2625,14 @@ async function onSimMLAChange(id) {
   comisionInfo.style.display = '';
 
   if (item.revenue > 0 && item.comision > 0) {
-    const pctComision = (item.comision / item.revenue * 100).toFixed(1);
+    // Descontar los cargos fijos del total de comisión para obtener solo el % variable
+    // El cargo fijo está incluido en item.comision — lo estimamos según precio promedio y unidades
+    const precioPromedio = item.units > 0 ? item.revenue / item.units : 0;
+    const cargoFijoEstimado = getCargoFijo(precioPromedio) * (item.units || 1);
+    const comisionVariable = Math.max(0, item.comision - cargoFijoEstimado);
+    const pctComision = (comisionVariable / item.revenue * 100).toFixed(1);
     document.getElementById('simComision').value = pctComision;
-    comisionDetalle.innerHTML = `<span style="color:#00e676">Calculada del historial de ventas: ${pctComision}%</span>`;
+    comisionDetalle.innerHTML = `<span style="color:#00e676">Calculada del historial (sin cargo fijo): ${pctComision}%</span>`;
   } else {
     document.getElementById('simComision').value = '13';
     comisionDetalle.innerHTML = `<span style="color:var(--muted)">Sin historial — usando 13% por defecto</span>`;
