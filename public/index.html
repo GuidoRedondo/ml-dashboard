@@ -6900,7 +6900,7 @@ function renderDiagnostico(d) {
             ${kpiSmall('🖼 Fotos', item.pictures)}
             ${kpiSmall('🎬 Video', item.video_id ? '✅ Sí' : '❌ No')}
             ${kpiSmall('🚚 FULL', item.shipping?.logistic_type === 'fulfillment' ? '✅ Sí' : '❌ No')}
-            ${kpiSmall('📍 Posición propia', d.own_position ? `#${d.own_position} de ${d.own_total}` : 'N/D')}
+            ${kpiSmall('📍 Posición en búsqueda', d.own_position ? `#${d.own_position} de ${d.own_total} resultados` : 'No aparece en top 50')}
           </div>
         </div>
         <div style="min-width:160px">
@@ -6933,7 +6933,7 @@ function renderDiagnostico(d) {
   const tablaHtml = `
     <div class="kpi-card" style="padding:0;overflow:hidden">
       <div style="padding:14px 18px;border-bottom:1px solid var(--border);font-size:13px;font-weight:600">
-        🏆 Top competidores en la categoría <span style="color:var(--muted);font-weight:400;font-size:12px">(${d.category_total.toLocaleString('es-AR')} publicaciones en total)</span>
+        🏆 Competidores en búsqueda <span style="color:var(--muted);font-weight:400;font-size:12px">(${d.category_total.toLocaleString('es-AR')} resultados para "${d.item.title.split(' ').slice(0,4).join(' ')}...")</span>
       </div>
       <div style="overflow-x:auto">
         <table style="width:100%;border-collapse:collapse">
