@@ -6803,7 +6803,7 @@ function sortEscalabilidad(col) {
 
 
 // ── DIAGNÓSTICO COMPETIDORES ──────────────────────────────────────────────────
-function loadDiagnostico() {
+async function loadDiagnostico() {
   const el = document.getElementById('diagContent');
   if (!el) return;
   const client = getActiveClient();
@@ -6812,14 +6812,41 @@ function loadDiagnostico() {
   const connected = state.accounts.filter(a => a.data);
   if (!connected.length) { el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">Sincronizá primero</div>'; return; }
 
-  // Armar lista de publicaciones propias
-  const items = [];
+  // Armar lista de publicaciones — usar top_items, rentabilidad o items_full
+  const itemsMap = {};
   connected.forEach(acc => {
-    (acc.data.rentabilidad?.by_product || []).forEach(p => {
-      if (!items.find(i => i.id === p.id)) items.push({ id: p.id, title: p.title, revenue: p.revenue });
+    // Desde top_items del dashboard
+    (acc.data.top_items || []).forEach(p => {
+      if (!itemsMap[p.id]) itemsMap[p.id] = { id: p.id, title: p.title, revenue: p.revenue || 0 };
     });
+    // Desde rentabilidad
+    (acc.data.rentabilidad?.by_product || []).forEach(p => {
+      if (!itemsMap[p.id]) itemsMap[p.id] = { id: p.id, title: p.title, revenue: p.revenue || 0 };
+    });
+    // Desde items_full si está disponible
+    if (acc.data.items_full) {
+      acc.data.items_full.forEach(p => {
+        if (!itemsMap[p.id]) itemsMap[p.id] = { id: p.id, title: p.title, revenue: p.revenue || 0 };
+      });
+    }
   });
-  items.sort((a,b) => b.revenue - a.revenue);
+
+  const items = Object.values(itemsMap).sort((a,b) => b.revenue - a.revenue);
+
+  // Si no hay items, cargar desde API
+  if (!items.length) {
+    el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">⏳ Cargando publicaciones...</div>';
+    try {
+      const range = getDateRange();
+      const res = await apiCall('GET', `/api/items-full?client_id=${client.id}&date_from=${range.date_from}&date_to=${range.date_to}`);
+      (res?.items || []).forEach(p => items.push({ id: p.id, title: p.title, revenue: p.revenue || 0 }));
+      items.sort((a,b) => b.revenue - a.revenue);
+    } catch(e) {}
+    if (!items.length) {
+      el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Sin publicaciones — sincronizá primero</div>';
+      return;
+    }
+  }
 
   const opciones = items.map(p => `<option value="${p.id}">${p.id} · ${(p.title||'').substring(0,60)}</option>`).join('');
 
@@ -7562,3 +7589,4 @@ window.addEventListener('DOMContentLoaded', () => {
 </script>
 </body>
 </html>
+  
