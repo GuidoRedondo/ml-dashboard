@@ -2510,6 +2510,10 @@ function renderSimulador(items, client) {
             ${simInput('simCMV',       'Costo del producto (CMV)', '$', 'number', '0')}
             ${simInput('simIIBB',      'IIBB %', '%', 'number', '3')}
             ${simInput('simTACOS',     'TACOS esperado %', '%', 'number', '0')}
+            ${simInput('simIIBB',      'IIBB %', '%', 'number', '3')}
+            ${simInput('simDebCred',   'Débito/Crédito %', '%', 'number', '1.2')}
+            ${simInput('simIVAVentas', 'IVA ventas %', '%', 'number', '21')}
+            ${simInput('simIVACMV',    'IVA compras CMV %', '%', 'number', '21')}
             ${simInput('simExtraCost', 'Otros costos por unidad', '$', 'number', '0')}
           </div>
         </div>
@@ -2549,7 +2553,7 @@ function renderSimulador(items, client) {
     </div>`;
 
   // Listeners para recalcular en tiempo real
-  ['simCMV','simIIBB','simTACOS','simExtraCost','simMargen','simEnvio','simComision'].forEach(id => {
+  ['simCMV','simIIBB','simDebCred','simIVAVentas','simIVACMV','simTACOS','simExtraCost','simMargen','simEnvio','simComision'].forEach(id => {
     const el2 = document.getElementById(id);
     if (el2) el2.addEventListener('input', () => {
       if (document.getElementById('simResultados').querySelector('.sim-precio')) calcularSimulador();
@@ -2569,69 +2573,23 @@ function simInput(id, label, suffix, type, val) {
 }
 
 function selectSimEscenario(cardEl, pct) {
-  // Highlight la card seleccionada
   document.querySelectorAll('.sim-esc-card').forEach(c => {
-    c.style.border = '2px solid transparent';
+    c.style.border = c.dataset.pct == '0' ? '2px solid #ff5252' : '2px solid transparent';
   });
-  cardEl.style.border = '2px solid var(--accent)';
+  cardEl.style.border = pct == 0 ? '2px solid #ff5252' : '2px solid var(--accent)';
 
-  // Recalcular el desglose con el margen seleccionado
-  const get = id => parseFloat(document.getElementById(id)?.value) || 0;
-  const cmv        = get('simCMV');
-  const iibb       = get('simIIBB') / 100;
-  const tacos      = get('simTACOS') / 100;
-  const extra      = get('simExtraCost');
-  const envio      = get('simEnvio');
-  const comisionPct= get('simComision') / 100;
-  const fmt  = n => '$' + Math.round(n).toLocaleString('es-AR');
-  const fmtP = n => (n * 100).toFixed(1) + '%';
-
-  function calcPrecio(margen) {
-    const divisor = 1 - margen - comisionPct - iibb - tacos;
-    if (divisor <= 0) return null;
-    let precio = (cmv + envio + extra) / divisor;
-    for (let i = 0; i < 10; i++) {
-      const cf = getCargoFijo(precio);
-      const nuevo = (cmv + envio + extra + cf) / divisor;
-      if (Math.abs(nuevo - precio) < 1) { precio = nuevo; break; }
-      precio = nuevo;
-    }
-    return precio;
-  }
-
-  const precio = calcPrecio(pct);
+  if (!window._simCalcPrecio || !window._simRenderDesglose) return;
+  const precio = window._simCalcPrecio(pct);
   if (!precio) return;
-  const cf = getCargoFijo(precio);
-  const comisionMonto = precio * comisionPct;
-  const iibbMonto     = precio * iibb;
-  const tacosMonto    = precio * tacos;
-  const utilidad      = precio - comisionMonto - iibbMonto - tacosMonto - cmv - envio - extra - cf;
 
-  const desglose = [
-    { label: 'Comisión ML — % (' + fmtP(comisionPct) + ')', monto: comisionMonto, color: '#ff9100' },
-    { label: 'Comisión ML — Cargo fijo',                     monto: cf,            color: '#ff9100' },
-    { label: 'IIBB',          monto: iibbMonto,  color: '#ff9100' },
-    { label: 'Inversión Ads', monto: tacosMonto, color: '#ff9100' },
-    { label: 'Costo envío',   monto: envio,      color: '#ff9100' },
-    { label: 'CMV',           monto: cmv,        color: '#ff5252' },
-    { label: 'Otros costos',  monto: extra,      color: '#ff5252' },
-    { label: 'Utilidad neta', monto: utilidad,   color: '#00e676' },
-  ].filter(d => d.monto > 0.5);
-
-  const desgloseHtml = desglose.map(d => `
-    <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--border)">
-      <span style="font-size:13px;color:var(--muted)">${d.label}</span>
-      <div style="text-align:right">
-        <span style="font-size:13px;font-weight:600;color:${d.color}">${fmt(d.monto)}</span>
-        <span style="font-size:11px;color:var(--muted);margin-left:6px">${fmtP(d.monto / precio)}</span>
-      </div>
-    </div>`).join('');
-
+  const fmt  = window._simFmt;
+  const fmtP = window._simFmtP;
   const desgloseEl = document.querySelector('.kpi-card.sim-precio');
   if (desgloseEl) desgloseEl.innerHTML = `
     <div class="kpi-label" style="margin-bottom:14px">📊 Desglose — precio ${fmt(precio)} (margen ${fmtP(pct)})</div>
-    ${desgloseHtml}`;
+    ${window._simRenderDesglose(precio, pct)}`;
 }
+
 
 function filterSimSearch(val) {
   const q = val.toLowerCase().trim();
@@ -2793,6 +2751,10 @@ function calcularSimulador() {
   const get = id => parseFloat(document.getElementById(id)?.value) || 0;
   const cmv        = get('simCMV');
   const iibb       = get('simIIBB') / 100;
+  const debCred    = get('simDebCred') / 100;
+  const ivaVentas  = get('simIVAVentas') / 100;
+  const ivaCMV     = get('simIVACMV') / 100;
+  const iva21      = 0.21;
   const tacos      = get('simTACOS') / 100;
   const extra      = get('simExtraCost');
   const margenObj  = get('simMargen') / 100;
@@ -2801,18 +2763,56 @@ function calcularSimulador() {
 
   if (cmv <= 0 && envio <= 0) return;
 
-  // Calcula precio con iteración para incluir cargo fijo (que depende del precio)
+  // IVA compras acreditable
+  function calcIVACompras(precio) {
+    const ivaEnCMV      = cmv      / (1 + ivaCMV) * ivaCMV;
+    const ivaEnComision = (precio * comisionPct + getCargoFijo(precio)) / (1 + iva21) * iva21;
+    const ivaEnEnvio    = envio / (1 + iva21) * iva21;
+    return ivaEnCMV + ivaEnComision + ivaEnEnvio;
+  }
+
+  // IVA ventas a pagar
+  function calcIVAVentas(precio) {
+    return precio / (1 + ivaVentas) * ivaVentas;
+  }
+
+  // IVA neto a pagar
+  function calcIVANeto(precio) {
+    return Math.max(0, calcIVAVentas(precio) - calcIVACompras(precio));
+  }
+
+  // Débito/Crédito sobre precio de venta
+  function calcDebCred(precio) {
+    return precio * debCred;
+  }
+
+  // Calcula precio con iteración — todos los impuestos dependen del precio
   function calcPrecio(margen) {
-    const divisor = 1 - margen - comisionPct - iibb - tacos;
+    const divisor = 1 - margen - comisionPct - iibb - tacos - debCred;
     if (divisor <= 0) return null;
     let precio = (cmv + envio + extra) / divisor;
-    for (let i = 0; i < 10; i++) {
-      const cf = getCargoFijo(precio);
-      const nuevo = (cmv + envio + extra + cf) / divisor;
+    for (let i = 0; i < 15; i++) {
+      const cf      = getCargoFijo(precio);
+      const ivaNet  = calcIVANeto(precio);
+      const nuevo   = (cmv + envio + extra + cf + ivaNet) / divisor;
       if (Math.abs(nuevo - precio) < 1) { precio = nuevo; break; }
       precio = nuevo;
     }
     return precio;
+  }
+
+  // Función para construir desglose de un precio dado
+  function buildDesglose(precio, pct) {
+    const cf         = getCargoFijo(precio);
+    const comisionM  = precio * comisionPct;
+    const iibbM      = precio * iibb;
+    const tacosM     = precio * tacos;
+    const debCredM   = calcDebCred(precio);
+    const ivaVentasM = calcIVAVentas(precio);
+    const ivaComprasM= calcIVACompras(precio);
+    const ivaNetoM   = Math.max(0, ivaVentasM - ivaComprasM);
+    const utilidad   = precio - comisionM - cf - iibbM - tacosM - debCredM - ivaNetoM - cmv - envio - extra;
+    return { cf, comisionM, iibbM, tacosM, debCredM, ivaVentasM, ivaComprasM, ivaNetoM, utilidad };
   }
 
   const precioBase = calcPrecio(margenObj);
@@ -2821,16 +2821,10 @@ function calcularSimulador() {
     return;
   }
 
-  const cargoFijoBase = getCargoFijo(precioBase);
-  const costoTotal    = cmv + envio + extra + cargoFijoBase;
-
   const fmt  = n => '$' + Math.round(n).toLocaleString('es-AR');
   const fmtP = n => (n * 100).toFixed(1) + '%';
-
-  // Precio piso (margen = 0)
   const precioPiso = calcPrecio(0);
 
-  // Escenarios
   const escenarios = [
     { label: '📉 Mínimo',   pct: Math.max(0, margenObj - 0.05) },
     { label: '🎯 Objetivo', pct: margenObj },
@@ -2840,42 +2834,48 @@ function calcularSimulador() {
   const escHtml = escenarios.map(e => {
     const precio = calcPrecio(e.pct);
     if (!precio) return '';
-    const cf = getCargoFijo(precio);
-    const utilidad = precio - precio*comisionPct - precio*iibb - precio*tacos - cmv - envio - extra - cf;
+    const d = buildDesglose(precio, e.pct);
     const isObj = e.pct === margenObj;
     return `<div class="kpi-card sim-esc-card" data-pct="${e.pct}" onclick="selectSimEscenario(this, ${e.pct})"
       style="padding:16px;text-align:center;cursor:pointer;transition:border .15s;${isObj?'border:2px solid var(--accent)':'border:2px solid transparent'}">
       <div style="font-size:12px;color:var(--muted);margin-bottom:4px">${e.label} — ${fmtP(e.pct)}</div>
       <div style="font-size:26px;font-weight:800;font-family:var(--font-b);color:var(--accent)">${fmt(precio)}</div>
-      <div style="font-size:12px;color:#00e676;margin-top:4px">Utilidad: ${fmt(utilidad)} / u.</div>
+      <div style="font-size:12px;color:#00e676;margin-top:4px">Utilidad: ${fmt(d.utilidad)} / u.</div>
     </div>`;
   }).join('');
 
-  // Desglose precio objetivo
-  const comisionMonto = precioBase * comisionPct;
-  const iibbMonto     = precioBase * iibb;
-  const tacosMonto    = precioBase * tacos;
-  const utilidad      = precioBase - comisionMonto - iibbMonto - tacosMonto - cmv - envio - extra - cargoFijoBase;
+  function renderDesglose(precio, pct) {
+    const d = buildDesglose(precio, pct);
+    const items = [
+      { label: 'Comisión ML — % (' + fmtP(comisionPct) + ')', monto: d.comisionM,  color: '#ff9100' },
+      { label: 'Comisión ML — Cargo fijo',                     monto: d.cf,         color: '#ff9100' },
+      { label: 'IIBB (' + fmtP(iibb) + ')',                    monto: d.iibbM,      color: '#ff9100' },
+      { label: 'Débito/Crédito (' + fmtP(debCred) + ')',       monto: d.debCredM,   color: '#ff9100' },
+      { label: 'Inversión Ads (TACOS)',                         monto: d.tacosM,     color: '#ff9100' },
+      { label: 'Costo envío',                                   monto: envio,        color: '#ff9100' },
+      { label: 'CMV',                                           monto: cmv,          color: '#ff5252' },
+      { label: 'Otros costos',                                  monto: extra,        color: '#ff5252' },
+      { label: '🧾 IVA Ventas (' + fmtP(ivaVentas) + ')',      monto: d.ivaVentasM, color: '#6366f1' },
+      { label: '🧾 IVA Compras (acreditable)',                  monto: -d.ivaComprasM, color: '#00e676' },
+      { label: '🧾 IVA Neto a pagar',                          monto: d.ivaNetoM,   color: '#6366f1' },
+      { label: '✅ Utilidad neta',                              monto: d.utilidad,   color: '#00e676' },
+    ].filter(x => Math.abs(x.monto) > 0.5);
 
-  const desglose = [
-    { label: 'Comisión ML — % (' + fmtP(comisionPct) + ')', monto: comisionMonto, color: '#ff9100' },
-    { label: 'Comisión ML — Cargo fijo',                     monto: cargoFijoBase, color: '#ff9100' },
-    { label: 'IIBB',           monto: iibbMonto,     color: '#ff9100' },
-    { label: 'Inversión Ads',  monto: tacosMonto,    color: '#ff9100' },
-    { label: 'Costo envío',    monto: envio,         color: '#ff9100' },
-    { label: 'CMV',            monto: cmv,           color: '#ff5252' },
-    { label: 'Otros costos',   monto: extra,         color: '#ff5252' },
-    { label: 'Utilidad neta',  monto: utilidad,      color: '#00e676' },
-  ].filter(d => d.monto > 0.5);
+    return items.map(x => `
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--border)">
+        <span style="font-size:13px;color:var(--muted)">${x.label}</span>
+        <div style="text-align:right">
+          <span style="font-size:13px;font-weight:600;color:${x.color}">${x.monto < 0 ? '-' : ''}${fmt(Math.abs(x.monto))}</span>
+          <span style="font-size:11px;color:var(--muted);margin-left:6px">${fmtP(Math.abs(x.monto) / precio)}</span>
+        </div>
+      </div>`).join('');
+  }
 
-  const desgloseHtml = desglose.map(d => `
-    <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--border)">
-      <span style="font-size:13px;color:var(--muted)">${d.label}</span>
-      <div style="text-align:right">
-        <span style="font-size:13px;font-weight:600;color:${d.color}">${fmt(d.monto)}</span>
-        <span style="font-size:11px;color:var(--muted);margin-left:6px">${fmtP(d.monto / precioBase)}</span>
-      </div>
-    </div>`).join('');
+  // Guardar funciones para selectSimEscenario
+  window._simCalcPrecio   = calcPrecio;
+  window._simRenderDesglose = renderDesglose;
+  window._simFmt  = fmt;
+  window._simFmtP = fmtP;
 
   document.getElementById('simResultados').innerHTML = `
     ${precioPiso ? `<div class="kpi-card sim-esc-card" data-pct="0" onclick="selectSimEscenario(this, 0)"
@@ -2888,10 +2888,11 @@ function calcularSimulador() {
     </div>` : ''}
     <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:16px">${escHtml}</div>
     <div class="kpi-card sim-precio" style="padding:20px">
-      <div class="kpi-label" style="margin-bottom:14px">📊 Desglose — precio ${fmt(precioBase)}</div>
-      ${desgloseHtml}
+      <div class="kpi-label" style="margin-bottom:14px">📊 Desglose — precio ${fmt(precioBase)} (margen ${fmtP(margenObj)})</div>
+      ${renderDesglose(precioBase, margenObj)}
     </div>`;
 }
+
 
 
 function loadRentabilidad() {
