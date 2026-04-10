@@ -707,10 +707,15 @@ tbody td {
 
     <!-- RENTABILIDAD -->
     <div class="page" id="page-rentabilidad">
-      <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px;flex-wrap:wrap">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap">
         <h2 style="margin:0;font-family:var(--font-b);flex:1">📊 Rentabilidad</h2>
+        <div style="display:flex;gap:6px">
+          <button id="rentTabAnalisis" onclick="switchRentTab('analisis')" class="sync-btn" style="background:var(--accent)">📊 Análisis</button>
+          <button id="rentTabSimulador" onclick="switchRentTab('simulador')" class="sync-btn">🧮 Simulador</button>
+        </div>
       </div>
       <div id="rentabilidadContent"><div style="color:var(--muted);font-size:13px;padding:20px;text-align:center">Sincronizá primero para ver los datos</div></div>
+      <div id="simuladorContent" style="display:none"></div>
     </div>
 
     <!-- ADS -->
@@ -2402,6 +2407,293 @@ function perfFilterMode(idx) {
     window._perfModeFilter = (window._perfModeFilter === label) ? null : label;
   }
   loadPerformance();
+}
+
+// ── SIMULADOR DE PRECIO ────────────────────────────────────────────────────────
+function switchRentTab(tab) {
+  document.getElementById('rentabilidadContent').style.display = tab === 'analisis' ? '' : 'none';
+  document.getElementById('simuladorContent').style.display   = tab === 'simulador' ? '' : 'none';
+  document.getElementById('rentTabAnalisis').style.background  = tab === 'analisis'  ? 'var(--accent)' : 'var(--surface2)';
+  document.getElementById('rentTabSimulador').style.background = tab === 'simulador' ? 'var(--accent)' : 'var(--surface2)';
+  if (tab === 'simulador') loadSimulador();
+}
+
+async function loadSimulador() {
+  const el = document.getElementById('simuladorContent');
+  const client = getActiveClient();
+  if (!client) { el.innerHTML = '<div style="color:var(--muted);padding:20px;text-align:center">Seleccioná una cuenta</div>'; return; }
+
+  const connected = state.accounts.filter(a => a.data && a.data.rentabilidad);
+  if (!connected.length) { el.innerHTML = '<div style="color:var(--muted);padding:20px;text-align:center">Sincronizá primero</div>'; return; }
+
+  // Juntar productos con datos de escalabilidad (para clase ABC)
+  const allProducts = {};
+  connected.forEach(acc => {
+    (acc.data.rentabilidad?.by_product || []).forEach(p => {
+      if (!allProducts[p.id]) allProducts[p.id] = { ...p };
+    });
+  });
+
+  // Clase ABC por facturación
+  const sorted = Object.values(allProducts).sort((a,b) => b.revenue - a.revenue);
+  const totalRev = sorted.reduce((s,p) => s + p.revenue, 0) || 1;
+  let acum = 0;
+  sorted.forEach(p => {
+    acum += p.revenue;
+    const pct = acum / totalRev * 100;
+    p.claseABC = pct <= 70 ? 'A' : pct <= 90 ? 'B' : 'C';
+  });
+
+  // También incluir ítems sin ventas del período
+  const pubItems = [];
+  state.accounts.forEach(acc => {
+    if (acc.data?.items_full) acc.data.items_full.forEach(i => {
+      if (!allProducts[i.id]) pubItems.push({ id: i.id, title: i.title, claseABC: '—', revenue: 0 });
+    });
+  });
+
+  const allItems = [...sorted, ...pubItems];
+  window._simItems = allItems;
+  window._simClient = client;
+
+  renderSimulador(allItems, client);
+}
+
+function renderSimulador(items, client) {
+  const el = document.getElementById('simuladorContent');
+
+  const opciones = items.map(p =>
+    `<option value="${p.id}" data-abc="${p.claseABC||'—'}">${p.claseABC||'—'} · ${p.id} · ${(p.title||'').substring(0,50)}</option>`
+  ).join('');
+
+  el.innerHTML = `
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px">
+
+      <!-- PANEL IZQUIERDO: Inputs -->
+      <div>
+        <div class="kpi-card" style="padding:20px;margin-bottom:16px">
+          <div class="kpi-label" style="margin-bottom:14px">📦 Publicación</div>
+
+          <!-- Filtro ABC -->
+          <div style="display:flex;gap:8px;margin-bottom:10px">
+            ${['Todos','A','B','C','—'].map(f => `<button onclick="filterSimABC('${f}')" id="simABC${f}"
+              style="padding:4px 12px;border-radius:6px;border:1px solid var(--border);background:${f==='Todos'?'var(--accent)':'var(--surface2)'};color:var(--text);font-size:12px;cursor:pointer">${f}</button>`).join('')}
+          </div>
+
+          <select id="simMLA" onchange="onSimMLAChange(this.value)"
+            style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:12px;margin-bottom:4px">
+            <option value="">— Seleccioná una publicación —</option>
+            ${opciones}
+          </select>
+
+          <div id="simMLAInfo" style="font-size:11px;color:var(--muted);margin-top:6px;min-height:16px"></div>
+        </div>
+
+        <div class="kpi-card" style="padding:20px;margin-bottom:16px">
+          <div class="kpi-label" style="margin-bottom:14px">💰 Costos</div>
+          <div style="display:grid;gap:10px">
+            ${simInput('simCMV',       'Costo del producto (CMV)', '$', 'number', '0')}
+            ${simInput('simIIBB',      'IIBB %', '%', 'number', '3')}
+            ${simInput('simTACOS',     'TACOS esperado %', '%', 'number', '0')}
+            ${simInput('simExtraCost', 'Otros costos por unidad', '$', 'number', '0')}
+          </div>
+        </div>
+
+        <div class="kpi-card" style="padding:20px;margin-bottom:16px">
+          <div class="kpi-label" style="margin-bottom:14px">🎯 Objetivo</div>
+          <div style="display:grid;gap:10px">
+            ${simInput('simMargen', 'Margen deseado %', '%', 'number', '30')}
+          </div>
+        </div>
+
+        <div id="simEnvioInfo" class="kpi-card" style="padding:16px;margin-bottom:16px;display:none">
+          <div class="kpi-label" style="margin-bottom:10px">🚚 Costo de envío detectado</div>
+          <div id="simEnvioDetalle" style="font-size:13px"></div>
+          <div style="margin-top:10px">${simInput('simEnvio', 'Costo envío por unidad (editable)', '$', 'number', '0')}</div>
+        </div>
+
+        <div id="simComisionInfo" class="kpi-card" style="padding:16px;margin-bottom:16px;display:none">
+          <div class="kpi-label" style="margin-bottom:10px">📋 Comisión ML detectada</div>
+          <div id="simComisionDetalle" style="font-size:13px"></div>
+          <div style="margin-top:10px">${simInput('simComision', 'Comisión % (editable)', '%', 'number', '13')}</div>
+        </div>
+
+        <button onclick="calcularSimulador()"
+          style="width:100%;padding:12px;border-radius:10px;border:none;background:var(--accent);color:#000;font-family:var(--font-b);font-size:14px;font-weight:700;cursor:pointer">
+          🧮 Calcular precio
+        </button>
+      </div>
+
+      <!-- PANEL DERECHO: Resultados -->
+      <div id="simResultados">
+        <div class="kpi-card" style="padding:40px;text-align:center;color:var(--muted)">
+          <div style="font-size:40px;margin-bottom:12px">🧮</div>
+          <div>Completá los datos y presioná Calcular</div>
+        </div>
+      </div>
+    </div>`;
+
+  // Listeners para recalcular en tiempo real
+  ['simCMV','simIIBB','simTACOS','simExtraCost','simMargen','simEnvio','simComision'].forEach(id => {
+    const el2 = document.getElementById(id);
+    if (el2) el2.addEventListener('input', () => {
+      if (document.getElementById('simResultados').querySelector('.sim-precio')) calcularSimulador();
+    });
+  });
+}
+
+function simInput(id, label, suffix, type, val) {
+  return `<div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:4px">${label}</div>
+    <div style="display:flex;align-items:center;gap:6px">
+      <input id="${id}" type="${type}" value="${val}" step="any" min="0"
+        style="flex:1;padding:8px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px;outline:none">
+      <span style="font-size:12px;color:var(--muted);width:20px">${suffix}</span>
+    </div>
+  </div>`;
+}
+
+function filterSimABC(f) {
+  ['Todos','A','B','C','—'].forEach(x => {
+    const b = document.getElementById('simABC' + x);
+    if (b) b.style.background = x === f ? 'var(--accent)' : 'var(--surface2)';
+  });
+  const sel = document.getElementById('simMLA');
+  if (!sel) return;
+  Array.from(sel.options).forEach(opt => {
+    if (!opt.value) return;
+    opt.style.display = (f === 'Todos' || opt.dataset.abc === f) ? '' : 'none';
+  });
+  sel.value = '';
+  document.getElementById('simMLAInfo').textContent = '';
+}
+
+async function onSimMLAChange(id) {
+  if (!id) return;
+  const item = (window._simItems || []).find(p => p.id === id);
+  const client = window._simClient;
+  if (!item || !client) return;
+
+  document.getElementById('simMLAInfo').textContent = item.title || '';
+
+  // Comisión promedio histórica del ítem
+  const comisionInfo = document.getElementById('simComisionInfo');
+  const comisionDetalle = document.getElementById('simComisionDetalle');
+  comisionInfo.style.display = '';
+
+  if (item.revenue > 0 && item.comision > 0) {
+    const pctComision = (item.comision / item.revenue * 100).toFixed(1);
+    document.getElementById('simComision').value = pctComision;
+    comisionDetalle.innerHTML = `<span style="color:#00e676">Calculada del historial de ventas: ${pctComision}%</span>`;
+  } else {
+    document.getElementById('simComision').value = '13';
+    comisionDetalle.innerHTML = `<span style="color:var(--muted)">Sin historial — usando 13% por defecto</span>`;
+  }
+
+  // Costo de envío
+  const envioInfo = document.getElementById('simEnvioInfo');
+  const envioDetalle = document.getElementById('simEnvioDetalle');
+  envioInfo.style.display = '';
+  envioDetalle.innerHTML = '<span style="color:var(--muted)">Consultando...</span>';
+
+  try {
+    // Primero intentar historial real
+    if (item.revenue > 0 && item.resultado_envio != null) {
+      const costoEnvio = Math.max(0, -(item.resultado_envio / (item.units || 1)));
+      document.getElementById('simEnvio').value = Math.round(costoEnvio);
+      envioDetalle.innerHTML = `<span style="color:#00e676">Promedio histórico: $${Math.round(costoEnvio).toLocaleString('es-AR')} / unidad (${item.units} ventas)</span>`;
+    } else {
+      // Intentar shipping_options
+      const data = await apiCall('GET', `/api/debug/shipping?item_id=${id}&client_id=${client.id}`).catch(() => null);
+      if (data && data.costo > 0) {
+        document.getElementById('simEnvio').value = Math.round(data.costo);
+        envioDetalle.innerHTML = `<span style="color:#ff9100">Estimado por ML: $${Math.round(data.costo).toLocaleString('es-AR')} (según dimensiones del ítem)</span>`;
+      } else {
+        document.getElementById('simEnvio').value = '0';
+        envioDetalle.innerHTML = `<span style="color:var(--muted)">Sin datos — ingresalo manualmente</span>`;
+      }
+    }
+  } catch(e) {
+    envioDetalle.innerHTML = `<span style="color:var(--muted)">Sin datos — ingresalo manualmente</span>`;
+  }
+}
+
+function calcularSimulador() {
+  const get = id => parseFloat(document.getElementById(id)?.value) || 0;
+  const cmv        = get('simCMV');
+  const iibb       = get('simIIBB') / 100;
+  const tacos      = get('simTACOS') / 100;
+  const extra      = get('simExtraCost');
+  const margenObj  = get('simMargen') / 100;
+  const envio      = get('simEnvio');
+  const comisionPct= get('simComision') / 100;
+
+  if (cmv <= 0 && envio <= 0) return;
+
+  // Fórmula: Precio = (CMV + Envio + Extra) / (1 - Margen - Comision - IIBB - TACOS)
+  const divisor = 1 - margenObj - comisionPct - iibb - tacos;
+  if (divisor <= 0) {
+    document.getElementById('simResultados').innerHTML = `<div class="kpi-card" style="padding:20px;text-align:center;color:#ff5252">
+      Los porcentajes superan el 100% — revisá los valores</div>`;
+    return;
+  }
+
+  const costoTotal = cmv + envio + extra;
+  const precioBase = costoTotal / divisor;
+
+  // Escenarios
+  const escenarios = [
+    { label: '🎯 Objetivo', pct: margenObj },
+    { label: '📉 Mínimo', pct: Math.max(0, margenObj - 0.05) },
+    { label: '📈 Ideal', pct: margenObj + 0.05 },
+  ];
+
+  const fmt = n => '$' + Math.round(n).toLocaleString('es-AR');
+  const fmtP = n => (n * 100).toFixed(1) + '%';
+
+  const escHtml = escenarios.map(e => {
+    const div2 = 1 - e.pct - comisionPct - iibb - tacos;
+    if (div2 <= 0) return '';
+    const precio = costoTotal / div2;
+    const utilidad = precio - precio * comisionPct - precio * iibb - precio * tacos - cmv - envio - extra;
+    return `<div class="kpi-card" style="padding:16px;text-align:center;${e.pct === margenObj ? 'border:2px solid var(--accent)' : ''}">
+      <div style="font-size:12px;color:var(--muted);margin-bottom:4px">${e.label} — ${fmtP(e.pct)}</div>
+      <div style="font-size:26px;font-weight:800;font-family:var(--font-b);color:var(--accent)">${fmt(precio)}</div>
+      <div style="font-size:12px;color:#00e676;margin-top:4px">Utilidad: ${fmt(utilidad)} / unidad</div>
+    </div>`;
+  }).join('');
+
+  // Desglose del precio objetivo
+  const comisionMonto = precioBase * comisionPct;
+  const iibbMonto     = precioBase * iibb;
+  const tacosMonto    = precioBase * tacos;
+  const utilidad      = precioBase - comisionMonto - iibbMonto - tacosMonto - cmv - envio - extra;
+
+  const desglose = [
+    { label: 'Comisión ML', monto: comisionMonto, color: '#ff9100' },
+    { label: 'IIBB', monto: iibbMonto, color: '#ff9100' },
+    { label: 'Inversión Ads', monto: tacosMonto, color: '#ff9100' },
+    { label: 'Costo envío', monto: envio, color: '#ff9100' },
+    { label: 'CMV', monto: cmv, color: '#ff5252' },
+    { label: 'Otros costos', monto: extra, color: '#ff5252' },
+    { label: 'Utilidad neta', monto: utilidad, color: '#00e676' },
+  ].filter(d => d.monto > 0);
+
+  const desgloseHtml = desglose.map(d => `
+    <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--border)">
+      <span style="font-size:13px;color:var(--muted)">${d.label}</span>
+      <div style="text-align:right">
+        <span style="font-size:13px;font-weight:600;color:${d.color}">${fmt(d.monto)}</span>
+        <span style="font-size:11px;color:var(--muted);margin-left:6px">${fmtP(d.monto / precioBase)}</span>
+      </div>
+    </div>`).join('');
+
+  document.getElementById('simResultados').innerHTML = `
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:16px">${escHtml}</div>
+    <div class="kpi-card sim-precio" style="padding:20px">
+      <div class="kpi-label" style="margin-bottom:14px">📊 Desglose — precio ${fmt(precioBase)}</div>
+      ${desgloseHtml}
+    </div>`;
 }
 
 function loadRentabilidad() {
@@ -6912,4 +7204,4 @@ window.addEventListener('DOMContentLoaded', () => {
 });
 </script>
 </body>
-</html>>
+</html>
