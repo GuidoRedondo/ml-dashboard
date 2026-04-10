@@ -3091,7 +3091,7 @@ function renderRentabilidad(R, allProducts, costsMap) {
 }
 
 
-function loadVentas() {
+async function loadVentas() {
   const el = document.getElementById('ventasContent');
   if (!el) return;
   const connected = state.accounts.filter(a => a.data && a.data.orders_detail);
@@ -3100,17 +3100,18 @@ function loadVentas() {
     return;
   }
 
-  // Construir mapa de CMV por MLA desde by_product
+  // Cargar costos desde la DB
+  const client = getActiveClient();
   const costoMap = {};
-  connected.forEach(acc => {
-    (acc.data.rentabilidad?.by_product || []).forEach(p => {
-      if (p.costo_unit) costoMap[p.id] = parseFloat(p.costo_unit);
+  if (client) {
+    const range = getDateRange();
+    const costsData = await apiCall('GET', `/api/reporte/items-vendidos?client_id=${client.id}&date_from=${range.date_from}&date_to=${range.date_to}`).catch(() => null);
+    (costsData?.items || []).forEach(i => {
+      if (i.costo_unit) costoMap[i.mla_id] = parseFloat(i.costo_unit);
     });
-  });
-  // También desde product_costs si están en state
-  if (window._ventasCostsMap) Object.assign(costoMap, window._ventasCostsMap);
+  }
 
-  // Merge orders, agregar CMV y utilidad por orden
+  // Merge orders, calcular CMV, IVA y utilidad por orden
   const allOrders = [];
   connected.forEach(acc => {
     (acc.data.orders_detail || []).forEach(o => {
@@ -3119,8 +3120,17 @@ function loadVentas() {
         return s + (c ? c * (p.quantity || 1) : 0);
       }, 0);
       const hasCMV = cmvOrden > 0;
-      const utilidad = hasCMV ? o.neto - cmvOrden : null;
-      allOrders.push({ ...o, _account: acc.name, cmv: cmvOrden, hasCMV, utilidad });
+
+      // IVA a pagar por esta orden
+      // IVA ventas: facturación / 1.21 * 0.21
+      // IVA compras acreditable: (comisión + costo envío + CMV) / 1.21 * 0.21
+      const iva21 = 0.21;
+      const ivaVentas   = o.facturacion / (1 + iva21) * iva21;
+      const ivaCompras  = (o.comision + Math.max(0, o.envio_vendedor) + cmvOrden) / (1 + iva21) * iva21;
+      const ivaNeto     = Math.max(0, ivaVentas - ivaCompras);
+
+      const utilidad = hasCMV ? o.neto - cmvOrden - ivaNeto : null;
+      allOrders.push({ ...o, _account: acc.name, cmv: cmvOrden, hasCMV, ivaNeto, utilidad });
     });
   });
   allOrders.sort((a,b) => new Date(b.date) - new Date(a.date));
@@ -3229,7 +3239,7 @@ function renderVentas(orders) {
         <td style="padding:8px 10px;text-align:right;font-size:12px;color:${parseFloat(o.neto)>=0?'#00e676':'#ff5252'};font-weight:700">${fmtM(o.neto)}</td>
         <td style="padding:8px 10px;text-align:right;font-size:12px;font-weight:700;color:${pctColor(o.pct_recibido)}">${o.pct_recibido}%</td>
         <td style="padding:8px 10px;text-align:right;font-size:12px;font-weight:700;color:#d97706">${o.hasCMV ? fmtM(-o.cmv) : '<span style="color:var(--muted)">—</span>'}</td>
-        <td style="padding:8px 10px;text-align:right;font-size:12px;font-weight:700;color:${o.utilidad!=null?(o.utilidad>=0?'#00e676':'#ff5252'):'var(--muted)'}">${o.utilidad!=null ? fmtM(o.utilidad) : '—'}</td>
+        <td style="padding:8px 10px;text-align:right;font-size:12px;font-weight:700;color:${o.utilidad!=null?(o.utilidad>=0?'#00e676':'#ff5252'):'var(--muted)'}" title="${o.hasCMV ? 'Neto ML - CMV - IVA neto ($'+Math.round(o.ivaNeto||0).toLocaleString('es-AR')+')' : ''}">${o.utilidad!=null ? fmtM(o.utilidad) : '—'}</td>
         <td style="padding:8px 10px;text-align:right;font-size:11px;color:var(--muted)">${o.mode||'—'}</td>
       </tr>`;
   }).join('');
