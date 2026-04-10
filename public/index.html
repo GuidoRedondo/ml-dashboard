@@ -2619,23 +2619,51 @@ async function onSimMLAChange(id) {
     cmvInput.title = '';
   }
 
-  // Comisión promedio histórica del ítem
+  // Comisión real desde el endpoint de fees de ML
   const comisionInfo = document.getElementById('simComisionInfo');
   const comisionDetalle = document.getElementById('simComisionDetalle');
   comisionInfo.style.display = '';
+  comisionDetalle.innerHTML = '<span style="color:var(--muted)">Consultando fees en ML...</span>';
 
-  if (item.revenue > 0 && item.comision > 0) {
-    // Descontar los cargos fijos del total de comisión para obtener solo el % variable
-    // El cargo fijo está incluido en item.comision — lo estimamos según precio promedio y unidades
-    const precioPromedio = item.units > 0 ? item.revenue / item.units : 0;
-    const cargoFijoEstimado = getCargoFijo(precioPromedio) * (item.units || 1);
-    const comisionVariable = Math.max(0, item.comision - cargoFijoEstimado);
-    const pctComision = (comisionVariable / item.revenue * 100).toFixed(1);
-    document.getElementById('simComision').value = pctComision;
-    comisionDetalle.innerHTML = `<span style="color:#00e676">Calculada del historial (sin cargo fijo): ${pctComision}%</span>`;
-  } else {
-    document.getElementById('simComision').value = '13';
-    comisionDetalle.innerHTML = `<span style="color:var(--muted)">Sin historial — usando 13% por defecto</span>`;
+  try {
+    const feesData = await apiCall('GET', `/api/item-fees?item_id=${id}&client_id=${client.id}`);
+    // Buscar sale_fee (comisión variable %) y fixed_fee (cargo fijo)
+    const saleFeeLine = (feesData?.sale_fee_details || feesData?.fees || []).find(f => 
+      f.type === 'sale_fee' || f.id === 'sale_fee' || f.type === 'mercadolibre_fee'
+    );
+    const pctComision = saleFeeLine?.fee_amount_pct || saleFeeLine?.percentage || null;
+
+    if (pctComision) {
+      document.getElementById('simComision').value = parseFloat(pctComision).toFixed(1);
+      comisionDetalle.innerHTML = `<span style="color:#00e676">✓ Comisión real ML: ${parseFloat(pctComision).toFixed(1)}%</span>`;
+    } else if (feesData && !feesData.error) {
+      // Intentar calcular del total si no viene el % directo
+      const precioItem = item.price || 0;
+      const totalFee = feesData.sale_fee_amount || feesData.total_fee_amount || 0;
+      if (totalFee > 0 && precioItem > 0) {
+        const pct = (totalFee / precioItem * 100).toFixed(1);
+        document.getElementById('simComision').value = pct;
+        comisionDetalle.innerHTML = `<span style="color:#00e676">✓ Comisión calculada: ${pct}%</span>`;
+      } else {
+        // Fallback al historial
+        throw new Error('Sin datos de fees');
+      }
+    } else {
+      throw new Error(feesData?.error || 'Sin respuesta');
+    }
+  } catch(e) {
+    // Fallback: calcular del historial descontando cargo fijo
+    if (item.revenue > 0 && item.comision > 0) {
+      const precioPromedio = item.units > 0 ? item.revenue / item.units : 0;
+      const cargoFijoEstimado = getCargoFijo(precioPromedio) * (item.units || 1);
+      const comisionVariable = Math.max(0, item.comision - cargoFijoEstimado);
+      const pctComision = (comisionVariable / item.revenue * 100).toFixed(1);
+      document.getElementById('simComision').value = pctComision;
+      comisionDetalle.innerHTML = `<span style="color:#ff9100">⚠️ Estimada del historial: ${pctComision}% (fees no disponibles)</span>`;
+    } else {
+      document.getElementById('simComision').value = '13';
+      comisionDetalle.innerHTML = `<span style="color:var(--muted)">Sin datos — usando 13% por defecto</span>`;
+    }
   }
 
   // Costo de envío
