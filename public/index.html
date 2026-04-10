@@ -2697,10 +2697,16 @@ async function onSimMLAChange(id) {
 
   try {
     // Primero intentar historial real
-    if (item.revenue > 0 && item.resultado_envio != null) {
-      const costoEnvio = Math.max(0, -(item.resultado_envio / (item.units || 1)));
-      document.getElementById('simEnvio').value = Math.round(costoEnvio);
-      envioDetalle.innerHTML = `<span style="color:#00e676">Promedio histórico: $${Math.round(costoEnvio).toLocaleString('es-AR')} / unidad (${item.units} ventas)</span>`;
+    if (item.revenue > 0 && item.units > 0) {
+    // Usar solo ventas no-FLEX para el promedio de costo de envío
+    const unitsRef  = item.units_no_flex > 0 ? item.units_no_flex : item.units;
+    const envioRef  = item.units_no_flex > 0 ? item.envio_pagado_no_flex : item.envio_pagado;
+    const costoEnvio = unitsRef > 0 ? Math.max(0, envioRef / unitsRef) : 0;
+    document.getElementById('simEnvio').value = Math.round(costoEnvio);
+    const label = item.units_no_flex > 0
+      ? `<span style="color:#00e676">Promedio histórico (sin FLEX): $${Math.round(costoEnvio).toLocaleString('es-AR')} / unidad (${item.units_no_flex} ventas)</span>`
+      : `<span style="color:#ff9100">Promedio histórico (todas las modalidades): $${Math.round(costoEnvio).toLocaleString('es-AR')} / unidad</span>`;
+    envioDetalle.innerHTML = label;
     } else {
       // Intentar shipping_options
       const data = await apiCall('GET', `/api/debug/shipping?item_id=${id}&client_id=${client.id}`).catch(() => null);
