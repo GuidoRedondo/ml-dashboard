@@ -2398,6 +2398,20 @@ app.get('/api/reporte/pyl', requireAuth, async (req, res) => {
 });
 
 // ── DEBUG: inspect a specific order's shipment ───────────────────────────────
+app.get('/api/item-fees', requireAuth, async (req, res) => {
+  try {
+    const { item_id, client_id, price } = req.query;
+    const token = await getClientToken(parseInt(client_id));
+    if (!token) return res.status(403).json({ error: 'Sin token' });
+    const headers = { 'Authorization': `Bearer ${token}` };
+    const url = price 
+      ? `${ML_API}/items/${item_id}/fees?price=${price}`
+      : `${ML_API}/items/${item_id}/fees`;
+    const data = await fetch(url, { headers }).then(r => r.json());
+    res.json(data);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
 app.get('/api/debug/shipping', requireAuth, async (req, res) => {
   try {
     const { item_id, client_id } = req.query;
