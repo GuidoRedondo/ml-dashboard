@@ -2444,6 +2444,7 @@ app.get('/api/competencia/diagnostico', requireAuth, async (req, res) => {
     const query = encodeURIComponent(titleWords);
     const searchUrl = `${ML_API}/sites/MLA/search?q=${query}&limit=50`;
     const searchRes = await fetch(searchUrl, { headers: h }).then(r => r.json());
+    console.log(`[DIAG] searchRes keys:`, Object.keys(searchRes), 'error:', searchRes.error, 'message:', searchRes.message);
     const allResults = searchRes.results || [];
     console.log(`[DIAG] query="${titleWords}" total=${searchRes.paging?.total} results=${allResults.length} seller=${sellerId}`);
     if (allResults.length > 0) {
