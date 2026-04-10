@@ -6865,15 +6865,22 @@ async function runDiagnostico() {
   const mla = document.getElementById('diagMLA')?.value;
   const el  = document.getElementById('diagResultado');
   const client = getActiveClient();
-  if (!mla || !client) return;
+  if (!mla || !client) { showToast('Seleccioná una publicación'); return; }
 
   el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">⏳ Analizando competencia...</div>';
 
   try {
-    const data = await apiCall('GET', `/api/competencia/diagnostico?item_id=${mla}&client_id=${client.id}`);
+    const resp = await fetch(`${SERVER_URL}/api/competencia/diagnostico?item_id=${mla}&client_id=${client.id}&session_id=${getSession()||''}`);
+    const data = await resp.json();
+    console.log('[DIAG FRONT] response:', resp.status, data);
+    if (!resp.ok || data.error) {
+      el.innerHTML = `<div style="color:#ff5252;padding:20px;text-align:center">Error: ${data.error || resp.status}</div>`;
+      return;
+    }
     renderDiagnostico(data);
   } catch(e) {
-    el.innerHTML = `<div style="color:#ff5252;padding:20px;text-align:center">Error: ${e.message}</div>`;
+    console.error('[DIAG FRONT] error:', e);
+    el.innerHTML = `<div style="color:#ff5252;padding:20px;text-align:center">Error de conexión: ${e.message}</div>`;
   }
 }
 
