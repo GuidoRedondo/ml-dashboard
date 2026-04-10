@@ -2503,7 +2503,6 @@ function renderSimulador(items, client) {
           <div class="kpi-label" style="margin-bottom:14px">💰 Costos</div>
           <div style="display:grid;gap:10px">
             ${simInput('simCMV',       'Costo del producto (CMV)', '$', 'number', '0')}
-            ${simInput('simPeso',      'Peso del producto (kg)', 'kg', 'number', '0')}
             ${simInput('simIIBB',      'IIBB %', '%', 'number', '3')}
             ${simInput('simTACOS',     'TACOS esperado %', '%', 'number', '0')}
             ${simInput('simExtraCost', 'Otros costos por unidad', '$', 'number', '0')}
@@ -2545,7 +2544,7 @@ function renderSimulador(items, client) {
     </div>`;
 
   // Listeners para recalcular en tiempo real
-  ['simCMV','simPeso','simIIBB','simTACOS','simExtraCost','simMargen','simEnvio','simComision'].forEach(id => {
+  ['simCMV','simIIBB','simTACOS','simExtraCost','simMargen','simEnvio','simComision'].forEach(id => {
     const el2 = document.getElementById(id);
     if (el2) el2.addEventListener('input', () => {
       if (document.getElementById('simResultados').querySelector('.sim-precio')) calcularSimulador();
@@ -2664,48 +2663,16 @@ function calcularPrecioConCargoFijo(costoTotal, margenObj, comisionPct, iibb, ta
   return precio;
 }
 
-function getCargoFijo(precio, pesoKg) {
-  if (precio >= 33000 || pesoKg <= 0) return 0;
-  // Tabla ML: [peso_max, hasta_15999, hasta_23999, hasta_32999]
-  const tabla = [
-    [0.3,  1230, 2455, 2925],
-    [0.5,  1240, 2465, 2925],
-    [1,    1255, 2465, 2940],
-    [1.5,  1265, 2490, 2950],
-    [2,    1275, 2500, 2965],
-    [3,    1290, 2575, 3050],
-    [4,    1310, 2620, 3100],
-    [5,    1365, 2735, 3240],
-    [8,    1395, 2790, 3305],
-    [10,   1420, 2850, 3445],
-    [13,   1450, 2850, 3510],
-    [15,   1470, 2920, 3510],
-    [20,   1470, 2965, 3570],
-    [25,   1475, 2990, 3600],
-    [30,   1490, 3010, 3625],
-    [40,   1515, 3035, 3650],
-    [50,   1525, 3055, 3680],
-    [60,   1535, 3080, 3705],
-    [70,   1545, 3105, 3735],
-    [80,   1580, 3125, 3760],
-    [90,   1630, 3150, 3790],
-    [100,  1640, 3170, 3815],
-    [120,  1655, 3195, 3845],
-    [140,  1665, 3220, 3870],
-    [160,  1675, 3240, 3900],
-    [180,  1685, 3265, 3925],
-    [Infinity, 1705, 3285, 3950],
-  ];
-  const fila = tabla.find(r => pesoKg <= r[0]);
-  if (!fila) return 0;
-  const col = precio < 16000 ? 1 : precio < 24000 ? 2 : 3;
-  return fila[col];
+function getCargoFijo(precio) {
+  if (precio >= 33000) return 0;
+  if (precio < 16000)  return 1272;
+  if (precio < 24000)  return 2538;
+  return 3040;
 }
 
 function calcularSimulador() {
   const get = id => parseFloat(document.getElementById(id)?.value) || 0;
   const cmv        = get('simCMV');
-  const peso       = get('simPeso');
   const iibb       = get('simIIBB') / 100;
   const tacos      = get('simTACOS') / 100;
   const extra      = get('simExtraCost');
@@ -2721,7 +2688,7 @@ function calcularSimulador() {
     if (divisor <= 0) return null;
     let precio = (cmv + envio + extra) / divisor;
     for (let i = 0; i < 10; i++) {
-      const cf = getCargoFijo(precio, peso);
+      const cf = getCargoFijo(precio);
       const nuevo = (cmv + envio + extra + cf) / divisor;
       if (Math.abs(nuevo - precio) < 1) { precio = nuevo; break; }
       precio = nuevo;
@@ -2735,7 +2702,7 @@ function calcularSimulador() {
     return;
   }
 
-  const cargoFijoBase = getCargoFijo(precioBase, peso);
+  const cargoFijoBase = getCargoFijo(precioBase);
   const costoTotal    = cmv + envio + extra + cargoFijoBase;
 
   const fmt  = n => '$' + Math.round(n).toLocaleString('es-AR');
@@ -2754,7 +2721,7 @@ function calcularSimulador() {
   const escHtml = escenarios.map(e => {
     const precio = calcPrecio(e.pct);
     if (!precio) return '';
-    const cf = getCargoFijo(precio, peso);
+    const cf = getCargoFijo(precio);
     const utilidad = precio - precio*comisionPct - precio*iibb - precio*tacos - cmv - envio - extra - cf;
     const isObj = e.pct === margenObj;
     return `<div class="kpi-card" style="padding:16px;text-align:center;${isObj?'border:2px solid var(--accent)':''}">
@@ -2771,11 +2738,11 @@ function calcularSimulador() {
   const utilidad      = precioBase - comisionMonto - iibbMonto - tacosMonto - cmv - envio - extra - cargoFijoBase;
 
   const desglose = [
-    { label: 'Comisión ML (' + fmtP(comisionPct) + ')', monto: comisionMonto, color: '#ff9100' },
+    { label: 'Comisión ML — % (' + fmtP(comisionPct) + ')', monto: comisionMonto, color: '#ff9100' },
+    { label: 'Comisión ML — Cargo fijo',                     monto: cargoFijoBase, color: '#ff9100' },
     { label: 'IIBB',           monto: iibbMonto,     color: '#ff9100' },
     { label: 'Inversión Ads',  monto: tacosMonto,    color: '#ff9100' },
     { label: 'Costo envío',    monto: envio,         color: '#ff9100' },
-    { label: 'Cargo fijo ML',  monto: cargoFijoBase, color: '#ff9100' },
     { label: 'CMV',            monto: cmv,           color: '#ff5252' },
     { label: 'Otros costos',   monto: extra,         color: '#ff5252' },
     { label: 'Utilidad neta',  monto: utilidad,      color: '#00e676' },
@@ -2802,7 +2769,6 @@ function calcularSimulador() {
     <div class="kpi-card sim-precio" style="padding:20px">
       <div class="kpi-label" style="margin-bottom:14px">📊 Desglose — precio ${fmt(precioBase)}</div>
       ${desgloseHtml}
-      ${cargoFijoBase > 0 ? '<div style="font-size:11px;color:var(--muted);margin-top:8px">⚠️ Incluye cargo fijo ML por precio < $33.000</div>' : ''}
     </div>`;
 }
 
