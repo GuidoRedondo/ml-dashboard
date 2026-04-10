@@ -2673,6 +2673,9 @@ function calcularSimulador() {
   const fmt = n => '$' + Math.round(n).toLocaleString('es-AR');
   const fmtP = n => (n * 100).toFixed(1) + '%';
 
+  const divisorPiso = 1 - comisionPct - iibb - tacos;
+  const precioPiso = divisorPiso > 0 ? costoTotal / divisorPiso : null;
+
   const escHtml = escenarios.map(e => {
     const div2 = 1 - e.pct - comisionPct - iibb - tacos;
     if (div2 <= 0) return '';
@@ -2711,6 +2714,13 @@ function calcularSimulador() {
     </div>`).join('');
 
   document.getElementById('simResultados').innerHTML = `
+    ${precioPiso ? `<div class="kpi-card" style="padding:12px 16px;margin-bottom:12px;border:1px solid #ff5252;display:flex;align-items:center;justify-content:space-between">
+      <div>
+        <div style="font-size:11px;color:#ff5252;font-weight:600">⚠️ PRECIO PISO — Rentabilidad 0%</div>
+        <div style="font-size:11px;color:var(--muted)">Por debajo de este precio perdés dinero</div>
+      </div>
+      <div style="font-size:22px;font-weight:800;font-family:var(--font-b);color:#ff5252">${fmt(precioPiso)}</div>
+    </div>` : ''}
     <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:16px">${escHtml}</div>
     <div class="kpi-card sim-precio" style="padding:20px">
       <div class="kpi-label" style="margin-bottom:14px">📊 Desglose — precio ${fmt(precioBase)}</div>
