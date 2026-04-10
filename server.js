@@ -2436,17 +2436,26 @@ app.get('/api/competencia/diagnostico', requireAuth, async (req, res) => {
     const sellerId   = item.seller_id;
 
     // 2. Buscar por título para encontrar posición y competidores
-    // (búsqueda por categoría sola da 403 sin certificación)
-    const query = encodeURIComponent(item.title.split(' ').slice(0, 6).join(' '));
+    // Usar las primeras 4 palabras del título para mayor precisión
+    const titleWords = item.title.split(' ').slice(0, 4).join(' ');
+    const query = encodeURIComponent(titleWords);
     const searchUrl = `${ML_API}/sites/MLA/search?q=${query}&limit=50`;
     const searchRes = await fetch(searchUrl, { headers: h }).then(r => r.json());
     const allResults = searchRes.results || [];
+    console.log(`[DIAG] query="${titleWords}" total=${searchRes.paging?.total} results=${allResults.length} seller=${sellerId}`);
+    if (allResults.length > 0) {
+      console.log(`[DIAG] first result seller:`, allResults[0].seller?.id, allResults[0].seller_id);
+    }
 
     // Posición propia en los resultados
     const ownPosition = allResults.findIndex(r => r.id === item_id);
+    console.log(`[DIAG] own position: ${ownPosition} for item ${item_id}`);
 
-    // Top competidores (excluyendo propias publicaciones)
-    const competitors = allResults.filter(r => r.seller?.id !== sellerId && r.seller_id !== sellerId).slice(0, 10);
+    // Top competidores — excluir publicaciones del mismo seller
+    const competitors = allResults.filter(r => {
+      const rSellerId = r.seller?.id || r.seller_id;
+      return rSellerId != sellerId;
+    }).slice(0, 10);
 
     // 4. Datos del seller propio
     const sellerData = await fetch(`${ML_API}/users/${sellerId}`, { headers: h }).then(r => r.json());
