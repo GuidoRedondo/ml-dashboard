@@ -3525,7 +3525,13 @@ function setQuickRange(days) {
   });
   state.rangeDays = days;
   localStorage.setItem('ml_rangeDays', days);
-  syncAll();
+  // Si el panel de clientes está activo, recargarlo directamente
+  const panelPage = document.getElementById('page-panel-consultores');
+  if (panelPage && panelPage.classList.contains('active')) {
+    loadPanelConsultores();
+  } else {
+    syncAll();
+  }
 }
 
 function applyGlobalRange() {
@@ -3538,8 +3544,13 @@ function applyGlobalRange() {
     if (btn) btn.classList.remove('active');
   });
   state.rangeDays = null;
-  // Sincronizar automáticamente al cambiar fechas
-  syncAll();
+  // Si el panel de clientes está activo, recargarlo directamente
+  const panelPage = document.getElementById('page-panel-consultores');
+  if (panelPage && panelPage.classList.contains('active')) {
+    loadPanelConsultores();
+  } else {
+    syncAll();
+  }
 }
 
 function setRange(el, days) { setQuickRange(days); } // backwards compat
@@ -6090,12 +6101,13 @@ function renderPanelConsultores(results, range) {
     </div>`;
   }
 
-  const totalesHtml = `<div style="display:grid;grid-template-columns:repeat(6,1fr);gap:12px;margin-bottom:20px">
+  const totalesHtml = `<div style="display:grid;grid-template-columns:repeat(7,1fr);gap:12px;margin-bottom:20px">
     ${totCard('💵 Facturación total', fmt(totFac), deltFac, 'var(--yellow)')}
     ${totCard('📦 Ventas totales', totOrd.toLocaleString('es-AR'), deltOrd, '')}
     ${totCard('👁 Visitas totales', totVis.toLocaleString('es-AR'), null, '')}
     ${totCard('🎯 Conv. promedio', avgConv.toFixed(1) + '%', null, avgConv >= 3 ? '#00e676' : avgConv >= 1 ? '#ff9100' : '#ff5252')}
-    ${totCard('📣 TACOS promedio', tacosTotal ? tacosTotal + '%' : '—', null, tacosTotal <= 8 ? '#00e676' : tacosTotal <= 15 ? '#ff9100' : '#ff5252')}
+    ${totCard('📣 Inv. Publicitaria', fmt(totAdsSpend), null, '#ff9100')}
+    ${totCard('📊 TACOS promedio', tacosTotal ? tacosTotal + '%' : '—', null, tacosTotal <= 8 ? '#00e676' : tacosTotal <= 15 ? '#ff9100' : '#ff5252')}
     ${totCard('👥 Clientes activos', withData.length + ' / ' + results.length, null, '')}
   </div>`;
 
