@@ -6068,8 +6068,39 @@ function renderPanelConsultores(results, range) {
     </tr>`;
   }).join('');
 
-  el.innerHTML = `
-    <div style="font-size:12px;color:var(--muted);margin-bottom:12px">${results.length} clientes · Los % muestran variación vs período anterior · Click encabezado para ordenar</div>
+  // Calcular totales de todos los clientes con datos
+  const withData = rowData.filter(r => !r.empty);
+  const totFac    = withData.reduce((s,r) => s + (r.revenue||0), 0);
+  const totOrd    = withData.reduce((s,r) => s + (r.orders||0), 0);
+  const totVis    = withData.reduce((s,r) => s + (r.visits||0), 0);
+  const totAdsSpend = results.reduce((s,{data:d}) => s + (d?.stats?.ads_spend||0), 0);
+  const totFacPrev  = results.reduce((s,{data:d}) => s + (d?.stats?.prev?.total_amount||0), 0);
+  const totOrdPrev  = results.reduce((s,{data:d}) => s + (d?.stats?.prev?.total_orders||0), 0);
+  const deltFac   = totFacPrev > 0 ? ((totFac - totFacPrev) / totFacPrev * 100).toFixed(1) : null;
+  const deltOrd   = totOrdPrev > 0 ? ((totOrd - totOrdPrev) / totOrdPrev * 100).toFixed(1) : null;
+  const avgConv   = withData.filter(r => r.conv != null).reduce((s,r) => s + (r.conv||0), 0) / (withData.filter(r => r.conv != null).length || 1);
+  const tacosTotal= totFac > 0 ? (totAdsSpend / totFac * 100).toFixed(1) : null;
+
+  function totCard(label, value, delta, color) {
+    const dColor = delta > 0 ? '#00e676' : delta < 0 ? '#ff5252' : 'var(--muted)';
+    return `<div class="kpi-card" style="padding:16px">
+      <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px">${label}</div>
+      <div style="font-size:22px;font-weight:800;font-family:var(--font-b);color:${color||'var(--text)'}">${value}</div>
+      ${delta != null ? `<div style="font-size:11px;color:${dColor};margin-top:3px">${delta > 0 ? '+' : ''}${delta}% vs período ant.</div>` : ''}
+    </div>`;
+  }
+
+  const totalesHtml = `<div style="display:grid;grid-template-columns:repeat(6,1fr);gap:12px;margin-bottom:20px">
+    ${totCard('💵 Facturación total', fmt(totFac), deltFac, 'var(--yellow)')}
+    ${totCard('📦 Ventas totales', totOrd.toLocaleString('es-AR'), deltOrd, '')}
+    ${totCard('👁 Visitas totales', totVis.toLocaleString('es-AR'), null, '')}
+    ${totCard('🎯 Conv. promedio', avgConv.toFixed(1) + '%', null, avgConv >= 3 ? '#00e676' : avgConv >= 1 ? '#ff9100' : '#ff5252')}
+    ${totCard('📣 TACOS promedio', tacosTotal ? tacosTotal + '%' : '—', null, tacosTotal <= 8 ? '#00e676' : tacosTotal <= 15 ? '#ff9100' : '#ff5252')}
+    ${totCard('👥 Clientes activos', withData.length + ' / ' + results.length, null, '')}
+  </div>`;
+
+  el.innerHTML = totalesHtml +
+    `<div style="font-size:12px;color:var(--muted);margin-bottom:12px">${results.length} clientes · Los % muestran variación vs período anterior · Click encabezado para ordenar</div>
     <div class="kpi-card" style="padding:0;overflow:hidden"><div style="overflow-x:auto">
       <table style="width:100%;border-collapse:collapse">
         <thead><tr style="background:var(--surface2);border-bottom:2px solid var(--border)">
