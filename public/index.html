@@ -645,17 +645,37 @@ tbody td {
         <div class="kpi-card"><div class="kpi-label">🔄 ROAS</div><div class="kpi-value" id="kpiRoas">—</div><div class="kpi-sub">Ventas Ads / Gasto Ads</div></div>
       </div>
 
-      <!-- BLOQUE 3: Financiero + Reputación -->
+      <!-- BLOQUE 3: Financiero -->
       <div style="font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.08em;margin-bottom:8px">💰 FINANCIERO</div>
-      <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr auto;gap:12px;margin-bottom:16px;align-items:stretch">
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:12px;margin-bottom:16px">
         <div class="kpi-card"><div class="kpi-label">💰 IMPORTE RECIBIDO</div><div class="kpi-value" id="kpiRecibido">—</div><div class="kpi-delta" id="kpiRecibidoDelta"></div><div class="kpi-sub" id="kpiRecibidoSub">Neto tras comisiones, envío e impuestos</div></div>
         <div class="kpi-card"><div class="kpi-label">📈 % RECIBIDO</div><div class="kpi-value" id="kpiPctRecibido">—</div><div class="kpi-delta" id="kpiPctRecibidoDelta"></div><div class="kpi-sub" id="kpiPctRecibidoSub">Sobre facturación bruta</div></div>
         <div class="kpi-card"><div class="kpi-label">🟢 UTILIDAD <span id="kpiUtilidadCMVWarn" style="color:#ff9100;font-size:10px"></span></div><div class="kpi-value" id="kpiUtilidad">—</div><div class="kpi-delta" id="kpiUtilidadDelta"></div><div class="kpi-sub" id="kpiUtilidadSub">Neto ML − CMV − Ads</div></div>
         <div class="kpi-card"><div class="kpi-label">📊 MARGEN % <span id="kpiMargenCMVWarn" style="color:#ff9100;font-size:10px"></span></div><div class="kpi-value" id="kpiMargen">—</div><div class="kpi-delta" id="kpiMargenDelta"></div><div class="kpi-sub" id="kpiMargenSub">Utilidad / Facturación</div></div>
+      </div>
+
+      <!-- BLOQUE 4: Reputación y Calidad -->
+      <div style="font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.08em;margin-bottom:8px">⭐ REPUTACIÓN Y CALIDAD</div>
+      <div style="display:grid;grid-template-columns:auto 1fr 1fr 1fr;gap:12px;margin-bottom:16px;align-items:stretch">
         <div class="kpi-card" style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:20px 28px;min-width:140px">
           <div class="kpi-label" style="margin-bottom:10px">REPUTACIÓN</div>
           <div id="reputationBadge" style="font-size:36px">—</div>
           <div id="reputationLabel" style="font-size:12px;font-weight:700;margin-top:6px;letter-spacing:1px">—</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">⚠️ RECLAMOS</div>
+          <div class="kpi-value" id="kpiReclamos">—</div>
+          <div class="kpi-sub">% sobre ventas (últimas 60 vtas)</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">❌ CANCELACIONES</div>
+          <div class="kpi-value" id="kpiCancelaciones">—</div>
+          <div class="kpi-sub">% sobre ventas (últimas 60 vtas)</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">🕐 DEMORAS ENVÍO</div>
+          <div class="kpi-value" id="kpiDemoras">—</div>
+          <div class="kpi-sub">% sobre ventas (últimas 60 vtas)</div>
         </div>
       </div>
 
@@ -1317,8 +1337,12 @@ async function loadDashboardData() {
 
   await Promise.all(clientsToLoad.map(async client => {
     try {
-      const data = await apiCall('GET', `/api/dashboard?client_id=${client.id}&date_from=${date_from}&date_to=${date_to}`);
+      const [data, adsData] = await Promise.all([
+        apiCall('GET', `/api/dashboard?client_id=${client.id}&date_from=${date_from}&date_to=${date_to}`),
+        apiCall('GET', `/api/ads?client_id=${client.id}&date_from=${date_from}&date_to=${date_to}`).catch(() => null)
+      ]);
       if (data) {
+        if (adsData?.summary) data._adsData = adsData.summary;
         const acc = { id: client.id, name: client.name, color: clientColor(client.id), data, accessToken: null, clientId: client.id, userId: client.ml_user_id };
         const existing = state.accounts.findIndex(a => a.id === client.id);
         if (existing >= 0) state.accounts[existing] = acc;
@@ -1843,7 +1867,7 @@ function updateDashboard() {
   }
 
   let totalFac = 0, totalVentas = 0, totalVisits = 0, totalUnits = 0;
-  let totalRecibido = 0, totalAds = 0;
+  let totalRecibido = 0, totalAds = 0, totalAdsSales = 0, totalAdsUnits = 0;
   let convRates = [];
   let changes = { amount: [], orders: [], visits: [], conversion: [], units: [], ticket: [] };
 
@@ -1856,6 +1880,11 @@ function updateDashboard() {
     totalUnits    += s.total_units    || 0;
     totalRecibido += s.importe_recibido || 0;
     totalAds      += s.ads_spend      || 0;
+    // Datos de ads cargados automáticamente
+    if (acc.data._adsData) {
+      totalAdsSales += acc.data._adsData.sales    || 0;
+      totalAdsUnits += acc.data._adsData.units    || 0;
+    }
     if (s.conversion_rate != null) convRates.push(parseFloat(s.conversion_rate));
     if (s.change) {
       ['amount','orders','visits','conversion','units','ticket'].forEach(k => {
@@ -1900,13 +1929,21 @@ function updateDashboard() {
   document.getElementById('kpiTacos').textContent = tacos === '—' ? '—' : tacos + '%';
   document.getElementById('kpiTacosSub').textContent = totalAds > 0 ? 'Gasto Ads / Facturación' : 'Sin datos de Ads aún';
 
-  // KPIs de ads — se actualizan cuando carga la sección de publicidad
+  // KPIs de ads — con datos cargados automáticamente
   const adsSpendEl = document.getElementById('kpiAdsSpend');
   if (adsSpendEl) adsSpendEl.textContent = totalAds > 0 ? formatMoney(totalAds) : '—';
   const kpiAdsSalesEl = document.getElementById('kpiAdsSales');
-  const kpiPctAdsEl   = document.getElementById('kpiPctAds');
-  const kpiRoasEl     = document.getElementById('kpiRoas');
-  // Estos se actualizan desde loadAds() cuando hay datos de ads
+  if (kpiAdsSalesEl) kpiAdsSalesEl.textContent = totalAdsSales > 0 ? formatMoney(totalAdsSales) : '—';
+  const kpiAdsSalesSubEl = document.getElementById('kpiAdsSalesSub');
+  if (kpiAdsSalesSubEl) kpiAdsSalesSubEl.textContent = totalAdsUnits > 0 ? totalAdsUnits.toLocaleString('es-AR') + ' unidades' : '';
+  const salesShareNum = totalAdsSales && totalFac ? (totalAdsSales / totalFac * 100) : null;
+  const kpiPctAdsEl = document.getElementById('kpiPctAds');
+  if (kpiPctAdsEl) kpiPctAdsEl.textContent = salesShareNum ? salesShareNum.toFixed(1) + '%' : '—';
+  const roasNum = totalAds > 0 && totalAdsSales > 0 ? (totalAdsSales / totalAds).toFixed(2) + 'x' : '—';
+  const kpiRoasEl = document.getElementById('kpiRoas');
+  if (kpiRoasEl) kpiRoasEl.textContent = roasNum;
+  document.getElementById('kpiTacos').textContent = totalAds && totalFac ? (totalAds/totalFac*100).toFixed(1) + '%' : '—';
+  document.getElementById('kpiTacosSub').textContent = totalAds > 0 ? 'Gasto Ads / Facturación' : 'Sin datos de Ads aún';
 
   document.getElementById('kpiRecibido').textContent = formatMoney(totalRecibido);
   document.getElementById('kpiRecibidoSub').textContent = 'Neto tras comisiones, envío e impuestos';
@@ -1949,21 +1986,39 @@ function updateDashboard() {
   document.getElementById('kpiPctRecibidoSub').textContent = 'Sobre facturación bruta';
 
   // Reputación — solo la medalla de la primera cuenta
-  const firstWithRep = connected.find(acc => acc.data.reputation || (acc.data.user && acc.data.user.seller_reputation));
+  const firstWithRep = connected.find(acc => acc.data.reputation);
   const repBadgeEl = document.getElementById('reputationBadge');
   const repLabelEl = document.getElementById('reputationLabel');
-  if (firstWithRep) {
-    const rep = firstWithRep.data.reputation || firstWithRep.data.user.seller_reputation;
-    const level = rep.power_seller_status || 'silver';
+  if (firstWithRep && firstWithRep.data.reputation) {
+    const rep = firstWithRep.data.reputation;
+    const level = (rep.power_seller || rep.level || 'silver').toLowerCase();
     const medals = { platinum: '🏆', gold: '🥇', silver: '🥈', bronze: '🥉' };
     const labels = { platinum: 'PLATINO', gold: 'ORO', silver: 'PLATA', bronze: 'BRONCE' };
     const colors = { platinum: '#e5e4e2', gold: '#FFD700', silver: '#C0C0C0', bronze: '#CD7F32' };
-    repBadgeEl.textContent = medals[level] || '🥈';
-    repLabelEl.textContent = labels[level] || 'PLATA';
-    repLabelEl.style.color = colors[level] || '#C0C0C0';
+    if (repBadgeEl) repBadgeEl.textContent = medals[level] || '🥈';
+    if (repLabelEl) { repLabelEl.textContent = labels[level] || level.toUpperCase(); repLabelEl.style.color = colors[level] || '#C0C0C0'; }
+
+    // Reclamos, cancelaciones, demoras — promediar entre cuentas con datos
+    const repData = connected.filter(a => a.data.reputation).map(a => a.data.reputation);
+    const avgRate = (field) => {
+      const vals = repData.map(r => r[field] || 0);
+      return vals.length ? (vals.reduce((a,b) => a+b,0) / vals.length * 100) : null;
+    };
+    const repQualColor = (pct) => pct == null ? 'var(--muted)' : pct <= 1 ? '#00e676' : pct <= 3 ? '#ff9100' : '#ff5252';
+
+    const claims = avgRate('claims');
+    const cancels = avgRate('cancellations');
+    const delays  = avgRate('delayed');
+
+    const kpiReclEl = document.getElementById('kpiReclamos');
+    const kpiCancEl = document.getElementById('kpiCancelaciones');
+    const kpiDemEl  = document.getElementById('kpiDemoras');
+    if (kpiReclEl) { kpiReclEl.textContent = claims != null ? claims.toFixed(2) + '%' : '—'; kpiReclEl.style.color = repQualColor(claims); }
+    if (kpiCancEl) { kpiCancEl.textContent = cancels != null ? cancels.toFixed(2) + '%' : '—'; kpiCancEl.style.color = repQualColor(cancels); }
+    if (kpiDemEl)  { kpiDemEl.textContent  = delays != null  ? delays.toFixed(2) + '%'  : '—'; kpiDemEl.style.color  = repQualColor(delays); }
   } else {
-    repBadgeEl.textContent = '—';
-    repLabelEl.textContent = 'Sin datos';
+    if (repBadgeEl) repBadgeEl.textContent = '—';
+    if (repLabelEl) repLabelEl.textContent = 'Sin datos';
   }
 
   // Gráfico evolución
@@ -2050,20 +2105,20 @@ function buildEvolutionChart() {
   // Barras de ventas
   let barsSvg = '';
   if (series.ventas) {
-    const barW = Math.max(2, innerW / days - 1);
+    const barSpacing = innerW / days;
+    const barW = days <= 14
+      ? Math.max(8, barSpacing * 0.7)
+      : Math.max(2, barSpacing - 1);
     ventasByDay.forEach((v, i) => {
-      const x = padL + (i / (days - 1 || 1)) * innerW - barW/2;
+      const centerX = padL + (i + 0.5) * barSpacing;
+      const x = centerX - barW / 2;
       const barH = innerH * (v / maxVentas);
       const y = padT + innerH - barH;
-      barsSvg += `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barW.toFixed(1)}" height="${barH.toFixed(1)}"
-        fill="#00e676" opacity="0.7" rx="2">
-        <title>${labels[i]}: ${v} ventas</title>
-      </rect>`;
-      // Etiqueta de ventas dentro/encima de cada barra si hay espacio
+      barsSvg += `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barW.toFixed(1)}" height="${barH.toFixed(1)}" fill="#00e676" opacity="0.7" rx="2"><title>${labels[i]}: ${v} ventas</title></rect>`;
       if (v > 0 && barW > 14 && days <= 31) {
         const labelY = barH > 18 ? y + barH - 4 : y - 3;
         const labelFill = barH > 18 ? 'rgba(0,0,0,.7)' : '#00e676';
-        barsSvg += `<text x="${(x + barW/2).toFixed(1)}" y="${labelY.toFixed(1)}" text-anchor="middle" font-size="9" fill="${labelFill}" font-family="sans-serif" font-weight="600">${v}</text>`;
+        barsSvg += `<text x="${centerX.toFixed(1)}" y="${labelY.toFixed(1)}" text-anchor="middle" font-size="9" fill="${labelFill}" font-family="sans-serif" font-weight="600">${v}</text>`;
       }
     });
   }
@@ -2071,23 +2126,25 @@ function buildEvolutionChart() {
   // Línea de facturación
   let facPath = '', facArea = '';
   if (series.fac && facByDay.some(v => v > 0)) {
+    const barSpacingFac = innerW / days;
     const pts = facByDay.map((v, i) => {
-      const x = padL + (i / (days - 1 || 1)) * innerW;
+      const x = padL + (i + 0.5) * barSpacingFac;
       const y = padT + innerH - (v / maxFac) * innerH;
       return `${x.toFixed(1)},${y.toFixed(1)}`;
     });
     facPath = `<polyline points="${pts.join(' ')}" fill="none" stroke="#FFD700" stroke-width="2" stroke-linejoin="round"/>`;
-    const areaBot = padT + innerH;
-    const areaLeft  = padL;
-    const areaRight = padL + innerW;
+    const areaBot   = padT + innerH;
+    const areaLeft  = padL + 0.5 * (innerW / days);
+    const areaRight = padL + (days - 0.5) * (innerW / days);
     facArea = `<polygon points="${areaLeft},${areaBot} ${pts.join(' ')} ${areaRight},${areaBot}" fill="#FFD700" opacity="0.06"/>`;
   }
 
   // Línea de visitas
   let visitasPath = '';
   if (series.visitas && visitasByDay.some(v => v > 0)) {
+    const barSpacingVis = innerW / days;
     const pts = visitasByDay.map((v, i) => {
-      const x = padL + (i / (days - 1 || 1)) * innerW;
+      const x = padL + (i + 0.5) * barSpacingVis;
       const y = padT + innerH - (v / maxVisitas) * innerH;
       return `${x.toFixed(1)},${y.toFixed(1)}`;
     });
@@ -2104,7 +2161,7 @@ function buildEvolutionChart() {
   // Etiquetas X
   let xLabels = '';
   for (let i = 0; i < days; i += step) {
-    const x = padL + (i / (days - 1 || 1)) * innerW;
+    const x = padL + (i + 0.5) * (innerW / days);
     xLabels += `<text x="${x.toFixed(1)}" y="${H - 6}" text-anchor="middle" font-size="10" fill="rgba(255,255,255,.5)" font-family="sans-serif">${labels[i]}</text>`;
   }
 
@@ -2366,6 +2423,7 @@ async function loadPublicaciones() {
           <th style="text-align:right;cursor:pointer" onclick="sortPubs('conversion')">Conv. ↕</th>
           <th style="text-align:right;cursor:pointer" onclick="sortPubs('adsClicks')">Clicks Ads ↕</th>
           <th style="text-align:right;cursor:pointer" onclick="sortPubs('adsConversion')">Conv. Ads ↕</th>
+          <th style="text-align:center;cursor:pointer" onclick="sortPubs('health')">Health ↕</th>
         </tr></thead>
         <tbody id="pubsBody">${buildPubRows(allItems, fmt, Math.max(1, Math.round((new Date(range2.date_to) - new Date(range2.date_from)) / (1000*60*60*24))))}</tbody>
       </table>
@@ -2408,7 +2466,7 @@ function buildPubRows(items, fmt, dias) {
     const coberturaStr = cobertura != null ? cobertura + 'd' : '—';
     const coberColor = cobertura == null ? 'var(--muted)' : cobertura <= 7 ? '#ff5252' : cobertura <= 21 ? '#ff9100' : '#00e676';
 
-    return '<tr class="pub-row" data-status="' + item.status + '" data-hassales="' + item.hasSales + '" data-hasproblems="' + item.hasProblems + '" data-isfull="' + (item.is_full?'1':'0') + '" data-search="' + (item.title + item.id + (item.cuenta||'')).toLowerCase() + '">'      + '<td style="font-size:11px"><span style="color:var(--muted);cursor:pointer" title="Click para copiar" onclick="copyMLA(this,\'' + item.id + '\')">'      + item.id + '</span></td>'      + '<td style="max-width:240px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'      + '<a href="https://articulo.mercadolibre.com.ar/' + item.id.replace(/MLA(\d+)/, 'MLA-$1') + '" target="_blank" style="color:var(--text);text-decoration:none" title="Abrir en ML">'      + item.title + '</a></td>'      + '<td>' + statusTag + '</td>'      + '<td style="text-align:center">' + fullTag + '</td>'      + '<td style="text-align:right;font-weight:700;color:' + stockColor + '">' + (item.available_quantity != null ? item.available_quantity.toLocaleString('es-AR') : '—') + '</td>'      + '<td style="text-align:right;font-size:12px;font-weight:700;color:' + ritmoColor + '">' + (ritmo > 0 ? ritmo : '—') + '</td>'      + '<td style="text-align:right;font-size:12px;color:' + coberColor + '">' + coberturaStr + '</td>'      + '<td>' + adsTag + '</td>'      + '<td style="text-align:right;color:#00e676;font-weight:700">' + (item.units || '—') + '</td>'      + '<td style="text-align:right;color:var(--yellow);font-weight:700">' + (item.revenue > 0 ? fmt(item.revenue) : '—') + '</td>'      + '<td style="text-align:right;color:#00e676;font-weight:600">' + (item.adsSales > 0 ? fmt(item.adsSales) : '—') + '</td>'      + '<td style="text-align:right;font-size:12px">' + (item.revenueShare > 0 ? item.revenueShare + '%' : '—') + '</td>'      + '<td style="text-align:right">' + (item.visits > 0 ? item.visits.toLocaleString('es-AR') : '—') + '</td>'      + '<td style="text-align:right;font-size:13px;font-weight:700;color:' + convColor + '">' + (item.conversion > 0 ? item.conversion + '%' : '—') + '</td>'      + '<td style="text-align:right">' + (item.adsClicks > 0 ? item.adsClicks.toLocaleString('es-AR') : '—') + '</td>'      + '<td style="text-align:right;font-size:13px;font-weight:700;color:' + adsConvColor + '">' + (item.adsConversion > 0 ? item.adsConversion + '%' : '—') + '</td>'      + '</tr>';
+    return '<tr class="pub-row" data-status="' + item.status + '" data-hassales="' + item.hasSales + '" data-hasproblems="' + item.hasProblems + '" data-isfull="' + (item.is_full?'1':'0') + '" data-search="' + (item.title + item.id + (item.cuenta||'')).toLowerCase() + '">'      + '<td style="font-size:11px"><span style="color:var(--muted);cursor:pointer" title="Click para copiar" onclick="copyMLA(this,\'' + item.id + '\')">'      + item.id + '</span></td>'      + '<td style="max-width:240px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'      + '<a href="https://articulo.mercadolibre.com.ar/' + item.id.replace(/MLA(\d+)/, 'MLA-$1') + '" target="_blank" style="color:var(--text);text-decoration:none" title="Abrir en ML">'      + item.title + '</a></td>'      + '<td>' + statusTag + '</td>'      + '<td style="text-align:center">' + fullTag + '</td>'      + '<td style="text-align:right;font-weight:700;color:' + stockColor + '">' + (item.available_quantity != null ? item.available_quantity.toLocaleString('es-AR') : '—') + '</td>'      + '<td style="text-align:right;font-size:12px;font-weight:700;color:' + ritmoColor + '">' + (ritmo > 0 ? ritmo : '—') + '</td>'      + '<td style="text-align:right;font-size:12px;color:' + coberColor + '">' + coberturaStr + '</td>'      + '<td>' + adsTag + '</td>'      + '<td style="text-align:right;color:#00e676;font-weight:700">' + (item.units || '—') + '</td>'      + '<td style="text-align:right;color:var(--yellow);font-weight:700">' + (item.revenue > 0 ? fmt(item.revenue) : '—') + '</td>'      + '<td style="text-align:right;color:#00e676;font-weight:600">' + (item.adsSales > 0 ? fmt(item.adsSales) : '—') + '</td>'      + '<td style="text-align:right;font-size:12px">' + (item.revenueShare > 0 ? item.revenueShare + '%' : '—') + '</td>'      + '<td style="text-align:right">' + (item.visits > 0 ? item.visits.toLocaleString('es-AR') : '—') + '</td>'      + '<td style="text-align:right;font-size:13px;font-weight:700;color:' + convColor + '">' + (item.conversion > 0 ? item.conversion + '%' : '—') + '</td>'      + '<td style="text-align:right">' + (item.adsClicks > 0 ? item.adsClicks.toLocaleString('es-AR') : '—') + '</td>'      + '<td style="text-align:right;font-size:13px;font-weight:700;color:' + adsConvColor + '">' + (item.adsConversion > 0 ? item.adsConversion + '%' : '—') + '</td>'      + (function(){ if (item.health == null) return '<td style="text-align:center;color:var(--muted);font-size:11px">—</td>'; const h = item.health; const pct = Math.round(h * 100); const color = pct >= 80 ? '#00e676' : pct >= 50 ? '#ff9100' : '#ff5252'; const bar = '<div style="background:var(--surface2);border-radius:3px;height:4px;width:60px;margin:3px auto 0"><div style="background:'+color+';height:100%;width:'+pct+'%;border-radius:3px"></div></div>'; return '<td style="text-align:center"><span style="font-size:12px;font-weight:700;color:'+color+'">' + pct + '%</span>' + bar + '</td>'; })()      + '</tr>';
   }).join('');
 }
 
@@ -7305,15 +7363,31 @@ function renderCompetenciaDetalle(data, uid) {
 
   const topRows = (top_listings||[]).map((i,idx) => {
     const isMe = i.seller && String(i.seller.id) === String(uid);
-    return `<tr style="${isMe?'background:#f0f4ff':''}">
+    const isFull = i.shipping && i.shipping.logistic_type === 'fulfillment';
+    const priceDiff = price_stats && price_stats.avg > 0 ? Math.round(((i.price - price_stats.avg) / price_stats.avg) * 100) : null;
+    const ourAdv = [], theirAdv = [];
+    if (isMe) {
+      if (priceDiff != null && priceDiff < -5) ourAdv.push('💰 Mejor precio');
+      if (isFull) ourAdv.push('📦 FULL');
+      if (priceDiff != null && priceDiff > 5) theirAdv.push('💸 Precio alto');
+      if (!isFull) theirAdv.push('⚠️ Sin FULL');
+    }
+    const advTag = (label, color) => `<span style="background:${color}22;color:${color};padding:1px 6px;border-radius:4px;font-size:10px;font-weight:600;margin:1px;display:inline-block">${label}</span>`;
+    const priceDiffStr = priceDiff != null ? `<span style="font-size:10px;color:${priceDiff<0?'#00e676':priceDiff>0?'#ff5252':'var(--muted)'};margin-left:4px">${priceDiff>0?'+':''}${priceDiff}%</span>` : '';
+    const fullBadge = isFull ? '<span style="background:#00bcd422;color:#00bcd4;padding:1px 5px;border-radius:3px;font-size:10px;font-weight:600;margin-left:4px">FULL</span>' : '';
+    const ourAdvHtml = isMe ? (ourAdv.length ? ourAdv.map(l => advTag(l,'#00e676')).join('') : '<span style="color:#00e676;font-size:10px">✓ OK</span>') : '<span style="color:var(--muted);font-size:10px">—</span>';
+    const theirAdvHtml = isMe ? (theirAdv.length ? theirAdv.map(l => advTag(l,'#ff9100')).join('') : '<span style="color:#00e676;font-size:10px">✓</span>') : '<span style="color:var(--muted);font-size:10px">—</span>';
+    return `<tr style="${isMe?'background:rgba(67,56,202,.08);border-left:3px solid #4338ca':''}">
       <td style="padding:7px 10px;border-bottom:1px solid var(--border);font-size:11px;color:var(--muted)">${idx+1}</td>
-      <td style="padding:7px 10px;border-bottom:1px solid var(--border);font-size:12px;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+      <td style="padding:7px 10px;border-bottom:1px solid var(--border);font-size:12px;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
         <a href="${i.permalink||'#'}" target="_blank" style="color:var(--text);text-decoration:none">${i.title}</a>
         ${isMe?'<span style="color:#4338ca;font-size:10px;font-weight:600;margin-left:6px">[Tuya]</span>':''}
       </td>
-      <td style="padding:7px 10px;border-bottom:1px solid var(--border);font-size:12px;text-align:right;font-weight:600">$${(i.price||0).toLocaleString('es-AR')}</td>
+      <td style="padding:7px 10px;border-bottom:1px solid var(--border);font-size:12px;text-align:right;font-weight:600">$${(i.price||0).toLocaleString('es-AR')}${priceDiffStr}</td>
       <td style="padding:7px 10px;border-bottom:1px solid var(--border);font-size:12px;text-align:center">${i.sold_quantity||0}</td>
-      <td style="padding:7px 10px;border-bottom:1px solid var(--border);font-size:12px">${i.seller&&i.seller.nickname||'—'}</td>
+      <td style="padding:7px 10px;border-bottom:1px solid var(--border);font-size:12px">${i.seller&&i.seller.nickname||'—'}${fullBadge}</td>
+      <td style="padding:7px 10px;border-bottom:1px solid var(--border);font-size:11px">${ourAdvHtml}</td>
+      <td style="padding:7px 10px;border-bottom:1px solid var(--border);font-size:11px">${theirAdvHtml}</td>
     </tr>`;
   }).join('');
 
@@ -7337,9 +7411,11 @@ function renderCompetenciaDetalle(data, uid) {
         <thead><tr style="background:var(--surface2)">
           <th style="padding:7px 10px;font-size:11px;color:var(--muted);border-bottom:1px solid var(--border)">#</th>
           <th style="padding:7px 10px;font-size:11px;color:var(--muted);border-bottom:1px solid var(--border);text-align:left">Título</th>
-          <th style="padding:7px 10px;font-size:11px;color:var(--muted);border-bottom:1px solid var(--border);text-align:right">Precio</th>
+          <th style="padding:7px 10px;font-size:11px;color:var(--muted);border-bottom:1px solid var(--border);text-align:right">Precio vs prom.</th>
           <th style="padding:7px 10px;font-size:11px;color:var(--muted);border-bottom:1px solid var(--border)">Vendidos</th>
           <th style="padding:7px 10px;font-size:11px;color:var(--muted);border-bottom:1px solid var(--border)">Vendedor</th>
+          <th style="padding:7px 10px;font-size:11px;color:var(--muted);border-bottom:1px solid var(--border)">Ventaja tuya</th>
+          <th style="padding:7px 10px;font-size:11px;color:var(--muted);border-bottom:1px solid var(--border)">A mejorar</th>
         </tr></thead>
         <tbody>${topRows}</tbody>
       </table></div>
