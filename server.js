@@ -1571,7 +1571,7 @@ app.get('/api/items-full', requireAuth, async (req, res) => {
     for (let i = 0; i < allIds.length; i += 20) {
       const batch = allIds.slice(i, i+20);
       try {
-        const data = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,title,price,status,sub_status,available_quantity,listing_type_id,category_id,shipping,pictures,condition,catalog_listing,video_id,health`, { headers }).then(r => r.json());
+        const data = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,title,price,status,sub_status,available_quantity,listing_type_id,category_id,shipping,pictures,condition,catalog_listing,video_id`, { headers }).then(r => r.json());
         (Array.isArray(data) ? data : []).forEach(r => {
           if (r.code === 200 && r.body) itemDetailsMap[r.body.id] = r.body;
         });
@@ -1689,8 +1689,7 @@ app.get('/api/items-full', requireAuth, async (req, res) => {
         adsSales: ads.adsSales||0, adsCost: ads.adsCost||0,
         adsConversion: ads.clicks > 0 ? parseFloat(((ads.adsUnits||0)/ads.clicks*100).toFixed(1)) : 0,
         problems, hasProblems: problems.length > 0,
-        has_clip: clipsSet.has(item.id),
-        health: detail.health != null ? parseFloat(detail.health) : null
+        has_clip: clipsSet.has(item.id)
       };
     });
 
@@ -1724,8 +1723,7 @@ app.get('/api/items-full', requireAuth, async (req, res) => {
         adsSales: ads.adsSales||0, adsCost: ads.adsCost||0,
         adsConversion: ads.clicks > 0 ? parseFloat(((ads.adsUnits||0)/ads.clicks*100).toFixed(1)) : 0,
         problems, hasProblems: problems.length > 0,
-        has_clip: clipsSet.has(id),
-        health: detail.health != null ? parseFloat(detail.health) : null
+        has_clip: clipsSet.has(id)
       };
     });
 
@@ -3253,18 +3251,29 @@ app.get('/api/competencia', requireAuth, async (req, res) => {
 
     if (categoryId) {
       // ── Top sellers + price range for a specific category ──────────────────
-      // ML search API is public — no auth header needed, use multiple sort options
+      // Usar app token (client_credentials) — el user token da forbidden en búsquedas
+      // de categoría desde IPs de cloud (Railway/Vercel)
+      const appToken = await getAppToken(parseInt(req.query.client_id));
+      const searchHeaders = appToken
+        ? { 'Authorization': `Bearer ${appToken}` }
+        : { 'Authorization': `Bearer ${token}` };
+
       const searchUrl = `${ML_API}/sites/MLA/search?category=${categoryId}&sort=sold_quantity_desc&limit=50`;
       const searchUrl2 = `${ML_API}/sites/MLA/search?category=${categoryId}&limit=50`;
       
       let searchRes = {};
       try {
-        searchRes = await fetch(searchUrl).then(r => r.json());
-        console.log(`[COMP] category=${categoryId} results=${(searchRes.results||[]).length} total=${searchRes.paging?.total} error=${searchRes.error}`);
-        // Fallback if sort not available
+        searchRes = await fetch(searchUrl, { headers: searchHeaders }).then(r => r.json());
+        console.log(`[COMP] category=${categoryId} results=${(searchRes.results||[]).length} total=${searchRes.paging?.total} error=${searchRes.error} appToken=${!!appToken}`);
+        // Fallback si sort no disponible
         if (!searchRes.results || searchRes.results.length === 0) {
-          searchRes = await fetch(searchUrl2).then(r => r.json());
-          console.log(`[COMP] fallback results=${(searchRes.results||[]).length}`);
+          searchRes = await fetch(searchUrl2, { headers: searchHeaders }).then(r => r.json());
+          console.log(`[COMP] fallback results=${(searchRes.results||[]).length} error=${searchRes.error}`);
+        }
+        // Último fallback: user token directo
+        if (!searchRes.results || searchRes.results.length === 0) {
+          searchRes = await fetch(searchUrl2, { headers }).then(r => r.json());
+          console.log(`[COMP] user token fallback results=${(searchRes.results||[]).length} error=${searchRes.error}`);
         }
       } catch(e) { console.error('[COMP] search error:', e.message); }
 
