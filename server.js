@@ -3259,11 +3259,11 @@ app.get('/api/competencia', requireAuth, async (req, res) => {
       
       let searchRes = {};
       try {
-        searchRes = await fetch(searchUrl, { headers }).then(r => r.json());
+        searchRes = await fetch(searchUrl).then(r => r.json());
         console.log(`[COMP] category=${categoryId} results=${(searchRes.results||[]).length} total=${searchRes.paging?.total} error=${searchRes.error}`);
         // Fallback if sort not available
         if (!searchRes.results || searchRes.results.length === 0) {
-          searchRes = await fetch(searchUrl2, { headers }).then(r => r.json());
+          searchRes = await fetch(searchUrl2).then(r => r.json());
           console.log(`[COMP] fallback results=${(searchRes.results||[]).length}`);
         }
       } catch(e) { console.error('[COMP] search error:', e.message); }
