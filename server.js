@@ -3294,12 +3294,9 @@ app.get('/api/competencia', requireAuth, async (req, res) => {
       }
 
       const results = searchRes.results || [];
-      console.log(`[COMP] processing ${results.length} results`);
+      console.log(`[COMP] processing ${results.length} results, first=`, results[0] && { id: results[0].id, seller: results[0].seller, price: results[0].price });
 
       const catRes = await fetch(`${ML_API}/categories/${categoryId}`, { headers }).then(r => r.json()).catch(() => ({}));
-
-      const results = searchRes.results || [];
-      console.log(`[COMP] processing ${results.length} results, first=`, results[0] && { id: results[0].id, seller: results[0].seller, price: results[0].price });
       
       const prices = results.map(r => parseFloat(r.price)||0).filter(p => p > 0);
       const priceStats = prices.length ? {
