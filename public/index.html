@@ -647,9 +647,11 @@ tbody td {
 
       <!-- BLOQUE 3: Financiero + Reputación -->
       <div style="font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.08em;margin-bottom:8px">💰 FINANCIERO</div>
-      <div style="display:grid;grid-template-columns:1fr 1fr auto;gap:12px;margin-bottom:16px;align-items:stretch">
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr auto;gap:12px;margin-bottom:16px;align-items:stretch">
         <div class="kpi-card"><div class="kpi-label">💰 IMPORTE RECIBIDO</div><div class="kpi-value" id="kpiRecibido">—</div><div class="kpi-delta" id="kpiRecibidoDelta"></div><div class="kpi-sub" id="kpiRecibidoSub">Neto tras comisiones, envío e impuestos</div></div>
         <div class="kpi-card"><div class="kpi-label">📈 % RECIBIDO</div><div class="kpi-value" id="kpiPctRecibido">—</div><div class="kpi-delta" id="kpiPctRecibidoDelta"></div><div class="kpi-sub" id="kpiPctRecibidoSub">Sobre facturación bruta</div></div>
+        <div class="kpi-card"><div class="kpi-label">🟢 UTILIDAD <span id="kpiUtilidadCMVWarn" style="color:#ff9100;font-size:10px"></span></div><div class="kpi-value" id="kpiUtilidad">—</div><div class="kpi-delta" id="kpiUtilidadDelta"></div><div class="kpi-sub" id="kpiUtilidadSub">Neto ML − CMV − Ads</div></div>
+        <div class="kpi-card"><div class="kpi-label">📊 MARGEN % <span id="kpiMargenCMVWarn" style="color:#ff9100;font-size:10px"></span></div><div class="kpi-value" id="kpiMargen">—</div><div class="kpi-delta" id="kpiMargenDelta"></div><div class="kpi-sub" id="kpiMargenSub">Utilidad / Facturación</div></div>
         <div class="kpi-card" style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:20px 28px;min-width:140px">
           <div class="kpi-label" style="margin-bottom:10px">REPUTACIÓN</div>
           <div id="reputationBadge" style="font-size:36px">—</div>
@@ -1909,6 +1911,42 @@ function updateDashboard() {
   document.getElementById('kpiRecibido').textContent = formatMoney(totalRecibido);
   document.getElementById('kpiRecibidoSub').textContent = 'Neto tras comisiones, envío e impuestos';
 
+  // Utilidad y margen — cruzar con CMV de rentabilidad
+  let cmvTotal = 0, cmvCubierto = 0, cmvTotal_prev = 0;
+  let hasCMV = false;
+  connected.forEach(acc => {
+    const r = acc.data.rentabilidad;
+    if (!r) return;
+    (r.by_product || []).forEach(p => {
+      if (p.costo_unit != null) {
+        cmvTotal    += (p.costo_unit * p.units);
+        cmvCubierto += 1;
+        hasCMV = true;
+      }
+    });
+    cmvTotal_prev += r.costo_productos_prev || 0;
+  });
+
+  const utilidad     = hasCMV ? totalRecibido - cmvTotal - totalAds : null;
+  const utilidad_prev= hasCMV && cmvTotal_prev > 0 ? null : null; // sin prev
+  const margenPct    = hasCMV && totalFac > 0 ? (utilidad / totalFac * 100).toFixed(1) : null;
+
+  const kpiUtilEl  = document.getElementById('kpiUtilidad');
+  const kpiMargenEl= document.getElementById('kpiMargen');
+  const warnU = document.getElementById('kpiUtilidadCMVWarn');
+  const warnM = document.getElementById('kpiMargenCMVWarn');
+
+  if (kpiUtilEl) {
+    kpiUtilEl.textContent = utilidad != null ? formatMoney(utilidad) : '—';
+    kpiUtilEl.style.color = utilidad != null ? (utilidad >= 0 ? '#00e676' : '#ff5252') : '';
+    if (warnU) warnU.textContent = !hasCMV ? '⚠ sin CMV' : '';
+  }
+  if (kpiMargenEl) {
+    kpiMargenEl.textContent = margenPct != null ? margenPct + '%' : '—';
+    kpiMargenEl.style.color = margenPct != null ? (parseFloat(margenPct) >= 20 ? '#00e676' : parseFloat(margenPct) >= 10 ? '#ff9100' : '#ff5252') : '';
+    if (warnM) warnM.textContent = !hasCMV ? '⚠ sin CMV' : '';
+  }
+
   document.getElementById('kpiPctRecibido').textContent = pctRecibido === '—' ? '—' : pctRecibido + '%';
   document.getElementById('kpiPctRecibidoSub').textContent = 'Sobre facturación bruta';
 
@@ -1941,7 +1979,7 @@ function updateDashboard() {
 
 function buildEvolutionChart() {
   const connected = state.accounts.filter(a => a.data);
-  const chartEl = document.getElementById('weeklyChart');
+  const chartEl  = document.getElementById('weeklyChart');
   const legendEl = document.getElementById('chartLegend');
   if (!chartEl) return;
   chartEl.innerHTML = '';
@@ -1949,221 +1987,142 @@ function buildEvolutionChart() {
   if (!connected.length) return;
   try {
 
-  const range = getDateRange();
+  const range  = getDateRange();
   const fromMs = new Date(range.date_from).getTime();
   const toMs   = new Date(range.date_to).getTime();
   const days   = (fromMs && toMs) ? Math.max(1, Math.round((toMs - fromMs) / (1000*60*60*24))) : (state.rangeDays || 30);
-  const now = Date.now();
+  const now    = Date.now();
 
-  // Build daily buckets
+  // Buckets diarios
   const facByDay    = new Array(days).fill(0);
   const ventasByDay = new Array(days).fill(0);
+  const visitasByDay= new Array(days).fill(0);
 
   connected.forEach(acc => {
-    // Usar orders_detail que sí existe en los datos
-    const orders = acc.data.orders_detail || [];
-    orders.forEach(o => {
-      const oDate = new Date(o.date);
-      const age = (now - oDate.getTime()) / (1000 * 60 * 60 * 24);
-      const di = Math.floor(age);
+    (acc.data.orders_detail || []).forEach(o => {
+      const age = (now - new Date(o.date).getTime()) / (1000*60*60*24);
+      const di  = Math.floor(age);
       if (di >= 0 && di < days) {
         const idx = days - 1 - di;
         facByDay[idx]    += parseFloat(o.facturacion) || 0;
         ventasByDay[idx] += 1;
       }
     });
+    // Visitas: distribuir el total uniformemente (no tenemos por día)
+    // Si hay by_day en topItems, usarlo
+    const totalVisits = acc.data?.stats?.total_visits || 0;
+    if (totalVisits > 0 && days > 0) {
+      const dailyVisits = totalVisits / days;
+      for (let i = 0; i < days; i++) visitasByDay[i] += dailyVisits;
+    }
   });
 
-  // Date labels
+  // Labels de fechas
   const labels = [];
   for (let i = 0; i < days; i++) {
-    const d = new Date(now - (days - 1 - i) * 24 * 60 * 60 * 1000);
+    const d = new Date(now - (days - 1 - i) * 24*60*60*1000);
     labels.push(d.toLocaleDateString('es-AR', { day:'2-digit', month:'short' }).replace('.',''));
   }
 
+  // Estado activo de series (persistente)
+  if (!window._chartSeries) window._chartSeries = { fac: true, ventas: true, visitas: true };
+
   const W = chartEl.clientWidth || 900;
   const H = 200;
-  const padL = 12, padR = 12, padT = 20, padB = 32;
+  const padL = 10, padR = 10, padT = 16, padB = 36;
   const innerW = W - padL - padR;
   const innerH = H - padT - padB;
 
-  // Independent max for each series
+  const series = window._chartSeries;
   const maxFac    = Math.max(...facByDay, 1);
   const maxVentas = Math.max(...ventasByDay, 1);
+  const maxVisitas= Math.max(...visitasByDay, 1);
 
-  function getPoints(arr, maxVal) {
-    return arr.map((v, i) => ({
-      x: padL + (i / Math.max(arr.length - 1, 1)) * innerW,
-      y: padT + innerH - (v / maxVal) * innerH
-    }));
+  // Determinar cuántas etiquetas mostrar
+  const step = days <= 14 ? 1 : days <= 31 ? Math.ceil(days/10) : Math.ceil(days/8);
+
+  // Barras de ventas
+  let barsSvg = '';
+  if (series.ventas) {
+    const barW = Math.max(2, innerW / days - 1);
+    ventasByDay.forEach((v, i) => {
+      const x = padL + (i / (days - 1 || 1)) * innerW - barW/2;
+      const barH = innerH * (v / maxVentas);
+      const y = padT + innerH - barH;
+      barsSvg += `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barW.toFixed(1)}" height="${barH.toFixed(1)}"
+        fill="#00e676" opacity="0.7" rx="2">
+        <title>${labels[i]}: ${v} ventas</title>
+      </rect>`;
+    });
   }
 
-  function smoothD(points) {
-    if (points.length < 2) return '';
-    let d = `M ${points[0].x.toFixed(1)} ${points[0].y.toFixed(1)}`;
-    for (let i = 0; i < points.length - 1; i++) {
-      const p0 = points[Math.max(0, i - 1)];
-      const p1 = points[i];
-      const p2 = points[i + 1];
-      const p3 = points[Math.min(points.length - 1, i + 2)];
-      const cp1x = p1.x + (p2.x - p0.x) / 6;
-      const cp1y = p1.y + (p2.y - p0.y) / 6;
-      const cp2x = p2.x - (p3.x - p1.x) / 6;
-      const cp2y = p2.y - (p3.y - p1.y) / 6;
-      d += ` C ${cp1x.toFixed(1)} ${cp1y.toFixed(1)}, ${cp2x.toFixed(1)} ${cp2y.toFixed(1)}, ${p2.x.toFixed(1)} ${p2.y.toFixed(1)}`;
-    }
-    return d;
+  // Línea de facturación
+  let facPath = '', facArea = '';
+  if (series.fac && facByDay.some(v => v > 0)) {
+    const pts = facByDay.map((v, i) => {
+      const x = padL + (i / (days - 1 || 1)) * innerW;
+      const y = padT + innerH - (v / maxFac) * innerH;
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    });
+    facPath = `<polyline points="${pts.join(' ')}" fill="none" stroke="#FFD700" stroke-width="2" stroke-linejoin="round"/>`;
+    const areaBot = padT + innerH;
+    const areaLeft  = padL;
+    const areaRight = padL + innerW;
+    facArea = `<polygon points="${areaLeft},${areaBot} ${pts.join(' ')} ${areaRight},${areaBot}" fill="#FFD700" opacity="0.06"/>`;
   }
 
-  function areaD(points) {
-    const line = smoothD(points);
-    if (!line) return '';
-    const baseY = (padT + innerH).toFixed(1);
-    return `${line} L ${points[points.length-1].x.toFixed(1)} ${baseY} L ${points[0].x.toFixed(1)} ${baseY} Z`;
+  // Línea de visitas
+  let visitasPath = '';
+  if (series.visitas && visitasByDay.some(v => v > 0)) {
+    const pts = visitasByDay.map((v, i) => {
+      const x = padL + (i / (days - 1 || 1)) * innerW;
+      const y = padT + innerH - (v / maxVisitas) * innerH;
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    });
+    visitasPath = `<polyline points="${pts.join(' ')}" fill="none" stroke="#6366f1" stroke-width="1.5" stroke-dasharray="4 3" stroke-linejoin="round"/>`;
   }
 
-  const ptsFac    = getPoints(facByDay, maxFac);
-  const ptsVentas = getPoints(ventasByDay, maxVentas);
+  // Grid horizontal
+  let grid = '';
+  for (let g = 0; g <= 4; g++) {
+    const y = padT + (g / 4) * innerH;
+    grid += `<line x1="${padL}" y1="${y.toFixed(1)}" x2="${padL + innerW}" y2="${y.toFixed(1)}" stroke="rgba(255,255,255,.05)" stroke-width="1"/>`;
+  }
 
-  // X axis labels — smart spacing
-  const labelStep = days <= 14 ? 1 : days <= 30 ? 3 : 7;
+  // Etiquetas X
   let xLabels = '';
-  for (let i = 0; i < days; i++) {
-    if (i % labelStep !== 0 && i !== days - 1) continue;
-    const x = padL + (i / (days - 1)) * innerW;
-    xLabels += `<text x="${x.toFixed(1)}" y="${H - 8}" text-anchor="middle" fill="#aaa" font-size="10" font-family="sans-serif">${labels[i]}</text>`;
+  for (let i = 0; i < days; i += step) {
+    const x = padL + (i / (days - 1 || 1)) * innerW;
+    xLabels += `<text x="${x.toFixed(1)}" y="${H - 4}" text-anchor="middle" font-size="10" fill="rgba(255,255,255,.35)" font-family="sans-serif">${labels[i]}</text>`;
   }
 
-  // Invisible overlay rects per day for hover detection
-  let overlays = '';
-  const colW = innerW / days;
-  for (let i = 0; i < days; i++) {
-    const x = padL + i * colW;
-    const fac = facByDay[i];
-    const ventas = ventasByDay[i];
-    const fmt = n => { const sign = n < 0 ? '-' : ''; return sign + '$' + Math.round(Math.abs(n)).toLocaleString('es-AR'); };
-    overlays += `<rect x="${x.toFixed(1)}" y="${padT}" width="${colW.toFixed(1)}" height="${innerH}"
-      fill="transparent" class="chart-overlay"
-      data-label="${labels[i]}" data-fac="${fmt(fac)}" data-ventas="${ventas}"
-      data-cx="${(padL + (i/(days-1))*innerW).toFixed(1)}"
-      data-facy="${ptsFac[i].y.toFixed(1)}" data-ventasy="${ptsVentas[i].y.toFixed(1)}"/>`;
-  }
+  chartEl.innerHTML = `<svg width="100%" height="${H}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
+    ${grid}${barsSvg}${facArea}${facPath}${visitasPath}${xLabels}
+  </svg>`;
 
-  // Crosshair line (hidden initially)
-  const crosshair = `<line id="chartCrosshair" x1="0" y1="${padT}" x2="0" y2="${padT+innerH}" stroke="#ccc" stroke-width="1" stroke-dasharray="3,3" opacity="0"/>`;
-  // Highlight dots
-  const hlDots = `
-    <circle id="chartDotFac"    r="4" fill="#FFD700" stroke="#fff" stroke-width="2" opacity="0"/>
-    <circle id="chartDotVentas" r="4" fill="#00e676" stroke="#fff" stroke-width="2" opacity="0"/>`;
+  // Leyenda clickeable
+  const fmt = n => '$' + Math.round(n/1000).toLocaleString('es-AR') + 'K';
+  const legends = [
+    { key: 'fac',     color: '#FFD700', label: '— Facturación', total: fmt(facByDay.reduce((a,b)=>a+b,0)), type: 'line' },
+    { key: 'ventas',  color: '#00e676', label: '█ Ventas',       total: ventasByDay.reduce((a,b)=>a+b,0).toLocaleString('es-AR') + ' órd.', type: 'bar' },
+    { key: 'visitas', color: '#6366f1', label: '- - Visitas',    total: '', type: 'dash' },
+  ];
+  legendEl.innerHTML = legends.map(l => `
+    <div onclick="toggleChartSeries('${l.key}')" style="display:flex;align-items:center;gap:6px;cursor:pointer;opacity:${series[l.key]?1:0.35};user-select:none;transition:opacity .15s">
+      <span style="color:${l.color};font-size:${l.type==='dash'?'14':'12'}px">${l.type==='line'?'━':l.type==='dash'?'╌':'▪'}</span>
+      <span style="font-size:12px;color:var(--muted)">${l.label.replace(/^[━╌▪█\-— ]+/,'')}</span>
+      ${l.total ? `<span style="font-size:11px;font-weight:600;color:${l.color}">${l.total}</span>` : ''}
+    </div>`).join('');
 
-  // Grid lines
-  const gridLines = [0.25, 0.5, 0.75, 1].map(f => {
-    const y = (padT + innerH - f * innerH).toFixed(1);
-    return `<line x1="${padL}" y1="${y}" x2="${padL + innerW}" y2="${y}" stroke="#e8e8e8" stroke-width="1" stroke-dasharray="4,4"/>`;
-  }).join('');
-
-  chartEl.style.height = H + 'px';
-  chartEl.style.display = 'block';
-  chartEl.style.position = 'relative';
-  chartEl.style.overflow = 'hidden';
-  chartEl.innerHTML = `
-    <div id="chartTooltip" style="
-      display:none;position:absolute;pointer-events:none;z-index:10;
-      background:var(--surface,#fff);border:1px solid var(--border,#e0e0e0);
-      border-radius:8px;padding:8px 12px;font-size:12px;
-      box-shadow:0 4px 16px rgba(0,0,0,0.12);min-width:130px;white-space:nowrap">
-    </div>
-    <svg id="chartSvg" width="100%" height="${H}" viewBox="0 0 ${W} ${H}" style="overflow:hidden;display:block">
-      <defs>
-        <linearGradient id="gFac" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stop-color="#FFD700" stop-opacity="0.3"/>
-          <stop offset="100%" stop-color="#FFD700" stop-opacity="0.0"/>
-        </linearGradient>
-        <linearGradient id="gVentas" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stop-color="#00e676" stop-opacity="0.25"/>
-          <stop offset="100%" stop-color="#00e676" stop-opacity="0.0"/>
-        </linearGradient>
-      </defs>
-      ${gridLines}
-      ${crosshair}
-      <path d="${areaD(ptsFac)}"    fill="url(#gFac)"/>
-      <path d="${areaD(ptsVentas)}" fill="url(#gVentas)"/>
-      <path d="${smoothD(ptsFac)}"    fill="none" stroke="#FFD700" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
-      <path d="${smoothD(ptsVentas)}" fill="none" stroke="#00e676" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
-      ${hlDots}
-      ${overlays}
-      ${xLabels}
-    </svg>`;
-
-  // Tooltip logic
-  const tooltip   = chartEl.querySelector('#chartTooltip');
-  const crossEl   = chartEl.querySelector('#chartCrosshair');
-  const dotFac    = chartEl.querySelector('#chartDotFac');
-  const dotVentas = chartEl.querySelector('#chartDotVentas');
-  const svgEl     = chartEl.querySelector('#chartSvg');
-
-  chartEl.querySelectorAll('.chart-overlay').forEach(rect => {
-    rect.addEventListener('mouseenter', function() {
-      const cx     = parseFloat(this.dataset.cx);
-      const facY   = parseFloat(this.dataset.facy);
-      const ventY  = parseFloat(this.dataset.ventasy);
-
-      // Crosshair
-      crossEl.setAttribute('x1', cx); crossEl.setAttribute('x2', cx);
-      crossEl.setAttribute('opacity', '1');
-
-      // Highlight dots
-      dotFac.setAttribute('cx', cx); dotFac.setAttribute('cy', facY);
-      dotFac.setAttribute('opacity', '1');
-      dotVentas.setAttribute('cx', cx); dotVentas.setAttribute('cy', ventY);
-      dotVentas.setAttribute('opacity', '1');
-
-      // Tooltip content
-      tooltip.innerHTML = `
-        <div style="font-weight:700;margin-bottom:6px;color:var(--text)">${this.dataset.label}</div>
-        <div style="display:flex;align-items:center;gap:6px;margin-bottom:3px">
-          <span style="width:8px;height:8px;border-radius:50%;background:#FFD700;display:inline-block"></span>
-          <span style="color:var(--muted)">Facturación:</span>
-          <span style="font-weight:600">${this.dataset.fac}</span>
-        </div>
-        <div style="display:flex;align-items:center;gap:6px">
-          <span style="width:8px;height:8px;border-radius:50%;background:#00e676;display:inline-block"></span>
-          <span style="color:var(--muted)">Ventas:</span>
-          <span style="font-weight:600">${this.dataset.ventas}</span>
-        </div>`;
-      tooltip.style.display = 'block';
-
-      // Position tooltip — flip if near right edge
-      const svgRect = svgEl.getBoundingClientRect();
-      const relX = (cx / W) * svgRect.width;
-      const flipLeft = relX > svgRect.width * 0.65;
-      tooltip.style.left  = flipLeft ? '' : (relX + 12) + 'px';
-      tooltip.style.right = flipLeft ? (svgRect.width - relX + 12) + 'px' : '';
-      tooltip.style.top   = padT + 'px';
-    });
-
-    rect.addEventListener('mouseleave', function() {
-      tooltip.style.display = 'none';
-      crossEl.setAttribute('opacity', '0');
-      dotFac.setAttribute('opacity', '0');
-      dotVentas.setAttribute('opacity', '0');
-    });
-  });
-
-  // Add hover cursor style once
-  if (!document.getElementById('chart-dot-style')) {
-    const style = document.createElement('style');
-    style.id = 'chart-dot-style';
-    style.textContent = '.chart-overlay { cursor: crosshair; }';
-    document.head.appendChild(style);
-  }
-
-  legendEl.innerHTML = `
-    <div class="leg"><div class="leg-dot" style="background:#FFD700"></div>Facturación</div>
-    <div class="leg"><div class="leg-dot" style="background:#00e676"></div>Ventas</div>
-  `;
-  } catch(e) { console.error('Chart render error:', e); }
+  } catch(e) { console.error('Chart error:', e); }
 }
+
+function toggleChartSeries(key) {
+  if (!window._chartSeries) window._chartSeries = { fac: true, ventas: true, visitas: true };
+  window._chartSeries[key] = !window._chartSeries[key];
+  buildEvolutionChart();
+}
+
 
 function setPubsRange(el, days) { setQuickRange(days); }
 
