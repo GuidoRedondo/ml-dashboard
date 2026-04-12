@@ -624,26 +624,33 @@ tbody td {
         </div>
       </div>
 
-      <!-- FILA 1: Facturación, Ventas, Ticket promedio -->
-      <div class="kpi-grid" style="grid-template-columns:repeat(3,1fr);margin-bottom:12px">
-        <div class="kpi-card"><div class="kpi-label">🧾 FACTURACIÓN</div><div class="kpi-value" id="kpiAmount">—</div><div class="kpi-delta" id="kpiAmountDelta"></div><div class="kpi-sub" id="kpiAmountSub">Seleccioná una cuenta</div></div>
-        <div class="kpi-card"><div class="kpi-label">🛒 VENTAS</div><div class="kpi-value" id="kpiOrders">—</div><div class="kpi-delta" id="kpiOrdersDelta"></div><div class="kpi-sub" id="kpiOrdersSub">Seleccioná una cuenta</div></div>
-        <div class="kpi-card"><div class="kpi-label">🎯 TICKET PROMEDIO</div><div class="kpi-value" id="kpiTicket">—</div><div class="kpi-delta" id="kpiTicketDelta"></div><div class="kpi-sub" id="kpiTicketSub">Seleccioná una cuenta</div></div>
+      <!-- BLOQUE 1: Ventas -->
+      <div style="font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.08em;margin-bottom:8px">📈 VENTAS</div>
+      <div class="kpi-grid" style="grid-template-columns:repeat(6,1fr);margin-bottom:16px">
+        <div class="kpi-card"><div class="kpi-label">🧾 FACTURACIÓN</div><div class="kpi-value" id="kpiAmount">—</div><div class="kpi-delta" id="kpiAmountDelta"></div><div class="kpi-sub" id="kpiAmountSub">Facturación bruta</div></div>
+        <div class="kpi-card"><div class="kpi-label">🛒 VENTAS</div><div class="kpi-value" id="kpiOrders">—</div><div class="kpi-delta" id="kpiOrdersDelta"></div><div class="kpi-sub" id="kpiOrdersSub">Órdenes pagadas</div></div>
+        <div class="kpi-card"><div class="kpi-label">🎯 TICKET PROM.</div><div class="kpi-value" id="kpiTicket">—</div><div class="kpi-delta" id="kpiTicketDelta"></div><div class="kpi-sub" id="kpiTicketSub">Facturación / Ventas</div></div>
+        <div class="kpi-card"><div class="kpi-label">👁 VISITAS</div><div class="kpi-value" id="kpiVisits">—</div><div class="kpi-delta" id="kpiVisitsDelta"></div><div class="kpi-sub" id="kpiVisitsSub">Visitas al período</div></div>
+        <div class="kpi-card"><div class="kpi-label">📦 UNIDADES</div><div class="kpi-value" id="kpiUnits">—</div><div class="kpi-delta" id="kpiUnitsDelta"></div><div class="kpi-sub" id="kpiUnitsSub">Unidades despachadas</div></div>
+        <div class="kpi-card"><div class="kpi-label">📊 CONVERSIÓN</div><div class="kpi-value" id="kpiConv">—</div><div class="kpi-delta" id="kpiConvDelta"></div><div class="kpi-sub" id="kpiConvSub">Ventas / Visitas</div></div>
       </div>
 
-      <!-- FILA 2: Visitas, Unidades, Conversión -->
-      <div class="kpi-grid" style="grid-template-columns:repeat(3,1fr);margin-bottom:12px">
-        <div class="kpi-card"><div class="kpi-label">👁 VISITAS</div><div class="kpi-value" id="kpiVisits">—</div><div class="kpi-delta" id="kpiVisitsDelta"></div><div class="kpi-sub" id="kpiVisitsSub">Seleccioná una cuenta</div></div>
-        <div class="kpi-card"><div class="kpi-label">📦 UNIDADES VENDIDAS</div><div class="kpi-value" id="kpiUnits">—</div><div class="kpi-delta" id="kpiUnitsDelta"></div><div class="kpi-sub" id="kpiUnitsSub">Seleccioná una cuenta</div></div>
-        <div class="kpi-card"><div class="kpi-label">📊 CONVERSIÓN</div><div class="kpi-value" id="kpiConv">—</div><div class="kpi-delta" id="kpiConvDelta"></div><div class="kpi-sub" id="kpiConvSub">Seleccioná una cuenta</div></div>
-      </div>
-
-      <!-- FILA 3: TACOS, Importe recibido, % recibido + Reputación -->
-      <div style="display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:12px;margin-bottom:12px;align-items:stretch">
+      <!-- BLOQUE 2: Publicidad -->
+      <div style="font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.08em;margin-bottom:8px">📣 PUBLICIDAD</div>
+      <div class="kpi-grid" style="grid-template-columns:repeat(5,1fr);margin-bottom:16px">
         <div class="kpi-card"><div class="kpi-label">📣 TACOS</div><div class="kpi-value" id="kpiTacos">—</div><div class="kpi-delta" id="kpiTacosDelta"></div><div class="kpi-sub" id="kpiTacosSub">Gasto Ads / Facturación</div></div>
-        <div class="kpi-card"><div class="kpi-label">💰 IMPORTE RECIBIDO</div><div class="kpi-value" id="kpiRecibido">—</div><div class="kpi-delta" id="kpiRecibidoDelta"></div><div class="kpi-sub" id="kpiRecibidoSub">Neto después de cargos</div></div>
-        <div class="kpi-card"><div class="kpi-label">📈 % RECIBIDO</div><div class="kpi-value" id="kpiPctRecibido">—</div><div class="kpi-delta" id="kpiPctRecibidoDelta"></div><div class="kpi-sub" id="kpiPctRecibidoSub">Sobre facturación</div></div>
-        <div class="kpi-card" style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:20px 24px;min-width:130px">
+        <div class="kpi-card"><div class="kpi-label">💸 INV. ADS</div><div class="kpi-value" id="kpiAdsSpend">—</div><div class="kpi-sub">Gasto total en Ads</div></div>
+        <div class="kpi-card"><div class="kpi-label">🛒 VENTAS ADS</div><div class="kpi-value" id="kpiAdsSales">—</div><div class="kpi-sub" id="kpiAdsSalesSub">Facturación por Ads</div></div>
+        <div class="kpi-card"><div class="kpi-label">💰 % FACT. ADS</div><div class="kpi-value" id="kpiPctAds">—</div><div class="kpi-sub">Ventas Ads / Fact. total</div></div>
+        <div class="kpi-card"><div class="kpi-label">🔄 ROAS</div><div class="kpi-value" id="kpiRoas">—</div><div class="kpi-sub">Ventas Ads / Gasto Ads</div></div>
+      </div>
+
+      <!-- BLOQUE 3: Financiero + Reputación -->
+      <div style="font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.08em;margin-bottom:8px">💰 FINANCIERO</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr auto;gap:12px;margin-bottom:16px;align-items:stretch">
+        <div class="kpi-card"><div class="kpi-label">💰 IMPORTE RECIBIDO</div><div class="kpi-value" id="kpiRecibido">—</div><div class="kpi-delta" id="kpiRecibidoDelta"></div><div class="kpi-sub" id="kpiRecibidoSub">Neto tras comisiones, envío e impuestos</div></div>
+        <div class="kpi-card"><div class="kpi-label">📈 % RECIBIDO</div><div class="kpi-value" id="kpiPctRecibido">—</div><div class="kpi-delta" id="kpiPctRecibidoDelta"></div><div class="kpi-sub" id="kpiPctRecibidoSub">Sobre facturación bruta</div></div>
+        <div class="kpi-card" style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:20px 28px;min-width:140px">
           <div class="kpi-label" style="margin-bottom:10px">REPUTACIÓN</div>
           <div id="reputationBadge" style="font-size:36px">—</div>
           <div id="reputationLabel" style="font-size:12px;font-weight:700;margin-top:6px;letter-spacing:1px">—</div>
@@ -1887,9 +1894,17 @@ function updateDashboard() {
   document.getElementById('kpiConvDelta').innerHTML = deltaHtml(avgCh(changes.conversion));
   document.getElementById('kpiConvSub').textContent = 'Ventas / Visitas';
 
-  // Fila 3
+  // Fila 3 — publicidad
   document.getElementById('kpiTacos').textContent = tacos === '—' ? '—' : tacos + '%';
-  document.getElementById('kpiTacosSub').textContent = totalAds > 0 ? 'Ads: ' + formatMoney(totalAds) : 'Sin datos de Ads aún';
+  document.getElementById('kpiTacosSub').textContent = totalAds > 0 ? 'Gasto Ads / Facturación' : 'Sin datos de Ads aún';
+
+  // KPIs de ads — se actualizan cuando carga la sección de publicidad
+  const adsSpendEl = document.getElementById('kpiAdsSpend');
+  if (adsSpendEl) adsSpendEl.textContent = totalAds > 0 ? formatMoney(totalAds) : '—';
+  const kpiAdsSalesEl = document.getElementById('kpiAdsSales');
+  const kpiPctAdsEl   = document.getElementById('kpiPctAds');
+  const kpiRoasEl     = document.getElementById('kpiRoas');
+  // Estos se actualizan desde loadAds() cuando hay datos de ads
 
   document.getElementById('kpiRecibido').textContent = formatMoney(totalRecibido);
   document.getElementById('kpiRecibidoSub').textContent = 'Neto tras comisiones, envío e impuestos';
@@ -1945,12 +1960,15 @@ function buildEvolutionChart() {
   const ventasByDay = new Array(days).fill(0);
 
   connected.forEach(acc => {
-    (acc.data.recent_orders || []).forEach(o => {
-      const age = (now - new Date(o.date_created).getTime()) / (1000 * 60 * 60 * 24);
+    // Usar orders_detail que sí existe en los datos
+    const orders = acc.data.orders_detail || [];
+    orders.forEach(o => {
+      const oDate = new Date(o.date);
+      const age = (now - oDate.getTime()) / (1000 * 60 * 60 * 24);
       const di = Math.floor(age);
       if (di >= 0 && di < days) {
         const idx = days - 1 - di;
-        facByDay[idx]    += parseFloat(o.total_amount) || 0;
+        facByDay[idx]    += parseFloat(o.facturacion) || 0;
         ventasByDay[idx] += 1;
       }
     });
@@ -4396,11 +4414,21 @@ async function loadAds() {
   const cpcNum = totalSpend && totalClicks ? totalSpend / totalClicks : null;
   const convAdsNum = totalClicks && totalUnitsAds ? (totalUnitsAds / totalClicks) * 100 : null;
 
-  // Update dashboard TACOS KPI if visible
+  // Actualizar KPIs de publicidad en el dashboard
   const kpiTacosEl = document.getElementById('kpiTacos');
   const kpiTacosDeltaEl = document.getElementById('kpiTacosSub');
   if (kpiTacosEl) kpiTacosEl.textContent = tacos;
-  if (kpiTacosDeltaEl) kpiTacosDeltaEl.textContent = 'Ads: ' + fmt(totalSpend);
+  if (kpiTacosDeltaEl) kpiTacosDeltaEl.textContent = 'Gasto Ads / Facturación';
+  const kpiAdsSpendEl = document.getElementById('kpiAdsSpend');
+  if (kpiAdsSpendEl) kpiAdsSpendEl.textContent = fmt(totalSpend);
+  const kpiAdsSalesEl = document.getElementById('kpiAdsSales');
+  if (kpiAdsSalesEl) { kpiAdsSalesEl.textContent = fmt(totalSales); }
+  const kpiAdsSalesSubEl = document.getElementById('kpiAdsSalesSub');
+  if (kpiAdsSalesSubEl) kpiAdsSalesSubEl.textContent = totalUnitsAds > 0 ? totalUnitsAds.toLocaleString('es-AR') + ' unidades' : '';
+  const kpiPctAdsEl = document.getElementById('kpiPctAds');
+  if (kpiPctAdsEl) kpiPctAdsEl.textContent = salesShareNum ? salesShareNum.toFixed(1) + '%' : '—';
+  const kpiRoasEl = document.getElementById('kpiRoas');
+  if (kpiRoasEl) kpiRoasEl.textContent = roas;
 
   // Build KPI cards HTML inline
   const kpiCardsHtml = `
