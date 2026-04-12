@@ -1280,7 +1280,16 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
         top15_units:          top15Units,
         top15_by_mode:        top15ByMode
       },
-      rentabilidad
+      rentabilidad,
+      reputation: {
+        level:         user.seller_reputation?.level_id || null,
+        power_seller:  user.seller_reputation?.power_seller_status || null,
+        transactions:  user.seller_reputation?.transactions?.completed || 0,
+        positive_pct:  user.seller_reputation?.transactions?.ratings?.positive || 0,
+        claims:        user.seller_reputation?.metrics?.claims?.rate || 0,
+        cancellations: user.seller_reputation?.metrics?.cancellations?.rate || 0,
+        delayed:       user.seller_reputation?.metrics?.delayed_handling_time?.rate || 0,
+      }
     });
   } catch(e) { console.error('Dashboard error:', e); res.status(500).json({ error: e.message }); }
 });
@@ -1562,7 +1571,7 @@ app.get('/api/items-full', requireAuth, async (req, res) => {
     for (let i = 0; i < allIds.length; i += 20) {
       const batch = allIds.slice(i, i+20);
       try {
-        const data = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,title,price,status,sub_status,available_quantity,listing_type_id,category_id,shipping,pictures,condition,catalog_listing,video_id`, { headers }).then(r => r.json());
+        const data = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,title,price,status,sub_status,available_quantity,listing_type_id,category_id,shipping,pictures,condition,catalog_listing,video_id,health`, { headers }).then(r => r.json());
         (Array.isArray(data) ? data : []).forEach(r => {
           if (r.code === 200 && r.body) itemDetailsMap[r.body.id] = r.body;
         });
@@ -1680,7 +1689,8 @@ app.get('/api/items-full', requireAuth, async (req, res) => {
         adsSales: ads.adsSales||0, adsCost: ads.adsCost||0,
         adsConversion: ads.clicks > 0 ? parseFloat(((ads.adsUnits||0)/ads.clicks*100).toFixed(1)) : 0,
         problems, hasProblems: problems.length > 0,
-        has_clip: clipsSet.has(item.id)
+        has_clip: clipsSet.has(item.id),
+        health: detail.health != null ? parseFloat(detail.health) : null
       };
     });
 
@@ -1714,7 +1724,8 @@ app.get('/api/items-full', requireAuth, async (req, res) => {
         adsSales: ads.adsSales||0, adsCost: ads.adsCost||0,
         adsConversion: ads.clicks > 0 ? parseFloat(((ads.adsUnits||0)/ads.clicks*100).toFixed(1)) : 0,
         problems, hasProblems: problems.length > 0,
-        has_clip: clipsSet.has(id)
+        has_clip: clipsSet.has(id),
+        health: detail.health != null ? parseFloat(detail.health) : null
       };
     });
 
