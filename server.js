@@ -1127,15 +1127,43 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
       costo_envios:     totalSellerShip,
       resultado_envios: totalBuyerShip - totalSellerShip,
       anulaciones:      totalCancelled,
+      // Se completan después de calcular CMV
+    };
+
+    // Calcular CMV desde product_costs
+    let cmv_total_dash = 0, cmv_cubierto_dash = 0;
+    const costsResDash = await pool.query('SELECT mla_id, costo_unit FROM product_costs WHERE client_id=$1', [clientId]);
+    const costsMapDash = {};
+    costsResDash.rows.forEach(r => { costsMapDash[r.mla_id] = parseFloat(r.costo_unit)||0; });
+    Object.values(byItem).forEach(i => {
+      const c = costsMapDash[i.id];
+      if (c != null && c > 0) { cmv_total_dash += c * i.units; cmv_cubierto_dash++; }
+    });
+    const hasCMVDash = cmv_cubierto_dash > 0;
+    const iva21 = 0.21;
+    const ivaVentasDash   = hasCMVDash ? curData.amount / (1+iva21) * iva21 : 0;
+    const ivaComprasDash  = hasCMVDash ? (totalSaleFee + totalSellerShip + cmv_total_dash) / (1+iva21) * iva21 : 0;
+    const ivaNetoDash     = hasCMVDash ? Math.max(0, ivaVentasDash - ivaComprasDash) : 0;
+    const utilidadDash    = hasCMVDash ? netoML - cmv_total_dash - adsSpend - ivaNetoDash : null;
+    const margenDash      = hasCMVDash && curData.amount > 0 ? (utilidadDash / curData.amount * 100) : null;
+
+    const R_extra = {
       cancelled_count:  cancelledCount,
       inversion_ads:    adsSpend,
       total_egresos:    totalEgresos,
       neto_ml:          netoML,
-      costo_productos:  0,
+      costo_productos:  cmv_total_dash,
+      cmv_cubierto:     cmv_cubierto_dash,
+      cmv_total_items:  Object.keys(byItem).length,
+      has_cmv:          hasCMVDash,
+      utilidad:         utilidadDash,
+      margen_pct:       margenDash != null ? parseFloat(margenDash.toFixed(1)) : null,
+      iva_neto:         ivaNetoDash,
       by_product:       byProduct,
     };
 
-    // Units sold
+    // Completar rentabilidad con campos de CMV
+    Object.assign(rentabilidad, R_extra);
     const totalUnits = curData.orders.reduce((s, o) =>
       s + (o.order_items || []).reduce((ss, oi) => ss + (oi.quantity || 0), 0), 0);
     const prevUnits = prevData.orders.reduce((s, o) =>
@@ -1190,6 +1218,21 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
       };
     }).sort((a,b) => new Date(b.date) - new Date(a.date));
 
+    // Calcular by_day para el gráfico
+    const dayMs = 24*60*60*1000;
+    const fromDate = curFrom;
+    const totalDays = Math.max(1, Math.round((curTo - fromDate) / dayMs));
+    const byDayVentas = new Array(totalDays).fill(0);
+    const byDayFac    = new Array(totalDays).fill(0);
+    curData.orders.forEach(o => {
+      const oDate = new Date(o.date_closed || o.date_approved || o.date_created);
+      const dayIdx = Math.floor((oDate - fromDate) / dayMs);
+      if (dayIdx >= 0 && dayIdx < totalDays) {
+        byDayVentas[dayIdx] += 1;
+        byDayFac[dayIdx]    += (o.order_items||[]).reduce((s,oi) => s+(parseFloat(oi.unit_price)||0)*(oi.quantity||0), 0);
+      }
+    });
+
     res.json({
       user,
       stats: {
@@ -1201,6 +1244,12 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
         importe_recibido: importeRecibido,
         porcentaje_recibido: parseFloat(porcentajeRecibido),
         ads_spend: adsSpend,
+        costo_productos: cmv_total_dash,
+        has_cmv: hasCMVDash,
+        cmv_cubierto: cmv_cubierto_dash,
+        cmv_total_items: Object.keys(byItem).length,
+        utilidad: utilidadDash,
+        margen_pct: margenDash != null ? parseFloat(margenDash.toFixed(1)) : null,
         desglose: { paid_amount: totalPaidAmount, sale_fee: totalSaleFee, taxes: totalTaxes, seller_shipping: totalSellerShip, ads: adsSpend },
         prev: {
           total_orders: prevData.orders.length, total_amount: prevData.amount,
@@ -1214,7 +1263,10 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
           conversion: pct(parseFloat(curConv), parseFloat(prevConv)),
           units: pct(totalUnits, prevUnits),
           ticket: pct(ticketPromedio, prevTicket)
-        }
+        },
+        by_day_ventas: byDayVentas,
+        by_day_fac:    byDayFac,
+        date_from:     curFrom.toISOString().slice(0,10),
       },
       top_items: topItems,
       orders_detail,
