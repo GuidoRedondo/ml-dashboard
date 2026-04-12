@@ -1911,40 +1911,38 @@ function updateDashboard() {
   document.getElementById('kpiRecibido').textContent = formatMoney(totalRecibido);
   document.getElementById('kpiRecibidoSub').textContent = 'Neto tras comisiones, envío e impuestos';
 
-  // Utilidad y margen — cruzar con CMV de rentabilidad
-  let cmvTotal = 0, cmvCubierto = 0, cmvTotal_prev = 0;
-  let hasCMV = false;
+  // Utilidad y margen — vienen del backend con CMV calculado
+  let cmvTotal = 0, hasCMV = false, utilidadTotal = 0, margenTotal = null;
+  let cmvCubierto = 0, cmvTotalItems = 0;
   connected.forEach(acc => {
-    const r = acc.data.rentabilidad;
-    if (!r) return;
-    (r.by_product || []).forEach(p => {
-      if (p.costo_unit != null) {
-        cmvTotal    += (p.costo_unit * p.units);
-        cmvCubierto += 1;
-        hasCMV = true;
-      }
-    });
-    cmvTotal_prev += r.costo_productos_prev || 0;
+    const s = acc.data?.stats;
+    if (!s) return;
+    if (s.has_cmv) {
+      hasCMV = true;
+      cmvTotal     += s.costo_productos || 0;
+      cmvCubierto  += s.cmv_cubierto || 0;
+      cmvTotalItems+= s.cmv_total_items || 0;
+      utilidadTotal+= s.utilidad || 0;
+    }
   });
+  if (hasCMV && totalFac > 0) {
+    margenTotal = (utilidadTotal / totalFac * 100).toFixed(1);
+  }
 
-  const utilidad     = hasCMV ? totalRecibido - cmvTotal - totalAds : null;
-  const utilidad_prev= hasCMV && cmvTotal_prev > 0 ? null : null; // sin prev
-  const margenPct    = hasCMV && totalFac > 0 ? (utilidad / totalFac * 100).toFixed(1) : null;
-
-  const kpiUtilEl  = document.getElementById('kpiUtilidad');
-  const kpiMargenEl= document.getElementById('kpiMargen');
+  const kpiUtilEl   = document.getElementById('kpiUtilidad');
+  const kpiMargenEl = document.getElementById('kpiMargen');
   const warnU = document.getElementById('kpiUtilidadCMVWarn');
   const warnM = document.getElementById('kpiMargenCMVWarn');
 
   if (kpiUtilEl) {
-    kpiUtilEl.textContent = utilidad != null ? formatMoney(utilidad) : '—';
-    kpiUtilEl.style.color = utilidad != null ? (utilidad >= 0 ? '#00e676' : '#ff5252') : '';
-    if (warnU) warnU.textContent = !hasCMV ? '⚠ sin CMV' : '';
+    kpiUtilEl.textContent = hasCMV ? formatMoney(utilidadTotal) : '—';
+    kpiUtilEl.style.color = hasCMV ? (utilidadTotal >= 0 ? '#00e676' : '#ff5252') : '';
+    if (warnU) warnU.textContent = !hasCMV ? '⚠ sin CMV' : (cmvCubierto < cmvTotalItems ? `⚠ ${cmvTotalItems - cmvCubierto} sin CMV` : '');
   }
   if (kpiMargenEl) {
-    kpiMargenEl.textContent = margenPct != null ? margenPct + '%' : '—';
-    kpiMargenEl.style.color = margenPct != null ? (parseFloat(margenPct) >= 20 ? '#00e676' : parseFloat(margenPct) >= 10 ? '#ff9100' : '#ff5252') : '';
-    if (warnM) warnM.textContent = !hasCMV ? '⚠ sin CMV' : '';
+    kpiMargenEl.textContent = margenTotal != null ? margenTotal + '%' : '—';
+    kpiMargenEl.style.color = margenTotal != null ? (parseFloat(margenTotal) >= 20 ? '#00e676' : parseFloat(margenTotal) >= 10 ? '#ff9100' : '#ff5252') : '';
+    if (warnM) warnM.textContent = !hasCMV ? '⚠ sin CMV' : (cmvCubierto < cmvTotalItems ? `* parcial` : '');
   }
 
   document.getElementById('kpiPctRecibido').textContent = pctRecibido === '—' ? '—' : pctRecibido + '%';
@@ -1999,21 +1997,29 @@ function buildEvolutionChart() {
   const visitasByDay= new Array(days).fill(0);
 
   connected.forEach(acc => {
-    (acc.data.orders_detail || []).forEach(o => {
-      const age = (now - new Date(o.date).getTime()) / (1000*60*60*24);
-      const di  = Math.floor(age);
-      if (di >= 0 && di < days) {
-        const idx = days - 1 - di;
-        facByDay[idx]    += parseFloat(o.facturacion) || 0;
-        ventasByDay[idx] += 1;
-      }
-    });
-    // Visitas: distribuir el total uniformemente (no tenemos por día)
-    // Si hay by_day en topItems, usarlo
-    const totalVisits = acc.data?.stats?.total_visits || 0;
+    const s = acc.data?.stats;
+    if (!s) return;
+    // Usar by_day del backend si están disponibles
+    if (s.by_day_fac && s.by_day_ventas) {
+      s.by_day_fac.forEach((v, i) => { if (i < days) facByDay[i] += v; });
+      s.by_day_ventas.forEach((v, i) => { if (i < days) ventasByDay[i] += v; });
+    } else {
+      // Fallback a orders_detail
+      (acc.data.orders_detail || []).forEach(o => {
+        const age = (now - new Date(o.date).getTime()) / (1000*60*60*24);
+        const di  = Math.floor(age);
+        if (di >= 0 && di < days) {
+          const idx = days - 1 - di;
+          facByDay[idx]    += parseFloat(o.facturacion) || 0;
+          ventasByDay[idx] += 1;
+        }
+      });
+    }
+    // Visitas distribuidas uniformemente
+    const totalVisits = s.total_visits || 0;
     if (totalVisits > 0 && days > 0) {
-      const dailyVisits = totalVisits / days;
-      for (let i = 0; i < days; i++) visitasByDay[i] += dailyVisits;
+      const dv = totalVisits / days;
+      for (let i = 0; i < days; i++) visitasByDay[i] += dv;
     }
   });
 
@@ -2096,8 +2102,45 @@ function buildEvolutionChart() {
     xLabels += `<text x="${x.toFixed(1)}" y="${H - 4}" text-anchor="middle" font-size="10" fill="rgba(255,255,255,.35)" font-family="sans-serif">${labels[i]}</text>`;
   }
 
+  // Etiquetas en picos de facturación
+  let peakLabels = '';
+  if (series.fac) {
+    const maxFacVal = Math.max(...facByDay);
+    const maxFacIdx = facByDay.indexOf(maxFacVal);
+    if (maxFacVal > 0) {
+      const x = padL + (maxFacIdx / (days - 1 || 1)) * innerW;
+      const y = padT + innerH - (maxFacVal / maxFac) * innerH - 6;
+      const label = '$' + Math.round(maxFacVal/1000).toLocaleString('es-AR') + 'K';
+      peakLabels += `<text x="${x.toFixed(1)}" y="${Math.max(y,14).toFixed(1)}" text-anchor="middle" font-size="9" fill="#FFD700" font-family="sans-serif" font-weight="600">${label}</text>`;
+    }
+  }
+  if (series.ventas) {
+    const maxVentasVal = Math.max(...ventasByDay);
+    const maxVentasIdx = ventasByDay.indexOf(maxVentasVal);
+    if (maxVentasVal > 0) {
+      const x = padL + (maxVentasIdx / (days - 1 || 1)) * innerW;
+      const barH2 = innerH * (maxVentasVal / maxVentas);
+      const y = padT + innerH - barH2 - 6;
+      peakLabels += `<text x="${x.toFixed(1)}" y="${Math.max(y,14).toFixed(1)}" text-anchor="middle" font-size="9" fill="#00e676" font-family="sans-serif" font-weight="600">${maxVentasVal}</text>`;
+    }
+  }
+
+  // Línea vertical de hover
+  const hoverLine = `<line id="chartHoverLine" x1="-1" y1="${padT}" x2="-1" y2="${padT+innerH}" stroke="rgba(255,255,255,.3)" stroke-width="1" pointer-events="none"/>`;
+  const hoverTip  = `<g id="chartTip" opacity="0" pointer-events="none">
+    <rect id="chartTipBg" x="0" y="0" width="120" height="52" rx="6" fill="rgba(20,20,30,.9)" stroke="rgba(255,255,255,.1)" stroke-width="1"/>
+    <text id="chartTipDate" x="8" y="14" font-size="10" fill="rgba(255,255,255,.6)" font-family="sans-serif"></text>
+    <text id="chartTipFac"  x="8" y="28" font-size="11" fill="#FFD700" font-family="sans-serif" font-weight="600"></text>
+    <text id="chartTipVent" x="8" y="43" font-size="11" fill="#00e676" font-family="sans-serif"></text>
+  </g>`;
+
+  // Overlay transparente para capturar hover
+  const overlay = `<rect x="${padL}" y="${padT}" width="${innerW}" height="${innerH}" fill="transparent"
+    onmousemove="chartHover(event, this, ${days}, ${padL}, ${innerW}, ${JSON.stringify(labels)}, ${JSON.stringify(facByDay)}, ${JSON.stringify(ventasByDay)})"
+    onmouseleave="document.getElementById('chartTip').setAttribute('opacity','0');document.getElementById('chartHoverLine').setAttribute('x1','-1');document.getElementById('chartHoverLine').setAttribute('x2','-1')"/>`;
+
   chartEl.innerHTML = `<svg width="100%" height="${H}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
-    ${grid}${barsSvg}${facArea}${facPath}${visitasPath}${xLabels}
+    ${grid}${barsSvg}${facArea}${facPath}${visitasPath}${xLabels}${peakLabels}${hoverLine}${hoverTip}${overlay}
   </svg>`;
 
   // Leyenda clickeable
@@ -2115,6 +2158,34 @@ function buildEvolutionChart() {
     </div>`).join('');
 
   } catch(e) { console.error('Chart error:', e); }
+}
+
+function chartHover(e, el, days, padL, innerW, labels, facByDay, ventasByDay) {
+  const rect = el.closest('svg').getBoundingClientRect();
+  const xRel = e.clientX - rect.left;
+  const idx  = Math.min(days-1, Math.max(0, Math.round((xRel - padL) / innerW * (days-1))));
+  const svgW = rect.width;
+  const svgH = rect.height;
+  const scaleX = 900 / svgW; // viewBox width
+
+  const xPos = padL + (idx / (days-1||1)) * innerW;
+  document.getElementById('chartHoverLine').setAttribute('x1', xPos);
+  document.getElementById('chartHoverLine').setAttribute('x2', xPos);
+
+  const tip = document.getElementById('chartTip');
+  const tipBg = document.getElementById('chartTipBg');
+  const tipDate = document.getElementById('chartTipDate');
+  const tipFac  = document.getElementById('chartTipFac');
+  const tipVent = document.getElementById('chartTipVent');
+
+  tipDate.textContent = labels[idx] || '';
+  tipFac.textContent  = facByDay[idx] > 0 ? '$' + Math.round(facByDay[idx]).toLocaleString('es-AR') : '—';
+  tipVent.textContent = (ventasByDay[idx] || 0) + ' ventas';
+
+  let tipX = xPos + 8;
+  if (tipX + 125 > 900) tipX = xPos - 130;
+  tip.setAttribute('transform', `translate(${tipX}, 20)`);
+  tip.setAttribute('opacity', '1');
 }
 
 function toggleChartSeries(key) {
