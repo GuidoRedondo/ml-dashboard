@@ -3253,32 +3253,48 @@ app.get('/api/competencia', requireAuth, async (req, res) => {
     const headers = { 'Authorization': `Bearer ${token}` };
 
     if (categoryId) {
-      // ── Top sellers + price range for a specific category ──────────────────
-      // Usar app token (client_credentials) — el user token da forbidden en búsquedas
-      // de categoría desde IPs de cloud (Railway/Vercel)
+      // ── Competencia por categoría ──────────────────────────────────────────
+      // ML bloquea búsquedas por category desde IPs de cloud (forbidden).
+      // Alternativa: buscar las publicaciones propias del seller en esa categoría
+      // + buscar competidores usando q= con el título del ítem más vendido.
+      
       const appToken = await getAppToken(parseInt(req.query.client_id));
       const searchHeaders = appToken
         ? { 'Authorization': `Bearer ${appToken}` }
-        : { 'Authorization': `Bearer ${token}` };
+        : headers;
 
-      const searchUrl = `${ML_API}/sites/MLA/search?category=${categoryId}&sort=sold_quantity_desc&limit=50`;
-      const searchUrl2 = `${ML_API}/sites/MLA/search?category=${categoryId}&limit=50`;
-      
-      let searchRes = {};
+      // 1. Mis publicaciones en esta categoría (esto SÍ funciona)
+      const myItemsUrl = `${ML_API}/sites/MLA/search?seller_id=${uid}&category=${categoryId}&limit=50`;
+      let myItemsRes = {};
       try {
-        searchRes = await fetch(searchUrl, { headers: searchHeaders }).then(r => r.json());
-        console.log(`[COMP] category=${categoryId} results=${(searchRes.results||[]).length} total=${searchRes.paging?.total} error=${searchRes.error} appToken=${!!appToken}`);
-        // Fallback si sort no disponible
-        if (!searchRes.results || searchRes.results.length === 0) {
-          searchRes = await fetch(searchUrl2, { headers: searchHeaders }).then(r => r.json());
-          console.log(`[COMP] fallback results=${(searchRes.results||[]).length} error=${searchRes.error}`);
-        }
-        // Último fallback: user token directo
-        if (!searchRes.results || searchRes.results.length === 0) {
-          searchRes = await fetch(searchUrl2, { headers }).then(r => r.json());
-          console.log(`[COMP] user token fallback results=${(searchRes.results||[]).length} error=${searchRes.error}`);
-        }
-      } catch(e) { console.error('[COMP] search error:', e.message); }
+        myItemsRes = await fetch(myItemsUrl, { headers }).then(r => r.json());
+        console.log(`[COMP] my items in cat=${categoryId} results=${(myItemsRes.results||[]).length} error=${myItemsRes.error}`);
+      } catch(e) { console.error('[COMP] my items error:', e.message); }
+
+      const myItems = myItemsRes.results || [];
+
+      // 2. Buscar competidores por título del ítem más vendido (q= funciona desde cloud)
+      let searchRes = { results: [] };
+      if (myItems.length > 0) {
+        const topItem = myItems.sort((a,b) => (b.sold_quantity||0) - (a.sold_quantity||0))[0];
+        const titleWords = topItem.title
+          .replace(/[^\w\sÀ-ɏ]/g, ' ')
+          .replace(/\s+/g, ' ').trim()
+          .split(' ').filter(w => w.length > 2).slice(0, 4).join(' ');
+        const qUrl = `${ML_API}/sites/MLA/search?q=${encodeURIComponent(titleWords)}&category=${categoryId}&limit=50`;
+        const qUrl2 = `${ML_API}/sites/MLA/search?q=${encodeURIComponent(titleWords)}&limit=50`;
+        try {
+          searchRes = await fetch(qUrl, { headers: searchHeaders }).then(r => r.json());
+          console.log(`[COMP] q search results=${(searchRes.results||[]).length} error=${searchRes.error} q="${titleWords}"`);
+          if (!searchRes.results || searchRes.results.length === 0) {
+            searchRes = await fetch(qUrl2, { headers: searchHeaders }).then(r => r.json());
+            console.log(`[COMP] q fallback results=${(searchRes.results||[]).length} error=${searchRes.error}`);
+          }
+        } catch(e) { console.error('[COMP] q search error:', e.message); }
+      }
+
+      const results = searchRes.results || [];
+      console.log(`[COMP] processing ${results.length} results`);
 
       const catRes = await fetch(`${ML_API}/categories/${categoryId}`, { headers }).then(r => r.json()).catch(() => ({}));
 
