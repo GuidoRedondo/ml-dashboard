@@ -3669,6 +3669,35 @@ app.post('/api/token', async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
+// ── DEBUG APP TOKEN ──────────────────────────────────────────────────────────
+app.get('/api/debug/app-token', requireAuth, async (req, res) => {
+  try {
+    const clientId = parseInt(req.query.client_id);
+    const result = await pool.query('SELECT app_id, client_secret FROM clients WHERE id = $1', [clientId]);
+    const row = result.rows[0] || {};
+    const app_id = row.app_id || process.env.ML_APP_ID;
+    const client_secret = row.client_secret || process.env.ML_CLIENT_SECRET;
+
+    const r = await fetch('https://api.mercadolibre.com/oauth/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ grant_type: 'client_credentials', client_id: app_id, client_secret }).toString()
+    });
+    const data = await r.json();
+
+    res.json({
+      db_app_id: row.app_id || null,
+      env_app_id: process.env.ML_APP_ID ? process.env.ML_APP_ID.slice(0,6)+'...' : null,
+      using_app_id: app_id ? app_id.slice(0,6)+'...' : null,
+      has_secret: !!client_secret,
+      ml_response: data,
+      got_token: !!data.access_token
+    });
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 initDB().then(() => {
   app.listen(PORT, () => console.log(`Puerto ${PORT}`));
 }).catch(e => { console.error('DB init error:', e); process.exit(1); });
