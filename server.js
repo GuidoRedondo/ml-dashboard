@@ -615,7 +615,10 @@ async function getAppToken(clientId) {
   try {
     const result = await pool.query('SELECT app_id, client_secret FROM clients WHERE id = $1', [clientId]);
     if (!result.rows.length) return null;
-    const { app_id, client_secret } = result.rows[0];
+    const row = result.rows[0];
+    // Fallback a env vars si el cliente no tiene credenciales propias en DB
+    const app_id = row.app_id || process.env.ML_APP_ID;
+    const client_secret = row.client_secret || process.env.ML_CLIENT_SECRET;
     const r = await fetch(`${ML_API}/oauth/token`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
