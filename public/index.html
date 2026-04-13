@@ -7313,10 +7313,73 @@ async function loadCompetenciaDetalle(catId, catName, uid, clientId, itemId) {
   const el = document.getElementById('competenciaContent');
   el.innerHTML = `<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">⏳ Analizando categoría <strong>${catName}</strong>...</div>`;
   try {
-    const itemParam = itemId ? `&item_id=${itemId}` : '';
-    const data = await apiCall('GET', `/api/competencia?uid=${uid}&client_id=${clientId}&category_id=${catId}${itemParam}`);
-    if (data) renderCompetenciaDetalle(data, uid);
-    else el.innerHTML = '<div style="color:var(--muted);padding:40px">Error al cargar categoría</div>';
+    // Obtener el token del cliente para hacer búsquedas directas a ML desde el browser
+    // (el backend da forbidden por IP de Railway)
+    const client = getActiveClient();
+    const tokenRes = await apiCall('GET', `/api/client-token?client_id=${clientId}`);
+    const token = tokenRes && tokenRes.token;
+
+    // 1. Obtener título del item_id para buscar competidores
+    let searchTitle = null;
+    if (itemId && token) {
+      try {
+        const itemRes = await fetch(`https://api.mercadolibre.com/items/${itemId}`, {
+          headers: { 'Authorization': `Bearer ${token}` }
+        }).then(r => r.json());
+        searchTitle = itemRes.title || null;
+      } catch(e) {}
+    }
+
+    // 2. Buscar competidores desde el browser (IP del usuario, no Railway)
+    let results = [];
+    if (searchTitle && token) {
+      const titleWords = searchTitle.split(' ').filter(w => w.length > 2).slice(0, 4).join(' ');
+      try {
+        const searchRes = await fetch(
+          `https://api.mercadolibre.com/sites/MLA/search?q=${encodeURIComponent(titleWords)}&limit=50`,
+          { headers: { 'Authorization': `Bearer ${token}` } }
+        ).then(r => r.json());
+        results = searchRes.results || [];
+        console.log(`[COMP] browser q="${titleWords}" results=${results.length} error=${searchRes.error}`);
+      } catch(e) { console.error('[COMP] browser search error:', e); }
+    }
+
+    // 3. Obtener nombre de categoría
+    let catName2 = catName;
+    try {
+      const catRes = await fetch(`https://api.mercadolibre.com/categories/${catId}`).then(r => r.json());
+      catName2 = catRes.name || catName;
+    } catch(e) {}
+
+    // 4. Calcular price_stats y sellers desde los resultados
+    const prices = results.map(r => parseFloat(r.price)||0).filter(p => p > 0);
+    const priceStats = prices.length ? {
+      min: Math.min(...prices),
+      max: Math.max(...prices),
+      avg: Math.round(prices.reduce((a,b)=>a+b,0) / prices.length)
+    } : null;
+
+    const sellersMap = {};
+    results.forEach(r => {
+      const sid = r.seller && (r.seller.id || r.seller);
+      const snick = (r.seller && r.seller.nickname) || String(sid);
+      if (!sid) return;
+      if (!sellersMap[sid]) sellersMap[sid] = { id: sid, nickname: snick, items: [], total_sold: 0 };
+      sellersMap[sid].items.push({ id: r.id, title: r.title, price: r.price, sold_quantity: r.sold_quantity||0 });
+      sellersMap[sid].total_sold += r.sold_quantity||0;
+    });
+
+    const myItems = results.filter(r => r.seller && String(r.seller.id||r.seller) === String(uid));
+
+    const data = {
+      category: { id: catId, name: catName2 },
+      price_stats: priceStats,
+      sellers: Object.values(sellersMap).sort((a,b) => b.total_sold - a.total_sold).slice(0,10),
+      my_items: myItems,
+      top_listings: results.slice(0, 50)
+    };
+
+    renderCompetenciaDetalle(data, uid);
   } catch(e) {
     el.innerHTML = `<div style="color:var(--muted);font-size:13px;padding:40px">Error: ${e.message}</div>`;
   }
