@@ -1,4 +1,4 @@
-const express = require('express');
+cconst express = require('express');
 const cookieParser = require('cookie-parser');
 const cors = require('cors');
 const fetch = require('node-fetch');
@@ -3254,43 +3254,58 @@ app.get('/api/competencia', requireAuth, async (req, res) => {
 
     if (categoryId) {
       // ── Competencia por categoría ──────────────────────────────────────────
-      // ML bloquea búsquedas por category desde IPs de cloud (forbidden).
-      // Alternativa: buscar las publicaciones propias del seller en esa categoría
-      // + buscar competidores usando q= con el título del ítem más vendido.
-      
+      // ML bloquea category+seller_id desde IPs de cloud.
+      // Usamos q= con el título del ítem (pasado desde el frontend como item_id)
+      // o con el item_id directamente para obtener el título.
+
       const appToken = await getAppToken(parseInt(req.query.client_id));
       const searchHeaders = appToken
         ? { 'Authorization': `Bearer ${appToken}` }
         : headers;
 
-      // 1. Mis publicaciones en esta categoría (esto SÍ funciona)
-      const myItemsUrl = `${ML_API}/sites/MLA/search?seller_id=${uid}&category=${categoryId}&limit=50`;
-      let myItemsRes = {};
-      try {
-        myItemsRes = await fetch(myItemsUrl, { headers }).then(r => r.json());
-        console.log(`[COMP] my items in cat=${categoryId} results=${(myItemsRes.results||[]).length} error=${myItemsRes.error}`);
-      } catch(e) { console.error('[COMP] my items error:', e.message); }
+      // Obtener título: puede venir como item_id en query, o buscamos el primer ítem del seller
+      let searchTitle = req.query.item_title || null;
+      const sampleItemId = req.query.item_id || null;
 
-      const myItems = myItemsRes.results || [];
+      if (!searchTitle && sampleItemId) {
+        try {
+          const itemData = await fetch(`${ML_API}/items/${sampleItemId}`, { headers }).then(r => r.json());
+          searchTitle = itemData.title || null;
+          console.log(`[COMP] got title from item_id=${sampleItemId}: "${searchTitle}"`);
+        } catch(e) {}
+      }
 
-      // 2. Buscar competidores por título del ítem más vendido (q= funciona desde cloud)
+      // Si no hay título, intentar obtener un ítem del seller en esta categoría via API interna
+      if (!searchTitle) {
+        try {
+          const r = await fetch(`${ML_API}/users/${uid}/items/search?status=active&limit=20`, { headers }).then(r => r.json());
+          const ids = (r.results || []).slice(0, 5);
+          if (ids.length) {
+            const batchData = await fetch(`${ML_API}/items?ids=${ids.join(',')}&attributes=id,title,category_id`, { headers }).then(r => r.json()).catch(() => []);
+            const inCat = (Array.isArray(batchData) ? batchData : [])
+              .filter(r => r.code === 200 && r.body && r.body.category_id === categoryId)
+              .map(r => r.body);
+            if (inCat.length) searchTitle = inCat[0].title;
+          }
+        } catch(e) {}
+      }
+
+      const myItems = [];
+
+      // Buscar competidores con q= (esto SÍ funciona desde cloud)
       let searchRes = { results: [] };
-      if (myItems.length > 0) {
-        const topItem = myItems.sort((a,b) => (b.sold_quantity||0) - (a.sold_quantity||0))[0];
-        const titleWords = topItem.title
-          .replace(/[^\w\sÀ-ɏ]/g, ' ')
+      if (searchTitle) {
+        const titleWords = searchTitle
+          .replace(/[^\w\sÀ-ɏ]/gi, ' ')
           .replace(/\s+/g, ' ').trim()
           .split(' ').filter(w => w.length > 2).slice(0, 4).join(' ');
-        const qUrl = `${ML_API}/sites/MLA/search?q=${encodeURIComponent(titleWords)}&category=${categoryId}&limit=50`;
-        const qUrl2 = `${ML_API}/sites/MLA/search?q=${encodeURIComponent(titleWords)}&limit=50`;
+        const qUrl = `${ML_API}/sites/MLA/search?q=${encodeURIComponent(titleWords)}&limit=50`;
         try {
           searchRes = await fetch(qUrl, { headers: searchHeaders }).then(r => r.json());
           console.log(`[COMP] q search results=${(searchRes.results||[]).length} error=${searchRes.error} q="${titleWords}"`);
-          if (!searchRes.results || searchRes.results.length === 0) {
-            searchRes = await fetch(qUrl2, { headers: searchHeaders }).then(r => r.json());
-            console.log(`[COMP] q fallback results=${(searchRes.results||[]).length} error=${searchRes.error}`);
-          }
         } catch(e) { console.error('[COMP] q search error:', e.message); }
+      } else {
+        console.log(`[COMP] no title available for category=${categoryId}`);
       }
 
       const results = searchRes.results || [];
@@ -3356,6 +3371,21 @@ app.get('/api/competencia', requireAuth, async (req, res) => {
         c.name = cd.name || c.id;
       } catch(e) {}
     }));
+
+    // Incluir un item_id de muestra por categoría para búsqueda de competidores
+    const catItems = {};
+    for (let i = 0; i < activeIds.length; i += 20) {
+      const batch = activeIds.slice(i, i+20);
+      try {
+        const data = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,category_id,title`, { headers }).then(r => r.json());
+        (Array.isArray(data) ? data : []).forEach(r => {
+          if (r.code !== 200 || !r.body) return;
+          const cid = r.body.category_id;
+          if (!catItems[cid]) catItems[cid] = { id: r.body.id, title: r.body.title };
+        });
+      } catch(e) {}
+    }
+    topCats.forEach(c => { c.sample_item = catItems[c.id] || null; });
 
     res.json({ categories: topCats });
   } catch(e) { console.error('[COMPETENCIA]', e.message); res.status(500).json({ error: e.message }); }
