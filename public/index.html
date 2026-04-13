@@ -7297,7 +7297,7 @@ function renderCompetenciaCategorias(cats, client) {
   const uid = client.ml_user_id || client.userId;
   const cid = client.id;
   const cards = cats.map(c => `
-    <div onclick="loadCompetenciaDetalle('${c.id}','${c.name.replace(/'/g,"\\'")}',${uid},${cid})"
+    <div onclick="loadCompetenciaDetalle('${c.id}','${c.name.replace(/'/g,"\\'")}',${uid},${cid},'${c.sample_item?c.sample_item.id:''}')"
          style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px 16px;cursor:pointer;transition:border-color 0.15s"
          onmouseover="this.style.borderColor='var(--accent)'" onmouseout="this.style.borderColor='var(--border)'">
       <div style="font-size:13px;font-weight:600;margin-bottom:4px">${c.name}</div>
@@ -7309,11 +7309,12 @@ function renderCompetenciaCategorias(cats, client) {
   <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px">${cards}</div>`;
 }
 
-async function loadCompetenciaDetalle(catId, catName, uid, clientId) {
+async function loadCompetenciaDetalle(catId, catName, uid, clientId, itemId) {
   const el = document.getElementById('competenciaContent');
   el.innerHTML = `<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">⏳ Analizando categoría <strong>${catName}</strong>...</div>`;
   try {
-    const data = await apiCall('GET', `/api/competencia?uid=${uid}&client_id=${clientId}&category_id=${catId}`);
+    const itemParam = itemId ? `&item_id=${itemId}` : '';
+    const data = await apiCall('GET', `/api/competencia?uid=${uid}&client_id=${clientId}&category_id=${catId}${itemParam}`);
     if (data) renderCompetenciaDetalle(data, uid);
     else el.innerHTML = '<div style="color:var(--muted);padding:40px">Error al cargar categoría</div>';
   } catch(e) {
@@ -7782,4 +7783,4 @@ window.addEventListener('DOMContentLoaded', () => {
 });
 </script>
 </body>
-</html>
+</html></html>
