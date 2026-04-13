@@ -7319,29 +7319,24 @@ async function loadCompetenciaDetalle(catId, catName, uid, clientId, itemId) {
     const tokenRes = await apiCall('GET', `/api/client-token?client_id=${clientId}`);
     const token = tokenRes && tokenRes.token;
 
-    // 1. Obtener título del item_id para buscar competidores
+    // 1. Obtener título del item_id via backend proxy
     let searchTitle = null;
-    if (itemId && token) {
+    if (itemId) {
       try {
-        const itemRes = await fetch(`https://api.mercadolibre.com/items/${itemId}`, {
-          headers: { 'Authorization': `Bearer ${token}` }
-        }).then(r => r.json());
-        searchTitle = itemRes.title || null;
+        const itemRes = await apiCall('GET', `/api/ml-search?q=${itemId}&client_id=${clientId}&mode=item`);
+        searchTitle = itemRes && itemRes.title || null;
       } catch(e) {}
     }
 
-    // 2. Buscar competidores desde el browser (IP del usuario, no Railway)
+    // 2. Buscar competidores via proxy del backend (evita CORS y restricciones de IP)
     let results = [];
-    if (searchTitle && token) {
+    if (searchTitle) {
       const titleWords = searchTitle.split(' ').filter(w => w.length > 2).slice(0, 4).join(' ');
       try {
-        const searchRes = await fetch(
-          `https://api.mercadolibre.com/sites/MLA/search?q=${encodeURIComponent(titleWords)}&limit=50`,
-          { headers: { 'Authorization': `Bearer ${token}` } }
-        ).then(r => r.json());
-        results = searchRes.results || [];
-        console.log(`[COMP] browser q="${titleWords}" results=${results.length} error=${searchRes.error}`);
-      } catch(e) { console.error('[COMP] browser search error:', e); }
+        const searchRes = await apiCall('GET', `/api/ml-search?q=${encodeURIComponent(titleWords)}&client_id=${clientId}`);
+        results = (searchRes && searchRes.results) || [];
+        console.log(`[COMP] proxy q="${titleWords}" results=${results.length}`);
+      } catch(e) { console.error('[COMP] search error:', e); }
     }
 
     // 3. Obtener nombre de categoría
