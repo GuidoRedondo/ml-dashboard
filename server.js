@@ -3685,6 +3685,16 @@ app.post('/api/token', async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
+// ── CLIENT TOKEN ENDPOINT (para búsquedas desde el browser) ─────────────────
+app.get('/api/client-token', requireAuth, async (req, res) => {
+  try {
+    const clientId = parseInt(req.query.client_id);
+    const token = await getClientToken(clientId);
+    if (!token) return res.status(403).json({ error: 'Sin token' });
+    res.json({ token });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
 // ── DEBUG APP TOKEN ──────────────────────────────────────────────────────────
 app.get('/api/debug/app-token', requireAuth, async (req, res) => {
   try {
