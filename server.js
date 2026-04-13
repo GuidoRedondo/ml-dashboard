@@ -3685,7 +3685,32 @@ app.post('/api/token', async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
-// ── CLIENT TOKEN ENDPOINT (para búsquedas desde el browser) ─────────────────
+// ── PROXY: búsqueda ML desde el backend (evita CORS del browser) ────────────
+app.get('/api/ml-search', requireAuth, async (req, res) => {
+  try {
+    const { q, client_id, mode } = req.query;
+    if (!q) return res.status(400).json({ error: 'Falta q' });
+    const appToken = await getAppToken(parseInt(client_id));
+    const token = await getClientToken(parseInt(client_id));
+    const authHeaders = { 'Authorization': `Bearer ${appToken || token}` };
+
+    // mode=item: obtener título de un item_id específico
+    if (mode === 'item') {
+      const itemData = await fetch(`${ML_API}/items/${q}`, { headers: authHeaders }).then(r => r.json());
+      console.log(`[ML-SEARCH] item=${q} title="${itemData.title}" error=${itemData.error}`);
+      return res.json({ title: itemData.title || null, error: itemData.error });
+    }
+
+    // modo búsqueda q=
+    const url = `${ML_API}/sites/MLA/search?q=${encodeURIComponent(q)}&limit=50`;
+    console.log(`[ML-SEARCH] q="${q}" appToken=${!!appToken}`);
+    const data = await fetch(url, { headers: authHeaders }).then(r => r.json());
+    console.log(`[ML-SEARCH] results=${(data.results||[]).length} error=${data.error}`);
+    res.json(data);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── CLIENT TOKEN ENDPOINT ────────────────────────────────────────────────────
 app.get('/api/client-token', requireAuth, async (req, res) => {
   try {
     const clientId = parseInt(req.query.client_id);
