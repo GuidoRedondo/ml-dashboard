@@ -1,4 +1,4 @@
-cconst express = require('express');
+const express = require('express');
 const cookieParser = require('cookie-parser');
 const cors = require('cors');
 const fetch = require('node-fetch');
@@ -1574,7 +1574,7 @@ app.get('/api/items-full', requireAuth, async (req, res) => {
     for (let i = 0; i < allIds.length; i += 20) {
       const batch = allIds.slice(i, i+20);
       try {
-        const data = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,title,price,status,sub_status,available_quantity,listing_type_id,category_id,shipping,pictures,condition,catalog_listing,video_id`, { headers }).then(r => r.json());
+        const data = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,title,price,status,sub_status,available_quantity,listing_type_id,category_id,shipping,pictures,condition,catalog_listing,video_id,health`, { headers }).then(r => r.json());
         (Array.isArray(data) ? data : []).forEach(r => {
           if (r.code === 200 && r.body) itemDetailsMap[r.body.id] = r.body;
         });
@@ -1692,7 +1692,8 @@ app.get('/api/items-full', requireAuth, async (req, res) => {
         adsSales: ads.adsSales||0, adsCost: ads.adsCost||0,
         adsConversion: ads.clicks > 0 ? parseFloat(((ads.adsUnits||0)/ads.clicks*100).toFixed(1)) : 0,
         problems, hasProblems: problems.length > 0,
-        has_clip: clipsSet.has(item.id)
+        has_clip: clipsSet.has(item.id),
+        health: detail.health != null ? parseFloat(detail.health) : null
       };
     });
 
@@ -1726,7 +1727,8 @@ app.get('/api/items-full', requireAuth, async (req, res) => {
         adsSales: ads.adsSales||0, adsCost: ads.adsCost||0,
         adsConversion: ads.clicks > 0 ? parseFloat(((ads.adsUnits||0)/ads.clicks*100).toFixed(1)) : 0,
         problems, hasProblems: problems.length > 0,
-        has_clip: clipsSet.has(id)
+        has_clip: clipsSet.has(id),
+        health: detail.health != null ? parseFloat(detail.health) : null
       };
     });
 
@@ -3253,65 +3255,37 @@ app.get('/api/competencia', requireAuth, async (req, res) => {
     const headers = { 'Authorization': `Bearer ${token}` };
 
     if (categoryId) {
-      // ── Competencia por categoría ──────────────────────────────────────────
-      // ML bloquea category+seller_id desde IPs de cloud.
-      // Usamos q= con el título del ítem (pasado desde el frontend como item_id)
-      // o con el item_id directamente para obtener el título.
-
+      // ── Top sellers + price range for a specific category ──────────────────
+      // Usar app token (client_credentials) — el user token da forbidden en búsquedas
+      // de categoría desde IPs de cloud (Railway/Vercel)
       const appToken = await getAppToken(parseInt(req.query.client_id));
       const searchHeaders = appToken
         ? { 'Authorization': `Bearer ${appToken}` }
-        : headers;
+        : { 'Authorization': `Bearer ${token}` };
 
-      // Obtener título: puede venir como item_id en query, o buscamos el primer ítem del seller
-      let searchTitle = req.query.item_title || null;
-      const sampleItemId = req.query.item_id || null;
+      const searchUrl = `${ML_API}/sites/MLA/search?category=${categoryId}&sort=sold_quantity_desc&limit=50`;
+      const searchUrl2 = `${ML_API}/sites/MLA/search?category=${categoryId}&limit=50`;
+      
+      let searchRes = {};
+      try {
+        searchRes = await fetch(searchUrl, { headers: searchHeaders }).then(r => r.json());
+        console.log(`[COMP] category=${categoryId} results=${(searchRes.results||[]).length} total=${searchRes.paging?.total} error=${searchRes.error} appToken=${!!appToken}`);
+        // Fallback si sort no disponible
+        if (!searchRes.results || searchRes.results.length === 0) {
+          searchRes = await fetch(searchUrl2, { headers: searchHeaders }).then(r => r.json());
+          console.log(`[COMP] fallback results=${(searchRes.results||[]).length} error=${searchRes.error}`);
+        }
+        // Último fallback: user token directo
+        if (!searchRes.results || searchRes.results.length === 0) {
+          searchRes = await fetch(searchUrl2, { headers }).then(r => r.json());
+          console.log(`[COMP] user token fallback results=${(searchRes.results||[]).length} error=${searchRes.error}`);
+        }
+      } catch(e) { console.error('[COMP] search error:', e.message); }
 
-      if (!searchTitle && sampleItemId) {
-        try {
-          const itemData = await fetch(`${ML_API}/items/${sampleItemId}`, { headers }).then(r => r.json());
-          searchTitle = itemData.title || null;
-          console.log(`[COMP] got title from item_id=${sampleItemId}: "${searchTitle}"`);
-        } catch(e) {}
-      }
-
-      // Si no hay título, intentar obtener un ítem del seller en esta categoría via API interna
-      if (!searchTitle) {
-        try {
-          const r = await fetch(`${ML_API}/users/${uid}/items/search?status=active&limit=20`, { headers }).then(r => r.json());
-          const ids = (r.results || []).slice(0, 5);
-          if (ids.length) {
-            const batchData = await fetch(`${ML_API}/items?ids=${ids.join(',')}&attributes=id,title,category_id`, { headers }).then(r => r.json()).catch(() => []);
-            const inCat = (Array.isArray(batchData) ? batchData : [])
-              .filter(r => r.code === 200 && r.body && r.body.category_id === categoryId)
-              .map(r => r.body);
-            if (inCat.length) searchTitle = inCat[0].title;
-          }
-        } catch(e) {}
-      }
-
-      const myItems = [];
-
-      // Buscar competidores con q= (esto SÍ funciona desde cloud)
-      let searchRes = { results: [] };
-      if (searchTitle) {
-        const titleWords = searchTitle
-          .replace(/[^\w\sÀ-ɏ]/gi, ' ')
-          .replace(/\s+/g, ' ').trim()
-          .split(' ').filter(w => w.length > 2).slice(0, 4).join(' ');
-        const qUrl = `${ML_API}/sites/MLA/search?q=${encodeURIComponent(titleWords)}&limit=50`;
-        try {
-          searchRes = await fetch(qUrl, { headers: searchHeaders }).then(r => r.json());
-          console.log(`[COMP] q search results=${(searchRes.results||[]).length} error=${searchRes.error} q="${titleWords}"`);
-        } catch(e) { console.error('[COMP] q search error:', e.message); }
-      } else {
-        console.log(`[COMP] no title available for category=${categoryId}`);
-      }
+      const catRes = await fetch(`${ML_API}/categories/${categoryId}`, { headers }).then(r => r.json()).catch(() => ({}));
 
       const results = searchRes.results || [];
       console.log(`[COMP] processing ${results.length} results, first=`, results[0] && { id: results[0].id, seller: results[0].seller, price: results[0].price });
-
-      const catRes = await fetch(`${ML_API}/categories/${categoryId}`, { headers }).then(r => r.json()).catch(() => ({}));
       
       const prices = results.map(r => parseFloat(r.price)||0).filter(p => p > 0);
       const priceStats = prices.length ? {
@@ -3331,15 +3305,14 @@ app.get('/api/competencia', requireAuth, async (req, res) => {
         sellers[sid].total_sold += r.sold_quantity || 0;
       });
 
-      // My items in this category — usar los que ya buscamos directamente
-      const myItemsInResults = results.filter(r => r.seller && String(r.seller.id || r.seller) === String(uid));
-      const finalMyItems = myItems.length > 0 ? myItems : myItemsInResults;
+      // My items in this category
+      const myItems = results.filter(r => r.seller && String(r.seller.id || r.seller) === String(uid));
 
       return res.json({
         category: { id: categoryId, name: catRes.name || categoryId },
         price_stats: priceStats,
         sellers: Object.values(sellers).sort((a,b) => b.total_sold - a.total_sold).slice(0,10),
-        my_items: finalMyItems,
+        my_items: myItems,
         top_listings: results.slice(0,50)
       });
     }
@@ -3372,7 +3345,7 @@ app.get('/api/competencia', requireAuth, async (req, res) => {
       } catch(e) {}
     }));
 
-    // Incluir un item_id de muestra por categoría para búsqueda de competidores
+    // Incluir sample_item por categoría para búsqueda de competidores
     const catItems = {};
     for (let i = 0; i < activeIds.length; i += 20) {
       const batch = activeIds.slice(i, i+20);
@@ -3721,25 +3694,14 @@ app.get('/api/debug/app-token', requireAuth, async (req, res) => {
     const row = result.rows[0] || {};
     const app_id = row.app_id || process.env.ML_APP_ID;
     const client_secret = row.client_secret || process.env.ML_CLIENT_SECRET;
-
     const r = await fetch('https://api.mercadolibre.com/oauth/token', {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({ grant_type: 'client_credentials', client_id: app_id, client_secret }).toString()
     });
     const data = await r.json();
-
-    res.json({
-      db_app_id: row.app_id || null,
-      env_app_id: process.env.ML_APP_ID ? process.env.ML_APP_ID.slice(0,6)+'...' : null,
-      using_app_id: app_id ? app_id.slice(0,6)+'...' : null,
-      has_secret: !!client_secret,
-      ml_response: data,
-      got_token: !!data.access_token
-    });
-  } catch(e) {
-    res.status(500).json({ error: e.message });
-  }
+    res.json({ db_app_id: row.app_id||null, env_app_id: process.env.ML_APP_ID?process.env.ML_APP_ID.slice(0,6)+'...':null, has_secret: !!client_secret, ml_response: data, got_token: !!data.access_token });
+  } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
 initDB().then(() => {
