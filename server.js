@@ -3316,14 +3316,15 @@ app.get('/api/competencia', requireAuth, async (req, res) => {
         sellers[sid].total_sold += r.sold_quantity || 0;
       });
 
-      // My items in this category
-      const myItems = results.filter(r => r.seller && String(r.seller.id || r.seller) === String(uid));
+      // My items in this category — usar los que ya buscamos directamente
+      const myItemsInResults = results.filter(r => r.seller && String(r.seller.id || r.seller) === String(uid));
+      const finalMyItems = myItems.length > 0 ? myItems : myItemsInResults;
 
       return res.json({
         category: { id: categoryId, name: catRes.name || categoryId },
         price_stats: priceStats,
         sellers: Object.values(sellers).sort((a,b) => b.total_sold - a.total_sold).slice(0,10),
-        my_items: myItems,
+        my_items: finalMyItems,
         top_listings: results.slice(0,50)
       });
     }
