@@ -530,6 +530,9 @@ tbody td {
       <div class="nav-item" data-page="logistica" onclick="showPage('logistica',this);loadLogistica()">
         <span class="nav-icon">🚚</span> Logística
       </div>
+      <div class="nav-item" data-page="stock" onclick="showPage('stock',this);loadStock()">
+        <span class="nav-icon">📦</span> Stock
+      </div>
       <div class="nav-item" data-page="escalabilidad" onclick="showPage('escalabilidad',this);loadEscalabilidad()">
         <span class="nav-icon">🚀</span> Escalabilidad
       </div>
@@ -1079,6 +1082,19 @@ tbody td {
     <div class="page" id="page-reputacion">
       <h2 style="margin:0 0 20px;font-family:var(--font-b)">Reputación</h2>
       <div id="reputacionContent"><div style="color:var(--muted)">Sincronizá para ver datos</div></div>
+    </div>
+
+    <!-- STOCK -->
+    <div class="page" id="page-stock">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px;flex-wrap:wrap">
+        <h2 style="margin:0;font-family:var(--font-b);flex:1">📦 Stock</h2>
+        <input id="stockSearch" type="text" placeholder="Buscar por MLA, SKU o título..."
+          oninput="filterStock(this.value)"
+          style="padding:7px 12px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:12px;width:240px">
+        <button class="sync-btn" onclick="loadStock()">🔄 Actualizar</button>
+        <button class="sync-btn" onclick="exportStockExcel()" style="background:#16a34a;color:#fff;border:none">📥 Excel</button>
+      </div>
+      <div id="stockContent"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Sincronizá para ver datos</div></div>
     </div>
 
   </main>
@@ -8235,6 +8251,283 @@ window.addEventListener('DOMContentLoaded', () => {
     showLoginScreen();
   }
 });
+
+// ── STOCK ─────────────────────────────────────────────────────────────────────
+let _stockData = null;
+let _stockSort = { col: 'valor_stock', asc: false };
+let _stockFilter = 'todos';
+
+async function loadStock() {
+  const el = document.getElementById('stockContent');
+  if (!el) return;
+  const client = getActiveClient();
+  if (!client || !client.ml_user_id) {
+    el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">Sin cuenta conectada — seleccioná una cuenta primero</div>';
+    return;
+  }
+  el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">⏳ Cargando stock... puede tardar unos segundos</div>';
+
+  const { date_from, date_to } = getDateRange();
+  const dias = Math.max(1, Math.round((new Date(date_to) - new Date(date_from)) / (1000*60*60*24)));
+
+  try {
+    // Cargar publicaciones activas (items-full) + costos (product_costs)
+    const [itemsRes, costsRes] = await Promise.all([
+      fetch(`${SERVER_URL}/api/items-full?client_id=${client.id}&date_from=${date_from}&date_to=${date_to}&session_id=${getSession()||''}`).then(r => r.json()),
+      apiCall('GET', `/api/reporte/items-activos?client_id=${client.id}`)
+    ]);
+
+    const items   = (itemsRes?.items || []).filter(i => i.status === 'active' || i.status === 'paused');
+    const costsMap = {};
+    (costsRes?.items || []).forEach(i => { if (i.costo_unit != null) costsMap[i.mla_id] = parseFloat(i.costo_unit); });
+
+    // Construir filas
+    const rows = items.map(item => {
+      const stock   = item.available_quantity ?? 0;
+      const costo   = costsMap[item.id] ?? null;
+      const ritmo   = dias > 0 && item.units > 0 ? item.units / dias : 0;
+      const cobertura = ritmo > 0 ? Math.round(stock / ritmo) : null;
+      const valorStock = costo != null ? costo * stock : null;
+      return {
+        id:          item.id,
+        sku:         item.sku || '—',
+        title:       item.title,
+        stock,
+        costo,
+        valor_stock: valorStock,
+        ritmo:       parseFloat(ritmo.toFixed(2)),
+        cobertura,
+        is_full:     item.is_full || false,
+        units:       item.units || 0,
+      };
+    });
+
+    _stockData = { rows, dias };
+    renderStock();
+  } catch(e) {
+    el.innerHTML = `<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Error: ${e.message}</div>`;
+  }
+}
+
+function filterStock(q) {
+  if (!_stockData) return;
+  const term = (q || '').toLowerCase();
+  document.querySelectorAll('#stockTbody tr[data-search]').forEach(row => {
+    row.style.display = !term || row.dataset.search.includes(term) ? '' : 'none';
+  });
+  _updateStockCount();
+}
+
+function _updateStockCount() {
+  const visible = document.querySelectorAll('#stockTbody tr[data-search]:not([style*="display: none"]):not([style*="display:none"])').length;
+  const el = document.getElementById('stockCount');
+  if (el) el.textContent = visible + ' productos';
+}
+
+function setStockFilter(f, btn) {
+  _stockFilter = f;
+  document.querySelectorAll('#stockFilterBtns button').forEach(b => {
+    const active = b === btn;
+    b.style.background = active ? 'var(--accent)' : 'none';
+    b.style.color      = active ? '#000' : 'var(--muted)';
+    b.style.borderColor= active ? 'var(--accent)' : 'var(--border)';
+  });
+  renderStockRows();
+  document.getElementById('stockSearch').value = '';
+}
+
+function sortStock(col) {
+  if (_stockSort.col === col) _stockSort.asc = !_stockSort.asc;
+  else { _stockSort.col = col; _stockSort.asc = false; }
+  renderStockRows();
+}
+
+function renderStock() {
+  if (!_stockData) return;
+  const { rows, dias } = _stockData;
+  const el = document.getElementById('stockContent');
+  const fmt  = n => '$' + Math.round(n).toLocaleString('es-AR');
+  const fmtN = n => n != null ? n.toLocaleString('es-AR') : '—';
+
+  // ── KPIs ─────────────────────────────────────────────────────────────────
+  const total       = rows.length;
+  const sinStock    = rows.filter(r => r.stock === 0).length;
+  const critico     = rows.filter(r => r.stock > 0 && r.cobertura != null && r.cobertura <= 7).length;
+  const sinCMV      = rows.filter(r => r.costo == null).length;
+  const conFull     = rows.filter(r => r.is_full).length;
+  const valorTotal  = rows.filter(r => r.valor_stock != null).reduce((s, r) => s + r.valor_stock, 0);
+  const conValor    = rows.filter(r => r.valor_stock != null).length;
+
+  const kpiCard = (icon, label, value, color, sub, filterKey) => `
+    <div onclick="setStockFilter('${filterKey}', this)" id="stk-kpi-${filterKey}"
+      class="kpi-card" style="padding:16px;cursor:pointer;border-top:3px solid ${color};transition:opacity .15s;
+      ${_stockFilter===filterKey ? 'outline:2px solid '+color+';outline-offset:2px' : ''}">
+      <div class="kpi-label">${icon} ${label}</div>
+      <div style="font-size:26px;font-weight:800;font-family:var(--font-b);color:${color};margin-top:6px">${value}</div>
+      ${sub ? `<div style="font-size:11px;color:var(--muted);margin-top:4px">${sub}</div>` : ''}
+    </div>`;
+
+  const kpis = `<div style="display:grid;grid-template-columns:repeat(6,1fr);gap:12px;margin-bottom:16px">
+    ${kpiCard('📦','Total activas', total, 'var(--accent)', `${dias}d de período`, 'todos')}
+    ${kpiCard('⚠️','Sin stock', sinStock, sinStock>0?'#ff5252':'#00e676', 'Stock = 0', 'sin_stock')}
+    ${kpiCard('🔴','Cobertura crítica', critico, critico>0?'#ff9100':'#00e676', '≤ 7 días', 'critico')}
+    ${kpiCard('❓','Sin CMV', sinCMV, sinCMV>0?'#6366f1':'#00e676', 'Sin costo cargado', 'sin_cmv')}
+    ${kpiCard('📦','Con FULL', conFull, '#00bcd4', `${(conFull/Math.max(total,1)*100).toFixed(0)}% del total`, 'full')}
+    <div class="kpi-card" style="padding:16px;border-top:3px solid #059669">
+      <div class="kpi-label">💰 Valor total en stock</div>
+      <div style="font-size:22px;font-weight:800;font-family:var(--font-b);color:#059669;margin-top:6px">${conValor > 0 ? fmt(valorTotal) : '—'}</div>
+      <div style="font-size:11px;color:var(--muted);margin-top:4px">${conValor} productos con CMV</div>
+    </div>
+  </div>`;
+
+  const alertasHtml = '';
+
+  // ── Filtros ───────────────────────────────────────────────────────────────
+  const filtros = `
+    <div id="stockFilterBtns" style="display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap">
+      ${[
+        ['todos','Todos',`${total}`,'var(--accent)'],
+        ['sin_stock','Sin stock',`${sinStock}`,'#ff5252'],
+        ['critico','Crítico ≤7d',`${critico}`,'#ff9100'],
+        ['sin_cmv','Sin CMV',`${sinCMV}`,'#6366f1'],
+        ['full','FULL',`${conFull}`,'#00bcd4'],
+      ].map(([key,label,count,color]) => `
+        <button onclick="setStockFilter('${key}',this)"
+          style="padding:4px 12px;border-radius:20px;font-size:12px;font-weight:600;cursor:pointer;
+                 border:1px solid ${_stockFilter===key?color:'var(--border)'};
+                 background:${_stockFilter===key?color:'none'};
+                 color:${_stockFilter===key?(_stockFilter==='todos'?'#000':'#fff'):'var(--muted)'}">
+          ${label} <span style="opacity:.7">(${count})</span>
+        </button>`
+      ).join('')}
+    </div>`;
+
+  // ── Tabla ─────────────────────────────────────────────────────────────────
+  const th = (col, label, align='right') => {
+    const active = _stockSort.col === col;
+    const arrow  = active ? (_stockSort.asc ? ' ↑' : ' ↓') : ' <span style="opacity:.3">↕</span>';
+    return `<th onclick="sortStock('${col}')" style="padding:9px 10px;text-align:${align};font-size:11px;font-weight:600;color:${active?'var(--accent)':'var(--muted)'};cursor:pointer;user-select:none;white-space:nowrap;border-bottom:2px solid var(--border)">${label}${arrow}</th>`;
+  };
+
+  el.innerHTML = kpis + alertasHtml + filtros + `
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
+      <span id="stockCount" style="font-size:12px;color:var(--muted)">${rows.length} productos</span>
+    </div>
+    <div class="kpi-card" style="padding:0;overflow:hidden">
+      <div style="overflow-x:auto">
+        <table style="width:100%;border-collapse:collapse;font-size:12px">
+          <thead><tr style="background:var(--surface2)">
+            ${th('id',          'MLA',         'left')}
+            ${th('sku',         'SKU',         'left')}
+            ${th('title',       'Título',      'left')}
+            ${th('stock',       'Stock')}
+            ${th('costo',       'CMV unit.')}
+            ${th('valor_stock', 'Valor en stock')}
+            ${th('ritmo',       'Ritmo/día')}
+            ${th('cobertura',   'Cobertura')}
+            ${th('is_full',     'FULL',        'center')}
+          </tr></thead>
+          <tbody id="stockTbody"></tbody>
+        </table>
+      </div>
+    </div>
+    <div style="font-size:11px;color:var(--muted);margin-top:10px">
+      Cobertura = stock actual / (unidades vendidas ÷ ${dias} días del período) · Publicaciones activas y pausadas
+    </div>`;
+
+  renderStockRows();
+}
+
+function renderStockRows() {
+  const tbody = document.getElementById('stockTbody');
+  if (!tbody || !_stockData) return;
+  const { rows } = _stockData;
+  const fmt  = n => '$' + Math.round(n).toLocaleString('es-AR');
+
+  // Filtro
+  const f = _stockFilter;
+  let filtered = rows;
+  if (f === 'sin_stock') filtered = rows.filter(r => r.stock === 0);
+  else if (f === 'critico')   filtered = rows.filter(r => r.stock > 0 && r.cobertura != null && r.cobertura <= 7);
+  else if (f === 'sin_cmv')   filtered = rows.filter(r => r.costo == null);
+  else if (f === 'full')      filtered = rows.filter(r => r.is_full);
+
+  // Orden
+  const { col, asc } = _stockSort;
+  filtered = [...filtered].sort((a, b) => {
+    const va = a[col] ?? (typeof a[col] === 'string' ? '' : -Infinity);
+    const vb = b[col] ?? (typeof b[col] === 'string' ? '' : -Infinity);
+    if (typeof va === 'string') return asc ? va.localeCompare(vb) : vb.localeCompare(va);
+    return asc ? va - vb : vb - va;
+  });
+
+  const stockColor  = s => s === 0 ? '#ff5252' : s <= 3 ? '#ff5252' : s <= 10 ? '#ff9100' : '#00e676';
+  const coberColor  = c => c == null ? 'var(--muted)' : c <= 7 ? '#ff5252' : c <= 21 ? '#ff9100' : '#00e676';
+  const coberBadge  = c => {
+    if (c == null) return '<span style="color:var(--muted)">—</span>';
+    const col = coberColor(c);
+    const icon = c <= 7 ? '🔴' : c <= 21 ? '🟠' : '🟢';
+    return `<span style="color:${col};font-weight:700">${icon} ${c}d</span>`;
+  };
+
+  tbody.innerHTML = filtered.map(r => `
+    <tr data-search="${(r.id+' '+(r.sku==='—'?'':r.sku)+' '+r.title).toLowerCase()}"
+        style="border-bottom:1px solid var(--border)">
+      <td style="padding:8px 10px;font-size:11px;white-space:nowrap">
+        <span style="color:var(--muted);cursor:pointer" onclick="copyMLA(this,'${r.id}')" title="Copiar">${r.id}</span>
+      </td>
+      <td style="padding:8px 10px;font-size:11px;color:var(--muted);white-space:nowrap">${r.sku}</td>
+      <td style="padding:8px 10px;max-width:280px">
+        <a href="https://articulo.mercadolibre.com.ar/${r.id.replace(/MLA(\d+)/,'MLA-$1')}" target="_blank"
+          style="color:var(--text);text-decoration:none;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block"
+          title="${r.title}">${r.title}</a>
+      </td>
+      <td style="padding:8px 10px;text-align:right;font-weight:700;font-size:13px;color:${stockColor(r.stock)}">${r.stock.toLocaleString('es-AR')}</td>
+      <td style="padding:8px 10px;text-align:right;color:${r.costo!=null?'var(--text)':'var(--muted)'}">${r.costo!=null ? fmt(r.costo) : '—'}</td>
+      <td style="padding:8px 10px;text-align:right;font-weight:700;color:${r.valor_stock!=null?'#059669':'var(--muted)'}">${r.valor_stock!=null ? fmt(r.valor_stock) : '—'}</td>
+      <td style="padding:8px 10px;text-align:right;color:${r.ritmo>0?'var(--text)':'var(--muted)'}">${r.ritmo > 0 ? r.ritmo : '—'}</td>
+      <td style="padding:8px 10px;text-align:right">${coberBadge(r.cobertura)}</td>
+      <td style="padding:8px 10px;text-align:center">${r.is_full ? '<span style="background:rgba(0,188,212,.15);color:#00bcd4;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600">FULL</span>' : '<span style="color:var(--muted);font-size:11px">—</span>'}</td>
+    </tr>`).join('') || `<tr><td colspan="9" style="padding:40px;text-align:center;color:var(--muted)">Sin productos con este filtro</td></tr>`;
+
+  // Actualizar KPI cards según filtro activo
+  ['todos','sin_stock','critico','sin_cmv','full'].forEach(key => {
+    const card = document.getElementById(`stk-kpi-${key}`);
+    if (card) {
+      card.style.outline = _stockFilter===key ? '2px solid var(--accent)' : 'none';
+    }
+  });
+
+  const cnt = document.getElementById('stockCount');
+  if (cnt) cnt.textContent = filtered.length + ' productos';
+}
+
+function exportStockExcel() {
+  if (!_stockData?.rows?.length) { showToast('Sin datos para exportar'); return; }
+  const { rows } = _stockData;
+  const XLSX = window.XLSX;
+  const client = getActiveClient();
+
+  const data = rows.map(r => ({
+    'MLA':              r.id,
+    'SKU':              r.sku === '—' ? '' : r.sku,
+    'Título':           r.title,
+    'Stock':            r.stock,
+    'CMV unitario':     r.costo ?? '',
+    'Valor en stock':   r.valor_stock != null ? Math.round(r.valor_stock) : '',
+    'Ritmo/día':        r.ritmo > 0 ? r.ritmo : '',
+    'Cobertura (días)': r.cobertura ?? '',
+    'FULL':             r.is_full ? 'Sí' : 'No',
+  }));
+
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.json_to_sheet(data);
+  ws['!cols'] = [16,18,50,10,14,16,12,16,8].map(w => ({ wch: w }));
+  XLSX.utils.book_append_sheet(wb, ws, 'Stock');
+  const fecha = new Date().toISOString().slice(0,10);
+  XLSX.writeFile(wb, `Stock_${(client?.name||'').replace(/\s+/g,'_')}_${fecha}.xlsx`);
+  showToast('✅ Excel descargado');
+}
 </script>
 </body>
 </html></html>
