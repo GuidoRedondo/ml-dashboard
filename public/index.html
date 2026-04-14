@@ -6939,6 +6939,8 @@ function renderCurvaABC() {
 
   const products = Object.values(allProducts).filter(p => p.revenue > 0).sort((a,b) => b.revenue - a.revenue);
   const totalRevenue = products.reduce((s,p) => s + p.revenue, 0);
+  const stockMap = _escData?.stockMap || {};
+  const stockColor = s => s == null ? 'var(--muted)' : s <= 3 ? '#ff5252' : s <= 10 ? '#ff9100' : '#00e676';
 
   let acum = 0;
   const classified = products.map((p, i) => {
@@ -6970,6 +6972,8 @@ function renderCurvaABC() {
 
   const rows = classified.map((p, i) => {
     const st = claseStyle[p.clase];
+    const stock = stockMap[p.id] ?? null;
+    const stock = stockMap[p.id] ?? null;
     return `<tr style="border-bottom:1px solid var(--border);${i%2===0?'background:rgba(255,255,255,.015)':''}">
       <td style="padding:8px 10px;text-align:center;font-size:12px;color:var(--muted)">${p.rank}</td>
       <td style="padding:8px 10px;text-align:center">
@@ -6981,6 +6985,7 @@ function renderCurvaABC() {
       </td>
       <td style="padding:8px 10px;text-align:right;font-size:13px;font-weight:700">${fmtN(p.revenue)}</td>
       <td style="padding:8px 10px;text-align:right;font-size:12px">${p.units}</td>
+      <td style="padding:8px 10px;text-align:right;font-size:12px;font-weight:700;color:${stockColor(stock)}">${stock != null ? stock.toLocaleString('es-AR') : '—'}</td>
       <td style="padding:8px 10px;text-align:right;font-size:12px;color:var(--muted)">${(p.revenue/totalRevenue*100).toFixed(1)}%</td>
       <td style="padding:8px 10px;text-align:right;font-size:12px;color:${p.clase==='A'?'#00e676':p.clase==='B'?'#ff9100':'var(--muted)'}">${p.pctAcum.toFixed(1)}%</td>
     </tr>`;
@@ -6997,6 +7002,7 @@ function renderCurvaABC() {
             <th style="padding:8px 10px;text-align:left;font-size:11px;font-weight:600;color:var(--muted)">Producto</th>
             <th style="padding:8px 10px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Facturación</th>
             <th style="padding:8px 10px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Unidades</th>
+            <th style="padding:8px 10px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Stock</th>
             <th style="padding:8px 10px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">% Individual</th>
             <th style="padding:8px 10px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">% Acumulado</th>
           </tr></thead>
@@ -7008,6 +7014,7 @@ function renderCurvaABC() {
       <span>🟢 A = productos que suman el 80% de la facturación</span>
       <span>🟡 B = siguiente 15% (acumulado 80–95%)</span>
       <span>🔴 C = último 5% (acumulado 95–100%)</span>
+      <span>Stock: 🟢 >10 · 🟠 ≤10 · 🔴 ≤3</span>
     </div>`;
 }
 
@@ -7049,7 +7056,8 @@ function renderPrioridades() {
 
   // Cruzar con score de escalabilidad (_escData ya tiene todo calculado)
   const minMargen = parseFloat(document.getElementById('escMinMargen')?.value) || 30;
-  const { products, costsMap } = _escData;
+  const { products, costsMap, stockMap = {} } = _escData;
+  const stockColor = s => s == null ? 'var(--muted)' : s <= 3 ? '#ff5252' : s <= 10 ? '#ff9100' : '#00e676';
   const maxRevenue = Math.max(...Object.values(products).map(x => x.revenue), 1);
 
   const allItems = Object.values(products).filter(p => p.revenue > 0).map(p => {
@@ -7072,7 +7080,8 @@ function renderPrioridades() {
     else if (margenReal >= minMargen * 0.65 && score >= 35)           { semaforo = '🟡'; semaColor = '#d97706'; }
     else                                                               { semaforo = '🔴'; semaColor = '#dc2626'; }
     const clase = claseByProduct[p.id] || 'C';
-    return { ...p, hasCMV, margenReal, score, semaforo, semaColor, clase };
+    const stock = stockMap[p.id] ?? null;
+    return { ...p, hasCMV, margenReal, score, semaforo, semaColor, clase, stock };
   }).sort((a,b) => {
     // Orden: clase A → B → C, dentro de cada clase por score desc
     const co = ['A','B','C'].indexOf(a.clase) - ['A','B','C'].indexOf(b.clase);
@@ -7120,6 +7129,8 @@ function renderPrioridades() {
     const pct = totalRevenue > 0 ? (p.revenue/totalRevenue*100).toFixed(1) : '0';
     const margenStr = p.margenReal != null ? Math.round(p.margenReal) + '%' + (p.hasCMV ? '' : '*') : '—';
     const margenColor = p.margenReal >= minMargen ? '#00e676' : p.margenReal >= minMargen*0.65 ? '#ff9100' : '#ff5252';
+    const stock = p.stock ?? null;
+    const stkCol = stock == null ? 'var(--muted)' : stock <= 3 ? '#ff5252' : stock <= 10 ? '#ff9100' : '#00e676';
     return `<tr style="border-bottom:1px solid var(--border)">
       <td style="padding:9px 10px;text-align:center">
         <span style="padding:3px 12px;border-radius:20px;font-size:12px;font-weight:700;background:${claseBg[p.clase]};color:${claseColor[p.clase]}">${p.clase}</span>
@@ -7131,6 +7142,7 @@ function renderPrioridades() {
       <td style="padding:9px 10px;text-align:right;font-size:13px;font-weight:700">${fmtN(p.revenue)}</td>
       <td style="padding:9px 10px;text-align:right;font-size:12px;color:var(--muted)">${pct}%</td>
       <td style="padding:9px 10px;text-align:right;font-size:13px;font-weight:700;color:${margenColor}">${margenStr}</td>
+      <td style="padding:9px 10px;text-align:right;font-size:12px;font-weight:700;color:${stkCol}">${stock != null ? stock.toLocaleString('es-AR') : '—'}</td>
       <td style="padding:9px 10px;text-align:center">
         <span title="Score: ${p.score}" style="font-size:18px;cursor:default">${p.semaforo}</span>
         <div style="font-size:10px;color:var(--muted)">${p.score} pts</div>
@@ -7149,6 +7161,7 @@ function renderPrioridades() {
             <th style="padding:9px 10px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Facturación</th>
             <th style="padding:9px 10px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">% Total</th>
             <th style="padding:9px 10px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Margen</th>
+            <th style="padding:9px 10px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Stock</th>
             <th style="padding:9px 10px;text-align:center;font-size:11px;font-weight:600;color:var(--muted)">Escalabilidad</th>
           </tr></thead>
           <tbody>${rows}</tbody>
@@ -7215,11 +7228,16 @@ function loadEscalabilidad() {
     .then(costsData => {
       const costsMap = {};
       (costsData?.items || []).forEach(i => { if (i.costo_unit != null) costsMap[i.mla_id] = parseFloat(i.costo_unit) || 0; });
-      _escData = { products: allProducts, fullSet, costsMap };
+      // Stock disponible: cruzar con _pubsData si está cargado
+      const stockMap = {};
+      (window._pubsData || []).forEach(i => { if (i.available_quantity != null) stockMap[i.id] = i.available_quantity; });
+      _escData = { products: allProducts, fullSet, costsMap, stockMap };
       renderEscalabilidad();
     })
     .catch(() => {
-      _escData = { products: allProducts, fullSet, costsMap: {} };
+      const stockMap = {};
+      (window._pubsData || []).forEach(i => { if (i.available_quantity != null) stockMap[i.id] = i.available_quantity; });
+      _escData = { products: allProducts, fullSet, costsMap: {}, stockMap };
       renderEscalabilidad();
     });
 }
@@ -7232,11 +7250,12 @@ function setEscFilter(f) {
 function renderEscalabilidad() {
   const el = document.getElementById('escalabilidadContent');
   if (!_escData) return;
-  const { products, fullSet, costsMap } = _escData;
+  const { products, fullSet, costsMap, stockMap = {} } = _escData;
   const minMargen = parseFloat(document.getElementById('escMinMargen')?.value) || 30;
 
   const fmtN = n => '$' + Math.round(Math.abs(n)).toLocaleString('es-AR');
   const fmtP = (n, dec=1) => n != null ? n.toFixed(dec) + '%' : '—';
+  const stockColor = s => s == null ? 'var(--muted)' : s <= 3 ? '#ff5252' : s <= 10 ? '#ff9100' : '#00e676';
 
   const maxRevenue = Math.max(...Object.values(products).map(x => x.revenue), 1);
 
@@ -7263,6 +7282,9 @@ function renderEscalabilidad() {
     // FULL
     const hasFull = fullSet.has(p.id);
 
+    // Stock disponible
+    const stock = stockMap[p.id] ?? null;
+
     // % inversión ads sobre facturación
     const pctAds = p.revenue > 0 && p.ads > 0 ? (p.ads / p.revenue * 100) : 0;
     const scoreMargen = Math.min(100, Math.max(0, (margenReal / (minMargen * 2)) * 100));
@@ -7279,7 +7301,7 @@ function renderEscalabilidad() {
       tag = 'revisar';   tagColor = '#dc2626'; tagBg = 'rgba(220,38,38,.10)';
     }
 
-    return { ...p, hasCMV, cmv, margenReal, trend, conversion, hasFull, pctAds, score, tag, tagColor, tagBg };
+    return { ...p, hasCMV, cmv, margenReal, trend, conversion, hasFull, stock, pctAds, score, tag, tagColor, tagBg };
   });
 
   const conCMV    = allItems.filter(i => i.hasCMV);
@@ -7363,6 +7385,7 @@ function renderEscalabilidad() {
         <td style="padding:8px 10px;text-align:right;font-size:12px;color:${convCol}">${convTxt}</td>
         <td style="padding:8px 10px;text-align:right;font-size:12px;color:${p.pctAds>0?pctAdsCol:'var(--muted)'}">${p.pctAds>0?fmtP(p.pctAds):'—'}</td>
         <td style="padding:8px 10px;text-align:center;font-size:12px">${p.hasFull?'<span style="color:#6366f1;font-weight:700">FULL</span>':'<span style="color:var(--muted)">—</span>'}</td>
+        <td style="padding:8px 10px;text-align:right;font-size:12px;font-weight:700;color:${stockColor(p.stock)}">${p.stock != null ? p.stock.toLocaleString('es-AR') : '—'}</td>
       </tr>`;
   }).join('');
 
@@ -7380,8 +7403,9 @@ function renderEscalabilidad() {
             ${th('conversion','Conversión')}
             ${th('pctAds','% Ads')}
             ${th('hasFull','FULL')}
+            ${th('stock','Stock')}
           </tr></thead>
-          <tbody>${rows || '<tr><td colspan="10" style="padding:40px;text-align:center;color:var(--muted)">Sin productos</td></tr>'}</tbody>
+          <tbody>${rows || '<tr><td colspan="11" style="padding:40px;text-align:center;color:var(--muted)">Sin productos</td></tr>'}</tbody>
         </table>
       </div>
     </div>`;
