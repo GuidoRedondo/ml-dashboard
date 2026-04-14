@@ -162,6 +162,18 @@ async function initDB() {
       updated_at        TIMESTAMP DEFAULT NOW(),
       UNIQUE(client_id, item_id)
     );
+    CREATE TABLE IF NOT EXISTS bitacora (
+      id           SERIAL PRIMARY KEY,
+      client_id    INTEGER NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+      tipo         VARCHAR(20)  NOT NULL DEFAULT 'nota',
+      estado       VARCHAR(20)  NOT NULL DEFAULT 'pendiente',
+      contenido    TEXT         NOT NULL,
+      autor        VARCHAR(100),
+      asignado_a   VARCHAR(100),
+      fecha_venc   DATE,
+      created_at   TIMESTAMP   DEFAULT NOW(),
+      updated_at   TIMESTAMP   DEFAULT NOW()
+    );
   `);
 
   // Create default admin if not exists (password: admin123 - change after first login)
@@ -1574,7 +1586,7 @@ app.get('/api/items-full', requireAuth, async (req, res) => {
     for (let i = 0; i < allIds.length; i += 20) {
       const batch = allIds.slice(i, i+20);
       try {
-        const data = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,title,price,status,sub_status,available_quantity,listing_type_id,category_id,shipping,pictures,condition,catalog_listing,video_id,health,health`, { headers }).then(r => r.json());
+        const data = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,title,price,status,sub_status,available_quantity,listing_type_id,category_id,shipping,pictures,condition,catalog_listing,video_id,health`, { headers }).then(r => r.json());
         (Array.isArray(data) ? data : []).forEach(r => {
           if (r.code === 200 && r.body) itemDetailsMap[r.body.id] = r.body;
         });
@@ -3255,39 +3267,37 @@ app.get('/api/competencia', requireAuth, async (req, res) => {
     const headers = { 'Authorization': `Bearer ${token}` };
 
     if (categoryId) {
-      // ── Competencia por categoría ──────────────────────────────────────────
-      // ML bloquea category search desde IPs de cloud. Usamos q= con el título
-      // del item_id pasado desde el frontend (sample_item de la categoría).
+      // ── Top sellers + price range for a specific category ──────────────────
+      // Usar app token (client_credentials) — el user token da forbidden en búsquedas
+      // de categoría desde IPs de cloud (Railway/Vercel)
       const appToken = await getAppToken(parseInt(req.query.client_id));
-      const searchHeaders = appToken ? { 'Authorization': `Bearer ${appToken}` } : headers;
+      const searchHeaders = appToken
+        ? { 'Authorization': `Bearer ${appToken}` }
+        : { 'Authorization': `Bearer ${token}` };
 
-      let searchTitle = null;
-      const sampleItemId = req.query.item_id || null;
-      if (sampleItemId) {
-        try {
-          const itemData = await fetch(`${ML_API}/items/${sampleItemId}`, { headers }).then(r => r.json());
-          searchTitle = itemData.title || null;
-          console.log(`[COMP] title from item_id=${sampleItemId}: "${searchTitle}"`);
-        } catch(e) { console.error('[COMP] item fetch error:', e.message); }
-      }
-
-      let searchRes = { results: [] };
-      if (searchTitle) {
-        const titleWords = searchTitle.split(' ').filter(w => w.length > 2).slice(0, 4).join(' ');
-        const qUrl = `${ML_API}/sites/MLA/search?q=${encodeURIComponent(titleWords)}&limit=50`;
-        try {
-          searchRes = await fetch(qUrl, { headers: searchHeaders }).then(r => r.json());
-          console.log(`[COMP] q="${titleWords}" results=${(searchRes.results||[]).length} error=${searchRes.error}`);
-        } catch(e) { console.error('[COMP] search error:', e.message); }
-      } else {
-        console.log(`[COMP] no title for category=${categoryId} item_id=${sampleItemId}`);
-      }
+      const searchUrl = `${ML_API}/sites/MLA/search?category=${categoryId}&sort=sold_quantity_desc&limit=50`;
+      const searchUrl2 = `${ML_API}/sites/MLA/search?category=${categoryId}&limit=50`;
+      
+      let searchRes = {};
+      try {
+        searchRes = await fetch(searchUrl, { headers: searchHeaders }).then(r => r.json());
+        console.log(`[COMP] category=${categoryId} results=${(searchRes.results||[]).length} total=${searchRes.paging?.total} error=${searchRes.error} appToken=${!!appToken}`);
+        // Fallback si sort no disponible
+        if (!searchRes.results || searchRes.results.length === 0) {
+          searchRes = await fetch(searchUrl2, { headers: searchHeaders }).then(r => r.json());
+          console.log(`[COMP] fallback results=${(searchRes.results||[]).length} error=${searchRes.error}`);
+        }
+        // Último fallback: user token directo
+        if (!searchRes.results || searchRes.results.length === 0) {
+          searchRes = await fetch(searchUrl2, { headers }).then(r => r.json());
+          console.log(`[COMP] user token fallback results=${(searchRes.results||[]).length} error=${searchRes.error}`);
+        }
+      } catch(e) { console.error('[COMP] search error:', e.message); }
 
       const catRes = await fetch(`${ML_API}/categories/${categoryId}`, { headers }).then(r => r.json()).catch(() => ({}));
 
       const results = searchRes.results || [];
-      const myItems = results.filter(r => r.seller && String(r.seller.id || r.seller) === String(uid));
-      console.log(`[COMP] processing ${results.length} results, myItems=${myItems.length}`);
+      console.log(`[COMP] processing ${results.length} results, first=`, results[0] && { id: results[0].id, seller: results[0].seller, price: results[0].price });
       
       const prices = results.map(r => parseFloat(r.price)||0).filter(p => p > 0);
       const priceStats = prices.length ? {
@@ -3306,6 +3316,9 @@ app.get('/api/competencia', requireAuth, async (req, res) => {
         sellers[sid].items.push({ id: r.id, title: r.title, price: r.price, sold_quantity: r.sold_quantity || 0 });
         sellers[sid].total_sold += r.sold_quantity || 0;
       });
+
+      // My items in this category
+      const myItems = results.filter(r => r.seller && String(r.seller.id || r.seller) === String(uid));
 
       return res.json({
         category: { id: categoryId, name: catRes.name || categoryId },
@@ -3600,6 +3613,63 @@ app.get('/api/devoluciones', requireAuth, async (req, res) => {
     });
   } catch(e) { console.error('[DEVOLUCIONES]', e.message); res.status(500).json({ error: e.message }); }
 });
+// ── BITÁCORA ─────────────────────────────────────────────────────────────────
+app.get('/api/bitacora', requireAuth, async (req, res) => {
+  try {
+    const { client_id } = req.query;
+    if (!client_id) return res.status(400).json({ error: 'Falta client_id' });
+    const r = await pool.query(
+      `SELECT id, client_id, tipo, estado, contenido, autor, asignado_a, fecha_venc,
+              created_at, updated_at
+       FROM bitacora WHERE client_id=$1 ORDER BY created_at DESC`,
+      [client_id]
+    );
+    res.json({ entries: r.rows });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/bitacora', requireAuth, async (req, res) => {
+  try {
+    const { client_id, tipo, estado, contenido, asignado_a, fecha_venc } = req.body;
+    if (!client_id || !contenido?.trim()) return res.status(400).json({ error: 'Faltan datos' });
+    const autor = req.user?.username || 'consultor';
+    const r = await pool.query(
+      `INSERT INTO bitacora (client_id, tipo, estado, contenido, autor, asignado_a, fecha_venc)
+       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+      [client_id, tipo||'nota', estado||'pendiente', contenido.trim(),
+       autor, asignado_a||null, fecha_venc||null]
+    );
+    res.json({ ok: true, entry: r.rows[0] });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+app.put('/api/bitacora/:id', requireAuth, async (req, res) => {
+  try {
+    const { estado, contenido, tipo, asignado_a, fecha_venc } = req.body;
+    const r = await pool.query(
+      `UPDATE bitacora SET
+        estado      = COALESCE($1, estado),
+        contenido   = COALESCE($2, contenido),
+        tipo        = COALESCE($3, tipo),
+        asignado_a  = COALESCE($4, asignado_a),
+        fecha_venc  = COALESCE($5::DATE, fecha_venc),
+        updated_at  = NOW()
+       WHERE id=$6 RETURNING *`,
+      [estado||null, contenido||null, tipo||null, asignado_a||null,
+       fecha_venc||null, req.params.id]
+    );
+    if (!r.rows.length) return res.status(404).json({ error: 'No encontrado' });
+    res.json({ ok: true, entry: r.rows[0] });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+app.delete('/api/bitacora/:id', requireAuth, async (req, res) => {
+  try {
+    await pool.query('DELETE FROM bitacora WHERE id=$1', [req.params.id]);
+    res.json({ ok: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
 app.get('/login', (req, res) => {
   const error = req.query.error || '';
   res.send(`<!DOCTYPE html><html><head>
@@ -3682,41 +3752,6 @@ app.post('/api/token', async (req, res) => {
     else { params.code = body.code; params.redirect_uri = body.redirect_uri; }
     const r = await fetch(`${ML_API}/oauth/token`, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(params).toString() });
     res.json(await r.json());
-  } catch(e) { res.status(500).json({ error: e.message }); }
-});
-
-// ── PROXY: búsqueda ML desde el backend (evita CORS del browser) ────────────
-app.get('/api/ml-search', requireAuth, async (req, res) => {
-  try {
-    const { q, client_id, mode } = req.query;
-    if (!q) return res.status(400).json({ error: 'Falta q' });
-    const appToken = await getAppToken(parseInt(client_id));
-    const token = await getClientToken(parseInt(client_id));
-    const authHeaders = { 'Authorization': `Bearer ${appToken || token}` };
-
-    // mode=item: obtener título de un item_id específico
-    if (mode === 'item') {
-      const itemData = await fetch(`${ML_API}/items/${q}`, { headers: authHeaders }).then(r => r.json());
-      console.log(`[ML-SEARCH] item=${q} title="${itemData.title}" error=${itemData.error}`);
-      return res.json({ title: itemData.title || null, error: itemData.error });
-    }
-
-    // modo búsqueda q=
-    const url = `${ML_API}/sites/MLA/search?q=${encodeURIComponent(q)}&limit=50`;
-    console.log(`[ML-SEARCH] q="${q}" appToken=${!!appToken}`);
-    const data = await fetch(url, { headers: authHeaders }).then(r => r.json());
-    console.log(`[ML-SEARCH] results=${(data.results||[]).length} error=${data.error}`);
-    res.json(data);
-  } catch(e) { res.status(500).json({ error: e.message }); }
-});
-
-// ── CLIENT TOKEN ENDPOINT ────────────────────────────────────────────────────
-app.get('/api/client-token', requireAuth, async (req, res) => {
-  try {
-    const clientId = parseInt(req.query.client_id);
-    const token = await getClientToken(clientId);
-    if (!token) return res.status(403).json({ error: 'Sin token' });
-    res.json({ token });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
