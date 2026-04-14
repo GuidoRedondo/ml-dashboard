@@ -2089,8 +2089,8 @@ function buildEvolutionChart() {
   if (!window._chartSeries) window._chartSeries = { fac: true, ventas: true, visitas: true };
 
   const W = chartEl.clientWidth || 900;
-  const H = 230;
-  const padL = 10, padR = 10, padT = 28, padB = 50;
+  const H = 190;
+  const padL = 10, padR = 10, padT = 28, padB = 20;
   const innerW = W - padL - padR;
   const innerH = H - padT - padB;
 
@@ -2153,18 +2153,13 @@ function buildEvolutionChart() {
     grid += `<line x1="${padL}" y1="${y.toFixed(1)}" x2="${padL + innerW}" y2="${y.toFixed(1)}" stroke="rgba(255,255,255,.05)" stroke-width="1"/>`;
   }
 
-  // Etiquetas X — fechas reales debajo de cada barra (o cada N barras)
+  // Etiquetas X — se renderizan como HTML debajo del SVG (evita problemas de viewBox/scaling)
   let xLabels = '';
-  // Línea separadora entre chart y labels
-  xLabels += `<line x1="${padL}" y1="${(padT+innerH+6).toFixed(1)}" x2="${padL+innerW}" y2="${(padT+innerH+6).toFixed(1)}" stroke="rgba(255,255,255,.08)" stroke-width="1"/>`;
+  const xLabelItems = [];
   for (let i = 0; i < days; i += step) {
-    const x = padL + (i + 0.5) * (innerW / days);
-    // Dos líneas: día y mes separados para mejor lectura
+    const pct = ((i + 0.5) / days * 100).toFixed(2);
     const parts = labels[i].split(' ');
-    const dia = parts[0] || '';
-    const mes = parts[1] || '';
-    xLabels += `<text x="${x.toFixed(1)}" y="${(padT+innerH+20).toFixed(1)}" text-anchor="middle" font-size="11" fill="rgba(255,255,255,.85)" font-family="sans-serif" font-weight="600">${dia}</text>`;
-    xLabels += `<text x="${x.toFixed(1)}" y="${(padT+innerH+34).toFixed(1)}" text-anchor="middle" font-size="10" fill="rgba(255,255,255,.45)" font-family="sans-serif">${mes}</text>`;
+    xLabelItems.push({ pct, dia: parts[0]||'', mes: parts[1]||'' });
   }
 
   // Etiquetas en picos de facturación
@@ -2176,10 +2171,12 @@ function buildEvolutionChart() {
       const x = padL + (maxFacIdx / (days - 1 || 1)) * innerW;
       const y = padT + innerH - (maxFacVal / maxFac) * innerH - 6;
       const label = '$' + Math.round(maxFacVal).toLocaleString('es-AR');
-      const rectW = Math.max(60, label.length * 7 + 10);
+      const rectW = Math.max(70, label.length * 7.5 + 12);
       const yFac = Math.max(y, 14);
-      peakLabels += `<rect x="${(x - rectW/2).toFixed(1)}" y="${(yFac-11).toFixed(1)}" width="${rectW}" height="14" rx="3" fill="rgba(0,0,0,.7)"/>`;
-      peakLabels += `<text x="${x.toFixed(1)}" y="${yFac.toFixed(1)}" text-anchor="middle" font-size="9" fill="#FFD700" font-family="sans-serif" font-weight="700">${label}</text>`;
+      // Clamp x para que no se corte en bordes
+      const rx = Math.min(Math.max(x, padL + rectW/2), padL + innerW - rectW/2);
+      peakLabels += `<rect x="${(rx - rectW/2).toFixed(1)}" y="${(yFac-11).toFixed(1)}" width="${rectW}" height="14" rx="3" fill="rgba(0,0,0,.8)"/>`;
+      peakLabels += `<text x="${rx.toFixed(1)}" y="${yFac.toFixed(1)}" text-anchor="middle" font-size="9" fill="#FFD700" font-family="sans-serif" font-weight="700">${label}</text>`;
     }
   }
   if (series.ventas) {
@@ -2209,9 +2206,21 @@ function buildEvolutionChart() {
     onmousemove="chartHover(event, this, ${days}, ${padL}, ${innerW}, ${JSON.stringify(labels)}, ${JSON.stringify(facByDay)}, ${JSON.stringify(ventasByDay)})"
     onmouseleave="document.getElementById('chartTip').setAttribute('opacity','0');document.getElementById('chartHoverLine').setAttribute('x1','-1');document.getElementById('chartHoverLine').setAttribute('x2','-1')"/>`;
 
-  chartEl.innerHTML = `<svg width="100%" height="${H}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
-    ${grid}${barsSvg}${facArea}${facPath}${visitasPath}${xLabels}${peakLabels}${hoverLine}${hoverTip}${overlay}
+  // Render SVG
+  chartEl.style.position = 'relative';
+  chartEl.innerHTML = `<svg width="100%" height="${H}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="display:block">
+    ${grid}${barsSvg}${facArea}${facPath}${visitasPath}${peakLabels}${hoverLine}${hoverTip}${overlay}
   </svg>`;
+  // Fechas en HTML absoluto debajo del SVG (escalan igual que el SVG)
+  const axisEl = document.createElement('div');
+  axisEl.style.cssText = 'position:relative;width:100%;height:38px;margin-top:2px;border-top:1px solid rgba(255,255,255,.08)';
+  xLabelItems.forEach(item => {
+    const d = document.createElement('div');
+    d.style.cssText = `position:absolute;left:${item.pct}%;transform:translateX(-50%);text-align:center;line-height:1.2`;
+    d.innerHTML = `<div style="font-size:11px;font-weight:600;color:rgba(255,255,255,.85);font-family:sans-serif">${item.dia}</div><div style="font-size:10px;color:rgba(255,255,255,.4);font-family:sans-serif">${item.mes}</div>`;
+    axisEl.appendChild(d);
+  });
+  chartEl.appendChild(axisEl);
 
   // Leyenda clickeable
   const fmtFull = n => '$' + Math.round(n).toLocaleString('es-AR');
