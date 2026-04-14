@@ -713,6 +713,11 @@ tbody td {
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px;flex-wrap:wrap">
         <h2 style="margin:0;font-family:var(--font-b);flex:1">Publicaciones</h2>
         <button class="sync-btn" onclick="exportPubsExcel()">📥 Excel</button>
+        <button class="sync-btn" onclick="exportarCMV()" style="background:#6366f1;color:#fff" title="Descargar Excel con MLA, título, precio, facturación y costo actual para completar">💰 Descargar CMV</button>
+        <label style="margin:0">
+          <input type="file" accept=".xlsx" style="display:none" onchange="importarCMV(this)">
+          <span class="sync-btn" style="background:#059669;color:#fff;cursor:pointer" title="Importar Excel con costos completados">📤 Importar CMV</span>
+        </label>
       </div>
       <div id="publicacionesContent"></div>
     </div>
@@ -2089,8 +2094,8 @@ function buildEvolutionChart() {
   if (!window._chartSeries) window._chartSeries = { fac: true, ventas: true, visitas: true };
 
   const W = chartEl.clientWidth || 900;
-  const H = 190;
-  const padL = 10, padR = 10, padT = 28, padB = 20;
+  const H = 220;
+  const padL = 10, padR = 10, padT = 28, padB = 40;
   const innerW = W - padL - padR;
   const innerH = H - padT - padB;
 
@@ -2115,6 +2120,11 @@ function buildEvolutionChart() {
       const barH = innerH * (v / maxVentas);
       const y = padT + innerH - barH;
       barsSvg += `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barW.toFixed(1)}" height="${barH.toFixed(1)}" fill="#00e676" opacity="0.7" rx="2"><title>${labels[i]}: ${v} ventas</title></rect>`;
+      if (v > 0 && barW > 14 && days <= 31) {
+        const labelY = barH > 18 ? y + barH - 4 : y - 3;
+        const labelFill = barH > 18 ? 'rgba(0,0,0,.7)' : '#00e676';
+        barsSvg += `<text x="${centerX.toFixed(1)}" y="${labelY.toFixed(1)}" text-anchor="middle" font-size="9" fill="${labelFill}" font-family="sans-serif" font-weight="600">${v}</text>`;
+      }
     });
   }
 
@@ -2153,13 +2163,11 @@ function buildEvolutionChart() {
     grid += `<line x1="${padL}" y1="${y.toFixed(1)}" x2="${padL + innerW}" y2="${y.toFixed(1)}" stroke="rgba(255,255,255,.05)" stroke-width="1"/>`;
   }
 
-  // Etiquetas X — se renderizan como HTML debajo del SVG (evita problemas de viewBox/scaling)
+  // Etiquetas X
   let xLabels = '';
-  const xLabelItems = [];
   for (let i = 0; i < days; i += step) {
-    const pct = ((i + 0.5) / days * 100).toFixed(2);
-    const parts = labels[i].split(' ');
-    xLabelItems.push({ pct, dia: parts[0]||'', mes: parts[1]||'' });
+    const x = padL + (i + 0.5) * (innerW / days);
+    xLabels += `<text x="${x.toFixed(1)}" y="${H - 6}" text-anchor="middle" font-size="10" fill="rgba(255,255,255,.5)" font-family="sans-serif">${labels[i]}</text>`;
   }
 
   // Etiquetas en picos de facturación
@@ -2170,13 +2178,10 @@ function buildEvolutionChart() {
     if (maxFacVal > 0) {
       const x = padL + (maxFacIdx / (days - 1 || 1)) * innerW;
       const y = padT + innerH - (maxFacVal / maxFac) * innerH - 6;
-      const label = '$' + Math.round(maxFacVal).toLocaleString('es-AR');
-      const rectW = Math.max(70, label.length * 7.5 + 12);
-      const yFac = Math.max(y, 14);
-      // Clamp x para que no se corte en bordes
-      const rx = Math.min(Math.max(x, padL + rectW/2), padL + innerW - rectW/2);
-      peakLabels += `<rect x="${(rx - rectW/2).toFixed(1)}" y="${(yFac-11).toFixed(1)}" width="${rectW}" height="14" rx="3" fill="rgba(0,0,0,.8)"/>`;
-      peakLabels += `<text x="${rx.toFixed(1)}" y="${yFac.toFixed(1)}" text-anchor="middle" font-size="9" fill="#FFD700" font-family="sans-serif" font-weight="700">${label}</text>`;
+      const label = '$' + Math.round(maxFacVal/1000).toLocaleString('es-AR') + 'K';
+      const yFac = Math.max(y, 12);
+      peakLabels += `<rect x="${(x-22).toFixed(1)}" y="${(yFac-10).toFixed(1)}" width="44" height="13" rx="3" fill="rgba(0,0,0,.6)"/>`;
+      peakLabels += `<text x="${x.toFixed(1)}" y="${yFac.toFixed(1)}" text-anchor="middle" font-size="9" fill="#FFD700" font-family="sans-serif" font-weight="700">${label}</text>`;
     }
   }
   if (series.ventas) {
@@ -2206,37 +2211,22 @@ function buildEvolutionChart() {
     onmousemove="chartHover(event, this, ${days}, ${padL}, ${innerW}, ${JSON.stringify(labels)}, ${JSON.stringify(facByDay)}, ${JSON.stringify(ventasByDay)})"
     onmouseleave="document.getElementById('chartTip').setAttribute('opacity','0');document.getElementById('chartHoverLine').setAttribute('x1','-1');document.getElementById('chartHoverLine').setAttribute('x2','-1')"/>`;
 
-  // Render SVG
-  chartEl.style.position = 'relative';
-  chartEl.innerHTML = `<svg width="100%" height="${H}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="display:block">
-    ${grid}${barsSvg}${facArea}${facPath}${visitasPath}${peakLabels}${hoverLine}${hoverTip}${overlay}
+  chartEl.innerHTML = `<svg width="100%" height="${H}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
+    ${grid}${barsSvg}${facArea}${facPath}${visitasPath}${xLabels}${peakLabels}${hoverLine}${hoverTip}${overlay}
   </svg>`;
-  // Fechas en HTML absoluto debajo del SVG (escalan igual que el SVG)
-  const axisEl = document.createElement('div');
-  axisEl.style.cssText = 'position:relative;width:100%;height:38px;margin-top:2px;border-top:1px solid rgba(255,255,255,.08)';
-  xLabelItems.forEach(item => {
-    const d = document.createElement('div');
-    d.style.cssText = `position:absolute;left:${item.pct}%;transform:translateX(-50%);text-align:center;line-height:1.2`;
-    d.innerHTML = `<div style="font-size:11px;font-weight:600;color:rgba(255,255,255,.85);font-family:sans-serif">${item.dia}</div><div style="font-size:10px;color:rgba(255,255,255,.4);font-family:sans-serif">${item.mes}</div>`;
-    axisEl.appendChild(d);
-  });
-  chartEl.appendChild(axisEl);
 
   // Leyenda clickeable
-  const fmtFull = n => '$' + Math.round(n).toLocaleString('es-AR');
+  const fmt = n => '$' + Math.round(n/1000).toLocaleString('es-AR') + 'K';
   const legends = [
-    { key: 'fac',     color: '#FFD700', label: 'Facturación', symbol: '━', total: fmtFull(facByDay.reduce((a,b)=>a+b,0)) },
-    { key: 'ventas',  color: '#00e676', label: 'Ventas',      symbol: '▪', total: ventasByDay.reduce((a,b)=>a+b,0).toLocaleString('es-AR') + ' órd.' },
-    { key: 'visitas', color: '#6366f1', label: 'Visitas',     symbol: '╌', total: '' },
+    { key: 'fac',     color: '#FFD700', label: '— Facturación', total: fmt(facByDay.reduce((a,b)=>a+b,0)), type: 'line' },
+    { key: 'ventas',  color: '#00e676', label: '█ Ventas',       total: ventasByDay.reduce((a,b)=>a+b,0).toLocaleString('es-AR') + ' órd.', type: 'bar' },
+    { key: 'visitas', color: '#6366f1', label: '- - Visitas',    total: '', type: 'dash' },
   ];
-  legendEl.style.cssText = 'display:flex;gap:20px;flex-wrap:wrap;margin-top:14px;padding:10px 12px;background:rgba(255,255,255,.04);border-radius:8px;border:1px solid rgba(255,255,255,.07)';
   legendEl.innerHTML = legends.map(l => `
-    <div onclick="toggleChartSeries('${l.key}')" style="display:flex;flex-direction:column;gap:3px;cursor:pointer;opacity:${series[l.key]?1:0.35};user-select:none;transition:opacity .15s;min-width:100px">
-      <div style="display:flex;align-items:center;gap:6px">
-        <span style="color:${l.color};font-size:16px;line-height:1">${l.symbol}</span>
-        <span style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;font-weight:500">${l.label}</span>
-      </div>
-      ${l.total ? `<div style="font-size:15px;font-weight:700;color:${l.color};padding-left:22px">${l.total}</div>` : '<div style="font-size:11px;color:var(--muted);padding-left:22px">período seleccionado</div>'}
+    <div onclick="toggleChartSeries('${l.key}')" style="display:flex;align-items:center;gap:6px;cursor:pointer;opacity:${series[l.key]?1:0.35};user-select:none;transition:opacity .15s">
+      <span style="color:${l.color};font-size:${l.type==='dash'?'14':'12'}px">${l.type==='line'?'━':l.type==='dash'?'╌':'▪'}</span>
+      <span style="font-size:12px;color:var(--muted)">${l.label.replace(/^[━╌▪█\-— ]+/,'')}</span>
+      ${l.total ? `<span style="font-size:11px;font-weight:600;color:${l.color}">${l.total}</span>` : ''}
     </div>`).join('');
 
   } catch(e) { console.error('Chart error:', e); }
@@ -2301,6 +2291,82 @@ function exportPubsExcel() {
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Publicaciones');
   XLSX.writeFile(wb, 'publicaciones.xlsx');
+}
+
+// ── CMV Export: descarga Excel con MLA, título, precio, facturación y costo actual ──
+async function exportarCMV() {
+  if (!window._pubsData || !window._pubsData.length) { showToast('No hay datos. Sincronizá primero.'); return; }
+  // Ordenado por facturación desc (ya viene así en _pubsData)
+  const items = window._pubsData;
+  // Buscar costos guardados para el cliente activo
+  const client = getActiveClient();
+  let costsMap = {};
+  try {
+    const r = await apiCall('GET', `/api/reporte/items-activos?client_id=${client.id}`);
+    if (r && r.items) r.items.forEach(i => { costsMap[i.mla_id] = i.costo_unit; });
+  } catch(e) {}
+
+  const rows = items.map(i => ({
+    'MLA': i.id,
+    'Título': i.title,
+    'Precio': i.price || '',
+    'Facturación período': Math.round(i.revenue || 0),
+    'Unidades período': i.units || 0,
+    'Costo unitario (CMV)': costsMap[i.id] != null ? costsMap[i.id] : '',
+    'Notas': ''
+  }));
+
+  const ws = XLSX.utils.json_to_sheet(rows);
+  // Anchos de columna
+  ws['!cols'] = [{ wch: 16 }, { wch: 50 }, { wch: 12 }, { wch: 20 }, { wch: 18 }, { wch: 22 }, { wch: 25 }];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'CMV');
+  const fecha = new Date().toISOString().slice(0,10);
+  XLSX.writeFile(wb, `CMV_${client.name || 'cliente'}_${fecha}.xlsx`);
+  showToast('✅ CMV exportado — completá la columna "Costo unitario" y volvé a importar');
+}
+
+// ── CMV Import: lee Excel y guarda costos en DB ──
+async function importarCMV(input) {
+  const file = input.files[0];
+  if (!file) return;
+  input.value = ''; // reset para permitir reimportar el mismo archivo
+  const client = getActiveClient();
+  if (!client) { showToast('❌ No hay cliente activo'); return; }
+
+  const reader = new FileReader();
+  reader.onload = async (e) => {
+    try {
+      const wb = XLSX.read(e.target.result, { type: 'array' });
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(ws);
+
+      // Filtrar solo filas con MLA y costo cargado
+      const costos = rows
+        .filter(r => r['MLA'] && r['Costo unitario (CMV)'] !== '' && r['Costo unitario (CMV)'] != null)
+        .map(r => ({
+          mla_id: String(r['MLA']).trim(),
+          title: String(r['Título'] || '').trim(),
+          costo_unit: parseFloat(r['Costo unitario (CMV)']) || 0,
+          notas: String(r['Notas'] || '').trim()
+        }))
+        .filter(r => r.costo_unit > 0);
+
+      if (!costos.length) { showToast('❌ No se encontraron costos válidos en el archivo'); return; }
+
+      showToast(`⏳ Guardando ${costos.length} costos...`);
+      const res = await apiCall('POST', '/api/reporte/costos', { client_id: client.id, costos });
+      if (res && res.ok) {
+        showToast(`✅ ${res.saved} costos guardados correctamente`);
+      } else {
+        showToast('❌ Error al guardar costos');
+      }
+    } catch(err) {
+      console.error('[CMV IMPORT]', err);
+      showToast('❌ Error leyendo el archivo Excel');
+    }
+  };
+  reader.readAsArrayBuffer(file);
 }
 
 async function loadPublicaciones() {
@@ -7328,68 +7394,10 @@ async function loadCompetenciaDetalle(catId, catName, uid, clientId, itemId) {
   const el = document.getElementById('competenciaContent');
   el.innerHTML = `<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">⏳ Analizando categoría <strong>${catName}</strong>...</div>`;
   try {
-    // Obtener el token del cliente para hacer búsquedas directas a ML desde el browser
-    // (el backend da forbidden por IP de Railway)
-    const client = getActiveClient();
-    const tokenRes = await apiCall('GET', `/api/client-token?client_id=${clientId}`);
-    const token = tokenRes && tokenRes.token;
-
-    // 1. Obtener título del item_id via backend proxy
-    let searchTitle = null;
-    if (itemId) {
-      try {
-        const itemRes = await apiCall('GET', `/api/ml-search?q=${itemId}&client_id=${clientId}&mode=item`);
-        searchTitle = itemRes && itemRes.title || null;
-      } catch(e) {}
-    }
-
-    // 2. Buscar competidores via proxy del backend (evita CORS y restricciones de IP)
-    let results = [];
-    if (searchTitle) {
-      const titleWords = searchTitle.split(' ').filter(w => w.length > 2).slice(0, 4).join(' ');
-      try {
-        const searchRes = await apiCall('GET', `/api/ml-search?q=${encodeURIComponent(titleWords)}&client_id=${clientId}`);
-        results = (searchRes && searchRes.results) || [];
-        console.log(`[COMP] proxy q="${titleWords}" results=${results.length}`);
-      } catch(e) { console.error('[COMP] search error:', e); }
-    }
-
-    // 3. Obtener nombre de categoría
-    let catName2 = catName;
-    try {
-      const catRes = await fetch(`https://api.mercadolibre.com/categories/${catId}`).then(r => r.json());
-      catName2 = catRes.name || catName;
-    } catch(e) {}
-
-    // 4. Calcular price_stats y sellers desde los resultados
-    const prices = results.map(r => parseFloat(r.price)||0).filter(p => p > 0);
-    const priceStats = prices.length ? {
-      min: Math.min(...prices),
-      max: Math.max(...prices),
-      avg: Math.round(prices.reduce((a,b)=>a+b,0) / prices.length)
-    } : null;
-
-    const sellersMap = {};
-    results.forEach(r => {
-      const sid = r.seller && (r.seller.id || r.seller);
-      const snick = (r.seller && r.seller.nickname) || String(sid);
-      if (!sid) return;
-      if (!sellersMap[sid]) sellersMap[sid] = { id: sid, nickname: snick, items: [], total_sold: 0 };
-      sellersMap[sid].items.push({ id: r.id, title: r.title, price: r.price, sold_quantity: r.sold_quantity||0 });
-      sellersMap[sid].total_sold += r.sold_quantity||0;
-    });
-
-    const myItems = results.filter(r => r.seller && String(r.seller.id||r.seller) === String(uid));
-
-    const data = {
-      category: { id: catId, name: catName2 },
-      price_stats: priceStats,
-      sellers: Object.values(sellersMap).sort((a,b) => b.total_sold - a.total_sold).slice(0,10),
-      my_items: myItems,
-      top_listings: results.slice(0, 50)
-    };
-
-    renderCompetenciaDetalle(data, uid);
+    const itemParam = itemId ? `&item_id=${itemId}` : '';
+    const data = await apiCall('GET', `/api/competencia?uid=${uid}&client_id=${clientId}&category_id=${catId}${itemParam}`);
+    if (data) renderCompetenciaDetalle(data, uid);
+    else el.innerHTML = '<div style="color:var(--muted);padding:40px">Error al cargar categoría</div>';
   } catch(e) {
     el.innerHTML = `<div style="color:var(--muted);font-size:13px;padding:40px">Error: ${e.message}</div>`;
   }
