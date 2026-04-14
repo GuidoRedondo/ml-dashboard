@@ -5931,10 +5931,13 @@ function renderPyL(pyl) {
           ${row('TOTAL INGRESOS', pyl.ingresos.total, '#6366f1', true, false)}
           ${sec('📤 Egresos Mercado Libre','#fee2e2')}
           ${row('Comisión ML', -pyl.egresos_ml.comision, '#dc2626', false, true)}
-          ${row('Impuestos', -pyl.egresos_ml.impuestos, '#dc2626', false, true)}
+          ${row('Impuestos (retenciones)', -pyl.egresos_ml.impuestos, '#dc2626', false, true)}
           ${row('Costo envío vendedor', -pyl.egresos_ml.envio_vendedor, '#dc2626', false, true)}
           ${row('Publicidad (PADS)', -pyl.egresos_ml.publicidad, '#dc2626', false, true)}
           ${pyl.egresos_ml.reembolsos ? row('Reembolsos', -pyl.egresos_ml.reembolsos, '#dc2626', false, true) : ''}
+          ${row('IVA ventas (débito fiscal)', -pyl.iva.ventas, '#8b5cf6', false, true)}
+          ${row('IVA compras acreditable', pyl.iva.compras, '#059669', false, true)}
+          ${row('IVA NETO A PAGAR', -pyl.iva.neto, '#8b5cf6', false, true)}
           ${row('TOTAL EGRESOS ML', -pyl.egresos_ml.total, '#dc2626', true, false)}
           ${sec('💰 Resultado','#dcfce7')}
           ${row('RESULTADO NETO ML', pyl.resultado_neto_ml, pyl.resultado_neto_ml>=0?'#16a34a':'#dc2626', true, false)}
@@ -5960,7 +5963,7 @@ function renderPyL(pyl) {
           ['Rentabilidad %', pyl.margenes.rentabilidad != null ? fmtP(pyl.margenes.rentabilidad) : '—', pyl.margenes.rentabilidad>0?'#16a34a':'#dc2626'],
           ['CMV', fmtM(pyl.cmv.total), '#d97706'],
           ['Contribución Marginal', fmtM(pyl.ingresos.facturacion - pyl.egresos_ml.comision - pyl.egresos_ml.envio_vendedor - pyl.egresos_ml.publicidad - pyl.cmv.total), (pyl.ingresos.facturacion - pyl.egresos_ml.comision - pyl.egresos_ml.envio_vendedor - pyl.egresos_ml.publicidad - pyl.cmv.total)>=0?'#16a34a':'#dc2626'],
-          ['IVA a pagar', fmtM(Math.max(0, pyl.ingresos.facturacion/1.21*0.21 - (pyl.egresos_ml.comision + pyl.egresos_ml.envio_vendedor)/1.21*0.21 - pyl.cmv.total/1.21*0.21)), '#6366f1'],
+          ['🧾 IVA a pagar', fmtM(pyl.iva?.neto ?? 0), '#8b5cf6'],
           ['Gastos Fijos', fmtM(pyl.gastos_fijos.total), '#6366f1'],
           ['Utilidad Final', fmtM(pyl.utilidad_final), pyl.utilidad_final>=0?'#16a34a':'#dc2626'],
         ].map(([l,v,c]) => `<div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px 14px">
@@ -6000,10 +6003,13 @@ async function exportarReporteExcel() {
     [],
     ['EGRESOS MERCADO LIBRE', ''],
     ['Comisión ML', -pyl.egresos_ml.comision],
-    ['Impuestos', -pyl.egresos_ml.impuestos],
+    ['Impuestos (retenciones)', -pyl.egresos_ml.impuestos],
     ['Costo envío vendedor', -pyl.egresos_ml.envio_vendedor],
     ['Publicidad (PADS)', -pyl.egresos_ml.publicidad],
-    ['Reembolsos', -pyl.egresos_ml.reembolsos],
+    ...(pyl.egresos_ml.reembolsos ? [['Reembolsos', -pyl.egresos_ml.reembolsos]] : []),
+    ['IVA ventas (débito fiscal)', -(pyl.iva?.ventas ?? 0)],
+    ['IVA compras acreditable', pyl.iva?.compras ?? 0],
+    ['IVA NETO A PAGAR', -(pyl.iva?.neto ?? 0)],
     ['TOTAL EGRESOS ML', -pyl.egresos_ml.total],
     [],
     ['RESULTADO NETO ML', pyl.resultado_neto_ml],
