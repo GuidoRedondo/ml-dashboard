@@ -610,11 +610,27 @@ tbody td {
     <!-- DASHBOARD -->
     <!-- PANEL CLIENTES -->
     <div class="page" id="page-panel-consultores">
-      <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px">
         <h2 style="margin:0;font-family:var(--font-b);flex:1">🎯 Panel de Clientes</h2>
         <button class="sync-btn" onclick="loadPanelConsultores()">🔄 Actualizar todos</button>
       </div>
-      <div id="panelConsultoresContent"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Cargando...</div></div>
+      <!-- Tabs -->
+      <div style="display:flex;gap:0;border-bottom:2px solid var(--border);margin-bottom:20px">
+        <button id="tab-panel-metricas" onclick="switchPanelTab('metricas')"
+          style="padding:8px 18px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--accent);border-bottom:2px solid var(--accent);margin-bottom:-2px;font-family:var(--font-b)">
+          📊 Métricas
+        </button>
+        <button id="tab-panel-bitacora" onclick="switchPanelTab('bitacora')"
+          style="padding:8px 18px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-2px;font-family:var(--font-b)">
+          📋 Bitácora
+        </button>
+      </div>
+      <div id="panel-tab-metricas">
+        <div id="panelConsultoresContent"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Cargando...</div></div>
+      </div>
+      <div id="panel-tab-bitacora" style="display:none">
+        <div id="bitacoraContent"></div>
+      </div>
     </div>
 
     <div class="page active" id="page-dashboard">
@@ -4229,6 +4245,7 @@ function canSeeSection(sectionId) {
 function applyPermissions() {
   const role = getSessionRole();
   const isGestion = role === 'admin' || role === 'consultant';
+  const isConsultor = role === 'admin' || role === 'consultant' || role === 'colaborador';
 
   // Ocultar sección GESTIÓN para no-admins
   document.querySelectorAll('.nav-section-label').forEach(el => {
@@ -6329,6 +6346,334 @@ function renderPanelConsultores(results, range) {
         <tbody>${rows}</tbody>
       </table>
     </div></div>`;
+}
+
+// ── BITÁCORA ──────────────────────────────────────────────────────────────────
+let _panelActiveTab = 'metricas';
+
+function switchPanelTab(tab) {
+  _panelActiveTab = tab;
+  ['metricas','bitacora'].forEach(t => {
+    const el  = document.getElementById(`panel-tab-${t}`);
+    const btn = document.getElementById(`tab-panel-${t}`);
+    if (el)  el.style.display  = t === tab ? '' : 'none';
+    if (btn) {
+      btn.style.color        = t === tab ? 'var(--accent)' : 'var(--muted)';
+      btn.style.borderBottom = t === tab ? '2px solid var(--accent)' : '2px solid transparent';
+    }
+  });
+  if (tab === 'bitacora') renderBitacoraShell();
+}
+
+// Renderiza el shell: selector de cliente + área de entradas
+function renderBitacoraShell() {
+  const el = document.getElementById('bitacoraContent');
+  if (!el) return;
+
+  const clients = allClients.filter(c => c.active && c.ml_user_id);
+  if (!clients.length) {
+    el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">Sin clientes conectados</div>';
+    return;
+  }
+
+  const clientOpts = clients.map(c =>
+    `<option value="${c.id}">${c.name}</option>`
+  ).join('');
+
+  // Consultor logueado
+  const me = getSessionUser() || 'yo';
+
+  // Armar lista de consultores (usuarios no-cliente) para el selector "Asignado a"
+  // Lo cargamos desde /api/users si está disponible, sino usamos el usuario actual
+  el.innerHTML = `
+    <div style="display:grid;grid-template-columns:260px 1fr;gap:20px;align-items:start">
+
+      <!-- Panel izquierdo: selector de cliente -->
+      <div>
+        <div style="font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px">Cliente</div>
+        <div style="display:flex;flex-direction:column;gap:4px" id="bitacoraClientList">
+          ${clients.map((c,i) => `
+            <div onclick="selectBitacoraClient(${c.id},'${c.name.replace(/'/g,"\\'")}')" id="bci-${c.id}"
+              style="padding:10px 14px;border-radius:10px;border:1px solid ${i===0?'var(--accent)':'var(--border)'};
+                     background:${i===0?'rgba(255,214,0,.08)':'var(--surface)'};cursor:pointer;transition:all .15s">
+              <div style="font-size:13px;font-weight:600">${c.name}</div>
+            </div>`).join('')}
+        </div>
+      </div>
+
+      <!-- Panel derecho: formulario + entradas -->
+      <div>
+        <!-- Formulario nueva entrada -->
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px 18px;margin-bottom:16px">
+          <div style="font-size:12px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:12px">+ Nueva entrada</div>
+          <div style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:10px">
+            <select id="bitTipo"
+              style="padding:7px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px">
+              <option value="nota">📝 Nota</option>
+              <option value="tarea">✅ Tarea</option>
+              <option value="alerta">⚠️ Alerta</option>
+            </select>
+            <select id="bitEstado"
+              style="padding:7px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px">
+              <option value="pendiente">🟡 Pendiente</option>
+              <option value="en_curso">🔵 En curso</option>
+              <option value="resuelto">🟢 Resuelto</option>
+            </select>
+            <input type="text" id="bitAsignado" placeholder="Asignado a..." value="${me}"
+              style="padding:7px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px;width:140px">
+            <input type="date" id="bitFechaVenc" title="Fecha de vencimiento"
+              style="padding:7px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px">
+          </div>
+          <div style="display:flex;gap:10px;align-items:flex-end">
+            <textarea id="bitContenido" placeholder="Escribí tu nota, tarea o alerta..." rows="2"
+              style="flex:1;padding:9px 12px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px;resize:vertical;font-family:var(--font)"
+              onkeydown="if(event.ctrlKey&&event.key==='Enter')guardarEntradaBit()"></textarea>
+            <button onclick="guardarEntradaBit()"
+              style="padding:9px 20px;border-radius:8px;border:none;background:var(--accent);color:#000;font-size:13px;font-weight:700;cursor:pointer;white-space:nowrap;flex-shrink:0">
+              Guardar
+            </button>
+          </div>
+          <div style="font-size:10px;color:var(--muted);margin-top:6px">Ctrl+Enter para guardar rápido</div>
+        </div>
+
+        <!-- Filtros -->
+        <div style="display:flex;gap:6px;margin-bottom:14px;flex-wrap:wrap" id="bitFiltros">
+          ${['todos','pendiente','en_curso','resuelto','nota','tarea','alerta'].map((f,i) =>
+            `<button onclick="setBitFiltro('${f}',this)"
+              style="padding:4px 12px;border-radius:20px;font-size:12px;font-weight:600;cursor:pointer;
+                     border:1px solid ${i===0?'var(--accent)':'var(--border)'};
+                     background:${i===0?'var(--accent)':'none'};
+                     color:${i===0?'#000':'var(--muted)'}">${_bitFiltroLabel(f)}</button>`
+          ).join('')}
+        </div>
+
+        <!-- Lista de entradas -->
+        <div id="bitEntradas"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">⏳ Cargando...</div></div>
+      </div>
+    </div>`;
+
+  window._bitClientId   = clients[0].id;
+  window._bitClientName = clients[0].name;
+  window._bitFiltro     = 'todos';
+  loadEntradasBit(clients[0].id);
+}
+
+function _bitFiltroLabel(f) {
+  const m = { todos:'Todos', pendiente:'🟡 Pendiente', en_curso:'🔵 En curso',
+               resuelto:'🟢 Resuelto', nota:'📝 Nota', tarea:'✅ Tarea', alerta:'⚠️ Alerta' };
+  return m[f] || f;
+}
+
+function selectBitacoraClient(clientId, name) {
+  window._bitClientId   = clientId;
+  window._bitClientName = name;
+  // Highlight
+  document.querySelectorAll('[id^="bci-"]').forEach(el => {
+    const active = el.id === `bci-${clientId}`;
+    el.style.borderColor = active ? 'var(--accent)' : 'var(--border)';
+    el.style.background  = active ? 'rgba(255,214,0,.08)' : 'var(--surface)';
+  });
+  loadEntradasBit(clientId);
+}
+
+async function loadEntradasBit(clientId) {
+  const el = document.getElementById('bitEntradas');
+  if (!el) return;
+  el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:30px;text-align:center">⏳ Cargando...</div>';
+  try {
+    const data = await apiCall('GET', `/api/bitacora?client_id=${clientId}`);
+    window._bitEntradas = data?.entries || [];
+    renderEntradasBit();
+  } catch(e) {
+    el.innerHTML = `<div style="color:var(--muted);padding:20px">Error: ${e.message}</div>`;
+  }
+}
+
+function setBitFiltro(f, btn) {
+  window._bitFiltro = f;
+  document.querySelectorAll('#bitFiltros button').forEach(b => {
+    const active = b === btn;
+    b.style.background = active ? 'var(--accent)' : 'none';
+    b.style.color      = active ? '#000' : 'var(--muted)';
+    b.style.borderColor= active ? 'var(--accent)' : 'var(--border)';
+  });
+  renderEntradasBit();
+}
+
+function renderEntradasBit() {
+  const el = document.getElementById('bitEntradas');
+  if (!el) return;
+  const entries = window._bitEntradas || [];
+  const f = window._bitFiltro || 'todos';
+  const filtered = entries.filter(e => {
+    if (f === 'todos') return true;
+    return e.tipo === f || e.estado === f;
+  });
+
+  if (!filtered.length) {
+    el.innerHTML = `<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">
+      ${entries.length ? 'Sin entradas con este filtro' : 'No hay entradas todavía. Agregá la primera arriba ↑'}
+    </div>`;
+    return;
+  }
+
+  const fmtDate = d => {
+    if (!d) return null;
+    const dt = new Date(d);
+    return dt.toLocaleDateString('es-AR', { day:'2-digit', month:'2-digit', year:'numeric' });
+  };
+  const fmtTs = d => {
+    if (!d) return '';
+    const dt = new Date(d);
+    return dt.toLocaleDateString('es-AR',{day:'2-digit',month:'2-digit'}) + ' ' +
+           dt.toLocaleTimeString('es-AR',{hour:'2-digit',minute:'2-digit'});
+  };
+
+  const tipoCfg = {
+    nota:   { icon:'📝', color:'#6366f1', bg:'rgba(99,102,241,.1)' },
+    tarea:  { icon:'✅', color:'#059669', bg:'rgba(5,150,105,.1)' },
+    alerta: { icon:'⚠️', color:'#d97706', bg:'rgba(217,119,6,.1)' },
+  };
+  const estadoCfg = {
+    pendiente: { label:'🟡 Pendiente', color:'#d97706', bg:'rgba(217,119,6,.1)' },
+    en_curso:  { label:'🔵 En curso',  color:'#3b82f6', bg:'rgba(59,130,246,.1)' },
+    resuelto:  { label:'🟢 Resuelto',  color:'#059669', bg:'rgba(5,150,105,.1)' },
+  };
+
+  const cards = filtered.map(e => {
+    const tc = tipoCfg[e.tipo] || tipoCfg.nota;
+    const sc = estadoCfg[e.estado] || estadoCfg.pendiente;
+    const hoy = new Date().toISOString().slice(0,10);
+    const vencido = e.fecha_venc && e.fecha_venc.slice(0,10) < hoy && e.estado !== 'resuelto';
+    const fechaVencStr = e.fecha_venc
+      ? `<span style="font-size:11px;color:${vencido?'#dc2626':'var(--muted)'};font-weight:${vencido?'700':'400'}">
+           ${vencido?'⏰':'📅'} Vence: ${fmtDate(e.fecha_venc)}
+         </span>` : '';
+
+    return `
+      <div id="bit-card-${e.id}" style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:14px 16px;margin-bottom:10px;transition:box-shadow .15s"
+        onmouseover="this.style.boxShadow='0 2px 12px rgba(0,0,0,.08)'" onmouseout="this.style.boxShadow=''">
+        <div style="display:flex;align-items:flex-start;gap:12px">
+          <!-- Ícono tipo -->
+          <div style="width:32px;height:32px;border-radius:8px;background:${tc.bg};display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0">${tc.icon}</div>
+          <!-- Contenido -->
+          <div style="flex:1;min-width:0">
+            <div id="bit-text-${e.id}" style="font-size:13px;color:var(--text);line-height:1.5;margin-bottom:8px;white-space:pre-wrap">${_escHtml(e.contenido)}</div>
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+              <!-- Estado pill clickeable -->
+              <select onchange="cambiarEstadoBit(${e.id},this.value)"
+                style="padding:3px 10px;border-radius:20px;font-size:11px;font-weight:600;border:1px solid ${sc.color}33;background:${sc.bg};color:${sc.color};cursor:pointer;appearance:none;-webkit-appearance:none">
+                <option value="pendiente" ${e.estado==='pendiente'?'selected':''}>🟡 Pendiente</option>
+                <option value="en_curso"  ${e.estado==='en_curso' ?'selected':''}>🔵 En curso</option>
+                <option value="resuelto"  ${e.estado==='resuelto' ?'selected':''}>🟢 Resuelto</option>
+              </select>
+              ${e.asignado_a ? `<span style="font-size:11px;color:var(--muted)">👤 ${_escHtml(e.asignado_a)}</span>` : ''}
+              ${fechaVencStr}
+              <span style="font-size:10px;color:var(--muted);margin-left:auto">${fmtTs(e.created_at)} · ${_escHtml(e.autor||'')}</span>
+            </div>
+          </div>
+          <!-- Acciones -->
+          <div style="display:flex;gap:6px;flex-shrink:0">
+            <button onclick="editarEntradaBit(${e.id})" title="Editar"
+              style="padding:5px 8px;border:1px solid var(--border);border-radius:6px;background:none;color:var(--muted);cursor:pointer;font-size:13px">✏️</button>
+            <button onclick="eliminarEntradaBit(${e.id})" title="Eliminar"
+              style="padding:5px 8px;border:1px solid var(--border);border-radius:6px;background:none;color:var(--muted);cursor:pointer;font-size:13px">🗑</button>
+          </div>
+        </div>
+      </div>`;
+  }).join('');
+
+  const pendCount = entries.filter(e => e.estado==='pendiente' || e.estado==='en_curso').length;
+  el.innerHTML = `
+    <div style="font-size:12px;color:var(--muted);margin-bottom:12px">
+      ${filtered.length} entrada${filtered.length!==1?'s':''} · ${pendCount} pendiente${pendCount!==1?'s':''}
+    </div>
+    ${cards}`;
+}
+
+function _escHtml(str) {
+  return String(str||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+async function guardarEntradaBit() {
+  const clientId  = window._bitClientId;
+  const contenido = document.getElementById('bitContenido')?.value?.trim();
+  const tipo      = document.getElementById('bitTipo')?.value || 'nota';
+  const estado    = document.getElementById('bitEstado')?.value || 'pendiente';
+  const asignado  = document.getElementById('bitAsignado')?.value?.trim() || null;
+  const fechaVenc = document.getElementById('bitFechaVenc')?.value || null;
+
+  if (!clientId) { showToast('⚠ Seleccioná un cliente'); return; }
+  if (!contenido) { showToast('⚠ Escribí algo primero'); return; }
+
+  const res = await apiCall('POST', '/api/bitacora', {
+    client_id: clientId, tipo, estado, contenido, asignado_a: asignado, fecha_venc: fechaVenc
+  });
+  if (res?.ok) {
+    document.getElementById('bitContenido').value = '';
+    document.getElementById('bitFechaVenc').value = '';
+    window._bitEntradas = [res.entry, ...(window._bitEntradas||[])];
+    renderEntradasBit();
+    showToast('✅ Entrada guardada');
+  } else {
+    showToast('❌ Error al guardar');
+  }
+}
+
+async function cambiarEstadoBit(id, estado) {
+  const res = await apiCall('PUT', `/api/bitacora/${id}`, { estado });
+  if (res?.ok) {
+    const entry = (window._bitEntradas||[]).find(e => e.id===id);
+    if (entry) entry.estado = estado;
+    renderEntradasBit();
+  } else {
+    showToast('❌ Error al actualizar');
+  }
+}
+
+function editarEntradaBit(id) {
+  const entry = (window._bitEntradas||[]).find(e => e.id===id);
+  if (!entry) return;
+  const textEl = document.getElementById(`bit-text-${id}`);
+  if (!textEl) return;
+
+  // Inline editor
+  textEl.innerHTML = `
+    <textarea id="bit-edit-${id}" style="width:100%;padding:7px;border-radius:7px;border:1px solid var(--accent);background:var(--surface2);color:var(--text);font-size:13px;resize:vertical;font-family:var(--font);min-height:60px"
+      onkeydown="if(event.ctrlKey&&event.key==='Enter')guardarEdicionBit(${id})">${_escHtml(entry.contenido)}</textarea>
+    <div style="display:flex;gap:8px;margin-top:8px">
+      <button onclick="guardarEdicionBit(${id})"
+        style="padding:5px 14px;border:none;border-radius:6px;background:var(--accent);color:#000;font-size:12px;font-weight:600;cursor:pointer">Guardar</button>
+      <button onclick="cancelarEdicionBit(${id})"
+        style="padding:5px 12px;border:1px solid var(--border);border-radius:6px;background:none;color:var(--muted);font-size:12px;cursor:pointer">Cancelar</button>
+    </div>`;
+  document.getElementById(`bit-edit-${id}`)?.focus();
+}
+
+async function guardarEdicionBit(id) {
+  const val = document.getElementById(`bit-edit-${id}`)?.value?.trim();
+  if (!val) return;
+  const res = await apiCall('PUT', `/api/bitacora/${id}`, { contenido: val });
+  if (res?.ok) {
+    const entry = (window._bitEntradas||[]).find(e => e.id===id);
+    if (entry) entry.contenido = val;
+    renderEntradasBit();
+    showToast('✅ Editado');
+  } else { showToast('❌ Error'); }
+}
+
+function cancelarEdicionBit(id) {
+  renderEntradasBit();
+}
+
+async function eliminarEntradaBit(id) {
+  if (!confirm('¿Eliminar esta entrada de la bitácora?')) return;
+  const res = await apiCall('DELETE', `/api/bitacora/${id}`);
+  if (res?.ok) {
+    window._bitEntradas = (window._bitEntradas||[]).filter(e => e.id!==id);
+    renderEntradasBit();
+    showToast('✅ Entrada eliminada');
+  } else { showToast('❌ Error al eliminar'); }
 }
 
 // ── TENDENCIA ──────────────────────────────────────────────────────────────────
