@@ -2445,7 +2445,14 @@ app.get('/api/reporte/pyl', requireAuth, async (req, res) => {
 
     // ── P&L ───────────────────────────────────────────────────────────────────
     const total_ingresos   = facturacion + ingreso_envio_comprador;
-    const total_egresos_ml = egreso_comision + egreso_impuestos + egreso_envio_vendedor + egreso_publicidad + egreso_reembolsos;
+    // IVA neto a pagar: IVA ventas − IVA compras acreditable (CMV + comisión + envío vendedor)
+    const iva21 = 0.21;
+    const iva_ventas   = facturacion / (1 + iva21) * iva21;
+    const iva_compras  = (egreso_comision + egreso_envio_vendedor + cmv_total) / (1 + iva21) * iva21;
+    const iva_neto     = Math.max(0, iva_ventas - iva_compras);
+
+    // IVA forma parte de los egresos ML → afecta el Resultado Neto ML
+    const total_egresos_ml  = egreso_comision + egreso_impuestos + egreso_envio_vendedor + egreso_publicidad + egreso_reembolsos + iva_neto;
     const resultado_neto_ml = total_ingresos - total_egresos_ml;
     const utilidad_antes_gf = resultado_neto_ml - cmv_total;
     const utilidad_final    = utilidad_antes_gf - total_gastos_fijos;
@@ -2464,12 +2471,16 @@ app.get('/api/reporte/pyl', requireAuth, async (req, res) => {
         envio_vendedor: egreso_envio_vendedor,
         publicidad: egreso_publicidad,
         reembolsos: egreso_reembolsos,
+        iva_ventas,
+        iva_compras,
+        iva_neto,
         total: total_egresos_ml
       },
       resultado_neto_ml,
       cmv: { total: cmv_total, estimado: cmv_estimado, cubierto: cmv_cubierto, total_items: items_detalle.length },
       utilidad_antes_gf,
       gastos_fijos: { items: gastos, total: total_gastos_fijos },
+      iva: { ventas: iva_ventas, compras: iva_compras, neto: iva_neto },
       utilidad_final,
       margenes: {
         pct_recibido:   facturacion>0 ? (resultado_neto_ml/facturacion*100).toFixed(1) : 0,
