@@ -2089,8 +2089,8 @@ function buildEvolutionChart() {
   if (!window._chartSeries) window._chartSeries = { fac: true, ventas: true, visitas: true };
 
   const W = chartEl.clientWidth || 900;
-  const H = 220;
-  const padL = 10, padR = 10, padT = 28, padB = 40;
+  const H = 230;
+  const padL = 10, padR = 10, padT = 28, padB = 50;
   const innerW = W - padL - padR;
   const innerH = H - padT - padB;
 
@@ -2115,11 +2115,6 @@ function buildEvolutionChart() {
       const barH = innerH * (v / maxVentas);
       const y = padT + innerH - barH;
       barsSvg += `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barW.toFixed(1)}" height="${barH.toFixed(1)}" fill="#00e676" opacity="0.7" rx="2"><title>${labels[i]}: ${v} ventas</title></rect>`;
-      if (v > 0 && barW > 14 && days <= 31) {
-        const labelY = barH > 18 ? y + barH - 4 : y - 3;
-        const labelFill = barH > 18 ? 'rgba(0,0,0,.7)' : '#00e676';
-        barsSvg += `<text x="${centerX.toFixed(1)}" y="${labelY.toFixed(1)}" text-anchor="middle" font-size="9" fill="${labelFill}" font-family="sans-serif" font-weight="600">${v}</text>`;
-      }
     });
   }
 
@@ -2158,11 +2153,18 @@ function buildEvolutionChart() {
     grid += `<line x1="${padL}" y1="${y.toFixed(1)}" x2="${padL + innerW}" y2="${y.toFixed(1)}" stroke="rgba(255,255,255,.05)" stroke-width="1"/>`;
   }
 
-  // Etiquetas X
+  // Etiquetas X — fechas reales debajo de cada barra (o cada N barras)
   let xLabels = '';
+  // Línea separadora entre chart y labels
+  xLabels += `<line x1="${padL}" y1="${(padT+innerH+6).toFixed(1)}" x2="${padL+innerW}" y2="${(padT+innerH+6).toFixed(1)}" stroke="rgba(255,255,255,.08)" stroke-width="1"/>`;
   for (let i = 0; i < days; i += step) {
     const x = padL + (i + 0.5) * (innerW / days);
-    xLabels += `<text x="${x.toFixed(1)}" y="${H - 8}" text-anchor="middle" font-size="11" fill="rgba(255,255,255,.75)" font-family="sans-serif" font-weight="500">${labels[i]}</text>`;
+    // Dos líneas: día y mes separados para mejor lectura
+    const parts = labels[i].split(' ');
+    const dia = parts[0] || '';
+    const mes = parts[1] || '';
+    xLabels += `<text x="${x.toFixed(1)}" y="${(padT+innerH+20).toFixed(1)}" text-anchor="middle" font-size="11" fill="rgba(255,255,255,.85)" font-family="sans-serif" font-weight="600">${dia}</text>`;
+    xLabels += `<text x="${x.toFixed(1)}" y="${(padT+innerH+34).toFixed(1)}" text-anchor="middle" font-size="10" fill="rgba(255,255,255,.45)" font-family="sans-serif">${mes}</text>`;
   }
 
   // Etiquetas en picos de facturación
@@ -2218,11 +2220,14 @@ function buildEvolutionChart() {
     { key: 'ventas',  color: '#00e676', label: 'Ventas',      symbol: '▪', total: ventasByDay.reduce((a,b)=>a+b,0).toLocaleString('es-AR') + ' órd.' },
     { key: 'visitas', color: '#6366f1', label: 'Visitas',     symbol: '╌', total: '' },
   ];
+  legendEl.style.cssText = 'display:flex;gap:20px;flex-wrap:wrap;margin-top:14px;padding:10px 12px;background:rgba(255,255,255,.04);border-radius:8px;border:1px solid rgba(255,255,255,.07)';
   legendEl.innerHTML = legends.map(l => `
-    <div onclick="toggleChartSeries('${l.key}')" style="display:flex;align-items:center;gap:6px;cursor:pointer;opacity:${series[l.key]?1:0.35};user-select:none;transition:opacity .15s;padding:2px 8px 2px 0">
-      <span style="color:${l.color};font-size:14px;line-height:1">${l.symbol}</span>
-      <span style="font-size:12px;color:var(--muted);white-space:nowrap">${l.label}</span>
-      ${l.total ? `<span style="font-size:12px;font-weight:700;color:${l.color};white-space:nowrap">${l.total}</span>` : ''}
+    <div onclick="toggleChartSeries('${l.key}')" style="display:flex;flex-direction:column;gap:3px;cursor:pointer;opacity:${series[l.key]?1:0.35};user-select:none;transition:opacity .15s;min-width:100px">
+      <div style="display:flex;align-items:center;gap:6px">
+        <span style="color:${l.color};font-size:16px;line-height:1">${l.symbol}</span>
+        <span style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;font-weight:500">${l.label}</span>
+      </div>
+      ${l.total ? `<div style="font-size:15px;font-weight:700;color:${l.color};padding-left:22px">${l.total}</div>` : '<div style="font-size:11px;color:var(--muted);padding-left:22px">período seleccionado</div>'}
     </div>`).join('');
 
   } catch(e) { console.error('Chart error:', e); }
