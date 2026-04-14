@@ -6973,7 +6973,6 @@ function renderCurvaABC() {
   const rows = classified.map((p, i) => {
     const st = claseStyle[p.clase];
     const stock = stockMap[p.id] ?? null;
-    const stock = stockMap[p.id] ?? null;
     return `<tr style="border-bottom:1px solid var(--border);${i%2===0?'background:rgba(255,255,255,.015)':''}">
       <td style="padding:8px 10px;text-align:center;font-size:12px;color:var(--muted)">${p.rank}</td>
       <td style="padding:8px 10px;text-align:center">
@@ -7129,8 +7128,7 @@ function renderPrioridades() {
     const pct = totalRevenue > 0 ? (p.revenue/totalRevenue*100).toFixed(1) : '0';
     const margenStr = p.margenReal != null ? Math.round(p.margenReal) + '%' + (p.hasCMV ? '' : '*') : '—';
     const margenColor = p.margenReal >= minMargen ? '#00e676' : p.margenReal >= minMargen*0.65 ? '#ff9100' : '#ff5252';
-    const stock = p.stock ?? null;
-    const stkCol = stock == null ? 'var(--muted)' : stock <= 3 ? '#ff5252' : stock <= 10 ? '#ff9100' : '#00e676';
+    const stkCol = p.stock == null ? 'var(--muted)' : stock <= 3 ? '#ff5252' : stock <= 10 ? '#ff9100' : '#00e676';
     return `<tr style="border-bottom:1px solid var(--border)">
       <td style="padding:9px 10px;text-align:center">
         <span style="padding:3px 12px;border-radius:20px;font-size:12px;font-weight:700;background:${claseBg[p.clase]};color:${claseColor[p.clase]}">${p.clase}</span>
@@ -7142,7 +7140,7 @@ function renderPrioridades() {
       <td style="padding:9px 10px;text-align:right;font-size:13px;font-weight:700">${fmtN(p.revenue)}</td>
       <td style="padding:9px 10px;text-align:right;font-size:12px;color:var(--muted)">${pct}%</td>
       <td style="padding:9px 10px;text-align:right;font-size:13px;font-weight:700;color:${margenColor}">${margenStr}</td>
-      <td style="padding:9px 10px;text-align:right;font-size:12px;font-weight:700;color:${stkCol}">${stock != null ? stock.toLocaleString('es-AR') : '—'}</td>
+      <td style="padding:9px 10px;text-align:right;font-size:12px;font-weight:700;color:${stkCol}">${p.stock != null ? p.stock.toLocaleString('es-AR') : '—'}</td>
       <td style="padding:9px 10px;text-align:center">
         <span title="Score: ${p.score}" style="font-size:18px;cursor:default">${p.semaforo}</span>
         <div style="font-size:10px;color:var(--muted)">${p.score} pts</div>
