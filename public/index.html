@@ -978,6 +978,7 @@ tbody td {
         <button class="reporte-tab active" onclick="setReporteTab('costos',this)" id="tab-costos" style="padding:7px 16px;border-radius:8px;border:1px solid var(--border);background:var(--accent);color:#fff;font-size:13px;cursor:pointer">💰 Costos de productos</button>
         <button class="reporte-tab" onclick="setReporteTab('gastos',this)" id="tab-gastos" style="padding:7px 16px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px;cursor:pointer">🏢 Gastos fijos</button>
         <button class="reporte-tab" onclick="setReporteTab('pyl',this)" id="tab-pyl" style="padding:7px 16px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px;cursor:pointer">📈 P&L</button>
+        <button class="reporte-tab" onclick="setReporteTab('comparar',this)" id="tab-comparar" style="padding:7px 16px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px;cursor:pointer">📊 Comparar meses</button>
       </div>
       <div id="reporte-costos-panel">
         <div id="reporteCostosContent"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Seleccioná un cliente y mes, luego hacé click en "Cargar productos"</div></div>
@@ -987,6 +988,9 @@ tbody td {
       </div>
       <div id="reporte-pyl-panel" style="display:none">
         <div id="reportePylContent"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Completá costos y gastos, luego generá el P&L</div></div>
+      </div>
+      <div id="reporte-comparar-panel" style="display:none">
+        <div id="reporteCompararContent"></div>
       </div>
     </div>
 
@@ -3163,7 +3167,17 @@ function calcularSimulador() {
     const mLabel  = mr >= 25 ? 'Buen margen' : mr >= 15 ? 'Margen ajustado' : 'Margen bajo';
 
     const variaciones = [-15, -10, -5, 0, 5, 10, 15, 20];
-    const sensHtml = variaciones.map(v => {
+    const pisoPrecio  = calcPrecioDesdeMargen(0);
+    const pisoPisoRow = pisoPrecio ? (() => {
+      const dp = buildDesglose(pisoPrecio);
+      return `<tr style="border-bottom:2px solid #ff5252;background:rgba(255,82,82,.06)">
+        <td style="padding:7px 10px;font-size:12px;font-weight:700;color:#ff5252">⚠ Precio piso</td>
+        <td style="padding:7px 10px;text-align:right;font-size:13px;font-weight:700;color:#ff5252">${fmt(Math.round(pisoPrecio))}</td>
+        <td style="padding:7px 10px;text-align:right;font-size:13px;font-weight:700;color:#ff5252">0.0%</td>
+        <td style="padding:7px 10px;text-align:right;font-size:12px;color:var(--muted)">$0</td>
+      </tr>`;
+    })() : '';
+    const sensHtml = pisoPisoRow + variaciones.map(v => {
       const p2 = precio * (1 + v / 100);
       const d2 = buildDesglose(p2);
       const isBase = v === 0;
@@ -5770,11 +5784,12 @@ function initReporte() {
 }
 
 function setReporteTab(tab, el) {
-  ['costos','gastos','pyl'].forEach(t => {
+  ['costos','gastos','pyl','comparar'].forEach(t => {
     document.getElementById(`reporte-${t}-panel`).style.display = t === tab ? '' : 'none';
     const btn = document.getElementById(`tab-${t}`);
     if (btn) { btn.style.background = t === tab ? 'var(--accent)' : 'var(--surface)'; btn.style.color = t === tab ? '#fff' : 'var(--text)'; }
   });
+  if (tab === 'comparar') loadCompararReporte();
 }
 
 function getReportePeriod() {
