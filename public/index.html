@@ -6429,16 +6429,16 @@ function renderPyL(pyl) {
           .map(([cat,monto])=>detalleRow(cat, monto, pyl.ingresos.facturacion)).join('')}
       </div>` : ''}
 
-      <!-- Ordenes / adicional -->
+      <!-- Métricas clave -->
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
         ${[
-          ['Órdenes', pyl.ordenes.toLocaleString('es-AR'), ''],
-          ['% Recibido', fmtP(pyl.margenes.pct_recibido), pyl.resultado_neto_ml>=0?'#16a34a':'#dc2626'],
-          ['Rentabilidad s/CMV', pyl.margenes.rentabilidad!=null?fmtP(pyl.margenes.rentabilidad):'—', pyl.margenes.rentabilidad>0?'#16a34a':'#dc2626'],
-          ['IVA a pagar', fmtM(pyl.iva?.neto??0), '#8b5cf6'],
-        ].map(([l,v,c])=>`<div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px 14px">
-          <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">${l}</div>
-          <div style="font-size:16px;font-weight:700;font-family:var(--font-b);color:${c||'var(--text)'};margin-top:4px">${v}</div>
+          ['📦 Órdenes',            pyl.ordenes.toLocaleString('es-AR'),                                                     ''],
+          ['📥 % Recibido',         fmtP(pyl.margenes.pct_recibido),                                                         pyl.resultado_neto_ml>=0?'#16a34a':'#dc2626'],
+          ['📊 Margen neto',        fmtP(pyl.margenes.margen),                                                               pyl.utilidad_final>=0?'#16a34a':'#dc2626'],
+          ['🏭 Rentabilidad s/CMV', pyl.margenes.rentabilidad!=null?fmtP(pyl.margenes.rentabilidad):'Sin CMV',               pyl.margenes.rentabilidad>0?'#16a34a':'var(--muted)'],
+        ].map(([l,v,c])=>`<div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px 16px">
+          <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px">${l}</div>
+          <div style="font-size:20px;font-weight:800;font-family:var(--font-b);color:${c||'var(--text)'}">${v}</div>
         </div>`).join('')}
       </div>
 
