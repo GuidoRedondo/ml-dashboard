@@ -5806,23 +5806,29 @@ async function loadCompararReporte() {
     const mesesData = await apiCall('GET', `/api/reporte/meses-disponibles?client_id=${client_id}`);
     const meses = mesesData?.meses || [];
 
-    if (meses.length < 1) {
-      el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">No hay meses guardados. Generá el P&L de al menos un mes primero desde la pestaña P&L.</div>';
-      return;
-    }
-
     // Formatear etiqueta de mes
     const fmtMes = m => {
+      if (m === 'actual') return '📍 Mes en curso';
       const [y, mo] = m.split('-');
       const nombres = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
       return `${nombres[parseInt(mo)-1]} ${y}`;
     };
 
-    const optsMeses = meses.map(m => `<option value="${m.mes}">${fmtMes(m.mes)} — $${Math.round(m.facturacion).toLocaleString('es-AR')}</option>`).join('');
+    // Construir opciones — siempre incluir "Mes en curso" si hay P&L calculado
+    const tieneActual = !!window._reportePyl;
+    const optsActual  = tieneActual
+      ? `<option value="actual">📍 Mes en curso — $${Math.round(window._reportePyl.ingresos.facturacion).toLocaleString('es-AR')}</option>`
+      : '';
+    const optsMeses   = meses.map(m => `<option value="${m.mes}">${fmtMes(m.mes)} — $${Math.round(m.facturacion).toLocaleString('es-AR')}</option>`).join('');
 
-    // Mes A: el más reciente | Mes B: el anterior
-    const mesA = meses[0]?.mes || '';
-    const mesB = meses[1]?.mes || '';
+    if (!tieneActual && meses.length < 1) {
+      el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">Generá el P&L desde la pestaña P&L primero.</div>';
+      return;
+    }
+
+    // Defaults: Mes A = actual (o más reciente), Mes B = más reciente guardado
+    const defaultA = tieneActual ? 'actual' : (meses[0]?.mes || '');
+    const defaultB = meses[0]?.mes || '';
 
     el.innerHTML = `
       <div class="kpi-card" style="padding:20px;margin-bottom:20px">
@@ -5830,14 +5836,14 @@ async function loadCompararReporte() {
           <div style="flex:1;min-width:200px">
             <div style="font-size:11px;color:var(--muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:.05em">Mes base</div>
             <select id="cmpMesA" style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px">
-              ${optsMeses}
+              ${optsActual}${optsMeses}
             </select>
           </div>
           <div style="font-size:22px;color:var(--muted);padding-top:18px">vs</div>
           <div style="flex:1;min-width:200px">
             <div style="font-size:11px;color:var(--muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:.05em">Mes a comparar</div>
             <select id="cmpMesB" style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px">
-              ${optsMeses}
+              ${optsActual}${optsMeses}
             </select>
           </div>
           <div style="padding-top:18px">
@@ -5846,20 +5852,23 @@ async function loadCompararReporte() {
             </button>
           </div>
         </div>
-        <div style="margin-top:12px">
+        <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
           <button onclick="mesAnteriorAuto()" style="background:none;border:1px solid var(--border);border-radius:8px;padding:5px 12px;color:var(--muted);font-size:12px;cursor:pointer">
-            ⚡ Último mes vs anterior
+            ⚡ Último mes vs anterior guardado
           </button>
+          ${tieneActual && meses.length >= 1 ? `<button onclick="actualVsAnterior()" style="background:none;border:1px solid var(--accent);border-radius:8px;padding:5px 12px;color:var(--accent);font-size:12px;cursor:pointer;font-weight:600">
+            📍 Mes en curso vs último guardado
+          </button>` : ''}
         </div>
       </div>
       <div id="cmpResultados"></div>`;
 
     // Pre-setear selectores
-    document.getElementById('cmpMesA').value = mesA;
-    document.getElementById('cmpMesB').value = mesB;
+    document.getElementById('cmpMesA').value = defaultA;
+    document.getElementById('cmpMesB').value = defaultB;
 
-    // Si hay al menos 2 meses, comparar automáticamente
-    if (meses.length >= 2) ejecutarComparacion();
+    // Comparar automáticamente si hay datos
+    if (defaultA && defaultB && defaultA !== defaultB) ejecutarComparacion();
 
   } catch(e) {
     el.innerHTML = `<div style="color:#ff5252;padding:20px">Error: ${e.message}</div>`;
@@ -5870,10 +5879,23 @@ function mesAnteriorAuto() {
   const selA = document.getElementById('cmpMesA');
   const selB = document.getElementById('cmpMesB');
   if (!selA || !selB) return;
-  const opts = Array.from(selA.options).map(o => o.value).filter(Boolean);
+  // Excluir "actual" — buscar los dos primeros meses guardados
+  const opts = Array.from(selA.options).map(o => o.value).filter(v => v && v !== 'actual');
   if (opts.length >= 2) {
     selA.value = opts[0];
     selB.value = opts[1];
+    ejecutarComparacion();
+  }
+}
+
+function actualVsAnterior() {
+  const selA = document.getElementById('cmpMesA');
+  const selB = document.getElementById('cmpMesB');
+  if (!selA || !selB) return;
+  const opts = Array.from(selA.options).map(o => o.value).filter(v => v && v !== 'actual');
+  if (opts.length >= 1 && window._reportePyl) {
+    selA.value = 'actual';
+    selB.value = opts[0];
     ejecutarComparacion();
   }
 }
@@ -5893,8 +5915,57 @@ async function ejecutarComparacion() {
   el.innerHTML = '<div style="color:var(--muted);padding:20px;text-align:center">⏳ Comparando...</div>';
 
   try {
-    const data = await apiCall('GET', `/api/reporte/comparar?client_id=${client_id}&mes_a=${mes_a}&mes_b=${mes_b}`);
-    renderComparacion(data, mes_a, mes_b);
+    // Si uno de los meses es "actual", usar el P&L en memoria
+    if (mes_a === 'actual' || mes_b === 'actual') {
+      const pylActual = window._reportePyl;
+      if (!pylActual) {
+        el.innerHTML = '<div style="color:#ff9100;padding:20px;text-align:center">Generá el P&L del mes en curso primero desde la pestaña P&L</div>';
+        return;
+      }
+      // Cargar el mes guardado
+      const mesGuardado = mes_a === 'actual' ? mes_b : mes_a;
+      const savedData = await apiCall('GET', `/api/reporte/meses-disponibles?client_id=${client_id}`);
+      const mesRow = (savedData?.meses || []).find(m => m.mes === mesGuardado + '-01' || m.mes === mesGuardado);
+      if (!mesRow) {
+        el.innerHTML = '<div style="color:#ff5252;padding:20px;text-align:center">No se encontró el mes guardado</div>';
+        return;
+      }
+      // Buscar el P&L completo del mes guardado
+      const cmpData = await apiCall('GET', `/api/reporte/comparar?client_id=${client_id}&mes_a=${mesGuardado}&mes_b=${mesGuardado}`);
+      const pylGuardado = cmpData?.pyl_a;
+      if (!pylGuardado) {
+        el.innerHTML = '<div style="color:#ff5252;padding:20px;text-align:center">No se pudo cargar el mes guardado</div>';
+        return;
+      }
+
+      // Construir diff manualmente
+      const diff_fn = (a, b) => a != null && b != null ? a - b : null;
+      const pct_diff = (a, b) => a != null && b != null && b !== 0 ? ((a - b) / Math.abs(b) * 100).toFixed(1) : null;
+
+      const pylA = mes_a === 'actual' ? pylActual : pylGuardado;
+      const pylB = mes_a === 'actual' ? pylGuardado : pylActual;
+      const labelA = mes_a === 'actual' ? 'actual' : mes_a;
+      const labelB = mes_b === 'actual' ? 'actual' : mes_b;
+
+      const diff = {
+        facturacion:       diff_fn(pylA.ingresos?.facturacion,    pylB.ingresos?.facturacion),
+        ordenes:           diff_fn(pylA.ordenes,                   pylB.ordenes),
+        total_egresos_ml:  diff_fn(pylA.egresos_ml?.total,        pylB.egresos_ml?.total),
+        resultado_neto:    diff_fn(pylA.resultado_neto_ml,         pylB.resultado_neto_ml),
+        cmv:               diff_fn(pylA.cmv?.total,               pylB.cmv?.total),
+        utilidad_antes_gf: diff_fn(pylA.utilidad_antes_gf,        pylB.utilidad_antes_gf),
+        gastos_fijos:      diff_fn(pylA.gastos_fijos?.total,      pylB.gastos_fijos?.total),
+        utilidad_final:    diff_fn(pylA.utilidad_final,           pylB.utilidad_final),
+        margen:            diff_fn(parseFloat(pylA.margenes?.margen),    parseFloat(pylB.margenes?.margen)),
+        rentabilidad:      diff_fn(parseFloat(pylA.margenes?.rentabilidad), parseFloat(pylB.margenes?.rentabilidad)),
+        pct_recibido:      diff_fn(parseFloat(pylA.margenes?.pct_recibido), parseFloat(pylB.margenes?.pct_recibido)),
+      };
+      renderComparacion({ pyl_a: pylA, pyl_b: pylB, diff }, labelA, labelB);
+    } else {
+      // Ambos son meses guardados — usar endpoint normal
+      const data = await apiCall('GET', `/api/reporte/comparar?client_id=${client_id}&mes_a=${mes_a}&mes_b=${mes_b}`);
+      renderComparacion(data, mes_a, mes_b);
+    }
   } catch(e) {
     el.innerHTML = `<div style="color:#ff5252;padding:20px">Error: ${e.message}</div>`;
   }
@@ -5908,6 +5979,7 @@ function renderComparacion(data, mes_a, mes_b) {
   const fmt  = n => n != null ? '$' + Math.round(n).toLocaleString('es-AR') : '—';
   const fmtP = n => n != null ? parseFloat(n).toFixed(1) + '%' : '—';
   const fmtMes = m => {
+    if (m === 'actual') return '📍 Mes en curso';
     const [y, mo] = m.split('-');
     const nombres = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
     return `${nombres[parseInt(mo)-1]} ${y}`;
@@ -6001,7 +6073,7 @@ function renderComparacion(data, mes_a, mes_b) {
             ${sec('💰 Resultado')}
             ${row('RESULTADO NETO ML',        a?.resultado_neto_ml,         b?.resultado_neto_ml,         diff?.resultado_neto, false, true)}
             ${rowPct('% Recibido',            a?.margenes?.pct_recibido,    b?.margenes?.pct_recibido,    diff?.pct_recibido)}
-            ${sec('🏭 CMV')}
+            ${sec('🏭 Costo Merc. Vendida')}
             ${row('Costo de mercancía',       a?.cmv?.total,                b?.cmv?.total,                diff?.cmv,           false, true, false)}
             ${row('UTILIDAD ANTES GF',        a?.utilidad_antes_gf,         b?.utilidad_antes_gf,         diff?.utilidad_antes_gf, false, true)}
             ${sec('🏢 Gastos Fijos')}
@@ -6432,7 +6504,7 @@ function renderPyL(pyl) {
       <!-- Métricas clave -->
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
         ${[
-          ['📦 Órdenes',            pyl.ordenes.toLocaleString('es-AR'),                                                     ''],
+          ['📦 Ventas',            pyl.ordenes.toLocaleString('es-AR'),                                                     ''],
           ['📥 % Recibido',         fmtP(pyl.margenes.pct_recibido),                                                         pyl.resultado_neto_ml>=0?'#16a34a':'#dc2626'],
           ['📊 Margen neto',        fmtP(pyl.margenes.margen),                                                               pyl.utilidad_final>=0?'#16a34a':'#dc2626'],
           ['🏭 Rentabilidad s/CMV', pyl.margenes.rentabilidad!=null?fmtP(pyl.margenes.rentabilidad):'Sin CMV',               pyl.margenes.rentabilidad>0?'#16a34a':'var(--muted)'],
