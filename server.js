@@ -2519,7 +2519,15 @@ app.get('/api/reporte/meses-disponibles', requireAuth, async (req, res) => {
        ORDER BY mes DESC`,
       [client_id]
     );
-    res.json({ meses: r.rows });
+    // Normalizar mes a string YYYY-MM (evita problemas de timezone con Date objects)
+    const meses = r.rows.map(row => {
+      const d = new Date(row.mes);
+      return {
+        ...row,
+        mes: `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,'0')}`
+      };
+    });
+    res.json({ meses });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -2536,7 +2544,9 @@ app.get('/api/reporte/comparar', requireAuth, async (req, res) => {
 
     const byMes = {};
     r.rows.forEach(row => {
-      const mesKey = row.mes.toISOString().slice(0,7);
+      // row.mes es un Date de postgres — extraer YYYY-MM sin depender de timezone
+      const d = new Date(row.mes);
+      const mesKey = `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,'0')}`;
       byMes[mesKey] = row.data;
     });
 
