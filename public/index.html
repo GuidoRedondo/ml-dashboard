@@ -5791,6 +5791,233 @@ function initReporte() {
   }
 }
 
+async function loadCompararReporte() {
+  const el = document.getElementById('reporteCompararContent');
+  if (!el) return;
+  const client_id = getReporteClientId();
+  if (!client_id) {
+    el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">Seleccioná un cliente primero</div>';
+    return;
+  }
+
+  el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">⏳ Cargando meses disponibles...</div>';
+
+  try {
+    const mesesData = await apiCall('GET', `/api/reporte/meses-disponibles?client_id=${client_id}`);
+    const meses = mesesData?.meses || [];
+
+    if (meses.length < 1) {
+      el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">No hay meses guardados. Generá el P&L de al menos un mes primero desde la pestaña P&L.</div>';
+      return;
+    }
+
+    // Formatear etiqueta de mes
+    const fmtMes = m => {
+      const [y, mo] = m.split('-');
+      const nombres = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
+      return `${nombres[parseInt(mo)-1]} ${y}`;
+    };
+
+    const optsMeses = meses.map(m => `<option value="${m.mes}">${fmtMes(m.mes)} — $${Math.round(m.facturacion).toLocaleString('es-AR')}</option>`).join('');
+
+    // Mes A: el más reciente | Mes B: el anterior
+    const mesA = meses[0]?.mes || '';
+    const mesB = meses[1]?.mes || '';
+
+    el.innerHTML = `
+      <div class="kpi-card" style="padding:20px;margin-bottom:20px">
+        <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap">
+          <div style="flex:1;min-width:200px">
+            <div style="font-size:11px;color:var(--muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:.05em">Mes base</div>
+            <select id="cmpMesA" style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px">
+              ${optsMeses}
+            </select>
+          </div>
+          <div style="font-size:22px;color:var(--muted);padding-top:18px">vs</div>
+          <div style="flex:1;min-width:200px">
+            <div style="font-size:11px;color:var(--muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:.05em">Mes a comparar</div>
+            <select id="cmpMesB" style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px">
+              ${optsMeses}
+            </select>
+          </div>
+          <div style="padding-top:18px">
+            <button onclick="ejecutarComparacion()" class="sync-btn" style="background:var(--accent);color:#000;font-weight:700;padding:8px 20px">
+              📊 Comparar
+            </button>
+          </div>
+        </div>
+        <div style="margin-top:12px">
+          <button onclick="mesAnteriorAuto()" style="background:none;border:1px solid var(--border);border-radius:8px;padding:5px 12px;color:var(--muted);font-size:12px;cursor:pointer">
+            ⚡ Último mes vs anterior
+          </button>
+        </div>
+      </div>
+      <div id="cmpResultados"></div>`;
+
+    // Pre-setear selectores
+    document.getElementById('cmpMesA').value = mesA;
+    document.getElementById('cmpMesB').value = mesB;
+
+    // Si hay al menos 2 meses, comparar automáticamente
+    if (meses.length >= 2) ejecutarComparacion();
+
+  } catch(e) {
+    el.innerHTML = `<div style="color:#ff5252;padding:20px">Error: ${e.message}</div>`;
+  }
+}
+
+function mesAnteriorAuto() {
+  const selA = document.getElementById('cmpMesA');
+  const selB = document.getElementById('cmpMesB');
+  if (!selA || !selB) return;
+  const opts = Array.from(selA.options).map(o => o.value).filter(Boolean);
+  if (opts.length >= 2) {
+    selA.value = opts[0];
+    selB.value = opts[1];
+    ejecutarComparacion();
+  }
+}
+
+async function ejecutarComparacion() {
+  const el = document.getElementById('cmpResultados');
+  if (!el) return;
+  const client_id = getReporteClientId();
+  const mes_a = document.getElementById('cmpMesA')?.value;
+  const mes_b = document.getElementById('cmpMesB')?.value;
+  if (!mes_a || !mes_b) return;
+  if (mes_a === mes_b) {
+    el.innerHTML = '<div style="color:#ff9100;padding:20px;text-align:center">Seleccioná dos meses diferentes</div>';
+    return;
+  }
+
+  el.innerHTML = '<div style="color:var(--muted);padding:20px;text-align:center">⏳ Comparando...</div>';
+
+  try {
+    const data = await apiCall('GET', `/api/reporte/comparar?client_id=${client_id}&mes_a=${mes_a}&mes_b=${mes_b}`);
+    renderComparacion(data, mes_a, mes_b);
+  } catch(e) {
+    el.innerHTML = `<div style="color:#ff5252;padding:20px">Error: ${e.message}</div>`;
+  }
+}
+
+function renderComparacion(data, mes_a, mes_b) {
+  const el = document.getElementById('cmpResultados');
+  if (!el || !data) return;
+
+  const { pyl_a, pyl_b, diff } = data;
+  const fmt  = n => n != null ? '$' + Math.round(n).toLocaleString('es-AR') : '—';
+  const fmtP = n => n != null ? parseFloat(n).toFixed(1) + '%' : '—';
+  const fmtMes = m => {
+    const [y, mo] = m.split('-');
+    const nombres = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
+    return `${nombres[parseInt(mo)-1]} ${y}`;
+  };
+
+  // Δ color: verde si sube (para métricas positivas) o si baja (para costos)
+  const deltaColor = (val, esPositivoBueno = true) => {
+    if (val == null || val === 0) return 'var(--muted)';
+    return (val > 0) === esPositivoBueno ? '#00e676' : '#ff5252';
+  };
+  const deltaIcon  = n => n > 0 ? '▲' : n < 0 ? '▼' : '—';
+  const deltaCell  = (n, esPositivoBueno = true, isPct = false) => {
+    if (n == null) return '<td style="text-align:right;color:var(--muted)">—</td>';
+    const color = deltaColor(n, esPositivoBueno);
+    const icon  = deltaIcon(n);
+    const val   = isPct ? `${n > 0 ? '+' : ''}${parseFloat(n).toFixed(1)}%` : `${n > 0 ? '+' : ''}${fmt(n).replace('$-','-$')}`;
+    return `<td style="text-align:right;font-weight:700;color:${color}">${icon} ${val}</td>`;
+  };
+
+  // ── KPIs resumen ─────────────────────────────────────────────────────────
+  const kpiDiff = (label, va, vb, d, fmt_fn, esPositivo=true) => {
+    const color = deltaColor(d, esPositivo);
+    const icon  = deltaIcon(d);
+    return `<div class="kpi-card" style="padding:16px">
+      <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px">${label}</div>
+      <div style="display:flex;justify-content:space-between;align-items:flex-end">
+        <div>
+          <div style="font-size:11px;color:var(--muted)">${fmtMes(mes_a)}</div>
+          <div style="font-size:18px;font-weight:700;font-family:var(--font-b)">${fmt_fn(va)}</div>
+        </div>
+        <div style="font-size:13px;font-weight:700;color:${color};text-align:right">
+          ${icon} ${d != null ? (typeof d === 'number' && Math.abs(d) < 1000 && !label.includes('$') ? `${d>0?'+':''}${parseFloat(d).toFixed(1)}%` : fmt(d)) : '—'}
+        </div>
+        <div style="text-align:right">
+          <div style="font-size:11px;color:var(--muted)">${fmtMes(mes_b)}</div>
+          <div style="font-size:18px;font-weight:700;font-family:var(--font-b);color:var(--muted)">${fmt_fn(vb)}</div>
+        </div>
+      </div>
+    </div>`;
+  };
+
+  const kpis = `<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:20px">
+    ${kpiDiff('Facturación', pyl_a?.ingresos?.facturacion, pyl_b?.ingresos?.facturacion, diff?.facturacion, fmt)}
+    ${kpiDiff('Órdenes', pyl_a?.ordenes, pyl_b?.ordenes, diff?.ordenes, v => v?.toLocaleString('es-AR') ?? '—')}
+    ${kpiDiff('Resultado Neto ML', pyl_a?.resultado_neto_ml, pyl_b?.resultado_neto_ml, diff?.resultado_neto, fmt)}
+    ${kpiDiff('CMV', pyl_a?.cmv?.total, pyl_b?.cmv?.total, diff?.cmv, fmt, false)}
+    ${kpiDiff('Gastos Fijos', pyl_a?.gastos_fijos?.total, pyl_b?.gastos_fijos?.total, diff?.gastos_fijos, fmt, false)}
+    ${kpiDiff('Utilidad Final', pyl_a?.utilidad_final, pyl_b?.utilidad_final, diff?.utilidad_final, fmt)}
+  </div>`;
+
+  // ── Tabla P&L lado a lado ─────────────────────────────────────────────────
+  const th = txt => `<th style="padding:9px 12px;text-align:right;font-size:11px;font-weight:600;color:var(--muted);border-bottom:2px solid var(--border);white-space:nowrap">${txt}</th>`;
+  const sec = label => `<tr><td colspan="4" style="padding:7px 12px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;background:var(--surface2);border-top:1px solid var(--border)">${label}</td></tr>`;
+  const row = (label, va, vb, d, indent=false, bold=false, esPositivo=true) => `
+    <tr style="border-bottom:1px solid var(--border)">
+      <td style="padding:8px 12px;font-size:12px;${bold?'font-weight:700;':''}${indent?'padding-left:24px;color:var(--muted)':''}">${label}</td>
+      <td style="padding:8px 12px;text-align:right;font-size:12px;${bold?'font-weight:700;':''}">${fmt(va)}</td>
+      <td style="padding:8px 12px;text-align:right;font-size:12px;color:var(--muted)">${fmt(vb)}</td>
+      ${deltaCell(d, esPositivo)}
+    </tr>`;
+  const rowPct = (label, va, vb, d) => `
+    <tr style="border-bottom:1px solid var(--border)">
+      <td style="padding:8px 12px;font-size:12px;color:var(--muted)">${label}</td>
+      <td style="padding:8px 12px;text-align:right;font-size:12px">${fmtP(va)}</td>
+      <td style="padding:8px 12px;text-align:right;font-size:12px;color:var(--muted)">${fmtP(vb)}</td>
+      ${deltaCell(d, true, true)}
+    </tr>`;
+
+  const a = pyl_a; const b = pyl_b;
+  const tabla = `
+    <div class="kpi-card" style="padding:0;overflow:hidden">
+      <div style="overflow-x:auto">
+        <table style="width:100%;border-collapse:collapse;font-size:12px">
+          <thead><tr style="background:var(--surface2)">
+            ${th('Concepto').replace('text-align:right','text-align:left')}
+            ${th(fmtMes(mes_a))}
+            ${th(fmtMes(mes_b))}
+            ${th('Variación')}
+          </tr></thead>
+          <tbody>
+            ${sec('📥 Ingresos')}
+            ${row('Facturación productos',    a?.ingresos?.facturacion,     b?.ingresos?.facturacion,     diff?.facturacion,   true)}
+            ${row('Ingreso envío comprador',  a?.ingresos?.envio_comprador, b?.ingresos?.envio_comprador, null, true)}
+            ${row('TOTAL INGRESOS',           a?.ingresos?.total,           b?.ingresos?.total,           diff?.facturacion,   false, true)}
+            ${sec('📤 Egresos ML')}
+            ${row('Comisión ML',              a?.egresos_ml?.comision,      b?.egresos_ml?.comision,      null, true, false, false)}
+            ${row('Costo envío vendedor',     a?.egresos_ml?.envio_vendedor,b?.egresos_ml?.envio_vendedor,null, true, false, false)}
+            ${row('Publicidad (PADS)',        a?.egresos_ml?.publicidad,    b?.egresos_ml?.publicidad,    null, true, false, false)}
+            ${row('IVA neto a pagar',         a?.egresos_ml?.iva_neto,      b?.egresos_ml?.iva_neto,      null, true, false, false)}
+            ${row('TOTAL EGRESOS ML',         a?.egresos_ml?.total,         b?.egresos_ml?.total,         diff?.total_egresos_ml, false, true, false)}
+            ${sec('💰 Resultado')}
+            ${row('RESULTADO NETO ML',        a?.resultado_neto_ml,         b?.resultado_neto_ml,         diff?.resultado_neto, false, true)}
+            ${rowPct('% Recibido',            a?.margenes?.pct_recibido,    b?.margenes?.pct_recibido,    diff?.pct_recibido)}
+            ${sec('🏭 CMV')}
+            ${row('Costo de mercancía',       a?.cmv?.total,                b?.cmv?.total,                diff?.cmv,           false, true, false)}
+            ${row('UTILIDAD ANTES GF',        a?.utilidad_antes_gf,         b?.utilidad_antes_gf,         diff?.utilidad_antes_gf, false, true)}
+            ${sec('🏢 Gastos Fijos')}
+            ${row('TOTAL GASTOS FIJOS',       a?.gastos_fijos?.total,       b?.gastos_fijos?.total,       diff?.gastos_fijos,  false, true, false)}
+            ${sec('📊 Resultado Final')}
+            ${row('UTILIDAD FINAL',           a?.utilidad_final,            b?.utilidad_final,            diff?.utilidad_final, false, true)}
+            ${rowPct('Margen %',              a?.margenes?.margen,          b?.margenes?.margen,          diff?.margen)}
+            ${rowPct('Rentabilidad %',        a?.margenes?.rentabilidad,    b?.margenes?.rentabilidad,    diff?.rentabilidad)}
+          </tbody>
+        </table>
+      </div>
+    </div>`;
+
+  el.innerHTML = kpis + tabla;
+}
+
 function setReporteTab(tab, el) {
   ['costos','gastos','pyl','comparar'].forEach(t => {
     document.getElementById(`reporte-${t}-panel`).style.display = t === tab ? '' : 'none';
