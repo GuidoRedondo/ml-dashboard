@@ -5814,21 +5814,27 @@ async function loadCompararReporte() {
       return `${nombres[parseInt(mo)-1]} ${y}`;
     };
 
-    // Construir opciones — siempre incluir "Mes en curso" si hay P&L calculado
-    const tieneActual = !!window._reportePyl;
-    const optsActual  = tieneActual
-      ? `<option value="actual">📍 Mes en curso — $${Math.round(window._reportePyl.ingresos.facturacion).toLocaleString('es-AR')}</option>`
+    // Construir opciones
+    // "Mes en curso" disponible si hay P&L en memoria (_reportePyl) O si hay meses guardados que usar como base
+    const pylActualEnMemoria = window._reportePyl;
+    const optsActual  = pylActualEnMemoria
+      ? `<option value="actual">📍 Mes en curso (cargado) — $${Math.round(pylActualEnMemoria.ingresos.facturacion).toLocaleString('es-AR')}</option>`
       : '';
     const optsMeses   = meses.map(m => `<option value="${m.mes}">${fmtMes(m.mes)} — $${Math.round(m.facturacion).toLocaleString('es-AR')}</option>`).join('');
 
-    if (!tieneActual && meses.length < 1) {
-      el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">Generá el P&L desde la pestaña P&L primero.</div>';
+    if (!pylActualEnMemoria && meses.length < 1) {
+      el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">Generá el P&L desde la pestaña P&L primero para poder comparar.</div>';
       return;
     }
 
-    // Defaults: Mes A = actual (o más reciente), Mes B = más reciente guardado
-    const defaultA = tieneActual ? 'actual' : (meses[0]?.mes || '');
-    const defaultB = meses[0]?.mes || '';
+    if (meses.length < 1) {
+      el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">No hay meses guardados para comparar. Generá el P&L de al menos un mes y guardalo.</div>';
+      return;
+    }
+
+    // Defaults: Mes A = actual si está en memoria, sino el más reciente; Mes B = siguiente
+    const defaultA = pylActualEnMemoria ? 'actual' : (meses[0]?.mes || '');
+    const defaultB = pylActualEnMemoria ? (meses[0]?.mes || '') : (meses[1]?.mes || meses[0]?.mes || '');
 
     el.innerHTML = `
       <div class="kpi-card" style="padding:20px;margin-bottom:20px">
@@ -5856,7 +5862,7 @@ async function loadCompararReporte() {
           <button onclick="mesAnteriorAuto()" style="background:none;border:1px solid var(--border);border-radius:8px;padding:5px 12px;color:var(--muted);font-size:12px;cursor:pointer">
             ⚡ Último mes vs anterior guardado
           </button>
-          ${tieneActual && meses.length >= 1 ? `<button onclick="actualVsAnterior()" style="background:none;border:1px solid var(--accent);border-radius:8px;padding:5px 12px;color:var(--accent);font-size:12px;cursor:pointer;font-weight:600">
+          ${pylActualEnMemoria && meses.length >= 1 ? `<button onclick="actualVsAnterior()" style="background:none;border:1px solid var(--accent);border-radius:8px;padding:5px 12px;color:var(--accent);font-size:12px;cursor:pointer;font-weight:600">
             📍 Mes en curso vs último guardado
           </button>` : ''}
         </div>
@@ -5918,6 +5924,10 @@ async function ejecutarComparacion() {
     // Si uno de los meses es "actual", usar el P&L en memoria
     if (mes_a === 'actual' || mes_b === 'actual') {
       const pylActual = window._reportePyl;
+      if (!pylActual) {
+        el.innerHTML = '<div style="color:#ff9100;padding:20px;text-align:center">Para usar "Mes en curso", generá primero el P&L desde la pestaña P&L</div>';
+        return;
+      }
       if (!pylActual) {
         el.innerHTML = '<div style="color:#ff9100;padding:20px;text-align:center">Generá el P&L del mes en curso primero desde la pestaña P&L</div>';
         return;
@@ -6430,7 +6440,7 @@ function renderPyL(pyl) {
       ],'#ede9fe')}
 
       ${cascada([
-        { label:'Costos variables', monto: -(pyl.egresos_ml.total + pyl.cmv.total), color:'#dc2626', bold:true, border:'#dc2626',
+        { label:'Costos variables (ML + CMV)', monto: -(pyl.egresos_ml.total + pyl.cmv.total), color:'#dc2626', bold:true, border:'#dc2626',
           pct: pyl.ingresos.facturacion > 0 ? (pyl.egresos_ml.total + pyl.cmv.total) / pyl.ingresos.facturacion * 100 : null },
       ],'#fee2e2')}
 
@@ -6444,12 +6454,7 @@ function renderPyL(pyl) {
         pyl.ingresos.facturacion,
         '#6366f1','#f0f4ff')}
 
-      ${cascadaBloque('IVA a pagar',
-        -(pyl.iva?.neto ?? 0),
-        pyl.ingresos.facturacion,
-        '#8b5cf6','#f5f3ff')}
-
-      ${cascadaBloque('Utilidad neta',
+      ${cascadaBloque('Utilidad Final',
         pyl.utilidad_final,
         pyl.ingresos.facturacion,
         pyl.utilidad_final >= 0 ? '#16a34a' : '#dc2626','#f0fdf4', true)}
