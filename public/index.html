@@ -6094,74 +6094,129 @@ function renderPyL(pyl) {
         ⚠ CMV parcial — ${pyl.cmv.cubierto} de ${pyl.cmv.total_items} productos tienen costo cargado. El CMV puede estar subestimado.
       </div>` : '';
 
-  el.innerHTML = cmvWarning + `
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:20px">
-    <!-- P&L Table -->
-    <div style="overflow-x:auto">
-      <table style="width:100%;border-collapse:collapse">
-        <thead><tr style="background:var(--surface2)">
-          <th style="padding:8px 14px;font-size:11px;color:var(--muted);text-align:left;border-bottom:1px solid var(--border)">Concepto</th>
-          <th style="padding:8px 14px;font-size:11px;color:var(--muted);text-align:right;border-bottom:1px solid var(--border)">Monto</th>
-          <th style="padding:8px 14px;font-size:11px;color:var(--muted);text-align:right;border-bottom:1px solid var(--border)">% Fact</th>
-        </tr></thead>
-        <tbody>
-          ${sec('📥 Ingresos','#ede9fe')}
-          ${row('Facturación productos', pyl.ingresos.facturacion, '', false, true)}
-          ${row('Ingreso por envío (comprador)', pyl.ingresos.envio_comprador, '', false, true)}
-          ${row('TOTAL INGRESOS', pyl.ingresos.total, '#6366f1', true, false)}
-          ${sec('📤 Egresos Mercado Libre','#fee2e2')}
-          ${row('Comisión ML', -pyl.egresos_ml.comision, '#dc2626', false, true)}
-          ${row('Impuestos (retenciones)', -pyl.egresos_ml.impuestos, '#dc2626', false, true)}
-          ${row('Costo envío vendedor', -pyl.egresos_ml.envio_vendedor, '#dc2626', false, true)}
-          ${row('Publicidad (PADS)', -pyl.egresos_ml.publicidad, '#dc2626', false, true)}
-          ${pyl.egresos_ml.reembolsos ? row('Reembolsos', -pyl.egresos_ml.reembolsos, '#dc2626', false, true) : ''}
-          ${row('IVA ventas (débito fiscal)', -pyl.iva.ventas, '#8b5cf6', false, true)}
-          ${row('IVA compras acreditable', pyl.iva.compras, '#059669', false, true)}
-          ${row('IVA NETO A PAGAR', -pyl.iva.neto, '#8b5cf6', false, true)}
-          ${row('TOTAL EGRESOS ML', -pyl.egresos_ml.total, '#dc2626', true, false)}
-          ${sec('💰 Resultado','#dcfce7')}
-          ${row('RESULTADO NETO ML', pyl.resultado_neto_ml, pyl.resultado_neto_ml>=0?'#16a34a':'#dc2626', true, false)}
-          ${sec('🏭 CMV','#fef3c7')}
-          ${row('Costo de mercancía vendida', -pyl.cmv.total, '#d97706', true, false)}
-          ${row('UTILIDAD ANTES GASTOS FIJOS', pyl.utilidad_antes_gf, pyl.utilidad_antes_gf>=0?'#16a34a':'#dc2626', true, false)}
-          ${sec('🏢 Gastos Fijos','#f0f4ff')}
-          ${(pyl.gastos_fijos.items||[]).map(g => row(g.concepto, -g.monto, '#6366f1', false, true)).join('')}
-          ${row('TOTAL GASTOS FIJOS', -pyl.gastos_fijos.total, '#6366f1', true, false)}
-          ${sec('📊 Resultado Final','#f0fdf4')}
-          ${row('UTILIDAD FINAL', pyl.utilidad_final, pyl.utilidad_final>=0?'#16a34a':'#dc2626', true, false)}
-        </tbody>
-      </table>
-    </div>
-    <!-- KPIs -->
-    <div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px">
-        ${[
-          ['Facturación', fmtM(pyl.ingresos.facturacion), ''],
-          ['Órdenes', pyl.ordenes.toLocaleString('es-AR'), ''],
-          ['% Recibido', fmtP(pyl.margenes.pct_recibido), pyl.resultado_neto_ml>=0?'#16a34a':'#dc2626'],
-          ['Margen %', fmtP(pyl.margenes.margen), pyl.utilidad_final>=0?'#16a34a':'#dc2626'],
-          ['Rentabilidad %', pyl.margenes.rentabilidad != null ? fmtP(pyl.margenes.rentabilidad) : '—', pyl.margenes.rentabilidad>0?'#16a34a':'#dc2626'],
-          ['CMV', fmtM(pyl.cmv.total), '#d97706'],
-          ['Contribución Marginal', fmtM(pyl.ingresos.facturacion - pyl.egresos_ml.comision - pyl.egresos_ml.envio_vendedor - pyl.egresos_ml.publicidad - pyl.cmv.total), (pyl.ingresos.facturacion - pyl.egresos_ml.comision - pyl.egresos_ml.envio_vendedor - pyl.egresos_ml.publicidad - pyl.cmv.total)>=0?'#16a34a':'#dc2626'],
-          ['🧾 IVA a pagar', fmtM(pyl.iva?.neto ?? 0), '#8b5cf6'],
-          ['Gastos Fijos', fmtM(pyl.gastos_fijos.total), '#6366f1'],
-          ['Utilidad Final', fmtM(pyl.utilidad_final), pyl.utilidad_final>=0?'#16a34a':'#dc2626'],
-        ].map(([l,v,c]) => `<div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px 14px">
-          <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em">${l}</div>
-          <div style="font-size:18px;font-weight:700;font-family:var(--font-b);color:${c||'var(--text)'};margin-top:4px">${v}</div>
-        </div>`).join('')}
+
+  // Helpers para renderPyL nuevo layout
+  const cascada = (rows, bg) => rows.map(r => `
+    <div style="background:var(--surface);border:1px solid var(--border);border-left:4px solid ${r.border||'var(--border)'};border-radius:10px;padding:14px 16px">
+      <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">${r.label}</div>
+      <div style="display:flex;align-items:baseline;gap:10px;margin-top:4px">
+        <div style="font-size:${r.bold?'26px':'22px'};font-weight:800;font-family:var(--font-b);color:${r.color}">${fmtM(r.monto)}</div>
+        ${r.pct!=null?`<div style="font-size:13px;font-weight:600;color:${r.color};opacity:.7">${r.pct.toFixed(1)}%</div>`:''}
       </div>
-      <!-- Gastos por categoría -->
-      ${pyl.gastos_fijos.items?.length ? `<div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px">
-        <div style="font-size:12px;font-weight:600;margin-bottom:10px">Gastos fijos por categoría</div>
+    </div>`).join('');
+
+  const cascadaBloque = (label, monto, base, color, bg, bold=false) => `
+    <div style="background:var(--surface);border:1px solid var(--border);border-left:4px solid ${color};border-radius:10px;padding:14px 16px">
+      <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">${label}</div>
+      <div style="display:flex;align-items:baseline;gap:10px;margin-top:4px">
+        <div style="font-size:${bold?'28px':'22px'};font-weight:800;font-family:var(--font-b);color:${color}">${fmtM(monto)}</div>
+        ${base>0?`<div style="font-size:13px;font-weight:600;color:${color};opacity:.7">${(monto/base*100).toFixed(1)}%</div>`:''}
+      </div>
+    </div>`;
+
+  const detalleRow = (label, monto, base) => `
+    <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 16px;border-bottom:1px solid var(--border)">
+      <span style="font-size:12px;color:var(--muted)">${label}</span>
+      <div style="text-align:right">
+        <span style="font-size:13px;font-weight:600">${fmtM(monto)}</span>
+        ${base>0?`<span style="font-size:10px;color:var(--muted);margin-left:6px">${(monto/base*100).toFixed(1)}%</span>`:''}
+      </div>
+    </div>`;
+
+  el.innerHTML = cmvWarning + `
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px">
+
+    <!-- COLUMNA IZQUIERDA: Cascada financiera -->
+    <div style="display:flex;flex-direction:column;gap:10px">
+
+      ${cascada([
+        { label:'Facturación', monto: pyl.ingresos.facturacion, color:'var(--text)', bold:true, border:'var(--accent)' },
+      ],'#ede9fe')}
+
+      ${cascada([
+        { label:'Costos variables', monto: -(pyl.egresos_ml.total + pyl.cmv.total), color:'#dc2626', bold:true, border:'#dc2626',
+          pct: pyl.ingresos.facturacion > 0 ? (pyl.egresos_ml.total + pyl.cmv.total) / pyl.ingresos.facturacion * 100 : null },
+      ],'#fee2e2')}
+
+      ${cascadaBloque('Contribución Marginal',
+        pyl.ingresos.facturacion - pyl.egresos_ml.total - pyl.cmv.total,
+        pyl.ingresos.facturacion,
+        '#16a34a','#dcfce7')}
+
+      ${cascadaBloque('Gastos Fijos',
+        -pyl.gastos_fijos.total,
+        pyl.ingresos.facturacion,
+        '#6366f1','#f0f4ff')}
+
+      ${cascadaBloque('IVA a pagar',
+        -(pyl.iva?.neto ?? 0),
+        pyl.ingresos.facturacion,
+        '#8b5cf6','#f5f3ff')}
+
+      ${cascadaBloque('Utilidad neta',
+        pyl.utilidad_final,
+        pyl.ingresos.facturacion,
+        pyl.utilidad_final >= 0 ? '#16a34a' : '#dc2626','#f0fdf4', true)}
+
+    </div>
+
+    <!-- COLUMNA DERECHA: Detalle -->
+    <div style="display:flex;flex-direction:column;gap:12px">
+
+      <!-- Detalle Costos ML -->
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden">
+        <div style="padding:12px 16px;background:#fee2e2;border-bottom:1px solid var(--border)">
+          <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:#dc2626">📤 Costos ML</div>
+          <div style="font-size:20px;font-weight:800;font-family:var(--font-b);color:#dc2626;margin-top:2px">${fmtM(pyl.egresos_ml.total)}</div>
+          <div style="font-size:11px;color:#dc2626;opacity:.7">${pyl.ingresos.facturacion>0?fmtP(pyl.egresos_ml.total/pyl.ingresos.facturacion*100):''} de la facturación</div>
+        </div>
+        ${detalleRow('Comisión ML', pyl.egresos_ml.comision, pyl.ingresos.facturacion)}
+        ${pyl.egresos_ml.envio_vendedor ? detalleRow('Envío vendedor', pyl.egresos_ml.envio_vendedor, pyl.ingresos.facturacion) : ''}
+        ${pyl.egresos_ml.publicidad ? detalleRow('Publicidad (PADS)', pyl.egresos_ml.publicidad, pyl.ingresos.facturacion) : ''}
+        ${pyl.egresos_ml.impuestos ? detalleRow('Impuestos / retenciones', pyl.egresos_ml.impuestos, pyl.ingresos.facturacion) : ''}
+        ${pyl.egresos_ml.reembolsos ? detalleRow('Reembolsos', pyl.egresos_ml.reembolsos, pyl.ingresos.facturacion) : ''}
+      </div>
+
+      <!-- Detalle CMV -->
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden">
+        <div style="padding:12px 16px;background:#fef3c7;border-bottom:1px solid var(--border)">
+          <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:#d97706">🏭 CMV</div>
+          <div style="font-size:20px;font-weight:800;font-family:var(--font-b);color:#d97706;margin-top:2px">${fmtM(pyl.cmv.total)}</div>
+          <div style="font-size:11px;color:#d97706;opacity:.7">${pyl.ingresos.facturacion>0?fmtP(pyl.cmv.total/pyl.ingresos.facturacion*100):''} de la facturación${pyl.cmv.estimado?' · ⚠ estimado':''}</div>
+        </div>
+        <div style="padding:10px 16px;font-size:12px;color:var(--muted)">
+          ${pyl.cmv.cubierto} de ${pyl.cmv.total_items} productos con costo cargado
+        </div>
+      </div>
+
+      <!-- Detalle Gastos Fijos -->
+      ${pyl.gastos_fijos.items?.length ? `
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden">
+        <div style="padding:12px 16px;background:#f0f4ff;border-bottom:1px solid var(--border)">
+          <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:#6366f1">🏢 Gastos Fijos</div>
+          <div style="font-size:20px;font-weight:800;font-family:var(--font-b);color:#6366f1;margin-top:2px">${fmtM(pyl.gastos_fijos.total)}</div>
+          <div style="font-size:11px;color:#6366f1;opacity:.7">${pyl.ingresos.facturacion>0?fmtP(pyl.gastos_fijos.total/pyl.ingresos.facturacion*100):''} de la facturación</div>
+        </div>
         ${Object.entries(pyl.gastos_fijos.items.reduce((acc,g)=>{acc[g.categoria]=(acc[g.categoria]||0)+parseFloat(g.monto);return acc},{}))
           .sort(([,a],[,b])=>b-a)
-          .map(([cat,monto])=>`<div style="display:flex;justify-content:space-between;font-size:12px;padding:4px 0;border-bottom:1px solid var(--border)">
-            <span style="color:var(--muted)">${cat}</span><strong>${fmtM(monto)}</strong>
-          </div>`).join('')}
+          .map(([cat,monto])=>detalleRow(cat, monto, pyl.ingresos.facturacion)).join('')}
       </div>` : ''}
+
+      <!-- Ordenes / adicional -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+        ${[
+          ['Órdenes', pyl.ordenes.toLocaleString('es-AR'), ''],
+          ['% Recibido', fmtP(pyl.margenes.pct_recibido), pyl.resultado_neto_ml>=0?'#16a34a':'#dc2626'],
+          ['Rentabilidad s/CMV', pyl.margenes.rentabilidad!=null?fmtP(pyl.margenes.rentabilidad):'—', pyl.margenes.rentabilidad>0?'#16a34a':'#dc2626'],
+          ['IVA a pagar', fmtM(pyl.iva?.neto??0), '#8b5cf6'],
+        ].map(([l,v,c])=>`<div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px 14px">
+          <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">${l}</div>
+          <div style="font-size:16px;font-weight:700;font-family:var(--font-b);color:${c||'var(--text)'};margin-top:4px">${v}</div>
+        </div>`).join('')}
+      </div>
+
     </div>
-  </div>`;
+  </div>`
 }
 
 async function exportarReporteExcel() {
