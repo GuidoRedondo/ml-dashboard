@@ -2756,13 +2756,6 @@ function renderSimulador(items, client) {
           </div>
         </div>
 
-        <div class="kpi-card" style="padding:20px;margin-bottom:16px">
-          <div class="kpi-label" style="margin-bottom:14px">🎯 Objetivo</div>
-          <div style="display:grid;gap:10px">
-            ${simInput('simMargen', 'Margen deseado %', '%', 'number', '30')}
-          </div>
-        </div>
-
         <div id="simEnvioInfo" class="kpi-card" style="padding:16px;margin-bottom:16px;display:none">
           <div class="kpi-label" style="margin-bottom:10px">🚚 Costo de envío detectado</div>
           <div id="simEnvioDetalle" style="font-size:13px"></div>
@@ -2773,6 +2766,28 @@ function renderSimulador(items, client) {
           <div class="kpi-label" style="margin-bottom:10px">📋 Comisión ML detectada</div>
           <div id="simComisionDetalle" style="font-size:13px"></div>
           <div style="margin-top:10px">${simInput('simComision', 'Comisión % (editable)', '%', 'number', '13')}</div>
+        </div>
+
+        <div class="kpi-card" style="padding:20px;margin-bottom:16px">
+          <div class="kpi-label" style="margin-bottom:14px">🎯 Margen</div>
+          <div style="display:grid;gap:12px">
+            <!-- Margen real sobre precio actual -->
+            <div>
+              <div style="font-size:11px;color:var(--muted);margin-bottom:6px">Margen real (sobre precio actual)</div>
+              <div style="display:flex;align-items:center;gap:8px">
+                <div id="simMargenRealBadge" style="font-size:22px;font-weight:800;font-family:var(--font-b);color:var(--muted)">—</div>
+                <div id="simMargenRealBar" style="flex:1;height:6px;background:var(--surface2);border-radius:3px;overflow:hidden">
+                  <div id="simMargenRealFill" style="height:100%;width:0%;background:var(--muted);border-radius:3px;transition:width .3s,background .3s"></div>
+                </div>
+              </div>
+              <div id="simMargenRealSub" style="font-size:10px;color:var(--muted);margin-top:4px">Seleccioná un producto con CMV cargado</div>
+            </div>
+            <!-- Margen objetivo editable -->
+            ${simInput('simMargen', 'Margen objetivo %', '%', 'number', '30')}
+          </div>
+          <div style="font-size:10px;color:var(--muted);margin-top:8px;line-height:1.5">
+            Margen = Utilidad ÷ Precio × 100 &nbsp;·&nbsp; El simulador calcula el precio sugerido para llegar al objetivo
+          </div>
         </div>
 
         <button onclick="calcularSimulador()"
@@ -2794,6 +2809,19 @@ function renderSimulador(items, client) {
   ['simCMV','simIIBB','simDebCred','simIVAVentas','simIVACMV','simTACOS','simExtraCost','simMargen','simEnvio','simComision'].forEach(id => {
     const el2 = document.getElementById(id);
     if (el2) el2.addEventListener('input', () => {
+      // Guardar margen cuando cambia
+      if (id === 'simMargen') {
+        const mla = document.getElementById('simMLA')?.value;
+        if (mla) {
+          if (!window._simMargenByMLA) window._simMargenByMLA = {};
+          window._simMargenByMLA[mla] = parseFloat(el2.value) || 30;
+        }
+      }
+      // Actualizar margen real en tiempo real
+      const mlaVal = document.getElementById('simMLA')?.value;
+      const itemActual = mlaVal ? (window._simItems||[]).find(p => p.id === mlaVal) : null;
+      if (itemActual) actualizarMargenReal(itemActual);
+      // Recalcular precio sugerido si hay resultado visible
       if (document.getElementById('simResultados').querySelector('.sim-precio')) calcularSimulador();
     });
   });
@@ -2860,6 +2888,63 @@ function filterSimABC(f) {
   document.getElementById('simMLAInfo').textContent = '';
 }
 
+// Actualiza el badge de margen real (precio actual ML vs costos)
+function actualizarMargenReal(item) {
+  const badge  = document.getElementById('simMargenRealBadge');
+  const bar    = document.getElementById('simMargenRealFill');
+  const sub    = document.getElementById('simMargenRealSub');
+  if (!badge) return;
+
+  const cmv   = parseFloat(document.getElementById('simCMV')?.value) || 0;
+  const precio = item?.price || 0;
+
+  if (cmv <= 0 || precio <= 0) {
+    badge.textContent = '—';
+    badge.style.color = 'var(--muted)';
+    if (bar) { bar.style.width = '0%'; bar.style.background = 'var(--muted)'; }
+    if (sub) sub.textContent = cmv <= 0 ? 'Cargá el CMV para ver el margen real' : 'Sin precio disponible';
+    return;
+  }
+
+  // Usar comisión del input si está disponible, sino estimar 13%
+  const comisionPct = (parseFloat(document.getElementById('simComision')?.value) || 13) / 100;
+  const iibb        = (parseFloat(document.getElementById('simIIBB')?.value)    || 3)  / 100;
+  const envio       = parseFloat(document.getElementById('simEnvio')?.value)    || 0;
+  const tacos       = (parseFloat(document.getElementById('simTACOS')?.value)   || 0)  / 100;
+  const debCred     = (parseFloat(document.getElementById('simDebCred')?.value) || 1.2)/ 100;
+  const iva21       = 0.21;
+
+  // Cálculo simplificado del margen real sobre el precio actual
+  const comisionM   = precio * comisionPct;
+  const iibbM       = precio * iibb;
+  const tacosM      = precio * tacos;
+  const debCredM    = precio * debCred;
+  const ivaVentas   = precio / (1 + iva21) * iva21;
+  const ivaCompras  = (cmv + comisionM + envio) / (1 + iva21) * iva21;
+  const ivaNeto     = Math.max(0, ivaVentas - ivaCompras);
+  const utilidad    = precio - comisionM - iibbM - tacosM - debCredM - ivaNeto - cmv - envio;
+  const margenReal  = precio > 0 ? (utilidad / precio * 100) : 0;
+  const mr          = parseFloat(margenReal.toFixed(1));
+
+  const color = mr >= 25 ? '#00e676' : mr >= 15 ? '#ff9100' : '#ff5252';
+  badge.textContent  = mr + '%';
+  badge.style.color  = color;
+  if (bar) {
+    bar.style.width      = Math.max(0, Math.min(mr, 100)) + '%';
+    bar.style.background = color;
+  }
+  if (sub) {
+    const diff = mr - (parseFloat(document.getElementById('simMargen')?.value) || 30);
+    if (diff >= 0) {
+      sub.textContent = `✓ ${mr >= 25 ? 'Buen margen' : 'Margen aceptable'} — ${diff.toFixed(1)}pp por encima del objetivo`;
+      sub.style.color = '#00e676';
+    } else {
+      sub.textContent = `↑ Necesitás subir el precio ${Math.abs(diff).toFixed(1)}pp para llegar al objetivo`;
+      sub.style.color = '#ff9100';
+    }
+  }
+}
+
 async function onSimMLAChange(id) {
   if (!id) return;
   const item = (window._simItems || []).find(p => p.id === id);
@@ -2879,6 +2964,20 @@ async function onSimMLAChange(id) {
     cmvInput.style.borderColor = '';
     cmvInput.title = '';
   }
+
+  // Cargar margen guardado para este producto (o mantener el actual si no hay)
+  if (!window._simMargenByMLA) window._simMargenByMLA = {};
+  const margenEl = document.getElementById('simMargen');
+  if (margenEl) {
+    const savedMargen = window._simMargenByMLA[id];
+    if (savedMargen != null) {
+      margenEl.value = savedMargen;
+    }
+    // Si no hay guardado, mantiene el valor que ya tiene el input
+  }
+
+  // Actualizar badge margen real si hay CMV y precio
+  actualizarMargenReal(item);
 
   // Comisión real desde el endpoint de fees de ML
   const comisionInfo = document.getElementById('simComisionInfo');
@@ -3002,6 +3101,13 @@ function calcularSimulador() {
   const tacos      = get('simTACOS') / 100;
   const extra      = get('simExtraCost');
   const margenObj  = get('simMargen') / 100;
+
+  // Guardar margen para este producto
+  const mlaActivo = document.getElementById('simMLA')?.value;
+  if (mlaActivo) {
+    if (!window._simMargenByMLA) window._simMargenByMLA = {};
+    window._simMargenByMLA[mlaActivo] = get('simMargen');
+  }
   const envio      = get('simEnvio');
   const comisionPct= get('simComision') / 100;
 
