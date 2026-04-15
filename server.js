@@ -2490,8 +2490,95 @@ app.get('/api/reporte/pyl', requireAuth, async (req, res) => {
       items_detalle,
     };
 
+    // Guardar snapshot del P&L en la tabla reporte_financiero
+    try {
+      await pool.query(`
+        INSERT INTO reporte_financiero (client_id, mes, data, generated_at)
+        VALUES ($1, $2, $3, NOW())
+        ON CONFLICT (client_id, mes) DO UPDATE SET data=$3, generated_at=NOW()
+      `, [client_id, mesStr, JSON.stringify(pyl)]);
+    } catch(saveErr) {
+      console.error('[REPORTE PYL] Error guardando snapshot:', saveErr.message);
+    }
+
     res.json(pyl);
   } catch(e) { console.error('[REPORTE PYL]', e.message, e.stack); res.status(500).json({ error: e.message }); }
+});
+
+// GET /api/reporte/meses-disponibles — lista meses guardados de un cliente
+app.get('/api/reporte/meses-disponibles', requireAuth, async (req, res) => {
+  try {
+    const { client_id } = req.query;
+    const r = await pool.query(
+      `SELECT mes, generated_at,
+              (data->>'ordenes')::int AS ordenes,
+              data->'ingresos'->>'facturacion' AS facturacion,
+              data->'margenes'->>'margen' AS margen
+       FROM reporte_financiero
+       WHERE client_id=$1
+       ORDER BY mes DESC`,
+      [client_id]
+    );
+    res.json({ meses: r.rows });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// GET /api/reporte/comparar — devuelve dos P&L guardados con diferencias calculadas
+app.get('/api/reporte/comparar', requireAuth, async (req, res) => {
+  try {
+    const { client_id, mes_a, mes_b } = req.query;
+    if (!client_id || !mes_a || !mes_b) return res.status(400).json({ error: 'Faltan parámetros' });
+
+    const r = await pool.query(
+      `SELECT mes, data FROM reporte_financiero WHERE client_id=$1 AND mes IN ($2,$3)`,
+      [client_id, mes_a + '-01', mes_b + '-01']
+    );
+
+    const byMes = {};
+    r.rows.forEach(row => {
+      const mesKey = row.mes.toISOString().slice(0,7);
+      byMes[mesKey] = row.data;
+    });
+
+    const pylA = byMes[mes_a];
+    const pylB = byMes[mes_b];
+
+    if (!pylA || !pylB) {
+      return res.status(404).json({
+        error: 'Uno o ambos meses no tienen P&L guardado',
+        disponibles: Object.keys(byMes)
+      });
+    }
+
+    // Calcular diferencias absolutas (números directos, no objetos)
+    const diffN = (a, b) => {
+      const va = parseFloat(a) || 0;
+      const vb = parseFloat(b) || 0;
+      return va - vb;
+    };
+
+    const comparacion = {
+      mes_a, mes_b,
+      pyl_a: pylA,
+      pyl_b: pylB,
+      diff: {
+        facturacion:       diffN(pylA.ingresos?.facturacion,    pylB.ingresos?.facturacion),
+        ordenes:           diffN(pylA.ordenes,                   pylB.ordenes),
+        total_egresos_ml:  diffN(pylA.egresos_ml?.total,        pylB.egresos_ml?.total),
+        resultado_neto:    diffN(pylA.resultado_neto_ml,         pylB.resultado_neto_ml),
+        cmv:               diffN(pylA.cmv?.total,               pylB.cmv?.total),
+        utilidad_antes_gf: diffN(pylA.utilidad_antes_gf,        pylB.utilidad_antes_gf),
+        gastos_fijos:      diffN(pylA.gastos_fijos?.total,      pylB.gastos_fijos?.total),
+        utilidad_final:    diffN(pylA.utilidad_final,           pylB.utilidad_final),
+        iva_neto:          diffN(pylA.iva?.neto,                pylB.iva?.neto),
+        margen:            diffN(pylA.margenes?.margen,         pylB.margenes?.margen),
+        pct_recibido:      diffN(pylA.margenes?.pct_recibido,   pylB.margenes?.pct_recibido),
+        rentabilidad:      diffN(pylA.margenes?.rentabilidad,   pylB.margenes?.rentabilidad),
+      }
+    };
+
+    res.json(comparacion);
+  } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
 // ── DEBUG: inspect a specific order's shipment ───────────────────────────────
