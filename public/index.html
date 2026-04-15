@@ -5922,21 +5922,18 @@ async function ejecutarComparacion() {
         el.innerHTML = '<div style="color:#ff9100;padding:20px;text-align:center">Generá el P&L del mes en curso primero desde la pestaña P&L</div>';
         return;
       }
-      // Cargar el mes guardado
+      // Cargar P&L del mes guardado via endpoint pyl
       const mesGuardado = mes_a === 'actual' ? mes_b : mes_a;
-      const savedData = await apiCall('GET', `/api/reporte/meses-disponibles?client_id=${client_id}`);
-      const mesRow = (savedData?.meses || []).find(m => m.mes === mesGuardado + '-01' || m.mes === mesGuardado);
-      if (!mesRow) {
-        el.innerHTML = '<div style="color:#ff5252;padding:20px;text-align:center">No se encontró el mes guardado</div>';
+      const [my, mm] = mesGuardado.split('-');
+      const lastDay = new Date(parseInt(my), parseInt(mm), 0).getDate();
+      const pylGuardado = await apiCall('GET',
+        `/api/reporte/pyl?client_id=${client_id}&date_from=${my}-${mm}-01&date_to=${my}-${mm}-${String(lastDay).padStart(2,'0')}`
+      );
+      if (!pylGuardado || !pylGuardado.ingresos) {
+        el.innerHTML = '<div style="color:#ff5252;padding:20px;text-align:center">No se pudo cargar el mes guardado. Asegurate de que tenga P&L generado.</div>';
         return;
       }
-      // Buscar el P&L completo del mes guardado
-      const cmpData = await apiCall('GET', `/api/reporte/comparar?client_id=${client_id}&mes_a=${mesGuardado}&mes_b=${mesGuardado}`);
-      const pylGuardado = cmpData?.pyl_a;
-      if (!pylGuardado) {
-        el.innerHTML = '<div style="color:#ff5252;padding:20px;text-align:center">No se pudo cargar el mes guardado</div>';
-        return;
-      }
+
 
       // Construir diff manualmente
       const diff_fn = (a, b) => a != null && b != null ? a - b : null;
@@ -6479,7 +6476,7 @@ function renderPyL(pyl) {
       <!-- Detalle CMV -->
       <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden">
         <div style="padding:12px 16px;background:#fef3c7;border-bottom:1px solid var(--border)">
-          <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:#d97706">🏭 CMV</div>
+          <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:#d97706">🏭 Costo Mercadería Vendida</div>
           <div style="font-size:20px;font-weight:800;font-family:var(--font-b);color:#d97706;margin-top:2px">${fmtM(pyl.cmv.total)}</div>
           <div style="font-size:11px;color:#d97706;opacity:.7">${pyl.ingresos.facturacion>0?fmtP(pyl.cmv.total/pyl.ingresos.facturacion*100):''} de la facturación${pyl.cmv.estimado?' · ⚠ estimado':''}</div>
         </div>
@@ -6507,7 +6504,7 @@ function renderPyL(pyl) {
           ['📦 Ventas',            pyl.ordenes.toLocaleString('es-AR'),                                                     ''],
           ['📥 % Recibido',         fmtP(pyl.margenes.pct_recibido),                                                         pyl.resultado_neto_ml>=0?'#16a34a':'#dc2626'],
           ['📊 Margen neto',        fmtP(pyl.margenes.margen),                                                               pyl.utilidad_final>=0?'#16a34a':'#dc2626'],
-          ['🏭 Rentabilidad s/CMV', pyl.margenes.rentabilidad!=null?fmtP(pyl.margenes.rentabilidad):'Sin CMV',               pyl.margenes.rentabilidad>0?'#16a34a':'var(--muted)'],
+          ['📈 Rentabilidad s/CMV', pyl.margenes.rentabilidad!=null?fmtP(pyl.margenes.rentabilidad):'Sin CMV',               pyl.margenes.rentabilidad>0?'#16a34a':'var(--muted)'],
         ].map(([l,v,c])=>`<div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px 16px">
           <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px">${l}</div>
           <div style="font-size:20px;font-weight:800;font-family:var(--font-b);color:${c||'var(--text)'}">${v}</div>
