@@ -2760,16 +2760,16 @@ function renderSimulador(items, client) {
           </div>
         </div>
 
-        <div id="simEnvioInfo" class="kpi-card" style="padding:16px;margin-bottom:16px;display:none">
-          <div class="kpi-label" style="margin-bottom:10px">🚚 Costo de envío detectado</div>
-          <div id="simEnvioDetalle" style="font-size:13px"></div>
-          <div style="margin-top:10px">${simInput('simEnvio', 'Costo envío por unidad (editable)', '$', 'number', '0')}</div>
+        <div id="simEnvioInfo" class="kpi-card" style="padding:16px;margin-bottom:16px">
+          <div class="kpi-label" style="margin-bottom:10px">🚚 Costo de envío</div>
+          <div id="simEnvioDetalle" style="font-size:11px;color:var(--muted);margin-bottom:8px"></div>
+          <div>${simInput('simEnvio', 'Costo envío por unidad', '$', 'number', '0')}</div>
         </div>
 
-        <div id="simComisionInfo" class="kpi-card" style="padding:16px;margin-bottom:16px;display:none">
-          <div class="kpi-label" style="margin-bottom:10px">📋 Comisión ML detectada</div>
-          <div id="simComisionDetalle" style="font-size:13px"></div>
-          <div style="margin-top:10px">${simInput('simComision', 'Comisión % (editable)', '%', 'number', '13')}</div>
+        <div id="simComisionInfo" class="kpi-card" style="padding:16px;margin-bottom:16px">
+          <div class="kpi-label" style="margin-bottom:10px">📋 Comisión ML</div>
+          <div id="simComisionDetalle" style="font-size:11px;color:var(--muted);margin-bottom:8px"></div>
+          <div>${simInput('simComision', 'Comisión % (editable)', '%', 'number', '13')}</div>
         </div>
 
         <div class="kpi-card" style="padding:20px;margin-bottom:16px">
@@ -2876,15 +2876,27 @@ function filterSimSearch(val) {
   const sel = document.getElementById('simMLA');
   if (!sel) return;
   const abcActivo = document.querySelector('[id^="simABC"][style*="var(--accent)"]')?.id?.replace('simABC','') || 'Todos';
+
+  let visibles = [];
   Array.from(sel.options).forEach(opt => {
     if (!opt.value) return;
     const item = (window._simItems || []).find(p => p.id === opt.value);
     const matchABC = abcActivo === 'Todos' || opt.dataset.abc === abcActivo;
-    const matchQ = !q || opt.value.toLowerCase().includes(q) 
+    const matchQ = !q
+      || opt.value.toLowerCase().includes(q)
       || (opt.text || '').toLowerCase().includes(q)
-      || ((item?.sku || '')).toLowerCase().includes(q);
-    opt.style.display = matchABC && matchQ ? '' : 'none';
+      || ((item?.sku || '')).toLowerCase().includes(q)
+      || ((item?.title || '')).toLowerCase().includes(q);
+    const show = matchABC && matchQ;
+    opt.style.display = show ? '' : 'none';
+    if (show) visibles.push(opt.value);
   });
+
+  // Si hay exactamente un resultado, autoseleccionar y disparar cambio
+  if (visibles.length === 1 && sel.value !== visibles[0]) {
+    sel.value = visibles[0];
+    onSimMLAChange(visibles[0]);
+  }
 }
 
 function filterSimABC(f) {
@@ -2935,12 +2947,9 @@ async function onSimMLAChange(id) {
   }
 
   // Actualizar badge margen real si hay CMV y precio
-  actualizarMargenReal(item);
-
   // Comisión real desde el endpoint de fees de ML
   const comisionInfo = document.getElementById('simComisionInfo');
   const comisionDetalle = document.getElementById('simComisionDetalle');
-  comisionInfo.style.display = '';
   comisionDetalle.innerHTML = '<span style="color:var(--muted)">Consultando fees en ML...</span>';
 
   try {
@@ -2987,7 +2996,6 @@ async function onSimMLAChange(id) {
   // Costo de envío
   const envioInfo = document.getElementById('simEnvioInfo');
   const envioDetalle = document.getElementById('simEnvioDetalle');
-  envioInfo.style.display = '';
   envioDetalle.innerHTML = '<span style="color:var(--muted)">Consultando...</span>';
 
   try {
