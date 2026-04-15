@@ -2745,14 +2745,14 @@ function renderSimulador(items, client) {
         <div class="kpi-card" style="padding:20px;margin-bottom:16px">
           <div class="kpi-label" style="margin-bottom:14px">💰 Costos</div>
           <div style="display:grid;gap:10px">
-            ${simInput('simCMV',       'Costo del producto (CMV)', '$', 'number', '0')}
-            ${simInput('simIIBB',      'IIBB %', '%', 'number', '3')}
-            ${simInput('simTACOS',     'TACOS esperado %', '%', 'number', '0')}
-            ${simInput('simIIBB',      'IIBB %', '%', 'number', '3')}
-            ${simInput('simDebCred',   'Débito/Crédito %', '%', 'number', '1.2')}
-            ${simInput('simIVAVentas', 'IVA ventas %', '%', 'number', '21')}
-            ${simInput('simIVACMV',    'IVA compras CMV %', '%', 'number', '21')}
-            ${simInput('simExtraCost', 'Otros costos por unidad', '$', 'number', '0')}
+            ${simInput('simCMV',        'Costo del producto (CMV)', '$', 'number', '0')}
+            ${simInput('simIIBB',       'IIBB %', '%', 'number', '3')}
+            ${simInput('simTACOS',      'TACOS esperado %', '%', 'number', '0')}
+            ${simInput('simCostoFijo',  'Costos fijos asignados %', '%', 'number', '0')}
+            ${simInput('simDebCred',    'Débito/Crédito %', '%', 'number', '1.2')}
+            ${simInput('simIVAVentas',  'IVA ventas %', '%', 'number', '21')}
+            ${simInput('simIVACMV',     'IVA compras CMV %', '%', 'number', '21')}
+            ${simInput('simExtraCost',  'Otros costos por unidad', '$', 'number', '0')}
           </div>
         </div>
 
@@ -2769,30 +2769,37 @@ function renderSimulador(items, client) {
         </div>
 
         <div class="kpi-card" style="padding:20px;margin-bottom:16px">
-          <div class="kpi-label" style="margin-bottom:14px">🎯 Margen</div>
-          <div style="display:grid;gap:12px">
-            <!-- Margen real sobre precio actual -->
-            <div>
-              <div style="font-size:11px;color:var(--muted);margin-bottom:6px">Margen real (sobre precio actual)</div>
-              <div style="display:flex;align-items:center;gap:8px">
-                <div id="simMargenRealBadge" style="font-size:22px;font-weight:800;font-family:var(--font-b);color:var(--muted)">—</div>
-                <div id="simMargenRealBar" style="flex:1;height:6px;background:var(--surface2);border-radius:3px;overflow:hidden">
-                  <div id="simMargenRealFill" style="height:100%;width:0%;background:var(--muted);border-radius:3px;transition:width .3s,background .3s"></div>
-                </div>
-              </div>
-              <div id="simMargenRealSub" style="font-size:10px;color:var(--muted);margin-top:4px">Seleccioná un producto con CMV cargado</div>
-            </div>
-            <!-- Margen objetivo editable -->
-            ${simInput('simMargen', 'Margen objetivo %', '%', 'number', '30')}
+          <!-- Toggle modo -->
+          <div style="display:flex;background:var(--surface2);border-radius:10px;padding:3px;margin-bottom:16px">
+            <button id="simModoPrecio" onclick="setSimModo('precio')"
+              style="flex:1;padding:8px;border-radius:8px;border:none;background:var(--accent);color:#000;font-size:13px;font-weight:700;cursor:pointer;transition:all .15s">
+              💲 Ingreso precio
+            </button>
+            <button id="simModoMargen" onclick="setSimModo('margen')"
+              style="flex:1;padding:8px;border-radius:8px;border:none;background:transparent;color:var(--muted);font-size:13px;font-weight:600;cursor:pointer;transition:all .15s">
+              🎯 Por margen
+            </button>
           </div>
-          <div style="font-size:10px;color:var(--muted);margin-top:8px;line-height:1.5">
-            Margen = Utilidad ÷ Precio × 100 &nbsp;·&nbsp; El simulador calcula el precio sugerido para llegar al objetivo
+
+          <!-- MODO PRECIO -->
+          <div id="simPanelPrecio">
+            <div style="font-size:11px;color:var(--muted);margin-bottom:6px">Precio de venta $</div>
+            <input type="number" id="simPrecioManual" placeholder="Ej: 15000" min="0" step="1"
+              oninput="calcularSimulador()"
+              style="width:100%;padding:10px 12px;border-radius:8px;border:1.5px solid var(--accent);background:var(--surface2);color:var(--text);font-size:18px;font-weight:700;text-align:right;box-sizing:border-box;font-family:var(--font-b)">
+            <div style="font-size:10px;color:var(--muted);margin-top:6px">Ingresá el precio y el simulador calcula el margen real y el desglose</div>
+          </div>
+
+          <!-- MODO MARGEN -->
+          <div id="simPanelMargen" style="display:none">
+            ${simInput('simMargen', 'Margen objetivo %', '%', 'number', '30')}
+            <div style="font-size:10px;color:var(--muted);margin-top:6px">El simulador calcula el precio sugerido para llegar a ese margen</div>
           </div>
         </div>
 
         <button onclick="calcularSimulador()"
           style="width:100%;padding:12px;border-radius:10px;border:none;background:var(--accent);color:#000;font-family:var(--font-b);font-size:14px;font-weight:700;cursor:pointer">
-          🧮 Calcular precio
+          🧮 Calcular
         </button>
       </div>
 
@@ -2851,9 +2858,12 @@ function selectSimEscenario(cardEl, pct) {
   const fmt  = window._simFmt;
   const fmtP = window._simFmtP;
   const desgloseEl = document.querySelector('.kpi-card.sim-precio');
-  if (desgloseEl) desgloseEl.innerHTML = `
-    <div class="kpi-label" style="margin-bottom:14px">📊 Desglose — precio ${fmt(precio)} (margen ${fmtP(pct)})</div>
-    ${window._simRenderDesglose(precio, pct)}`;
+  if (desgloseEl) {
+    const d = window._simBuildDesglose ? window._simBuildDesglose(precio) : null;
+    if (d && window._simHtmlDesglose) {
+      desgloseEl.innerHTML = '<div style="font-size:12px;font-weight:600;color:var(--muted);margin-bottom:12px">Desglose — precio ' + window._simFmt(precio) + ' (margen ' + window._simFmtPn(pct*100) + ')</div>' + window._simHtmlDesglose(precio, d);
+    }
+  }
 }
 
 
@@ -2888,62 +2898,6 @@ function filterSimABC(f) {
   document.getElementById('simMLAInfo').textContent = '';
 }
 
-// Actualiza el badge de margen real (precio actual ML vs costos)
-function actualizarMargenReal(item) {
-  const badge  = document.getElementById('simMargenRealBadge');
-  const bar    = document.getElementById('simMargenRealFill');
-  const sub    = document.getElementById('simMargenRealSub');
-  if (!badge) return;
-
-  const cmv   = parseFloat(document.getElementById('simCMV')?.value) || 0;
-  const precio = item?.price || 0;
-
-  if (cmv <= 0 || precio <= 0) {
-    badge.textContent = '—';
-    badge.style.color = 'var(--muted)';
-    if (bar) { bar.style.width = '0%'; bar.style.background = 'var(--muted)'; }
-    if (sub) sub.textContent = cmv <= 0 ? 'Cargá el CMV para ver el margen real' : 'Sin precio disponible';
-    return;
-  }
-
-  // Usar comisión del input si está disponible, sino estimar 13%
-  const comisionPct = (parseFloat(document.getElementById('simComision')?.value) || 13) / 100;
-  const iibb        = (parseFloat(document.getElementById('simIIBB')?.value)    || 3)  / 100;
-  const envio       = parseFloat(document.getElementById('simEnvio')?.value)    || 0;
-  const tacos       = (parseFloat(document.getElementById('simTACOS')?.value)   || 0)  / 100;
-  const debCred     = (parseFloat(document.getElementById('simDebCred')?.value) || 1.2)/ 100;
-  const iva21       = 0.21;
-
-  // Cálculo simplificado del margen real sobre el precio actual
-  const comisionM   = precio * comisionPct;
-  const iibbM       = precio * iibb;
-  const tacosM      = precio * tacos;
-  const debCredM    = precio * debCred;
-  const ivaVentas   = precio / (1 + iva21) * iva21;
-  const ivaCompras  = (cmv + comisionM + envio) / (1 + iva21) * iva21;
-  const ivaNeto     = Math.max(0, ivaVentas - ivaCompras);
-  const utilidad    = precio - comisionM - iibbM - tacosM - debCredM - ivaNeto - cmv - envio;
-  const margenReal  = precio > 0 ? (utilidad / precio * 100) : 0;
-  const mr          = parseFloat(margenReal.toFixed(1));
-
-  const color = mr >= 25 ? '#00e676' : mr >= 15 ? '#ff9100' : '#ff5252';
-  badge.textContent  = mr + '%';
-  badge.style.color  = color;
-  if (bar) {
-    bar.style.width      = Math.max(0, Math.min(mr, 100)) + '%';
-    bar.style.background = color;
-  }
-  if (sub) {
-    const diff = mr - (parseFloat(document.getElementById('simMargen')?.value) || 30);
-    if (diff >= 0) {
-      sub.textContent = `✓ ${mr >= 25 ? 'Buen margen' : 'Margen aceptable'} — ${diff.toFixed(1)}pp por encima del objetivo`;
-      sub.style.color = '#00e676';
-    } else {
-      sub.textContent = `↑ Necesitás subir el precio ${Math.abs(diff).toFixed(1)}pp para llegar al objetivo`;
-      sub.style.color = '#ff9100';
-    }
-  }
-}
 
 async function onSimMLAChange(id) {
   if (!id) return;
@@ -3090,8 +3044,30 @@ function getCargoFijo(precio) {
   return 3040;
 }
 
+function setSimModo(modo) {
+  window._simModo = modo;
+  const btnPrecio = document.getElementById('simModoPrecio');
+  const btnMargen = document.getElementById('simModoMargen');
+  const panelPrecio = document.getElementById('simPanelPrecio');
+  const panelMargen = document.getElementById('simPanelMargen');
+  if (!btnPrecio) return;
+  if (modo === 'precio') {
+    btnPrecio.style.background = 'var(--accent)'; btnPrecio.style.color = '#000';
+    btnMargen.style.background = 'transparent';   btnMargen.style.color = 'var(--muted)';
+    panelPrecio.style.display = ''; panelMargen.style.display = 'none';
+  } else {
+    btnMargen.style.background = 'var(--accent)'; btnMargen.style.color = '#000';
+    btnPrecio.style.background = 'transparent';   btnPrecio.style.color = 'var(--muted)';
+    panelMargen.style.display = ''; panelPrecio.style.display = 'none';
+  }
+  if (document.getElementById('simCMV') && parseFloat(document.getElementById('simCMV').value) > 0) {
+    calcularSimulador();
+  }
+}
+
 function calcularSimulador() {
-  const get = id => parseFloat(document.getElementById(id)?.value) || 0;
+  const modo = window._simModo || 'precio';
+  const get  = id => parseFloat(document.getElementById(id)?.value) || 0;
   const cmv        = get('simCMV');
   const iibb       = get('simIIBB') / 100;
   const debCred    = get('simDebCred') / 100;
@@ -3099,151 +3075,210 @@ function calcularSimulador() {
   const ivaCMV     = get('simIVACMV') / 100;
   const iva21      = 0.21;
   const tacos      = get('simTACOS') / 100;
+  const costoFijo  = get('simCostoFijo') / 100;
   const extra      = get('simExtraCost');
-  const margenObj  = get('simMargen') / 100;
+  const envio      = get('simEnvio');
+  const comisionPct= get('simComision') / 100;
+  if (cmv <= 0 && envio <= 0) return;
 
-  // Guardar margen para este producto
+  const fmt  = n => '$' + Math.round(n).toLocaleString('es-AR');
+  const fmtPn= n => parseFloat(n).toFixed(1) + '%';
+
+  function calcIVACompras(precio) {
+    return cmv / (1 + ivaCMV) * ivaCMV
+         + (precio * comisionPct + getCargoFijo(precio)) / (1 + iva21) * iva21
+         + envio / (1 + iva21) * iva21;
+  }
+  function calcIVAVentas(precio) { return precio / (1 + ivaVentas) * ivaVentas; }
+  function calcIVANeto(precio)   { return Math.max(0, calcIVAVentas(precio) - calcIVACompras(precio)); }
+
+  function buildDesglose(precio) {
+    const cf          = getCargoFijo(precio);
+    const comisionM   = precio * comisionPct;
+    const iibbM       = precio * iibb;
+    const tacosM      = precio * tacos;
+    const debCredM    = precio * debCred;
+    const costoFijoM  = precio * costoFijo;
+    const ivaVentasM  = calcIVAVentas(precio);
+    const ivaComprasM = calcIVACompras(precio);
+    const ivaNetoM    = Math.max(0, ivaVentasM - ivaComprasM);
+    const utilidad    = precio - comisionM - cf - iibbM - tacosM - costoFijoM - debCredM - ivaNetoM - cmv - envio - extra;
+    const margenReal  = precio > 0 ? utilidad / precio * 100 : 0;
+    return { cf, comisionM, iibbM, tacosM, debCredM, ivaVentasM, ivaComprasM, ivaNetoM, utilidad, margenReal };
+  }
+
+  function calcPrecioDesdeMargen(margen) {
+    const divisor = 1 - margen - comisionPct - iibb - tacos - costoFijo - debCred;
+    if (divisor <= 0) return null;
+    let precio = (cmv + envio + extra) / divisor;
+    for (let i = 0; i < 20; i++) {
+      const nuevo = (cmv + envio + extra + getCargoFijo(precio) + calcIVANeto(precio)) / divisor;
+      if (Math.abs(nuevo - precio) < 1) { precio = nuevo; break; }
+      precio = nuevo;
+    }
+    return precio > 0 ? precio : null;
+  }
+
+  function htmlDesglose(precio, d) {
+    const items = [
+      { label: 'Comision ML %',              monto: d.comisionM,    color: '#ff9100' },
+      { label: 'Comision ML cargo fijo',     monto: d.cf,           color: '#ff9100' },
+      { label: 'IIBB (' + fmtPn(iibb*100) + ')', monto: d.iibbM,   color: '#ff9100' },
+      { label: 'Deb/Cred (' + fmtPn(debCred*100) + ')', monto: d.debCredM, color: '#ff9100' },
+      { label: 'Ads (TACOS)',                monto: d.tacosM,       color: '#ff9100' },
+      { label: 'Costos fijos (' + (costoFijo*100).toFixed(1) + '%)', monto: d.costoFijoM, color: '#ff9100' },
+      { label: 'Costo envio',               monto: envio,          color: '#ff9100' },
+      { label: 'CMV',                        monto: cmv,            color: '#ff5252' },
+      { label: 'Otros costos',              monto: extra,          color: '#ff5252' },
+      { label: 'IVA ventas',               monto: d.ivaVentasM,   color: '#8b5cf6' },
+      { label: 'IVA compras (acreditable)', monto: -d.ivaComprasM, color: '#059669' },
+      { label: 'IVA neto a pagar',          monto: d.ivaNetoM,     color: '#8b5cf6' },
+      { label: 'Utilidad neta',            monto: d.utilidad,     color: '#00e676' },
+    ].filter(x => Math.abs(x.monto) > 0.5);
+    return items.map(x => `
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--border)">
+        <span style="font-size:12px;color:var(--muted)">${x.label}</span>
+        <div>
+          <span style="font-size:12px;font-weight:600;color:${x.color}">${x.monto < 0 ? '+' : ''}${fmt(Math.abs(x.monto))}</span>
+          <span style="font-size:10px;color:var(--muted);margin-left:4px">${precio > 0 ? fmtPn(Math.abs(x.monto) / precio * 100) : ''}</span>
+        </div>
+      </div>`).join('');
+  }
+
+  const el = document.getElementById('simResultados');
+
+  // MODO PRECIO
+  if (modo === 'precio') {
+    const precio = get('simPrecioManual');
+    if (precio <= 0) {
+      el.innerHTML = `<div class="kpi-card" style="padding:40px;text-align:center;color:var(--muted)">
+        <div style="font-size:32px;margin-bottom:12px">&#128178;</div>
+        <div>Ingresa el precio de venta para calcular el margen real</div>
+      </div>`;
+      return;
+    }
+    const d  = buildDesglose(precio);
+    const mr = d.margenReal;
+    const mColor = mr >= 25 ? '#00e676' : mr >= 15 ? '#ff9100' : '#ff5252';
+    const mLabel  = mr >= 25 ? 'Buen margen' : mr >= 15 ? 'Margen ajustado' : 'Margen bajo';
+
+    const variaciones = [-15, -10, -5, 0, 5, 10, 15, 20];
+    const sensHtml = variaciones.map(v => {
+      const p2 = precio * (1 + v / 100);
+      const d2 = buildDesglose(p2);
+      const isBase = v === 0;
+      const mc = d2.margenReal >= 25 ? '#00e676' : d2.margenReal >= 15 ? '#ff9100' : '#ff5252';
+      return `<tr style="${isBase ? 'background:rgba(255,214,0,.08);' : ''}border-bottom:1px solid var(--border)">
+        <td style="padding:7px 10px;font-size:12px;${isBase ? 'font-weight:700;' : ''}color:${v > 0 ? '#00e676' : v < 0 ? '#ff5252' : 'var(--text)'}">
+          ${v > 0 ? '+' : ''}${v}%${isBase ? ' (actual)' : ''}
+        </td>
+        <td style="padding:7px 10px;text-align:right;font-size:13px;${isBase ? 'font-weight:700;' : ''}">${fmt(Math.round(p2))}</td>
+        <td style="padding:7px 10px;text-align:right;font-size:13px;font-weight:700;color:${mc}">${d2.margenReal.toFixed(1)}%</td>
+        <td style="padding:7px 10px;text-align:right;font-size:12px;color:#00e676">${fmt(Math.round(d2.utilidad))}</td>
+      </tr>`;
+    }).join('');
+
+    el.innerHTML = `
+      <div class="kpi-card sim-precio" style="padding:20px;margin-bottom:12px">
+        <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:16px">
+          <div>
+            <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">Precio</div>
+            <div style="font-size:28px;font-weight:800;font-family:var(--font-b)">${fmt(precio)}</div>
+          </div>
+          <div style="width:1px;height:44px;background:var(--border)"></div>
+          <div>
+            <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">Margen real</div>
+            <div style="font-size:36px;font-weight:800;font-family:var(--font-b);color:${mColor}">${mr.toFixed(1)}%</div>
+          </div>
+          <div style="flex:1;min-width:120px">
+            <div style="font-size:13px;font-weight:600;color:${mColor};margin-bottom:6px">${mLabel}</div>
+            <div style="background:var(--surface2);border-radius:4px;height:8px;overflow:hidden">
+              <div style="height:100%;width:${Math.max(0,Math.min(mr,100))}%;background:${mColor};border-radius:4px"></div>
+            </div>
+          </div>
+          <div>
+            <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">Utilidad / ud.</div>
+            <div style="font-size:20px;font-weight:700;color:#00e676">${fmt(d.utilidad)}</div>
+          </div>
+        </div>
+        ${htmlDesglose(precio, d)}
+      </div>
+      <div class="kpi-card" style="padding:0;overflow:hidden">
+        <div style="padding:12px 16px;border-bottom:1px solid var(--border);font-size:12px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em">
+          Simulacion de precios alternativos
+        </div>
+        <div style="overflow-x:auto">
+          <table style="width:100%;border-collapse:collapse">
+            <thead><tr style="background:var(--surface2)">
+              <th style="padding:8px 10px;text-align:left;font-size:11px;font-weight:600;color:var(--muted)">Variacion</th>
+              <th style="padding:8px 10px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Precio</th>
+              <th style="padding:8px 10px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Margen %</th>
+              <th style="padding:8px 10px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Utilidad</th>
+            </tr></thead>
+            <tbody>${sensHtml}</tbody>
+          </table>
+        </div>
+      </div>`;
+    return;
+  }
+
+  // MODO MARGEN
+  const margenObj = get('simMargen') / 100;
   const mlaActivo = document.getElementById('simMLA')?.value;
   if (mlaActivo) {
     if (!window._simMargenByMLA) window._simMargenByMLA = {};
     window._simMargenByMLA[mlaActivo] = get('simMargen');
   }
-  const envio      = get('simEnvio');
-  const comisionPct= get('simComision') / 100;
 
-  if (cmv <= 0 && envio <= 0) return;
-
-  // IVA compras acreditable
-  function calcIVACompras(precio) {
-    const ivaEnCMV      = cmv      / (1 + ivaCMV) * ivaCMV;
-    const ivaEnComision = (precio * comisionPct + getCargoFijo(precio)) / (1 + iva21) * iva21;
-    const ivaEnEnvio    = envio / (1 + iva21) * iva21;
-    return ivaEnCMV + ivaEnComision + ivaEnEnvio;
-  }
-
-  // IVA ventas a pagar
-  function calcIVAVentas(precio) {
-    return precio / (1 + ivaVentas) * ivaVentas;
-  }
-
-  // IVA neto a pagar
-  function calcIVANeto(precio) {
-    return Math.max(0, calcIVAVentas(precio) - calcIVACompras(precio));
-  }
-
-  // Débito/Crédito sobre precio de venta
-  function calcDebCred(precio) {
-    return precio * debCred;
-  }
-
-  // Calcula precio con iteración — todos los impuestos dependen del precio
-  function calcPrecio(margen) {
-    const divisor = 1 - margen - comisionPct - iibb - tacos - debCred;
-    if (divisor <= 0) return null;
-    let precio = (cmv + envio + extra) / divisor;
-    for (let i = 0; i < 15; i++) {
-      const cf      = getCargoFijo(precio);
-      const ivaNet  = calcIVANeto(precio);
-      const nuevo   = (cmv + envio + extra + cf + ivaNet) / divisor;
-      if (Math.abs(nuevo - precio) < 1) { precio = nuevo; break; }
-      precio = nuevo;
-    }
-    return precio;
-  }
-
-  // Función para construir desglose de un precio dado
-  function buildDesglose(precio, pct) {
-    const cf         = getCargoFijo(precio);
-    const comisionM  = precio * comisionPct;
-    const iibbM      = precio * iibb;
-    const tacosM     = precio * tacos;
-    const debCredM   = calcDebCred(precio);
-    const ivaVentasM = calcIVAVentas(precio);
-    const ivaComprasM= calcIVACompras(precio);
-    const ivaNetoM   = Math.max(0, ivaVentasM - ivaComprasM);
-    const utilidad   = precio - comisionM - cf - iibbM - tacosM - debCredM - ivaNetoM - cmv - envio - extra;
-    return { cf, comisionM, iibbM, tacosM, debCredM, ivaVentasM, ivaComprasM, ivaNetoM, utilidad };
-  }
-
-  const precioBase = calcPrecio(margenObj);
+  const precioBase = calcPrecioDesdeMargen(margenObj);
   if (!precioBase) {
-    document.getElementById('simResultados').innerHTML = '<div class="kpi-card" style="padding:20px;text-align:center;color:#ff5252">Los porcentajes superan el 100% — revisá los valores</div>';
+    el.innerHTML = '<div class="kpi-card" style="padding:20px;text-align:center;color:#ff5252">Los porcentajes superan el 100% — revisa los valores</div>';
     return;
   }
 
-  const fmt  = n => '$' + Math.round(n).toLocaleString('es-AR');
-  const fmtP = n => (n * 100).toFixed(1) + '%';
-  const precioPiso = calcPrecio(0);
-
+  const precioPiso = calcPrecioDesdeMargen(0);
   const escenarios = [
-    { label: '📉 Mínimo',   pct: Math.max(0, margenObj - 0.05) },
-    { label: '🎯 Objetivo', pct: margenObj },
-    { label: '📈 Ideal',    pct: margenObj + 0.05 },
+    { label: 'Minimo',   pct: Math.max(0, margenObj - 0.05) },
+    { label: 'Objetivo', pct: margenObj },
+    { label: 'Ideal',    pct: margenObj + 0.05 },
   ];
-
   const escHtml = escenarios.map(e => {
-    const precio = calcPrecio(e.pct);
-    if (!precio) return '';
-    const d = buildDesglose(precio, e.pct);
+    const p = calcPrecioDesdeMargen(e.pct);
+    if (!p) return '';
+    const d = buildDesglose(p);
     const isObj = e.pct === margenObj;
-    return `<div class="kpi-card sim-esc-card" data-pct="${e.pct}" onclick="selectSimEscenario(this, ${e.pct})"
-      style="padding:16px;text-align:center;cursor:pointer;transition:border .15s;${isObj?'border:2px solid var(--accent)':'border:2px solid transparent'}">
-      <div style="font-size:12px;color:var(--muted);margin-bottom:4px">${e.label} — ${fmtP(e.pct)}</div>
-      <div style="font-size:26px;font-weight:800;font-family:var(--font-b);color:var(--accent)">${fmt(precio)}</div>
-      <div style="font-size:12px;color:#00e676;margin-top:4px">Utilidad: ${fmt(d.utilidad)} / u.</div>
+    return `<div class="kpi-card sim-esc-card" data-pct="${e.pct}" onclick="selectSimEscenario(this,${e.pct})"
+      style="padding:16px;text-align:center;cursor:pointer;transition:border .15s;${isObj ? 'border:2px solid var(--accent)' : 'border:2px solid transparent'}">
+      <div style="font-size:11px;color:var(--muted);margin-bottom:4px">${e.label} — ${fmtPn(e.pct * 100)}</div>
+      <div style="font-size:26px;font-weight:800;font-family:var(--font-b);color:var(--accent)">${fmt(p)}</div>
+      <div style="font-size:12px;color:#00e676;margin-top:4px">Utilidad: ${fmt(d.utilidad)}</div>
     </div>`;
   }).join('');
 
-  function renderDesglose(precio, pct) {
-    const d = buildDesglose(precio, pct);
-    const items = [
-      { label: 'Comisión ML — % (' + fmtP(comisionPct) + ')', monto: d.comisionM,  color: '#ff9100' },
-      { label: 'Comisión ML — Cargo fijo',                     monto: d.cf,         color: '#ff9100' },
-      { label: 'IIBB (' + fmtP(iibb) + ')',                    monto: d.iibbM,      color: '#ff9100' },
-      { label: 'Débito/Crédito (' + fmtP(debCred) + ')',       monto: d.debCredM,   color: '#ff9100' },
-      { label: 'Inversión Ads (TACOS)',                         monto: d.tacosM,     color: '#ff9100' },
-      { label: 'Costo envío',                                   monto: envio,        color: '#ff9100' },
-      { label: 'CMV',                                           monto: cmv,          color: '#ff5252' },
-      { label: 'Otros costos',                                  monto: extra,        color: '#ff5252' },
-      { label: '🧾 IVA Ventas (' + fmtP(ivaVentas) + ')',      monto: d.ivaVentasM, color: '#6366f1' },
-      { label: '🧾 IVA Compras (acreditable)',                  monto: -d.ivaComprasM, color: '#00e676' },
-      { label: '🧾 IVA Neto a pagar',                          monto: d.ivaNetoM,   color: '#6366f1' },
-      { label: '✅ Utilidad neta',                              monto: d.utilidad,   color: '#00e676' },
-    ].filter(x => Math.abs(x.monto) > 0.5);
-
-    return items.map(x => `
-      <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--border)">
-        <span style="font-size:13px;color:var(--muted)">${x.label}</span>
-        <div style="text-align:right">
-          <span style="font-size:13px;font-weight:600;color:${x.color}">${x.monto < 0 ? '-' : ''}${fmt(Math.abs(x.monto))}</span>
-          <span style="font-size:11px;color:var(--muted);margin-left:6px">${fmtP(Math.abs(x.monto) / precio)}</span>
-        </div>
-      </div>`).join('');
-  }
-
-  // Guardar funciones para selectSimEscenario
-  window._simCalcPrecio   = calcPrecio;
-  window._simRenderDesglose = renderDesglose;
+  const dBase = buildDesglose(precioBase);
+  window._simCalcPrecio    = calcPrecioDesdeMargen;
+  window._simBuildDesglose = buildDesglose;
+  window._simHtmlDesglose  = htmlDesglose;
   window._simFmt  = fmt;
-  window._simFmtP = fmtP;
+  window._simFmtPn = fmtPn;
 
-  document.getElementById('simResultados').innerHTML = `
-    ${precioPiso ? `<div class="kpi-card sim-esc-card" data-pct="0" onclick="selectSimEscenario(this, 0)"
+  el.innerHTML = `
+    ${precioPiso ? `<div class="kpi-card sim-esc-card" data-pct="0" onclick="selectSimEscenario(this,0)"
       style="padding:12px 16px;margin-bottom:12px;border:2px solid #ff5252;cursor:pointer;display:flex;align-items:center;justify-content:space-between">
       <div>
-        <div style="font-size:11px;color:#ff5252;font-weight:600">⚠️ PRECIO PISO — Rentabilidad 0%</div>
+        <div style="font-size:11px;color:#ff5252;font-weight:600">PRECIO PISO — Margen 0%</div>
         <div style="font-size:11px;color:var(--muted)">Por debajo de este precio perdés dinero</div>
       </div>
-      <div style="font-size:22px;font-weight:800;font-family:var(--font-b);color:#ff5252">${fmt(precioPiso)}</div>
+      <div style="font-size:22px;font-weight:800;color:#ff5252">${fmt(precioPiso)}</div>
     </div>` : ''}
     <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:16px">${escHtml}</div>
     <div class="kpi-card sim-precio" style="padding:20px">
-      <div class="kpi-label" style="margin-bottom:14px">📊 Desglose — precio ${fmt(precioBase)} (margen ${fmtP(margenObj)})</div>
-      ${renderDesglose(precioBase, margenObj)}
+      <div style="font-size:12px;font-weight:600;color:var(--muted);margin-bottom:12px">
+        Desglose — precio ${fmt(precioBase)} · margen ${fmtPn(margenObj * 100)}
+      </div>
+      ${htmlDesglose(precioBase, dBase)}
     </div>`;
 }
-
-
 
 function loadRentabilidad() {
   const el = document.getElementById('rentabilidadContent');
