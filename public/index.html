@@ -2316,17 +2316,43 @@ function filterPubs(q) {
 
 function exportPubsExcel() {
   if (!window._pubsData || !window._pubsData.length) { showToast('No hay datos para exportar'); return; }
-  const rows = window._pubsData.map(i => ({
-    'MLA': i.id, 'Título': i.title, 'Tiene Ads': i.hasAds ? 'Sí' : 'No',
-    'Unidades': i.units, 'Facturación': Math.round(i.revenue),
-    'Ventas por Ads': Math.round(i.adsSales), '% Aporte': i.revenueShare,
-    'Visitas': i.visits, 'Conversión %': i.conversion,
-    'Clicks Ads': i.adsClicks, 'Conv. Ads %': i.adsConversion
-  }));
+  const { date_from, date_to } = getDateRange();
+  const dias = Math.max(1, Math.round((new Date(date_to) - new Date(date_from)) / (1000*60*60*24)));
+
+  const rows = window._pubsData.map(i => {
+    const ritmo     = i.units > 0 ? parseFloat((i.units / dias).toFixed(2)) : 0;
+    const cobertura = ritmo > 0 && (i.available_quantity||0) > 0 ? Math.round(i.available_quantity / ritmo) : null;
+    const health    = i.health != null ? Math.round(i.health * 100) : null;
+    return {
+      'MLA':             i.id,
+      'SKU':             i.sku || '',
+      'Título':          i.title,
+      'Estado':          i.status === 'active' ? 'Activa' : i.status === 'paused' ? 'Pausada' : i.status,
+      'FULL':            i.is_full ? 'Sí' : 'No',
+      'Stock':           i.available_quantity ?? '',
+      'Ritmo/día':       ritmo > 0 ? ritmo : '',
+      'Cobertura (días)':cobertura ?? '',
+      'ADS':             i.hasAds ? 'Sí' : 'No',
+      'Unidades':        i.units || 0,
+      'Facturación':     Math.round(i.revenue || 0),
+      'Fact. ADS':       i.adsSales > 0 ? Math.round(i.adsSales) : '',
+      '% Aporte':        i.revenueShare > 0 ? i.revenueShare : '',
+      'Visitas':         i.visits || '',
+      'Conversión %':    i.conversion > 0 ? i.conversion : '',
+      'Clicks ADS':      i.adsClicks > 0 ? i.adsClicks : '',
+      'Conv. ADS %':     i.adsConversion > 0 ? i.adsConversion : '',
+      'Health %':        health ?? '',
+    };
+  });
+
   const ws = XLSX.utils.json_to_sheet(rows);
+  ws['!cols'] = [16,14,50,10,6,8,10,16,6,10,14,14,10,10,12,12,12,10].map(w=>({wch:w}));
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Publicaciones');
-  XLSX.writeFile(wb, 'publicaciones.xlsx');
+  const client = getActiveClient();
+  const fecha  = new Date().toISOString().slice(0,10);
+  XLSX.writeFile(wb, `Publicaciones_${(client?.name||'').replace(/\s+/g,'_')}_${fecha}.xlsx`);
+  showToast('✅ Excel descargado');
 }
 
 // ── CMV Export: descarga Excel con MLA, título, precio, facturación y costo actual ──
@@ -7579,9 +7605,10 @@ function renderCurvaABC() {
 function renderPrioridades() {
   const el = document.getElementById('escPriorContent');
 
-  // Necesitamos _escData (del ranking) para tener el score
+  // Si no hay datos, cargarlos automáticamente
   if (!_escData) {
-    el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">Abrí primero la pestaña 🚀 Ranking para cargar los datos</div>';
+    el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">⏳ Cargando datos...</div>';
+    loadEscalabilidad(renderPrioridades);
     return;
   }
 
@@ -7735,12 +7762,11 @@ function renderPrioridades() {
 let _escData = null;
 let _escFilter = 'all'; // 'all' | 'escalar' | 'optimizar' | 'revisar' | 'sin_cmv'
 
-function loadEscalabilidad() {
+function loadEscalabilidad(callback) {
   const el = document.getElementById('escalabilidadContent');
-  if (!el) return;
   const connected = state.accounts.filter(a => a.data && a.data.rentabilidad);
   if (!connected.length) {
-    el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Sincronizá primero para ver los datos</div>';
+    if (el) el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Sincronizá primero para ver los datos</div>';
     return;
   }
 
@@ -7789,13 +7815,13 @@ function loadEscalabilidad() {
       const stockMap = {};
       (window._pubsData || []).forEach(i => { if (i.available_quantity != null) stockMap[i.id] = i.available_quantity; });
       _escData = { products: allProducts, fullSet, costsMap, stockMap };
-      renderEscalabilidad();
+      if (callback) callback(); else renderEscalabilidad();
     })
     .catch(() => {
       const stockMap = {};
       (window._pubsData || []).forEach(i => { if (i.available_quantity != null) stockMap[i.id] = i.available_quantity; });
       _escData = { products: allProducts, fullSet, costsMap: {}, stockMap };
-      renderEscalabilidad();
+      if (callback) callback(); else renderEscalabilidad();
     });
 }
 
