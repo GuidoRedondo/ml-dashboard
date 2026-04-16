@@ -5801,11 +5801,19 @@ function initReporte() {
       });
     }
   }
-  // Populate month selector — last 6 months
+  // Populate month selector — mes actual + últimos 6 meses
   const msel = document.getElementById('reporteMesSel');
   if (msel) {
     msel.innerHTML = '';
     const now = new Date();
+    // Mes en curso primero
+    const valActual = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
+    const labelActual = now.toLocaleDateString('es-AR', { month: 'long', year: 'numeric' });
+    const oActual = document.createElement('option');
+    oActual.value = valActual;
+    oActual.textContent = '📍 ' + labelActual.charAt(0).toUpperCase() + labelActual.slice(1) + ' (en curso)';
+    msel.appendChild(oActual);
+    // Últimos 6 meses cerrados
     for (let i = 1; i <= 6; i++) {
       const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
       const label = d.toLocaleDateString('es-AR', { month: 'long', year: 'numeric' });
@@ -6151,14 +6159,20 @@ function setReporteTab(tab, el) {
 }
 
 function getReportePeriod() {
-  const mes = document.getElementById('reporteMesSel')?.value; // "2026-02"
+  const mes = document.getElementById('reporteMesSel')?.value; // "2026-04"
   if (!mes) return null;
   const [y, m] = mes.split('-').map(Number);
-  const lastDay = new Date(y, m, 0).getDate();
+  const now = new Date();
+  const esMesActual = y === now.getFullYear() && m === (now.getMonth() + 1);
+  // Para el mes en curso usar hoy como fecha de corte; para meses cerrados usar el último día
+  const lastDay = esMesActual
+    ? now.getDate()
+    : new Date(y, m, 0).getDate();
   return {
     date_from: `${y}-${String(m).padStart(2,'0')}-01`,
-    date_to:   `${y}-${String(m).padStart(2,'0')}-${lastDay}`,
-    mes:       `${y}-${String(m).padStart(2,'0')}`
+    date_to:   `${y}-${String(m).padStart(2,'0')}-${String(lastDay).padStart(2,'0')}`,
+    mes:       `${y}-${String(m).padStart(2,'0')}`,
+    esMesActual,
   };
 }
 
@@ -6410,7 +6424,13 @@ async function generarPyL() {
   const btn = document.getElementById('reportePylBtn');
   btn.disabled = true; btn.textContent = '⏳ Generando...';
   const el = document.getElementById('reportePylContent');
-  el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">⏳ Calculando P&L... puede tardar un momento</div>';
+
+  const avisoActual = period.esMesActual
+    ? `<div style="background:#fef3c7;border:1px solid #fcd34d;border-radius:8px;padding:10px 16px;margin-bottom:14px;font-size:12px;color:#92400e;display:flex;align-items:center;gap:8px">
+        📍 <strong>Mes en curso</strong> — datos del 1 al ${period.date_to.slice(8)} de ${new Date(period.date_to).toLocaleDateString('es-AR',{month:'long'})}. Los números son parciales y van a cambiar.
+       </div>` : '';
+
+  el.innerHTML = avisoActual + '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">⏳ Calculando P&L... puede tardar un momento</div>';
   setReporteTab('pyl', document.getElementById('tab-pyl'));
 
   try {
