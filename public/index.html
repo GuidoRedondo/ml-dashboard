@@ -841,6 +841,7 @@ tbody td {
           <option value="sin_clip">Sin clip</option>
           <option value="con_clip">Con clip 🎬</option>
         </select>
+        <button onclick="exportFotosExcel()" class="sync-btn" style="background:#16a34a;color:#fff;border:none">📥 Excel</button>
       </div>
       <div id="fotosContent"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Cargando...</div></div>
     </div>
@@ -5248,6 +5249,49 @@ function renderFotosTabla() {
 }
 
 // ── LOGÍSTICA ─────────────────────────────────────────────────────────────────
+function exportFotosExcel() {
+  if (!_fotosData || !_fotosData.length) { showToast('Sin datos — cargá la sección Fotos primero'); return; }
+  const XLSX = window.XLSX;
+  const client = getActiveClient();
+  const fecha  = new Date().toISOString().slice(0,10);
+
+  const toRow = i => {
+    const estado = i.photo_count === 0 ? 'Sin fotos'
+      : i.photo_count <= 3 ? 'Pocas fotos (≤3)'
+      : i.photo_count <= 5 ? 'Mejorar (4-5)'
+      : 'OK (6+)';
+    return {
+      'MLA':        i.id,
+      'Título':     i.title,
+      'Estado':     i.status === 'active' ? 'Activa' : i.status === 'paused' ? 'Pausada' : i.status,
+      'Fotos':      i.photo_count ?? 0,
+      'Estado fotos': estado,
+      'Clip 🎬':    i.has_clip ? 'Sí' : 'No',
+      'Precio':     i.price || '',
+      'Stock':      i.available_quantity ?? '',
+      'Catálogo':   i.catalog_listing ? 'Sí' : 'No',
+      'URL ML':     `https://articulo.mercadolibre.com.ar/${i.id.replace(/MLA(\d+)/, 'MLA-$1')}`,
+    };
+  };
+
+  const cols = [16,50,10,8,18,8,12,8,10,55].map(w => ({ wch: w }));
+  const wb = XLSX.utils.book_new();
+
+  // Hoja 1: Todos
+  const wsTodos = XLSX.utils.json_to_sheet(_fotosData.map(toRow));
+  wsTodos['!cols'] = cols;
+  XLSX.utils.book_append_sheet(wb, wsTodos, 'Todas las publicaciones');
+
+  // Hoja 2: Solo con problemas (sin fotos o pocas fotos)
+  const conProblemas = _fotosData.filter(i => i.photo_count < 6);
+  const wsProb = XLSX.utils.json_to_sheet(conProblemas.map(toRow));
+  wsProb['!cols'] = cols;
+  XLSX.utils.book_append_sheet(wb, wsProb, 'Con problemas');
+
+  XLSX.writeFile(wb, `Fotos_${(client?.name||'').replace(/\s+/g,'_')}_${fecha}.xlsx`);
+  showToast(`✅ Excel descargado — ${_fotosData.length} pubs / ${conProblemas.length} con problemas`);
+}
+
 async function loadLogistica() {
   const el = document.getElementById('logisticaContent');
   el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">⏳ Consultando configuración de envíos...</div>';
