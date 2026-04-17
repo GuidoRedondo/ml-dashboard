@@ -620,18 +620,18 @@ tbody td {
       <!-- Tabs -->
       <div style="display:flex;gap:0;border-bottom:2px solid var(--border);margin-bottom:20px">
         <button id="tab-panel-metricas" onclick="switchPanelTab('metricas')"
-          style="padding:8px 18px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--accent);border-bottom:2px solid var(--accent);margin-bottom:-2px;font-family:var(--font-b)">
+          style="padding:8px 18px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-2px;font-family:var(--font-b)">
           📊 Métricas
         </button>
         <button id="tab-panel-bitacora" onclick="switchPanelTab('bitacora')"
-          style="padding:8px 18px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-2px;font-family:var(--font-b)">
+          style="padding:8px 18px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--accent);border-bottom:2px solid var(--accent);margin-bottom:-2px;font-family:var(--font-b)">
           📋 Bitácora
         </button>
       </div>
-      <div id="panel-tab-metricas">
+      <div id="panel-tab-metricas" style="display:none">
         <div id="panelConsultoresContent"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Cargando...</div></div>
       </div>
-      <div id="panel-tab-bitacora" style="display:none">
+      <div id="panel-tab-bitacora">
         <div id="bitacoraContent"></div>
       </div>
     </div>
@@ -6200,6 +6200,11 @@ function setReporteTab(tab, el) {
     if (btn) { btn.style.background = t === tab ? 'var(--accent)' : 'var(--surface)'; btn.style.color = t === tab ? '#fff' : 'var(--text)'; }
   });
   if (tab === 'comparar') loadCompararReporte();
+  if (tab === 'gastos') {
+    const clientId = getReporteClientId();
+    const period   = getReportePeriod();
+    if (clientId && period) loadReporteGastos(clientId, period.mes);
+  }
 }
 
 function getReportePeriod() {
@@ -6860,6 +6865,9 @@ function renderCompetidorFicha(data, el) {
 }
 // ── PANEL CLIENTES ────────────────────────────────────────────────────────────
 async function loadPanelConsultores() {
+  // Arrancar siempre en Bitácora
+  renderBitacoraShell();
+
   const el = document.getElementById('panelConsultoresContent');
   if (!el) return;
   const role = getSessionRole();
@@ -7004,7 +7012,7 @@ function renderPanelConsultores(results, range) {
 }
 
 // ── BITÁCORA ──────────────────────────────────────────────────────────────────
-let _panelActiveTab = 'metricas';
+let _panelActiveTab = 'bitacora';
 
 function switchPanelTab(tab) {
   _panelActiveTab = tab;
@@ -7778,7 +7786,7 @@ function renderPrioridades() {
     const pct = totalRevenue > 0 ? (p.revenue/totalRevenue*100).toFixed(1) : '0';
     const margenStr = p.margenReal != null ? Math.round(p.margenReal) + '%' + (p.hasCMV ? '' : '*') : '—';
     const margenColor = p.margenReal >= minMargen ? '#00e676' : p.margenReal >= minMargen*0.65 ? '#ff9100' : '#ff5252';
-    const stkCol = p.stock == null ? 'var(--muted)' : stock <= 3 ? '#ff5252' : stock <= 10 ? '#ff9100' : '#00e676';
+    const stkCol = p.stock == null ? 'var(--muted)' : p.stock <= 3 ? '#ff5252' : p.stock <= 10 ? '#ff9100' : '#00e676';
     return `<tr style="border-bottom:1px solid var(--border)">
       <td style="padding:9px 10px;text-align:center">
         <span style="padding:3px 12px;border-radius:20px;font-size:12px;font-weight:700;background:${claseBg[p.clase]};color:${claseColor[p.clase]}">${p.clase}</span>
