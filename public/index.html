@@ -942,6 +942,25 @@ tbody td {
       </div>
       <!-- Tab: Mercado -->
       <div id="comp-tab-mercado" style="display:none">
+        <!-- Análisis de Mercado ML -->
+        <div id="mercadoMLBlock" style="margin-bottom:24px">
+          <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px 18px;margin-bottom:16px">
+            <div style="font-size:13px;font-weight:600;margin-bottom:10px;color:var(--text)">📈 Análisis de Mercado por Categoría</div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+              <select id="mercadoMLCatSelect" onchange="loadMercadoML()"
+                style="flex:1;min-width:220px;padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px">
+                <option value="">— Seleccioná una categoría —</option>
+              </select>
+              <select id="mercadoMLPeriod" onchange="loadMercadoML()"
+                style="padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px">
+                <option value="currentMonth">Mes en curso</option>
+                <option value="last30Days">Últimos 30 días</option>
+                <option value="last90Days">Últimos 90 días</option>
+              </select>
+            </div>
+          </div>
+          <div id="mercadoMLResult"></div>
+        </div>
         <!-- Buscador por URL -->
         <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px 18px;margin-bottom:20px">
           <div style="font-size:13px;font-weight:600;margin-bottom:10px">🔍 Analizar publicación de competidor</div>
@@ -8354,6 +8373,113 @@ function kpiSmall(label, value) {
 let _compActiveTab = 'categorias';
 let _catVentasLoaded = false;
 
+// ── MERCADO ML ─────────────────────────────────────────────
+async function initMercadoMLCats() {
+  const sel = document.getElementById('mercadoMLCatSelect');
+  if (!sel || sel.options.length > 1) return;
+  const client = getActiveClient();
+  if (!client) return;
+  try {
+    const data = await apiCall('GET', `/api/competencia/categorias?client_id=${client.id}`);
+    if (data && data.categories && data.categories.length) {
+      data.categories.forEach(c => {
+        const opt = document.createElement('option');
+        opt.value = c.id;
+        opt.textContent = `${c.name} (${c.count} pub.)`;
+        sel.appendChild(opt);
+      });
+      if (data.categories.length > 0) {
+        sel.value = data.categories[0].id;
+        loadMercadoML();
+      }
+    }
+  } catch(e) { console.error('Error cargando categorías:', e); }
+}
+
+async function loadMercadoML() {
+  const sel = document.getElementById('mercadoMLCatSelect');
+  const period = document.getElementById('mercadoMLPeriod')?.value || 'currentMonth';
+  const el = document.getElementById('mercadoMLResult');
+  if (!sel || !el) return;
+  const catId = sel.value;
+  if (!catId) { el.innerHTML = ''; return; }
+
+  el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:30px;text-align:center">⏳ Cargando datos del mercado...</div>';
+
+  try {
+    const [seasonal, distribution] = await Promise.all([
+      fetch(`https://www.mercadolibre.com.ar/api/sc-metrics-opportunities/seasonal-sales-chart?period=${period}&categoryId=${catId}`).then(r => r.json()).catch(() => null),
+      fetch(`https://www.mercadolibre.com.ar/api/sc-metrics-opportunities/distribution-sellers-graph?period=${period}&categoryId=${catId}`).then(r => r.json()).catch(() => null)
+    ]);
+
+    let html = '<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px">';
+
+    // Distribución vendedores
+    if (distribution && distribution.ranges) {
+      const total = distribution.active_sellers || '—';
+      const repColors = { mercadolibrePlatinum: '#22c55e', mercadoliderGold: '#f59e0b', mercadolider: '#3b82f6', otros: '#94a3b8' };
+      html += `<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:18px">
+        <div style="font-size:13px;font-weight:700;color:var(--text);margin-bottom:4px">👥 Vendedores activos</div>
+        <div style="font-size:28px;font-weight:800;color:var(--accent);margin-bottom:14px">${total}</div>
+        <div style="display:flex;flex-direction:column;gap:8px">`;
+      distribution.ranges.forEach(r => {
+        const color = repColors[r.id] || '#94a3b8';
+        const pct = r.tooltip?.header?.percentage || '';
+        const pctNum = pct.replace(/[()%]/g,'') || 0;
+        html += `<div>
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:3px">
+            <span style="font-size:12px;color:var(--text-sec)">${r.label}</span>
+            <span style="font-size:12px;font-weight:700;color:${color}">${r.value} ${pct}</span>
+          </div>
+          <div style="height:6px;background:var(--border);border-radius:3px;overflow:hidden">
+            <div style="height:100%;width:${pctNum}%;background:${color};border-radius:3px"></div>
+          </div>
+        </div>`;
+      });
+      html += '</div></div>';
+    } else {
+      html += '<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:18px;color:var(--muted);font-size:13px">Sin datos de distribución</div>';
+    }
+
+    // Estacionalidad
+    if (seasonal && seasonal.data && seasonal.data.data) {
+      const months = seasonal.data.data;
+      const maxVal = Math.max(...months.map(m => Math.max(m.current_year || 0, m.previous_year || 0)));
+      const fmtM = v => { if (!v) return '—'; if (v >= 1e9) return '$' + (v/1e9).toFixed(1) + 'B'; if (v >= 1e6) return '$' + (v/1e6).toFixed(0) + 'M'; return '$' + v.toLocaleString('es-AR'); };
+      html += `<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:18px">
+        <div style="font-size:13px;font-weight:700;color:var(--text);margin-bottom:10px">📅 Estacionalidad</div>
+        <div style="display:flex;gap:12px;margin-bottom:10px">
+          <span style="font-size:11px;display:flex;align-items:center;gap:4px"><span style="width:12px;height:3px;background:#9355F0;display:inline-block;border-radius:2px"></span>Año actual</span>
+          <span style="font-size:11px;display:flex;align-items:center;gap:4px"><span style="width:12px;height:3px;background:#9B9B9B;display:inline-block;border-radius:2px"></span>Año anterior</span>
+        </div>
+        <div style="display:flex;align-items:flex-end;gap:2px;height:80px">`;
+      months.forEach(m => {
+        const cur = m.current_year; const prev = m.previous_year;
+        const hC = cur ? Math.round((cur/maxVal)*80) : 0;
+        const hP = prev ? Math.round((prev/maxVal)*80) : 0;
+        html += `<div style="flex:1;display:flex;flex-direction:column;align-items:center" title="${m.month}: actual ${fmtM(cur)} / anterior ${fmtM(prev)}">
+          <div style="width:100%;display:flex;gap:1px;align-items:flex-end;height:80px">
+            <div style="flex:1;height:${hC}px;background:#9355F0;border-radius:2px 2px 0 0;${cur?'':'opacity:0.15'}"></div>
+            <div style="flex:1;height:${hP}px;background:#9B9B9B;border-radius:2px 2px 0 0;${prev?'':'opacity:0.15'}"></div>
+          </div>
+          <div style="font-size:8px;color:var(--muted);margin-top:3px">${m.month}</div>
+        </div>`;
+      });
+      html += '</div></div>';
+    } else {
+      html += '<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:18px;color:var(--muted);font-size:13px">Sin datos de estacionalidad</div>';
+    }
+
+    html += '</div>';
+    if (seasonal && !seasonal.is_category_sold) {
+      html += '<div style="font-size:11px;color:var(--muted);padding:8px 12px;background:var(--surface);border:1px solid var(--border);border-radius:8px;margin-top:8px">ℹ️ Tu cuenta no registra ventas en esta categoría en el período seleccionado.</div>';
+    }
+    el.innerHTML = html;
+  } catch(e) {
+    el.innerHTML = `<div style="color:#ef4444;font-size:13px;padding:20px">Error: ${e.message}</div>`;
+  }
+}
+
 function switchCompTab(tab) {
   _compActiveTab = tab;
   ['categorias','mercado','diagnostico'].forEach(t => {
@@ -8366,7 +8492,7 @@ function switchCompTab(tab) {
     }
   });
   if (tab === 'categorias' && !_catVentasLoaded) loadCatVentas();
-  if (tab === 'mercado')     loadCompetencia();
+  if (tab === 'mercado')     { loadCompetencia(); initMercadoMLCats(); }
   if (tab === 'diagnostico') loadDiagnostico();
 }
 
