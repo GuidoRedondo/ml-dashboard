@@ -5,6 +5,42 @@ const fetch = require('node-fetch');
 const { Pool } = require('pg');
 const crypto = require('crypto');
 
+// ── EMAIL (Nodemailer) ────────────────────────────────────────────────────────
+let transporter = null;
+try {
+  const nodemailer = require('nodemailer');
+  if (process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS) {
+    transporter = nodemailer.createTransport({
+      host:   process.env.SMTP_HOST,
+      port:   parseInt(process.env.SMTP_PORT || '587'),
+      secure: process.env.SMTP_SECURE === 'true', // true para port 465, false para 587
+      auth: {
+        user: process.env.SMTP_USER,
+        pass: process.env.SMTP_PASS
+      }
+    });
+    console.log('[EMAIL] Nodemailer configurado — host:', process.env.SMTP_HOST, 'user:', process.env.SMTP_USER);
+  } else {
+    console.log('[EMAIL] Sin credenciales SMTP — emails desactivados. Configurar SMTP_HOST, SMTP_USER, SMTP_PASS');
+  }
+} catch(e) {
+  console.log('[EMAIL] nodemailer no disponible:', e.message);
+}
+
+async function sendEmail({ to, subject, html }) {
+  if (!transporter || !to) return false;
+  try {
+    await transporter.sendMail({
+      from: `"Negocio Redondo" <${process.env.SMTP_USER}>`,
+      to, subject, html
+    });
+    return true;
+  } catch(e) {
+    console.error('[EMAIL] Error al enviar:', e.message);
+    return false;
+  }
+}
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 const ML_API = 'https://api.mercadolibre.com';
@@ -3722,6 +3758,26 @@ app.get('/api/devoluciones', requireAuth, async (req, res) => {
   } catch(e) { console.error('[DEVOLUCIONES]', e.message); res.status(500).json({ error: e.message }); }
 });
 // ── BITÁCORA ─────────────────────────────────────────────────────────────────
+app.get('/api/bitacora/all-tasks', requireAuth, async (req, res) => {
+  try {
+    const r = await pool.query(
+      `SELECT b.id, b.client_id, b.tipo, b.estado,
+              b.contenido AS texto, b.autor, b.asignado_a,
+              b.fecha_venc, b.created_at, b.updated_at,
+              b.contenido AS notas,
+              c.name AS client_name
+       FROM bitacora b
+       LEFT JOIN clients c ON c.id = b.client_id
+       WHERE b.tipo = 'tarea'
+       ORDER BY
+         CASE b.estado WHEN 'pendiente' THEN 0 WHEN 'en_progreso' THEN 1 ELSE 2 END,
+         b.fecha_venc ASC NULLS LAST,
+         b.created_at DESC`
+    );
+    res.json({ tasks: r.rows });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
 app.get('/api/bitacora', requireAuth, async (req, res) => {
   try {
     const { client_id } = req.query;
@@ -3747,7 +3803,33 @@ app.post('/api/bitacora', requireAuth, async (req, res) => {
       [client_id, tipo||'nota', estado||'pendiente', contenido.trim(),
        autor, asignado_a||null, fecha_venc||null]
     );
-    res.json({ ok: true, entry: r.rows[0] });
+    const entry = r.rows[0];
+
+    // Email al asignado si es una Tarea con asignado_a
+    if (asignado_a && tipo === 'tarea' && transporter) {
+      const userRes = await pool.query('SELECT email FROM users WHERE username=$1', [asignado_a]);
+      const email = userRes.rows[0]?.email;
+      if (email) {
+        const clientRes = await pool.query('SELECT name FROM clients WHERE id=$1', [client_id]);
+        const clientName = clientRes.rows[0]?.name || `Cliente #${client_id}`;
+        const venc = fecha_venc ? `<br><strong>Vencimiento:</strong> ${new Date(fecha_venc).toLocaleDateString('es-AR')}` : '';
+        await sendEmail({
+          to: email,
+          subject: `📋 Nueva tarea asignada — ${clientName}`,
+          html: `<div style="font-family:sans-serif;max-width:560px">
+            <h2 style="color:#6366f1">📋 Te asignaron una tarea</h2>
+            <p><strong>Cliente:</strong> ${clientName}</p>
+            <p><strong>Asignado por:</strong> ${autor}</p>
+            <p><strong>Tarea:</strong><br>${contenido.trim().replace(/\n/g,'<br>')}</p>
+            ${venc}
+            <hr style="margin:20px 0;border:none;border-top:1px solid #eee">
+            <p style="color:#999;font-size:12px">Negocio Redondo — Panel de Clientes</p>
+          </div>`
+        });
+      }
+    }
+
+    res.json({ ok: true, entry });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -3777,6 +3859,53 @@ app.delete('/api/bitacora/:id', requireAuth, async (req, res) => {
     res.json({ ok: true });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
+
+// ── Chequeo diario de vencimientos de bitácora ────────────────────────────────
+async function checkBitacoraVencimientos() {
+  if (!transporter) return;
+  try {
+    const hoy = new Date().toISOString().slice(0,10);
+    const r = await pool.query(
+      `SELECT b.*, c.name AS client_name
+       FROM bitacora b
+       JOIN clients c ON c.id = b.client_id
+       WHERE b.fecha_venc::DATE = $1
+         AND b.estado != 'resuelto'
+         AND b.asignado_a IS NOT NULL`,
+      [hoy]
+    );
+    for (const entry of r.rows) {
+      const userRes = await pool.query('SELECT email FROM users WHERE username=$1', [entry.asignado_a]);
+      const email = userRes.rows[0]?.email;
+      if (!email) continue;
+      await sendEmail({
+        to: email,
+        subject: `⏰ Tarea que vence hoy — ${entry.client_name}`,
+        html: `<div style="font-family:sans-serif;max-width:560px">
+          <h2 style="color:#f59e0b">⏰ Tarea que vence hoy</h2>
+          <p><strong>Cliente:</strong> ${entry.client_name}</p>
+          <p><strong>Estado:</strong> ${entry.estado}</p>
+          <p><strong>Tarea:</strong><br>${(entry.contenido||'').replace(/\n/g,'<br>')}</p>
+          <hr style="margin:20px 0;border:none;border-top:1px solid #eee">
+          <p style="color:#999;font-size:12px">Negocio Redondo — Panel de Clientes</p>
+        </div>`
+      });
+    }
+    if (r.rows.length) console.log(`[EMAIL] Enviados ${r.rows.length} recordatorios de vencimiento`);
+  } catch(e) {
+    console.error('[EMAIL] Error en checkBitacoraVencimientos:', e.message);
+  }
+}
+
+// Ejecutar el chequeo de vencimientos cada día a las 8am (UTC-3 = 11am UTC)
+const now = new Date();
+const msHasta11UTC = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 11, 0, 0, 0) - now;
+const delay = msHasta11UTC > 0 ? msHasta11UTC : msHasta11UTC + 24*60*60*1000;
+setTimeout(() => {
+  checkBitacoraVencimientos();
+  setInterval(checkBitacoraVencimientos, 24*60*60*1000);
+}, delay);
+
 
 app.get('/login', (req, res) => {
   const error = req.query.error || '';
