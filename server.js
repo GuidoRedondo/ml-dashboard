@@ -2643,6 +2643,51 @@ app.get('/api/item-fees', requireAuth, async (req, res) => {
 });
 
 // ── DIAGNÓSTICO COMPETIDORES ──────────────────────────────────────────────────
+app.get('/api/competencia/categorias', requireAuth, async (req, res) => {
+  try {
+    const { client_id } = req.query;
+    if (!client_id) return res.status(400).json({ error: 'Falta client_id' });
+    const client = await getActiveClient(client_id);
+    if (!client) return res.status(404).json({ error: 'Cliente no encontrado' });
+    const headers = { 'Authorization': `Bearer ${client.access_token}` };
+
+    // Traer items activos y agrupar por categoría
+    const itemsResp = await fetch(`${ML_API}/users/${client.ml_user_id}/items/search?status=active&limit=100`, { headers }).then(r => r.json());
+    const itemIds = itemsResp.results || [];
+    if (!itemIds.length) return res.json({ categories: [] });
+
+    // Batches de 20
+    const batches = [];
+    for (let i = 0; i < itemIds.length; i += 20) batches.push(itemIds.slice(i, i+20));
+    const catCount = {};
+    const catNames = {};
+    for (const batch of batches) {
+      const data = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,category_id`, { headers }).then(r => r.json()).catch(() => []);
+      data.forEach(r => {
+        if (r.code === 200 && r.body?.category_id) {
+          const cid = r.body.category_id;
+          catCount[cid] = (catCount[cid] || 0) + 1;
+        }
+      });
+    }
+
+    // Traer nombres de categorías
+    const catIds = Object.keys(catCount);
+    await Promise.all(catIds.map(async cid => {
+      try {
+        const cat = await fetch(`${ML_API}/categories/${cid}`).then(r => r.json());
+        catNames[cid] = cat.name || cid;
+      } catch(e) { catNames[cid] = cid; }
+    }));
+
+    const categories = catIds
+      .sort((a,b) => catCount[b] - catCount[a])
+      .map(id => ({ id, name: catNames[id], count: catCount[id] }));
+
+    res.json({ categories });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
 app.get('/api/competencia/diagnostico', requireAuth, async (req, res) => {
   try {
     const { item_id, client_id } = req.query;
