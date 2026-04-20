@@ -7037,6 +7037,8 @@ function switchPanelTab(tab) {
 }
 
 // ── MIS TAREAS ──────────────────────────────────────────────
+let _misTareasOcultarResueltas = true;
+
 async function loadMisTareas() {
   const el = document.getElementById('misTareasContent');
   if (!el) return;
@@ -7048,68 +7050,84 @@ async function loadMisTareas() {
       el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Sin tareas registradas</div>';
       return;
     }
-
-    // Agrupar por asignado
-    const byUser = {};
-    data.tasks.forEach(t => {
-      const key = t.asignado_a || 'Sin asignar';
-      if (!byUser[key]) byUser[key] = [];
-      byUser[key].push(t);
-    });
-
-    const estadoColor = { pendiente: '#f59e0b', en_progreso: '#3b82f6', resuelto: '#22c55e' };
-    const estadoLabel = { pendiente: 'Pendiente', en_progreso: 'En progreso', resuelto: 'Resuelto' };
-
-    let html = `<div style="padding:4px 0 16px;font-size:12px;color:var(--muted)">${data.tasks.length} tarea(s) en total</div>`;
-
-    Object.entries(byUser).sort((a,b) => a[0].localeCompare(b[0])).forEach(([usuario, tareas]) => {
-      const pendientes = tareas.filter(t => t.estado !== 'resuelto').length;
-      html += `
-        <div style="margin-bottom:24px">
-          <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
-            <div style="font-size:14px;font-weight:700;color:var(--text)">👤 ${usuario}</div>
-            <div style="font-size:11px;padding:2px 8px;border-radius:20px;background:var(--accent);color:#fff;font-weight:600">${tareas.length} tarea${tareas.length>1?'s':''}</div>
-            ${pendientes > 0 ? `<div style="font-size:11px;padding:2px 8px;border-radius:20px;background:#fef3c7;color:#b45309;font-weight:600">${pendientes} pendiente${pendientes>1?'s':''}</div>` : ''}
-          </div>
-          <div style="display:flex;flex-direction:column;gap:8px">`;
-
-      // Ordenar: pendientes primero, resueltos al final
-      tareas.sort((a,b) => {
-        const order = { pendiente: 0, en_progreso: 1, resuelto: 2 };
-        return (order[a.estado]||0) - (order[b.estado]||0);
-      }).forEach(t => {
-        const color = estadoColor[t.estado] || '#94a3b8';
-        const label = estadoLabel[t.estado] || t.estado;
-        const vencida = t.fecha_venc && t.estado !== 'resuelto' && new Date(t.fecha_venc) < new Date();
-        const fechaVenc = t.fecha_venc ? new Date(t.fecha_venc).toLocaleDateString('es-AR',{day:'2-digit',month:'2-digit',year:'numeric'}) : '';
-        const fechaCreacion = t.created_at ? new Date(t.created_at).toLocaleDateString('es-AR',{day:'2-digit',month:'2-digit'}) : '';
-
-        html += `
-          <div style="background:var(--surface);border:1px solid ${vencida?'#ef4444':'var(--border)'};border-radius:8px;padding:10px 14px;${t.estado==='resuelto'?'opacity:0.6':''}">
-            <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px">
-              <div style="flex:1;min-width:0">
-                <div style="font-size:12px;font-weight:600;color:var(--muted);margin-bottom:2px">
-                  📁 ${t.client_name || 'Cliente desconocido'}
-                </div>
-                <div style="font-size:13px;font-weight:500;color:var(--text);line-height:1.4">${t.texto || ''}</div>
-                ${t.notas ? `<div style="font-size:11px;color:var(--muted);margin-top:4px">${t.notas}</div>` : ''}
-              </div>
-              <div style="flex-shrink:0;text-align:right">
-                <div style="font-size:11px;font-weight:600;padding:2px 8px;border-radius:20px;background:${color}20;color:${color};margin-bottom:4px">${label}</div>
-                ${fechaVenc ? `<div style="font-size:10px;color:${vencida?'#ef4444':'var(--muted)'};font-weight:${vencida?'700':'400'}">📅 ${fechaVenc}${vencida?' ⚠️':''}</div>` : ''}
-                ${fechaCreacion ? `<div style="font-size:10px;color:var(--muted)">Creada ${fechaCreacion}</div>` : ''}
-              </div>
-            </div>
-          </div>`;
-      });
-
-      html += `</div></div>`;
-    });
-
-    el.innerHTML = html;
+    window._misTareasData = data;
+    renderMisTareasLista(data);
   } catch(e) {
     el.innerHTML = `<div style="color:#ef4444;padding:40px;text-align:center">Error cargando tareas: ${e.message}</div>`;
   }
+}
+
+function renderMisTareasLista(data) {
+  const el = document.getElementById('misTareasContent');
+  if (!el || !data) return;
+
+  const estadoColor = { pendiente: '#f59e0b', en_progreso: '#3b82f6', resuelto: '#22c55e' };
+  const estadoLabel = { pendiente: 'Pendiente', en_progreso: 'En progreso', resuelto: 'Resuelto' };
+  const totalResueltas = data.tasks.filter(t => t.estado === 'resuelto').length;
+  const tareasVer = _misTareasOcultarResueltas ? data.tasks.filter(t => t.estado !== 'resuelto') : data.tasks;
+
+  let html = `
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:4px 0 16px;flex-wrap:wrap;gap:8px">
+      <div style="font-size:12px;color:var(--muted)">${data.tasks.length} tarea(s) en total${totalResueltas > 0 ? ` · ${totalResueltas} resuelta(s)` : ''}</div>
+      ${totalResueltas > 0 ? `
+      <button onclick="_misTareasOcultarResueltas=!_misTareasOcultarResueltas;renderMisTareasLista(window._misTareasData)"
+        style="font-size:12px;padding:4px 12px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);cursor:pointer;font-family:var(--font-b)">
+        ${_misTareasOcultarResueltas ? '👁 Mostrar resueltas' : '🙈 Ocultar resueltas'}
+      </button>` : ''}
+    </div>`;
+
+  const byUser = {};
+  tareasVer.forEach(t => {
+    const key = t.asignado_a || 'Sin asignar';
+    if (!byUser[key]) byUser[key] = [];
+    byUser[key].push(t);
+  });
+
+  Object.entries(byUser).sort((a,b) => a[0].localeCompare(b[0])).forEach(([usuario, tareas]) => {
+    const pendientes = tareas.filter(t => t.estado !== 'resuelto').length;
+    html += `
+      <div style="margin-bottom:24px">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+          <div style="font-size:14px;font-weight:700;color:var(--text)">👤 ${usuario}</div>
+          <div style="font-size:11px;padding:2px 8px;border-radius:20px;background:var(--accent);color:#fff;font-weight:600">${tareas.length} tarea${tareas.length>1?'s':''}</div>
+          ${pendientes > 0 ? `<div style="font-size:11px;padding:2px 8px;border-radius:20px;background:#fef3c7;color:#b45309;font-weight:600">${pendientes} pendiente${pendientes>1?'s':''}</div>` : ''}
+        </div>
+        <div style="display:flex;flex-direction:column;gap:8px">`;
+
+    tareas.sort((a,b) => {
+      const order = { pendiente: 0, en_progreso: 1, resuelto: 2 };
+      return (order[a.estado]||0) - (order[b.estado]||0);
+    }).forEach(t => {
+      const color = estadoColor[t.estado] || '#94a3b8';
+      const label = estadoLabel[t.estado] || t.estado;
+      const vencida = t.fecha_venc && t.estado !== 'resuelto' && new Date(t.fecha_venc) < new Date();
+      const fechaVenc = t.fecha_venc ? new Date(t.fecha_venc).toLocaleDateString('es-AR',{day:'2-digit',month:'2-digit',year:'numeric'}) : '';
+      const fechaCreacion = t.created_at ? new Date(t.created_at).toLocaleDateString('es-AR',{day:'2-digit',month:'2-digit'}) : '';
+
+      html += `
+        <div style="background:var(--surface);border:1px solid ${vencida?'#ef4444':'var(--border)'};border-radius:8px;padding:10px 14px;${t.estado==='resuelto'?'opacity:0.6':''}">
+          <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px">
+            <div style="flex:1;min-width:0">
+              <div style="font-size:12px;font-weight:600;color:var(--muted);margin-bottom:2px">📁 ${t.client_name || 'Cliente desconocido'}</div>
+              <div style="font-size:13px;font-weight:500;color:var(--text);line-height:1.4">${t.texto || ''}</div>
+            </div>
+            <div style="flex-shrink:0;text-align:right">
+              <div style="font-size:11px;font-weight:600;padding:2px 8px;border-radius:20px;background:${color}20;color:${color};margin-bottom:4px">${label}</div>
+              ${fechaVenc ? `<div style="font-size:10px;color:${vencida?'#ef4444':'var(--muted)'};font-weight:${vencida?'700':'400'}">📅 ${fechaVenc}${vencida?' ⚠️':''}</div>` : ''}
+              ${fechaCreacion ? `<div style="font-size:10px;color:var(--muted)">Creada ${fechaCreacion}</div>` : ''}
+            </div>
+          </div>
+        </div>`;
+    });
+
+    html += `</div></div>`;
+  });
+
+  if (!Object.keys(byUser).length) {
+    html += '<div style="color:var(--muted);font-size:13px;padding:20px;text-align:center">No hay tareas para mostrar</div>';
+  }
+
+  el.innerHTML = html;
 }
 
 // Renderiza el shell: selector de cliente + área de entradas
