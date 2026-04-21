@@ -4672,15 +4672,19 @@ function exportAdsAnunciosExcel() {
 }
 
 function filterAdsAnuncios(val) {
-  const q = val.toLowerCase();
+  const q = (val || '').toLowerCase();
+  const campSel = document.getElementById('adsAnuncioCampana');
+  const camp = campSel ? campSel.value.toLowerCase() : '';
   let count = 0;
   document.querySelectorAll('#adsAnunciosContent tr[data-search]').forEach(row => {
-    const show = !q || row.dataset.search.includes(q);
+    const matchQ = !q || row.dataset.search.includes(q);
+    const matchC = !camp || (row.dataset.campaign && row.dataset.campaign.toLowerCase() === camp);
+    const show = matchQ && matchC;
     row.style.display = show ? '' : 'none';
     if (show) count++;
   });
   const cnt = document.getElementById('adsAnunciosCount');
-  if (cnt) cnt.textContent = (q ? count : (_adsAnunciosData?.items?.length || 0)) + ' anuncios';
+  if (cnt) cnt.textContent = (q || camp ? count : (_adsAnunciosData?.items?.length || 0)) + ' anuncios';
 }
 
 function sortAdsAnuncios(col) {
@@ -4721,7 +4725,7 @@ function renderAdsAnuncios(data) {
   const roasColor = v => !v || v<=0 ? 'var(--muted)' : v>=6 ? '#00e676' : v>=3 ? '#ff9100' : '#ff5252';
 
   const rows = sorted.map((i, idx) => `
-    <tr data-search="${(i.item_id + ' ' + i.title).toLowerCase()}" style="border-bottom:1px solid var(--border);${idx%2===0?'background:rgba(255,255,255,.02)':''}">
+    <tr data-search="${(i.item_id + ' ' + i.title).toLowerCase()}" data-campaign="${(i.campaign||'').toLowerCase()}" style="border-bottom:1px solid var(--border);${idx%2===0?'background:rgba(255,255,255,.02)':''}">
       <td style="padding:7px 10px;font-size:12px;white-space:nowrap">
         <a href="https://articulo.mercadolibre.com.ar/${i.item_id}" target="_blank" style="color:var(--accent);text-decoration:none;font-weight:600">${i.item_id}</a>
       </td>
@@ -4739,17 +4743,25 @@ function renderAdsAnuncios(data) {
       <td style="padding:7px 10px;text-align:right;font-size:12px;color:var(--muted)">${fmt(i.cpc)}</td>
     </tr>`).join('');
 
+  // Armar opciones de campañas únicas
+  const campaigns = [...new Set(items.map(i => i.campaign).filter(Boolean))].sort();
+
   el.innerHTML = `
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap">
       <input id="adsAnuncioSearch" type="text" placeholder="Buscar por título o MLA..."
         oninput="filterAdsAnuncios(this.value)"
         style="flex:1;min-width:220px;padding:7px 12px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px;outline:none">
+      <select id="adsAnuncioCampana" onchange="filterAdsAnuncios(document.getElementById('adsAnuncioSearch').value)"
+        style="padding:7px 12px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px;outline:none;max-width:220px">
+        <option value="">Todas las campañas</option>
+        ${campaigns.map(c => `<option value="${c}">${c}</option>`).join('')}
+      </select>
       <div style="font-size:12px;color:var(--muted)" id="adsAnunciosCount">${items.length} anuncios · ${from} → ${to}</div>
       <button onclick="exportAdsAnunciosExcel()" style="padding:6px 14px;border:none;border-radius:8px;background:#16a34a;color:#fff;font-size:12px;font-weight:600;cursor:pointer">📥 Exportar Excel</button>
     </div>
-    <div style="overflow-x:auto">
+    <div style="overflow-x:auto;max-height:520px;overflow-y:auto">
       <table style="width:100%;border-collapse:collapse">
-        <thead><tr style="background:var(--surface2)">
+        <thead><tr style="background:var(--surface2);position:sticky;top:0;z-index:2">
           ${th('item_id',    'MLA',         'left')}
           ${th('title',      'Título',      'left')}
           ${th('campaign',   'Campaña',     'left')}
