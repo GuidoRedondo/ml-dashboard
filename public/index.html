@@ -2428,18 +2428,40 @@ async function importarCMV(input) {
     try {
       const wb = XLSX.read(e.target.result, { type: 'array' });
       const ws = wb.Sheets[wb.SheetNames[0]];
-      const rows = XLSX.utils.sheet_to_json(ws);
 
-      // Filtrar solo filas con MLA y costo cargado
-      const costos = rows
-        .filter(r => r['MLA'] && r['Costo unitario (CMV)'] !== '' && r['Costo unitario (CMV)'] != null)
+      // Buscar fila de headers (busca la que tenga 'MLA')
+      const rawRows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+      let headerRow = -1;
+      for (let i = 0; i < Math.min(rawRows.length, 6); i++) {
+        if (rawRows[i].some(c => String(c).toUpperCase().includes('MLA'))) { headerRow = i; break; }
+      }
+      if (headerRow === -1) { showToast('❌ No se encontró fila de encabezados'); return; }
+      const headers = rawRows[headerRow].map(h => String(h||'').trim());
+      const dataRows = rawRows.slice(headerRow + 1).map(r => {
+        const obj = {};
+        headers.forEach((h, i) => { obj[h] = r[i] ?? ''; });
+        return obj;
+      });
+
+      // Filtrar solo filas con MLA y costo cargado — buscar columna de costo flexible
+      const allRows = dataRows;
+      // Detectar clave de costo (cualquier columna que incluya "costo")
+      const costKey = allRows.length ? Object.keys(allRows[0]).find(k => k.toLowerCase().includes('costo')) : null;
+      const mlaKey  = allRows.length ? Object.keys(allRows[0]).find(k => k.toLowerCase().includes('mla')) : 'MLA';
+      const titKey  = allRows.length ? Object.keys(allRows[0]).find(k => k.toLowerCase().includes('títul') || k.toLowerCase().includes('title')) : 'Título';
+      const notKey  = allRows.length ? Object.keys(allRows[0]).find(k => k.toLowerCase().includes('nota')) : 'Notas';
+
+      if (!costKey) { showToast('❌ No se encontró columna de costo en el archivo'); return; }
+
+      const costos = allRows
+        .filter(r => r[mlaKey] && r[costKey] !== '' && r[costKey] != null)
         .map(r => ({
-          mla_id: String(r['MLA']).trim(),
-          title: String(r['Título'] || '').trim(),
-          costo_unit: parseFloat(r['Costo unitario (CMV)']) || 0,
-          notas: String(r['Notas'] || '').trim()
+          mla_id: String(r[mlaKey]).trim(),
+          title: String(r[titKey] || '').trim(),
+          costo_unit: parseFloat(String(r[costKey]).replace(/[,$\s]/g,'')) || 0,
+          notas: String(r[notKey] || '').trim()
         }))
-        .filter(r => r.costo_unit > 0);
+        .filter(r => r.mla_id.startsWith('MLA') && r.costo_unit > 0);
 
       if (!costos.length) { showToast('❌ No se encontraron costos válidos en el archivo'); return; }
 
@@ -3852,12 +3874,18 @@ async function importarCMVRentabilidad(input) {
       if (String(rows[i][0]).toUpperCase().includes('MLA') && rows[i].length > 2) { headerRow = i; break; }
     }
     if (headerRow === -1) { showToast('❌ No se encontró la fila de encabezados'); input.value=''; return; }
+    const headers = rows[headerRow].map(h => String(h||'').toLowerCase().trim());
+    const colMLA   = headers.findIndex(h => h.includes('mla'));
+    const colTit   = headers.findIndex(h => h.includes('títul') || h.includes('title'));
+    const colCosto = headers.findIndex(h => h.includes('costo'));
+    const colNotas = headers.findIndex(h => h.includes('nota'));
+    if (colMLA === -1 || colCosto === -1) { showToast('❌ No se encontraron columnas MLA o Costo en el archivo'); input.value=''; return; }
     const costos = [];
     rows.slice(headerRow + 1).forEach(row => {
-      const mla_id = String(row[0]||'').trim();
-      const title  = String(row[1]||'').trim();
-      const costo  = parseFloat(String(row[2]||'').replace(/[,$\s]/g,''))||0;
-      const notas  = String(row[5]||'').trim();
+      const mla_id = String(row[colMLA]||'').trim();
+      const title  = colTit >= 0 ? String(row[colTit]||'').trim() : '';
+      const costo  = parseFloat(String(row[colCosto]||'').replace(/[,$\s]/g,''))||0;
+      const notas  = colNotas >= 0 ? String(row[colNotas]||'').trim() : '';
       if (mla_id.startsWith('MLA') && costo > 0) costos.push({ mla_id, title, costo_unit: costo, notas });
     });
     if (!costos.length) { showToast('❌ Sin costos válidos en el archivo'); input.value=''; return; }
