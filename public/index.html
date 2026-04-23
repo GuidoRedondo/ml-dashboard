@@ -4264,7 +4264,12 @@ function loadPerformance() {
       </div>`;
   }
 
-  // ── TOP 15 TABLE with % recibido + % del total ─────────────────────────
+  // ── TOP 15 TABLE with % recibido + % del total + Stock ─────────────────
+  const stockMap = {};
+  if (window._pubsData && window._pubsData.length) {
+    window._pubsData.forEach(p => { stockMap[p.id] = p.available_quantity ?? null; });
+  }
+
   function top15Table(items, sortKey, mainFmt, mainLabel, totalBase) {
     if (!items.length) return '<div style="color:var(--muted);font-size:12px;padding:10px">Sin datos</div>';
     const sorted = [...items].sort((a,b) => parseFloat(b[sortKey])-parseFloat(a[sortKey])).slice(0,15);
@@ -4279,14 +4284,18 @@ function loadPerformance() {
             <th style="text-align:right;padding:6px 4px;color:var(--muted);font-weight:600">${mainLabel}</th>
             <th style="text-align:right;padding:6px 4px;color:var(--muted);font-weight:600">% del total</th>
             <th style="text-align:right;padding:6px 4px;color:var(--muted);font-weight:600">% recibido</th>
+            <th style="text-align:right;padding:6px 4px;color:var(--muted);font-weight:600">Stock</th>
           </tr>
         </thead>
         <tbody>
           ${sorted.map((item, i) => {
-            const val     = parseFloat(item[sortKey]) || 0;
-            const pctTot  = (val / totalBase * 100).toFixed(1);
-            const pctRec  = item.revenue > 0 ? ((item.net / item.revenue)*100).toFixed(1) : '—';
+            const val      = parseFloat(item[sortKey]) || 0;
+            const pctTot   = (val / totalBase * 100).toFixed(1);
+            const pctRec   = item.revenue > 0 ? ((item.net / item.revenue)*100).toFixed(1) : '—';
             const recColor = parseFloat(pctRec) >= 60 ? '#00e676' : parseFloat(pctRec) >= 40 ? '#FFD700' : '#ff9100';
+            const stock    = stockMap[item.id];
+            const stockStr = stock == null ? '—' : stock.toLocaleString('es-AR');
+            const stockColor = stock == null ? 'var(--muted)' : stock === 0 ? '#ff5252' : stock <= 5 ? '#ff9100' : '#00e676';
             return `<tr style="border-bottom:1px solid var(--border)">
               <td style="padding:6px 4px;color:var(--muted)">${i+1}</td>
               <td style="padding:6px 4px;white-space:nowrap">
@@ -4297,6 +4306,7 @@ function loadPerformance() {
               <td style="padding:6px 4px;text-align:right;font-weight:700;color:var(--accent)">${mainFmt(val)}</td>
               <td style="padding:6px 4px;text-align:right;color:var(--muted)">${pctTot}%</td>
               <td style="padding:6px 4px;text-align:right;font-weight:700;color:${recColor}">${pctRec}%</td>
+              <td style="padding:6px 4px;text-align:right;font-weight:700;color:${stockColor}">${stockStr}</td>
             </tr>`;
           }).join('')}
         </tbody>
