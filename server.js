@@ -3823,6 +3823,20 @@ app.get('/api/bitacora/all-tasks', requireAuth, async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
+// ── Proxy genérico para endpoints de ML (evita CORS) ──
+app.get('/api/proxy-ml', requireAuth, async (req, res) => {
+  try {
+    const { path, client_id } = req.query;
+    if (!path || !client_id) return res.status(400).json({ error: 'Falta path o client_id' });
+    const client = await getActiveClient(client_id);
+    if (!client) return res.status(404).json({ error: 'Cliente no encontrado' });
+    const url = `${ML_API}${path}`;
+    const r = await fetch(url, { headers: { 'Authorization': `Bearer ${client.access_token}` } });
+    const data = await r.json();
+    res.status(r.status).json(data);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
 app.get('/api/bitacora', requireAuth, async (req, res) => {
   try {
     const { client_id } = req.query;
