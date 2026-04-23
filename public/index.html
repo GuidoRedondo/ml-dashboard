@@ -720,18 +720,36 @@ tbody td {
     <div class="page" id="page-performance">
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap">
         <h2 style="margin:0;font-family:var(--font-b);flex:1">Performance por publicación</h2>
-        <button class="sync-btn" onclick="exportPerformanceExcel()">📥 Excel</button>
+        <button class="sync-btn" onclick="exportPerformanceExcel()" id="btnExportPerf">📥 Excel</button>
       </div>
-      <!-- Buscador por MLA -->
-      <div style="display:flex;gap:10px;align-items:center;margin-bottom:16px">
-        <input id="perfMlaInput" type="text" placeholder="Buscar por MLA o título para filtrar el análisis..."
-          style="flex:1;padding:8px 14px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px;outline:none"
-          oninput="onPerfMlaSearch(this.value)"
-          onkeydown="if(event.key==='Escape'){this.value='';onPerfMlaSearch('')}">
-        <button onclick="document.getElementById('perfMlaInput').value='';onPerfMlaSearch('')"
-          style="padding:7px 14px;border:1px solid var(--border);border-radius:8px;background:none;color:var(--muted);font-size:12px;cursor:pointer">✕ Limpiar</button>
+      <!-- Tabs -->
+      <div style="display:flex;gap:0;border-bottom:2px solid var(--border);margin-bottom:20px">
+        <button id="tab-perf-analisis" onclick="switchPerfTab('analisis')"
+          style="padding:8px 18px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--accent);border-bottom:2px solid var(--accent);margin-bottom:-2px;font-family:var(--font-b)">
+          📊 Análisis
+        </button>
+        <button id="tab-perf-publicaciones" onclick="switchPerfTab('publicaciones')"
+          style="padding:8px 18px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-2px;font-family:var(--font-b)">
+          📋 Publicaciones
+        </button>
       </div>
-      <div id="performanceContent"></div>
+      <!-- Tab Análisis -->
+      <div id="perf-tab-analisis">
+        <!-- Buscador por MLA -->
+        <div style="display:flex;gap:10px;align-items:center;margin-bottom:16px">
+          <input id="perfMlaInput" type="text" placeholder="Buscar por MLA o título para filtrar el análisis..."
+            style="flex:1;padding:8px 14px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px;outline:none"
+            oninput="onPerfMlaSearch(this.value)"
+            onkeydown="if(event.key==='Escape'){this.value='';onPerfMlaSearch('')}">
+          <button onclick="document.getElementById('perfMlaInput').value='';onPerfMlaSearch('')"
+            style="padding:7px 14px;border:1px solid var(--border);border-radius:8px;background:none;color:var(--muted);font-size:12px;cursor:pointer">✕ Limpiar</button>
+        </div>
+        <div id="performanceContent"></div>
+      </div>
+      <!-- Tab Publicaciones -->
+      <div id="perf-tab-publicaciones" style="display:none">
+        <div id="perfPubContent"></div>
+      </div>
     </div>
 
     <!-- PUBLICACIONES -->
@@ -2713,6 +2731,180 @@ function copyMLA(el, id) {
     el.textContent = '✓ copiado'; el.style.color = '#00e676';
     setTimeout(() => { el.textContent = orig; el.style.color = 'var(--muted)'; }, 1500);
   });
+}
+
+let _perfActiveTab = 'analisis';
+let _perfPubSort = { col: 'revenue', asc: false };
+let _perfPubModeFilter = null;
+
+function switchPerfTab(tab) {
+  _perfActiveTab = tab;
+  ['analisis','publicaciones'].forEach(t => {
+    const el  = document.getElementById(`perf-tab-${t}`);
+    const btn = document.getElementById(`tab-perf-${t}`);
+    if (el)  el.style.display  = t === tab ? '' : 'none';
+    if (btn) {
+      btn.style.color        = t === tab ? 'var(--accent)' : 'var(--muted)';
+      btn.style.borderBottom = t === tab ? '2px solid var(--accent)' : '2px solid transparent';
+    }
+  });
+  const btnExport = document.getElementById('btnExportPerf');
+  if (btnExport) btnExport.style.display = tab === 'publicaciones' ? 'none' : '';
+  if (tab === 'publicaciones') renderPerfPublicaciones();
+}
+
+function renderPerfPublicaciones() {
+  const el = document.getElementById('perfPubContent');
+  if (!el) return;
+
+  // Recopilar by_product de todas las cuentas conectadas
+  const connected = state.accounts.filter(a => a.data);
+  if (!connected.length) {
+    el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Sincronizá primero</div>';
+    return;
+  }
+
+  // Juntar todos los productos de todas las cuentas
+  let allProducts = [];
+  let totalRevenue = 0;
+  connected.forEach(acc => {
+    const bp = acc.data?.performance?.by_product;
+    if (!bp) return;
+    bp.forEach(p => { allProducts.push({ ...p, cuenta: acc.name }); });
+  });
+
+  // Calcular totales para % del total
+  totalRevenue = allProducts.reduce((s, p) => s + (p.revenue || 0), 0) || 1;
+
+  // Stock map
+  const stockMap = {};
+  const fullMap = {};
+  if (window._fullStockData?.items) window._fullStockData.items.forEach(f => { fullMap[f.id] = f.stock_full ?? 0; });
+  if (window._pubsData) window._pubsData.forEach(p => {
+    const dep = p.available_quantity ?? 0;
+    const full = p.is_full ? (fullMap[p.id] ?? 0) : 0;
+    stockMap[p.id] = dep + full;
+  });
+
+  // Filtrar por modo de entrega si hay filtro activo
+  if (_perfPubModeFilter) {
+    allProducts = allProducts.filter(p => {
+      // Buscar en los datos por modo
+      const acc = connected.find(a => a.data?.performance?.by_product?.some(bp => bp.id === p.id));
+      if (!acc) return true;
+      const modeData = acc.data?.performance?.top15_by_mode?.[_perfPubModeFilter];
+      if (!modeData) return false;
+      return [...(modeData.revenue || []), ...(modeData.units || [])].some(i => i.id === p.id);
+    });
+  }
+
+  // Ordenar — pct_total y stock son calculados
+  const { col, asc } = _perfPubSort;
+  allProducts.sort((a, b) => {
+    let va, vb;
+    if (col === 'pct_total') { va = a.revenue || 0; vb = b.revenue || 0; }
+    else if (col === 'stock') { va = stockMap[a.id] ?? -1; vb = stockMap[b.id] ?? -1; }
+    else { va = a[col] ?? -Infinity; vb = b[col] ?? -Infinity; }
+    return asc ? va - vb : vb - va;
+  });
+
+  const fmt  = n => '$' + Math.round(n).toLocaleString('es-AR');
+  const fmtP = n => n != null ? n.toFixed(1) + '%' : '—';
+
+  const th = (c, label, align = 'right') => {
+    const active = _perfPubSort.col === c;
+    const arrow  = active ? (_perfPubSort.asc ? ' ↑' : ' ↓') : '';
+    return `<th onclick="sortPerfPub('${c}')" style="padding:9px 10px;text-align:${align};font-size:11px;font-weight:600;color:${active?'var(--accent)':'var(--muted)'};cursor:pointer;user-select:none;white-space:nowrap;position:sticky;top:0;background:var(--surface2);z-index:2">${label}${arrow}</th>`;
+  };
+
+  // Filtros por forma de entrega (tomar de byMode del primer account)
+  const byMode = {};
+  connected.forEach(acc => {
+    Object.entries(acc.data?.performance?.by_mode || {}).forEach(([k,v]) => { byMode[k] = (byMode[k]||0) + v; });
+  });
+  const modeColors = { 'FULL':'#00bcd4','FLEX':'#00e676','Correo':'#2196F3','Sin envío':'#ff9100' };
+  const modeEntries = Object.entries(byMode).sort((a,b) => b[1]-a[1]);
+  const totalOrders = Object.values(byMode).reduce((a,b)=>a+b,0) || 1;
+
+  const modeFilters = modeEntries.map(([mode, val]) => {
+    const pct = (val/totalOrders*100).toFixed(0);
+    const color = modeColors[mode] || '#9c27b0';
+    const isActive = _perfPubModeFilter === mode;
+    return `<button onclick="setPerfPubModeFilter('${mode}')"
+      style="display:flex;align-items:center;gap:6px;padding:7px 14px;border-radius:8px;border:2px solid ${isActive ? color : 'var(--border)'};background:${isActive ? color+'22' : 'var(--surface)'};cursor:pointer;font-family:var(--font-b)">
+      <span style="width:10px;height:10px;border-radius:50%;background:${color};flex-shrink:0"></span>
+      <span style="font-size:13px;font-weight:600;color:var(--text)">${mode}</span>
+      <span style="font-size:11px;color:var(--muted)">${pct}%</span>
+      <span style="font-size:11px;color:var(--muted)">${val}</span>
+    </button>`;
+  }).join('');
+
+  const rows = allProducts.map((p, idx) => {
+    const stock = stockMap[p.id];
+    const stockStr = stock == null ? '—' : stock.toLocaleString('es-AR');
+    const stockColor = stock == null ? 'var(--muted)' : stock === 0 ? '#ff5252' : stock <= 5 ? '#ff9100' : '#00e676';
+    const trendStr = p.trend_pct == null ? '—' : (p.trend_pct >= 0 ? '+' : '') + p.trend_pct.toFixed(1) + '%';
+    const trendColor = p.trend_pct == null ? 'var(--muted)' : p.trend_pct >= 0 ? '#00e676' : '#ff5252';
+    const pctTotal = (p.revenue / totalRevenue * 100).toFixed(1);
+    const convColor = !p.conversion ? 'var(--muted)' : p.conversion >= 3 ? '#00e676' : p.conversion >= 1 ? '#ff9100' : '#ff5252';
+    return `<tr style="border-bottom:1px solid var(--border);${idx%2===0?'background:rgba(255,255,255,.015)':''}">
+      <td style="padding:7px 10px;font-size:11px;white-space:nowrap">
+        <a href="https://articulo.mercadolibre.com.ar/${p.id}" target="_blank" style="color:var(--accent);text-decoration:none;font-weight:600">${p.id}</a>
+      </td>
+      <td style="padding:7px 10px;font-size:12px;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${p.title}">${p.title}</td>
+      <td style="padding:7px 10px;text-align:right;font-size:12px;font-weight:700;color:#00e676">${(p.units||0).toLocaleString('es-AR')}</td>
+      <td style="padding:7px 10px;text-align:right;font-size:12px;font-weight:700;color:var(--accent)">${fmt(p.revenue||0)}</td>
+      <td style="padding:7px 10px;text-align:right;font-size:12px;font-weight:700;color:${trendColor}">${trendStr}</td>
+      <td style="padding:7px 10px;text-align:right;font-size:12px;color:var(--muted)">${pctTotal}%</td>
+      <td style="padding:7px 10px;text-align:right;font-size:12px">${p.visits > 0 ? p.visits.toLocaleString('es-AR') : '—'}</td>
+      <td style="padding:7px 10px;text-align:right;font-size:12px;font-weight:700;color:${convColor}">${p.conversion > 0 ? fmtP(p.conversion) : '—'}</td>
+      <td style="padding:7px 10px;text-align:right;font-size:12px;font-weight:700;color:${stockColor}">${stockStr}</td>
+    </tr>`;
+  }).join('');
+
+  el.innerHTML = `
+    <!-- Filtros por forma de entrega -->
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px 18px;margin-bottom:16px">
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <span style="font-size:12px;font-weight:600;color:var(--muted)">Filtrar por entrega:</span>
+        <button onclick="setPerfPubModeFilter(null)"
+          style="padding:7px 14px;border-radius:8px;border:2px solid ${!_perfPubModeFilter ? 'var(--accent)' : 'var(--border)'};background:${!_perfPubModeFilter ? 'rgba(99,102,241,.1)' : 'var(--surface)'};cursor:pointer;font-size:13px;font-weight:600;color:var(--text);font-family:var(--font-b)">
+          Todos
+        </button>
+        ${modeFilters}
+      </div>
+    </div>
+    <!-- Tabla -->
+    <div style="font-size:12px;color:var(--muted);margin-bottom:8px">${allProducts.length} publicaciones</div>
+    <div style="overflow-x:auto;max-height:600px;overflow-y:auto;border-radius:10px;border:1px solid var(--border)">
+      <table style="width:100%;border-collapse:collapse">
+        <thead>
+          <tr style="background:var(--surface2)">
+            ${th('id',        'MLA',          'left')}
+            ${th('title',     'Título',       'left')}
+            ${th('units',     'Unidades')}
+            ${th('revenue',   'Facturación')}
+            ${th('trend_pct', 'vs anterior')}
+            ${th('pct_total', '% del total')}
+            ${th('visits',    'Visitas')}
+            ${th('conversion','Conversión')}
+            ${th('stock',     'Stock')}
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+}
+
+function sortPerfPub(col) {
+  if (_perfPubSort.col === col) _perfPubSort.asc = !_perfPubSort.asc;
+  else { _perfPubSort.col = col; _perfPubSort.asc = false; }
+  renderPerfPublicaciones();
+}
+
+function setPerfPubModeFilter(mode) {
+  _perfPubModeFilter = mode;
+  renderPerfPublicaciones();
 }
 
 function perfFilterMode(idx) {
