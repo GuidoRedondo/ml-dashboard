@@ -4687,7 +4687,13 @@ function exportAdsAnunciosExcel() {
   const client = getActiveClient();
   const XLSX = window.XLSX;
   const stockMapExp = {};
-  if (window._pubsData) window._pubsData.forEach(p => { stockMapExp[p.id] = p.available_quantity ?? ''; });
+  const fullMapExp = {};
+  if (window._fullStockData?.items) window._fullStockData.items.forEach(f => { fullMapExp[f.id] = f.stock_full ?? 0; });
+  if (window._pubsData) window._pubsData.forEach(p => {
+    const dep = p.available_quantity ?? 0;
+    const full = p.is_full ? (fullMapExp[p.id] ?? 0) : 0;
+    stockMapExp[p.id] = dep + full;
+  });
   const rows = items.map(i => ({
     'MLA':          i.item_id,
     'Título':       i.title,
@@ -4765,16 +4771,28 @@ function renderAdsAnuncios(data) {
   const acosColor = v => !v || v<=0 ? 'var(--muted)' : v<=15 ? '#00e676' : v<=25 ? '#ff9100' : '#ff5252';
   const roasColor = v => !v || v<=0 ? 'var(--muted)' : v>=6 ? '#00e676' : v>=3 ? '#ff9100' : '#ff5252';
 
-  // Mapa de stock desde _pubsData
+  // Mapa de stock: para items FULL suma stock_full + available_quantity (depósito)
   const adsStockMap = {};
+  const adsFullMap = {};
+  if (window._fullStockData?.items?.length) {
+    window._fullStockData.items.forEach(f => { adsFullMap[f.id] = f.stock_full ?? 0; });
+  }
   if (window._pubsData && window._pubsData.length) {
-    window._pubsData.forEach(p => { adsStockMap[p.id] = p.available_quantity ?? null; });
+    window._pubsData.forEach(p => {
+      const deposito = p.available_quantity ?? 0;
+      const full = p.is_full ? (adsFullMap[p.id] ?? 0) : 0;
+      adsStockMap[p.id] = { total: deposito + full, full, deposito: p.is_full ? deposito : null, is_full: p.is_full };
+    });
   }
 
   const rows = sorted.map((i, idx) => {
-    const stock = adsStockMap[i.item_id];
-    const stockStr = stock == null ? '—' : stock.toLocaleString('es-AR');
-    const stockColor = stock == null ? 'var(--muted)' : stock === 0 ? '#ff5252' : stock <= 5 ? '#ff9100' : '#00e676';
+    const stockData = adsStockMap[i.item_id];
+    const stockTotal = stockData?.total ?? null;
+    const stockStr = stockTotal == null ? '—'
+      : stockData.is_full
+        ? `${stockTotal} (F:${stockData.full} D:${stockData.deposito})`
+        : stockTotal.toLocaleString('es-AR');
+    const stockColor = stockTotal == null ? 'var(--muted)' : stockTotal === 0 ? '#ff5252' : stockTotal <= 5 ? '#ff9100' : '#00e676';
     return `
     <tr data-search="${(i.item_id + ' ' + i.title).toLowerCase()}" data-campaign="${(i.campaign||'').toLowerCase()}" style="border-bottom:1px solid var(--border);${idx%2===0?'background:rgba(255,255,255,.02)':''}">
       <td style="padding:7px 10px;font-size:12px;white-space:nowrap">
