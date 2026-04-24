@@ -3117,7 +3117,7 @@ function renderDescuentos() {
     align = align || 'right';
     const active = _descuentosSort.col === col;
     const arrow  = active ? (_descuentosSort.asc ? ' ↑' : ' ↓') : '';
-    return '<th onclick="sortDescuentos('' + col + '')" style="' + thS(align) + ';cursor:pointer;color:' + (active ? 'var(--accent)' : 'var(--muted)') + '">' + label + arrow + '</th>';
+    return '<th onclick="sortDescuentos(\"' + col + '\")" style="' + thS(align) + ';cursor:pointer;color:' + (active ? 'var(--accent)' : 'var(--muted)') + '">' + label + arrow + '</th>';
   }
 
   // Armar filas
@@ -3136,10 +3136,10 @@ function renderDescuentos() {
 
     let html = '<tr style="border-bottom:1px solid var(--border);' + bg + '">';
     html += '<td style="padding:6px 8px;font-size:11px;white-space:nowrap">'
-      + '<span onclick="navigator.clipboard.writeText(this.dataset.mla);const t=this;t.textContent='✓';setTimeout(()=>t.textContent=t.dataset.mla,1200)" data-mla="' + p.id + '" style="color:var(--accent);font-weight:600;cursor:pointer" title="Click para copiar">' + p.id + '</span>'
+      + '<span onclick="navigator.clipboard.writeText(this.dataset.mla);const t=this;t.textContent=String.fromCharCode(10003);setTimeout(()=>t.textContent=t.dataset.mla,1200)" data-mla="' + p.id + '" style="color:var(--accent);font-weight:600;cursor:pointer" title="Click para copiar">' + p.id + '</span>'
       + '</td>';
     html += '<td style="padding:6px 8px;font-size:12px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + p.title.replace(/"/g,"'") + '">'
-      + '<a href="https://articulo.mercadolibre.com.ar/' + mlaLink + '" target="_blank" style="color:var(--text);text-decoration:none" onmouseover="this.style.textDecoration='underline'" onmouseout="this.style.textDecoration='none'">' + p.title + '</a>'
+      + '<a href="https://articulo.mercadolibre.com.ar/' + mlaLink + '" target="_blank" style="color:var(--text);text-decoration:none">' + p.title + '</a>'
       + '</td>';
     html += '<td style="padding:6px 8px;text-align:right;font-size:12px">$' + Math.round(p.precio).toLocaleString('es-AR') + '</td>';
     html += '<td style="padding:6px 8px;text-align:right;font-size:12px">$' + Math.round(p.costo).toLocaleString('es-AR') + '</td>';
