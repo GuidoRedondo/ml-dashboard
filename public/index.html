@@ -2989,7 +2989,27 @@ function exportDescuentosExcel() {
   showToast('✅ Excel descargado');
 }
 
-function loadDescuentos() {
+// ── Mapa de comisiones ML por listing type ──────────────────────────────────
+async function loadComisionMap() {
+  if (window._comisionMap) return window._comisionMap;
+  const client = getActiveClient();
+  if (!client) return {};
+  const listingTypes = [...new Set((window._pubsData || []).map(p => p.listing_type_id).filter(Boolean))];
+  if (!listingTypes.length) listingTypes.push('gold_special', 'gold_pro');
+  const map = {};
+  await Promise.all(listingTypes.map(async lt => {
+    try {
+      const r = await apiCall('GET', `/api/proxy-ml?path=${encodeURIComponent('/sites/MLA/listing_types/' + lt)}&client_id=${client.id}`);
+      if (r?.configuration?.sale_fee_criteria?.percentage_of_fee_amount != null) {
+        map[lt] = r.configuration.sale_fee_criteria.percentage_of_fee_amount;
+      }
+    } catch(e) {}
+  }));
+  window._comisionMap = map;
+  return map;
+}
+
+async function loadDescuentos() {
   window._dscSearchVal = '';
   const el = document.getElementById('descuentosContent');
   if (!el) return;
@@ -2999,17 +3019,25 @@ function loadDescuentos() {
     return;
   }
 
+  // Cargar mapa de comisiones desde ML
+  el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">⏳ Cargando comisiones de ML...</div>';
+  const comisionMap = await loadComisionMap();
+
+  // Mapa de listing_type por MLA desde _pubsData
+  const ltMap = {};
+  (window._pubsData || []).forEach(p => { if (p.listing_type_id) ltMap[p.id] = p.listing_type_id; });
+
   // Juntar productos con CMV cargado
   let products = [];
   connected.forEach(acc => {
     (acc.data.rentabilidad.by_product || []).forEach(p => {
-      if (!p.costo_unit) return; // solo los que tienen CMV cargado
-      // Comisión promedio real: comision total / revenue
-      const comPct = p.revenue > 0 ? (p.comision / p.revenue * 100) : 6;
-      // Envío promedio real por unidad vendida
+      if (!p.costo_unit) return;
+      // Comisión: usar mapa ML si disponible, sino histórico real
+      const lt = ltMap[p.id];
+      const comPctML = lt && comisionMap[lt] != null ? comisionMap[lt] : null;
+      const comPctHist = p.revenue > 0 ? (p.comision / p.revenue * 100) : 6;
+      const comPct = comPctML != null ? comPctML : parseFloat(comPctHist.toFixed(1));
       const envioUnit = p.units > 0 ? ((p.envio_pagado || 0) / p.units) : 0;
-      // Días de cobertura: stock / (unidades / días del período)
-      const client = getActiveClient();
       const dias = window._perfDays || 30;
       const stock = (() => {
         const fullMap = {};
@@ -3028,16 +3056,13 @@ function loadDescuentos() {
       const cobertura = (stock != null && ventasDiarias > 0) ? Math.round(stock / ventasDiarias) : null;
 
       products.push({
-        id:         p.id,
-        title:      p.title,
-        precio:     p.revenue / (p.units || 1), // precio promedio real
-        costo:      p.costo_unit || 0,
-        comPct:     parseFloat(comPct.toFixed(1)),
-        envioUnit:  Math.round(envioUnit),
-        stock:      stock,
-        cobertura:  cobertura,
-        units:      p.units,
-        cuenta:     acc.name,
+        id: p.id, title: p.title,
+        precio: p.revenue / (p.units || 1),
+        costo: p.costo_unit || 0,
+        comPct: parseFloat(comPct.toFixed(1)),
+        comSource: comPctML != null ? 'ML' : 'histórico',
+        envioUnit: Math.round(envioUnit),
+        stock, cobertura, units: p.units, cuenta: acc.name,
       });
     });
   });
@@ -3145,6 +3170,7 @@ function renderDescuentos() {
     html += '<td style="padding:6px 8px;text-align:right;font-size:12px">$' + Math.round(p.costo).toLocaleString('es-AR') + '</td>';
     html += '<td style="padding:4px 6px;text-align:center">'
       + '<input id="dsc_com_' + p.id + '" type="number" value="' + comPct + '" min="0" max="30" step="0.1" onchange="renderDescuentos()" style="width:52px;padding:3px 5px;border-radius:5px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:11px;text-align:center">%'
+      + '<div style="font-size:9px;color:' + (p.comSource === 'ML' ? '#00e676' : '#f59e0b') + ';margin-top:1px">' + (p.comSource === 'ML' ? '✓ ML' : '≈ hist.') + '</div>'
       + '</td>';
     html += '<td style="padding:4px 6px;text-align:center">'
       + '<input id="dsc_env_' + p.id + '" type="number" value="' + envioUnit + '" min="0" step="10" onchange="renderDescuentos()" style="width:64px;padding:3px 5px;border-radius:5px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:11px;text-align:center">'
