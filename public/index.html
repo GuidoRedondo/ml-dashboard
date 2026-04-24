@@ -3050,7 +3050,6 @@ function renderDescuentos() {
   const el = document.getElementById('descuentosContent');
   if (!el || !_descuentosData) return;
 
-  // Leer inputs globales
   const impPct    = parseFloat(document.getElementById('dscImp')?.value  || 0);
   const tacosPct  = parseFloat(document.getElementById('dscTacos')?.value || 0);
   const cfPct     = parseFloat(document.getElementById('dscCF')?.value   || 0);
@@ -3066,14 +3065,11 @@ function renderDescuentos() {
   const { col: sCol, asc: sAsc } = _descuentosSort;
   products = [...products].sort((a, b) => {
     let va, vb;
-    if (sCol === 'stock')     { va = a.stock ?? -1;    vb = b.stock ?? -1; }
+    if (sCol === 'stock')      { va = a.stock ?? -1;    vb = b.stock ?? -1; }
     else if (sCol === 'cobertura') { va = a.cobertura ?? -1; vb = b.cobertura ?? -1; }
     else if (sCol === 'precio') { va = a.precio; vb = b.precio; }
     else if (sCol === 'costo')  { va = a.costo;  vb = b.costo; }
     else if (sCol === 'margen') {
-      const impPct2 = parseFloat(document.getElementById('dscImp')?.value||0);
-      const tacos2  = parseFloat(document.getElementById('dscTacos')?.value||0);
-      const cf2     = parseFloat(document.getElementById('dscCF')?.value||0);
       va = calcMargen(a, a.precio, a.comPct, a.envioUnit).margen;
       vb = calcMargen(b, b.precio, b.comPct, b.envioUnit).margen;
     }
@@ -3081,7 +3077,6 @@ function renderDescuentos() {
     return sAsc ? va - vb : vb - va;
   });
 
-  // Función que calcula margen para un precio dado
   function calcMargen(p, precio, comPct, envioUnit) {
     const cf    = precio * cfPct / 100;
     const imp   = precio * impPct / 100;
@@ -3089,11 +3084,8 @@ function renderDescuentos() {
     const com   = precio * comPct / 100;
     const cargo = cargoFijoML(precio);
     const envio = precio >= 33000 ? envioUnit : 0;
-    // IVA diferencia: IVA ventas - IVA compras (igual que en rentabilidad)
     const iva21 = 0.21;
-    const ivaVentas   = precio / (1 + iva21) * iva21;
-    const ivaCompras  = (p.costo + com + envio) / (1 + iva21) * iva21;
-    const ivaDif      = Math.max(0, ivaVentas - ivaCompras);
+    const ivaDif = Math.max(0, precio/(1+iva21)*iva21 - (p.costo+com+envio)/(1+iva21)*iva21);
     const costoTotal = p.costo + com + cargo + envio + imp + tacos + cf + ivaDif;
     const margen = ((precio - costoTotal) / precio * 100);
     return { margen: parseFloat(margen.toFixed(1)), costoTotal, com, cargo, envio, imp, tacos, cf, ivaDif };
@@ -3104,133 +3096,113 @@ function renderDescuentos() {
     const nuevoPrecio = p.precio * (1 - pct/100);
     const { margen } = calcMargen(p, nuevoPrecio, comPct, envioUnit);
     const color = margen >= minMargen + 5 ? '#00e676' : margen >= minMargen ? '#f59e0b' : '#ff5252';
-    return `<td style="padding:6px 8px;text-align:center;background:${color}11;border-radius:4px">
-      <div style="font-size:12px;font-weight:700;color:var(--text)">$${Math.round(nuevoPrecio).toLocaleString('es-AR')}</div>
-      <div style="font-size:12px;font-weight:800;color:${color}">${margen.toFixed(1)}%</div>
-    </td>`;
+    return '<td style="padding:6px 8px;text-align:center;background:' + color + '11">'
+      + '<div style="font-size:12px;font-weight:700;color:var(--text)">$' + Math.round(nuevoPrecio).toLocaleString('es-AR') + '</div>'
+      + '<div style="font-size:12px;font-weight:800;color:' + color + '">' + margen.toFixed(1) + '%</div>'
+      + '</td>';
   }
 
-  // Cobertura badge
   function cobBadge(dias) {
     if (dias == null) return '<span style="color:var(--muted)">—</span>';
-    const color = dias >= 30 ? '#00e676' : dias >= 15 ? '#ffd700' : '#ff5252';
-    return `<span style="color:${color};font-weight:700">${dias}d</span>`;
+    const color = dias >= 30 ? '#00e676' : dias >= 15 ? '#f59e0b' : '#ff5252';
+    return '<span style="color:' + color + ';font-weight:700">' + dias + 'd</span>';
   }
 
-  const allDescuentos = [...DESCUENTOS_PRESETS, dscLibre > 0 ? dscLibre : null].filter(Boolean);
-
-  const rows = products.map((p, idx) => {
-    // Leer overrides por producto
-    const comPct   = parseFloat(document.getElementById(`dsc_com_${p.id}`)?.value ?? p.comPct);
-    const envioUnit = parseFloat(document.getElementById(`dsc_env_${p.id}`)?.value ?? p.envioUnit);
-    const { margen: margenActual, com, cargo, envio, imp, tacos, cf } = calcMargen(p, p.precio, comPct, envioUnit);
-    const margenColor = margenActual >= minMargen + 5 ? '#00e676' : margenActual >= minMargen ? '#ffd700' : '#ff5252';
-    const stockStr = p.stock == null ? '—' : p.stock.toLocaleString('es-AR');
-    const stockColor = p.stock == null ? 'var(--muted)' : p.stock === 0 ? '#ff5252' : p.stock <= 5 ? '#ff9100' : 'var(--text)';
-
-    const mlaParts = p.id.match(/^(MLA)(\d+)$/i);
-    const mlaLink = mlaParts ? `MLA-${mlaParts[2]}` : p.id;
-    return `<tr style="border-bottom:1px solid var(--border);${idx%2===0?'background:rgba(255,255,255,.015)':''}">
-      <td style="padding:6px 8px;font-size:11px;white-space:nowrap">
-        <span onclick="navigator.clipboard.writeText('${p.id}');this.textContent='✓';setTimeout(()=>this.textContent='${p.id}',1200)" style="color:var(--accent);font-weight:600;cursor:pointer" title="Click para copiar">${p.id}</span>
-      </td>
-      <td style="padding:6px 8px;font-size:12px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${p.title}">
-        <a href="https://articulo.mercadolibre.com.ar/${mlaLink}" target="_blank" style="color:var(--text);text-decoration:none" onmouseover="this.style.textDecoration='underline'" onmouseout="this.style.textDecoration='none'">${p.title}</a>
-      </td>
-      <td style="padding:6px 8px;text-align:right;font-size:12px">$${Math.round(p.precio).toLocaleString('es-AR')}</td>
-      <td style="padding:6px 8px;text-align:right;font-size:12px">$${Math.round(p.costo).toLocaleString('es-AR')}</td>
-      <!-- Comisión editable -->
-      <td style="padding:4px 6px;text-align:center">
-        <input id="dsc_com_${p.id}" type="number" value="${comPct}" min="0" max="30" step="0.1"
-          onchange="renderDescuentos()"
-          style="width:52px;padding:3px 5px;border-radius:5px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:11px;text-align:center">%
-      </td>
-      <!-- Envío editable -->
-      <td style="padding:4px 6px;text-align:center">
-        <input id="dsc_env_${p.id}" type="number" value="${envioUnit}" min="0" step="10"
-          onchange="renderDescuentos()"
-          style="width:64px;padding:3px 5px;border-radius:5px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:11px;text-align:center">
-      </td>
-      <!-- Margen actual con tooltip de detalle -->
-      <td style="padding:6px 8px;text-align:center;cursor:help" title="CMV: $${Math.round(p.costo)} | Com: $${Math.round(com)} | Cargo fijo: $${Math.round(cargo)} | Envío: $${Math.round(envio)} | Imp: $${Math.round(imp)} | TACOS: $${Math.round(tacos)} | CF: $${Math.round(cf)} | IVA dif: $${Math.round(ivaDif)}">
-        <span style="font-size:12px;font-weight:700;color:${margenColor}">${margenActual.toFixed(1)}%</span>
-        <span style="font-size:9px;color:var(--muted);margin-left:3px">ℹ️</span>
-      </td>
-      <!-- Stock y cobertura -->
-      <td style="padding:6px 8px;text-align:center;font-size:12px;color:${stockColor}">${stockStr}</td>
-      <td style="padding:6px 8px;text-align:center;font-size:12px">${cobBadge(p.cobertura)}</td>
-      <!-- Escenarios de descuento -->
-      ${DESCUENTOS_PRESETS.map(pct => celdaDescuento(p, pct, comPct, envioUnit)).join('')}
-      ${celdaDescuento(p, dscLibre, comPct, envioUnit)}
-    </tr>`;
-  }).join('');
-
-  function thS(align = 'right') {
-    return `padding:9px 8px;text-align:${align};font-size:11px;font-weight:600;color:var(--muted);position:sticky;top:0;background:var(--surface2);z-index:2;white-space:nowrap`;
+  function thS(align) {
+    align = align || 'right';
+    return 'padding:9px 8px;text-align:' + align + ';font-size:11px;font-weight:600;color:var(--muted);position:sticky;top:0;background:var(--surface2);z-index:2;white-space:nowrap';
   }
-  function dscTh(col, label, align = 'right') {
+
+  function dscTh(col, label, align) {
+    align = align || 'right';
     const active = _descuentosSort.col === col;
     const arrow  = active ? (_descuentosSort.asc ? ' ↑' : ' ↓') : '';
-    return `<th onclick="sortDescuentos('${col}')" style="${thS(align)};cursor:pointer;color:${active ? 'var(--accent)' : 'var(--muted)'}">${label}${arrow}</th>`;
+    return '<th onclick="sortDescuentos('' + col + '')" style="' + thS(align) + ';cursor:pointer;color:' + (active ? 'var(--accent)' : 'var(--muted)') + '">' + label + arrow + '</th>';
   }
 
-  el.innerHTML = `
-    <!-- Inputs globales -->
-    <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px 20px;margin-bottom:16px">
-      <div style="font-size:13px;font-weight:700;color:var(--text);margin-bottom:12px">⚙️ Parámetros globales</div>
-      <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end">
-        ${['dscImp:Impuestos %:0','dscTacos:TACOS %:0','dscCF:Costos fijos %:0','dscMin:Margen mínimo %:15'].map(s => {
-          const [id, label, def] = s.split(':');
-          return `<div style="display:flex;flex-direction:column;gap:4px">
-            <label style="font-size:11px;color:var(--muted)">${label}</label>
-            <input id="${id}" type="number" value="${def}" min="0" max="100" step="0.1" onchange="renderDescuentos()"
-              style="width:80px;padding:6px 8px;border-radius:7px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px;text-align:center">
-          </div>`;
-        }).join('')}
-        <div style="display:flex;flex-direction:column;gap:4px">
-          <label style="font-size:11px;color:var(--muted)">Descuento libre %</label>
-          <input id="dscLibre" type="number" value="0" min="0" max="80" step="1" onchange="renderDescuentos()"
-            style="width:80px;padding:6px 8px;border-radius:7px;border:1px solid var(--border);background:#6366f133;color:var(--text);font-size:13px;text-align:center">
-        </div>
-        <div style="display:flex;flex-direction:column;gap:4px">
-          <label style="font-size:11px;color:var(--muted)">Buscar</label>
-          <input id="dscSearch" type="text" placeholder="MLA o título..." value="${window._dscSearchVal||''}" oninput="window._dscSearchVal=this.value;renderDescuentos()"
-            style="width:160px;padding:6px 10px;border-radius:7px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:12px">
-        </div>
-        <div style="margin-left:auto;display:flex;align-items:flex-end">
-          <div style="font-size:11px;padding:6px 10px;border-radius:7px;background:var(--surface2);color:var(--muted)">
-            🟢 ≥ mín+5% &nbsp; 🟡 ≥ mín% &nbsp; 🔴 < mín%
-          </div>
-        </div>
-      </div>
-    </div>
-    <!-- Toolbar -->
-    <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
-      <div style="font-size:11px;color:var(--muted);flex:1">${products.length} productos con CMV cargado · Hover en margen actual para ver detalle de costos</div>
-      <button onclick="exportDescuentosExcel()" style="padding:5px 14px;border:none;border-radius:7px;background:#16a34a;color:#fff;font-size:12px;font-weight:600;cursor:pointer">📥 Excel</button>
-    </div>
-    <!-- Tabla -->
-    <div style="overflow-x:auto;max-height:620px;overflow-y:auto;border-radius:10px;border:1px solid var(--border)">
-      <table style="width:100%;border-collapse:collapse;font-size:12px">
-        <thead>
-          <tr style="background:var(--surface2)">
-            ${dscTh('id',        'MLA',          'left')}
-            ${dscTh('title',     'Título',       'left')}
-            ${dscTh('precio',    'Precio')}
-            ${dscTh('costo',     'CMV')}
-            <th style="${thS()}">Comisión</th>
-            <th style="${thS()}">Envío $</th>
-            ${dscTh('margen',    'Margen actual')}
-            ${dscTh('stock',     'Stock')}
-            ${dscTh('cobertura', 'Cobertura')}
-            ${DESCUENTOS_PRESETS.map(p => `<th style="${thS()};background:#1e2240;color:#60a5fa;font-weight:700">-${p}%</th>`).join('')}
-            <th style="${thS()};background:#1e2240;color:#a78bfa;font-weight:700">Libre %</th>
-          </tr>
-        </thead>
-        <tbody>${rows}</tbody>
-      </table>
-    </div>`;
+  // Armar filas
+  const rows = products.map(function(p, idx) {
+    const comPct    = parseFloat((document.getElementById('dsc_com_' + p.id) || {}).value ?? p.comPct);
+    const envioUnit = parseFloat((document.getElementById('dsc_env_' + p.id) || {}).value ?? p.envioUnit);
+    const mg = calcMargen(p, p.precio, comPct, envioUnit);
+    const margenActual = mg.margen;
+    const margenColor  = margenActual >= minMargen + 5 ? '#00e676' : margenActual >= minMargen ? '#f59e0b' : '#ff5252';
+    const stockStr     = p.stock == null ? '—' : p.stock.toLocaleString('es-AR');
+    const stockColor   = p.stock == null ? 'var(--muted)' : p.stock === 0 ? '#ff5252' : p.stock <= 5 ? '#ff9100' : 'var(--text)';
+    const mlaNums      = p.id.replace(/^MLA/i, '');
+    const mlaLink      = 'MLA-' + mlaNums;
+    const tooltip      = 'CMV:$' + Math.round(p.costo) + ' Com:$' + Math.round(mg.com) + ' Cargo:$' + Math.round(mg.cargo) + ' Envío:$' + Math.round(mg.envio) + ' Imp:$' + Math.round(mg.imp) + ' TACOS:$' + Math.round(mg.tacos) + ' CF:$' + Math.round(mg.cf) + ' IVA:$' + Math.round(mg.ivaDif);
+    const bg = idx % 2 === 0 ? 'background:rgba(255,255,255,.015)' : '';
+
+    let html = '<tr style="border-bottom:1px solid var(--border);' + bg + '">';
+    html += '<td style="padding:6px 8px;font-size:11px;white-space:nowrap">'
+      + '<span onclick="navigator.clipboard.writeText(this.dataset.mla);const t=this;t.textContent='✓';setTimeout(()=>t.textContent=t.dataset.mla,1200)" data-mla="' + p.id + '" style="color:var(--accent);font-weight:600;cursor:pointer" title="Click para copiar">' + p.id + '</span>'
+      + '</td>';
+    html += '<td style="padding:6px 8px;font-size:12px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + p.title.replace(/"/g,"'") + '">'
+      + '<a href="https://articulo.mercadolibre.com.ar/' + mlaLink + '" target="_blank" style="color:var(--text);text-decoration:none" onmouseover="this.style.textDecoration='underline'" onmouseout="this.style.textDecoration='none'">' + p.title + '</a>'
+      + '</td>';
+    html += '<td style="padding:6px 8px;text-align:right;font-size:12px">$' + Math.round(p.precio).toLocaleString('es-AR') + '</td>';
+    html += '<td style="padding:6px 8px;text-align:right;font-size:12px">$' + Math.round(p.costo).toLocaleString('es-AR') + '</td>';
+    html += '<td style="padding:4px 6px;text-align:center">'
+      + '<input id="dsc_com_' + p.id + '" type="number" value="' + comPct + '" min="0" max="30" step="0.1" onchange="renderDescuentos()" style="width:52px;padding:3px 5px;border-radius:5px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:11px;text-align:center">%'
+      + '</td>';
+    html += '<td style="padding:4px 6px;text-align:center">'
+      + '<input id="dsc_env_' + p.id + '" type="number" value="' + envioUnit + '" min="0" step="10" onchange="renderDescuentos()" style="width:64px;padding:3px 5px;border-radius:5px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:11px;text-align:center">'
+      + '</td>';
+    html += '<td style="padding:6px 8px;text-align:center;cursor:help" title="' + tooltip + '">'
+      + '<span style="font-size:12px;font-weight:700;color:' + margenColor + '">' + margenActual.toFixed(1) + '%</span>'
+      + '<span style="font-size:9px;color:var(--muted);margin-left:3px">ℹ️</span>'
+      + '</td>';
+    html += '<td style="padding:6px 8px;text-align:center;font-size:12px;color:' + stockColor + '">' + stockStr + '</td>';
+    html += '<td style="padding:6px 8px;text-align:center;font-size:12px">' + cobBadge(p.cobertura) + '</td>';
+    DESCUENTOS_PRESETS.forEach(function(pct) { html += celdaDescuento(p, pct, comPct, envioUnit); });
+    html += celdaDescuento(p, dscLibre, comPct, envioUnit);
+    html += '</tr>';
+    return html;
+  }).join('');
+
+  // Panel de parámetros — solo se crea una vez
+  if (!document.getElementById('dscImp')) {
+    const panelHTML = '<div id="dscPanel" style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px 20px;margin-bottom:16px">'
+      + '<div style="font-size:13px;font-weight:700;color:var(--text);margin-bottom:12px">⚙️ Parámetros globales</div>'
+      + '<div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end">'
+      + _dscInput('dscImp','Impuestos %','0') + _dscInput('dscTacos','TACOS %','0') + _dscInput('dscCF','Costos fijos %','0') + _dscInput('dscMin','Margen mínimo %','15')
+      + '<div style="display:flex;flex-direction:column;gap:4px"><label style="font-size:11px;color:var(--muted)">Descuento libre %</label><input id="dscLibre" type="number" value="0" min="0" max="80" step="1" onchange="renderDescuentos()" style="width:80px;padding:6px 8px;border-radius:7px;border:1px solid var(--border);background:#6366f133;color:var(--text);font-size:13px;text-align:center"></div>'
+      + '<div style="display:flex;flex-direction:column;gap:4px"><label style="font-size:11px;color:var(--muted)">Buscar</label><input id="dscSearch" type="text" placeholder="MLA o título..." oninput="window._dscSearchVal=this.value;renderDescuentos()" style="width:160px;padding:6px 10px;border-radius:7px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:12px"></div>'
+      + '<div style="margin-left:auto;display:flex;align-items:flex-end"><div style="font-size:11px;padding:6px 10px;border-radius:7px;background:var(--surface2);color:var(--muted)">🟢 ≥ mín+5% &nbsp; 🟡 ≥ mín% &nbsp; 🔴 &lt; mín%</div></div>'
+      + '</div></div>';
+    el.insertAdjacentHTML('afterbegin', panelHTML);
+  }
+
+  // Área de tabla dinámica
+  let tableEl = document.getElementById('dscTableArea');
+  if (!tableEl) { tableEl = document.createElement('div'); tableEl.id = 'dscTableArea'; el.appendChild(tableEl); }
+
+  const presetHeaders = DESCUENTOS_PRESETS.map(function(p) {
+    return '<th style="' + thS() + ';background:#1e2240;color:#60a5fa;font-weight:700">-' + p + '%</th>';
+  }).join('');
+
+  tableEl.innerHTML = '<div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">'
+    + '<div style="font-size:11px;color:var(--muted);flex:1">' + products.length + ' productos con CMV cargado · Hover en margen actual para ver detalle</div>'
+    + '<button onclick="exportDescuentosExcel()" style="padding:5px 14px;border:none;border-radius:7px;background:#16a34a;color:#fff;font-size:12px;font-weight:600;cursor:pointer">📥 Excel</button>'
+    + '</div>'
+    + '<div style="overflow-x:auto;max-height:620px;overflow-y:auto;border-radius:10px;border:1px solid var(--border)">'
+    + '<table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr style="background:var(--surface2)">'
+    + dscTh('id','MLA','left') + dscTh('title','Título','left') + dscTh('precio','Precio') + dscTh('costo','CMV')
+    + '<th style="' + thS() + '">Comisión</th><th style="' + thS() + '">Envío $</th>'
+    + dscTh('margen','Margen actual') + dscTh('stock','Stock') + dscTh('cobertura','Cobertura')
+    + presetHeaders
+    + '<th style="' + thS() + ';background:#1e2240;color:#a78bfa;font-weight:700">Libre %</th>'
+    + '</tr></thead><tbody>' + rows + '</tbody></table></div>';
 }
+
+function _dscInput(id, label, def) {
+  return '<div style="display:flex;flex-direction:column;gap:4px">'
+    + '<label style="font-size:11px;color:var(--muted)">' + label + '</label>'
+    + '<input id="' + id + '" type="number" value="' + def + '" min="0" max="100" step="0.1" onchange="renderDescuentos()" style="width:80px;padding:6px 8px;border-radius:7px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px;text-align:center">'
+    + '</div>';
+}
+
 
 async function loadSimulador() {
   const el = document.getElementById('simuladorContent');
