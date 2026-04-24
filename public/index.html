@@ -2996,17 +2996,30 @@ async function loadComisionMap() {
   if (!client) return {};
   const listingTypes = [...new Set((window._pubsData || []).map(p => p.listing_type_id).filter(Boolean))];
   if (!listingTypes.length) listingTypes.push('gold_special', 'gold_pro');
-  const map = {};
+  const map = {}; // { lt: { default: %, byCategory: { cat_id: % } } }
   await Promise.all(listingTypes.map(async lt => {
     try {
       const r = await apiCall('GET', `/api/proxy-ml?path=${encodeURIComponent('/sites/MLA/listing_types/' + lt)}&client_id=${client.id}`);
-      if (r?.configuration?.sale_fee_criteria?.percentage_of_fee_amount != null) {
-        map[lt] = r.configuration.sale_fee_criteria.percentage_of_fee_amount;
-      }
+      const defPct = r?.configuration?.sale_fee_criteria?.percentage_of_fee_amount ?? null;
+      const byCategory = {};
+      (r?.exceptions_by_category || []).forEach(exc => {
+        if (exc.category_id && exc.configuration?.sale_fee_criteria?.percentage_of_fee_amount != null) {
+          byCategory[exc.category_id] = exc.configuration.sale_fee_criteria.percentage_of_fee_amount;
+        }
+      });
+      map[lt] = { default: defPct, byCategory };
     } catch(e) {}
   }));
   window._comisionMap = map;
+  window._comisionMapRaw = map; // debug
   return map;
+}
+
+function getComisionPct(lt, categoryId) {
+  const m = window._comisionMap?.[lt];
+  if (!m) return null;
+  if (categoryId && m.byCategory?.[categoryId] != null) return m.byCategory[categoryId];
+  return m.default;
 }
 
 async function loadDescuentos() {
@@ -3032,12 +3045,17 @@ async function loadDescuentos() {
   connected.forEach(acc => {
     (acc.data.rentabilidad.by_product || []).forEach(p => {
       if (!p.costo_unit) return;
-      // Comisión: usar mapa ML si disponible, sino histórico real
+      // Comisión: usar mapa ML con categoría si disponible, sino histórico real
       const lt = ltMap[p.id];
-      const comPctML = lt && comisionMap[lt] != null ? comisionMap[lt] : null;
+      const pub = (window._pubsData || []).find(pub => pub.id === p.id);
+      const catId = pub?.category_id || null;
+      const comPctML = lt ? getComisionPct(lt, catId) : null;
       const comPctHist = p.revenue > 0 ? (p.comision / p.revenue * 100) : 6;
       const comPct = comPctML != null ? comPctML : parseFloat(comPctHist.toFixed(1));
-      const envioUnit = p.units > 0 ? ((p.envio_pagado || 0) / p.units) : 0;
+
+      // Envío: solo para productos >= $33k (los de abajo pagan cargo fijo, no envío)
+      const precioPromedio = p.revenue / (p.units || 1);
+      const envioUnit = precioPromedio >= 33000 && p.units > 0 ? Math.round((p.envio_pagado || 0) / p.units) : 0;
       const dias = window._perfDays || 30;
       const stock = (() => {
         const fullMap = {};
