@@ -1730,6 +1730,7 @@ app.get('/api/items-full', requireAuth, async (req, res) => {
         category_id: detail.category_id || '',
         condition: detail.condition || '',
         catalog_listing: detail.catalog_listing || false,
+        sku: detail.seller_custom_field || detail.seller_sku || '',
         photo_count: pics.length,
         photo_urls: pics.slice(0,3).map(p => p.url || p.secure_url || ''),
         is_full: isFull,
