@@ -2752,7 +2752,7 @@ function switchPerfTab(tab) {
   });
   const btnExport = document.getElementById('btnExportPerf');
   if (btnExport) btnExport.style.display = tab === 'publicaciones' ? 'none' : '';
-  if (tab === 'publicaciones') renderPerfPublicaciones();
+  if (tab === 'publicaciones') { window._perfPubSearch = ''; renderPerfPublicaciones(); }
 }
 
 function renderPerfPublicaciones() {
@@ -2787,6 +2787,12 @@ function renderPerfPublicaciones() {
     const full = p.is_full ? (fullMap[p.id] ?? 0) : 0;
     stockMap[p.id] = dep + full;
   });
+
+  // Filtrar por búsqueda
+  const busqueda = (window._perfPubSearch || '').toLowerCase();
+  if (busqueda) allProducts = allProducts.filter(p =>
+    p.id.toLowerCase().includes(busqueda) || p.title.toLowerCase().includes(busqueda)
+  );
 
   // Filtrar por modo de entrega — top15_by_mode tiene los items por modo
   if (_perfPubModeFilter) {
@@ -2865,7 +2871,7 @@ function renderPerfPublicaciones() {
   }).join('');
 
   el.innerHTML = `
-    <!-- Filtros por forma de entrega -->
+    <!-- Filtros por forma de entrega + buscador -->
     <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px 18px;margin-bottom:16px">
       <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
         <span style="font-size:12px;font-weight:600;color:var(--muted)">Filtrar por entrega:</span>
@@ -2874,6 +2880,11 @@ function renderPerfPublicaciones() {
           Todos
         </button>
         ${modeFilters}
+        <div style="margin-left:auto">
+          <input type="text" placeholder="Buscar MLA o título..." value="${window._perfPubSearch||''}"
+            oninput="window._perfPubSearch=this.value;renderPerfPublicaciones()"
+            style="padding:7px 12px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:12px;width:200px;outline:none">
+        </div>
       </div>
     </div>
     <!-- Tabla -->
