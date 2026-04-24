@@ -2934,7 +2934,58 @@ function switchRentTab(tab) {
 
 // ── DESCUENTOS (Hotsale / Campañas) ────────────────────────────────────────
 let _descuentosData = null;
+let _descuentosSort = { col: 'revenue', asc: false };
 const DESCUENTOS_PRESETS = [3, 5, 10, 15, 20];
+
+function sortDescuentos(col) {
+  if (_descuentosSort.col === col) _descuentosSort.asc = !_descuentosSort.asc;
+  else { _descuentosSort.col = col; _descuentosSort.asc = false; }
+  renderDescuentos();
+}
+
+function exportDescuentosExcel() {
+  if (!_descuentosData?.length) { showToast('Sin datos para exportar'); return; }
+  const XLSX = window.XLSX;
+  const impPct   = parseFloat(document.getElementById('dscImp')?.value  || 0);
+  const tacosPct = parseFloat(document.getElementById('dscTacos')?.value || 0);
+  const cfPct    = parseFloat(document.getElementById('dscCF')?.value   || 0);
+  const dscLibre = parseFloat(document.getElementById('dscLibre')?.value || 0);
+
+  function calcM(p, precio, comPct, envioUnit) {
+    const cf = precio * cfPct/100, imp = precio * impPct/100, tacos = precio * tacosPct/100;
+    const com = precio * comPct/100, cargo = cargoFijoML(precio);
+    const envio = precio >= 33000 ? envioUnit : 0;
+    return parseFloat(((precio - p.costo - com - cargo - envio - imp - tacos - cf) / precio * 100).toFixed(1));
+  }
+
+  const rows = _descuentosData.map(p => {
+    const comPct    = parseFloat(document.getElementById(`dsc_com_${p.id}`)?.value ?? p.comPct);
+    const envioUnit = parseFloat(document.getElementById(`dsc_env_${p.id}`)?.value ?? p.envioUnit);
+    const row = {
+      'MLA': p.id, 'Título': p.title,
+      'Precio': Math.round(p.precio), 'CMV': Math.round(p.costo),
+      'Comisión %': comPct, 'Envío $': envioUnit,
+      'Margen actual %': calcM(p, p.precio, comPct, envioUnit),
+      'Stock': p.stock ?? '', 'Cobertura (días)': p.cobertura ?? '',
+    };
+    DESCUENTOS_PRESETS.forEach(pct => {
+      const np = p.precio * (1 - pct/100);
+      row[`-${pct}% Precio`] = Math.round(np);
+      row[`-${pct}% Margen`] = calcM(p, np, comPct, envioUnit) + '%';
+    });
+    if (dscLibre > 0) {
+      const np = p.precio * (1 - dscLibre/100);
+      row[`-${dscLibre}% Precio`] = Math.round(np);
+      row[`-${dscLibre}% Margen`] = calcM(p, np, comPct, envioUnit) + '%';
+    }
+    return row;
+  });
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.json_to_sheet(rows);
+  XLSX.utils.book_append_sheet(wb, ws, 'Descuentos');
+  XLSX.writeFile(wb, `Descuentos_HotSale_${new Date().toISOString().slice(0,10)}.xlsx`);
+  showToast('✅ Excel descargado');
+}
 
 function loadDescuentos() {
   const el = document.getElementById('descuentosContent');
@@ -2949,7 +3000,7 @@ function loadDescuentos() {
   let products = [];
   connected.forEach(acc => {
     (acc.data.rentabilidad.by_product || []).forEach(p => {
-      if (!p.hasCMV) return; // solo los que tienen CMV
+      if (!p.costo_unit) return; // solo los que tienen CMV cargado
       // Comisión promedio real: comision total / revenue
       const comPct = p.revenue > 0 ? (p.comision / p.revenue * 100) : 6;
       // Envío promedio real por unidad vendida
@@ -3004,9 +3055,28 @@ function renderDescuentos() {
   const dscLibre  = parseFloat(document.getElementById('dscLibre')?.value || 0);
   const busqueda  = (document.getElementById('dscSearch')?.value || '').toLowerCase();
 
-  const products = _descuentosData.filter(p =>
+  let products = _descuentosData.filter(p =>
     !busqueda || p.id.toLowerCase().includes(busqueda) || p.title.toLowerCase().includes(busqueda)
   );
+
+  // Ordenar
+  const { col: sCol, asc: sAsc } = _descuentosSort;
+  products = [...products].sort((a, b) => {
+    let va, vb;
+    if (sCol === 'stock')     { va = a.stock ?? -1;    vb = b.stock ?? -1; }
+    else if (sCol === 'cobertura') { va = a.cobertura ?? -1; vb = b.cobertura ?? -1; }
+    else if (sCol === 'precio') { va = a.precio; vb = b.precio; }
+    else if (sCol === 'costo')  { va = a.costo;  vb = b.costo; }
+    else if (sCol === 'margen') {
+      const impPct2 = parseFloat(document.getElementById('dscImp')?.value||0);
+      const tacos2  = parseFloat(document.getElementById('dscTacos')?.value||0);
+      const cf2     = parseFloat(document.getElementById('dscCF')?.value||0);
+      va = calcMargen(a, a.precio, a.comPct, a.envioUnit).margen;
+      vb = calcMargen(b, b.precio, b.comPct, b.envioUnit).margen;
+    }
+    else { va = a[sCol] ?? 0; vb = b[sCol] ?? 0; }
+    return sAsc ? va - vb : vb - va;
+  });
 
   // Función que calcula margen para un precio dado
   function calcMargen(p, precio, comPct, envioUnit) {
@@ -3087,6 +3157,11 @@ function renderDescuentos() {
   function thS(align = 'right') {
     return `padding:9px 8px;text-align:${align};font-size:11px;font-weight:600;color:var(--muted);position:sticky;top:0;background:var(--surface2);z-index:2;white-space:nowrap`;
   }
+  function dscTh(col, label, align = 'right') {
+    const active = _descuentosSort.col === col;
+    const arrow  = active ? (_descuentosSort.asc ? ' ↑' : ' ↓') : '';
+    return `<th onclick="sortDescuentos('${col}')" style="${thS(align)};cursor:pointer;color:${active ? 'var(--accent)' : 'var(--muted)'}">${label}${arrow}</th>`;
+  }
 
   el.innerHTML = `
     <!-- Inputs globales -->
@@ -3118,24 +3193,27 @@ function renderDescuentos() {
         </div>
       </div>
     </div>
-    <!-- Leyenda margen -->
-    <div style="font-size:11px;color:var(--muted);margin-bottom:8px">${products.length} productos con CMV cargado · Hover en margen actual para ver detalle</div>
+    <!-- Toolbar -->
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+      <div style="font-size:11px;color:var(--muted);flex:1">${products.length} productos con CMV cargado · Hover en margen actual para ver detalle de costos</div>
+      <button onclick="exportDescuentosExcel()" style="padding:5px 14px;border:none;border-radius:7px;background:#16a34a;color:#fff;font-size:12px;font-weight:600;cursor:pointer">📥 Excel</button>
+    </div>
     <!-- Tabla -->
     <div style="overflow-x:auto;max-height:620px;overflow-y:auto;border-radius:10px;border:1px solid var(--border)">
       <table style="width:100%;border-collapse:collapse;font-size:12px">
         <thead>
           <tr style="background:var(--surface2)">
-            <th style="${thS('left')}">MLA</th>
-            <th style="${thS('left')}">Título</th>
-            <th style="${thS()}">Precio</th>
-            <th style="${thS()}">CMV</th>
+            ${dscTh('id',        'MLA',          'left')}
+            ${dscTh('title',     'Título',       'left')}
+            ${dscTh('precio',    'Precio')}
+            ${dscTh('costo',     'CMV')}
             <th style="${thS()}">Comisión</th>
             <th style="${thS()}">Envío $</th>
-            <th style="${thS()}">Margen actual</th>
-            <th style="${thS()}">Stock</th>
-            <th style="${thS()}">Cobertura</th>
-            ${DESCUENTOS_PRESETS.map(p => `<th style="${thS()};color:#ffd700">-${p}%</th>`).join('')}
-            <th style="${thS()};color:#a78bfa">Libre</th>
+            ${dscTh('margen',    'Margen actual')}
+            ${dscTh('stock',     'Stock')}
+            ${dscTh('cobertura', 'Cobertura')}
+            ${DESCUENTOS_PRESETS.map(p => `<th style="${thS()};background:#1e2240;color:#60a5fa;font-weight:700">-${p}%</th>`).join('')}
+            <th style="${thS()};background:#1e2240;color:#a78bfa;font-weight:700">Libre %</th>
           </tr>
         </thead>
         <tbody>${rows}</tbody>
