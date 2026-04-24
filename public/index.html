@@ -2994,32 +2994,41 @@ async function loadComisionMap() {
   if (window._comisionMap) return window._comisionMap;
   const client = getActiveClient();
   if (!client) return {};
-  const listingTypes = [...new Set((window._pubsData || []).map(p => p.listing_type_id).filter(Boolean))];
-  if (!listingTypes.length) listingTypes.push('gold_special', 'gold_pro');
-  const map = {}; // { lt: { default: %, byCategory: { cat_id: % } } }
-  await Promise.all(listingTypes.map(async lt => {
-    try {
-      const r = await apiCall('GET', `/api/proxy-ml?path=${encodeURIComponent('/sites/MLA/listing_types/' + lt)}&client_id=${client.id}`);
-      const defPct = r?.configuration?.sale_fee_criteria?.percentage_of_fee_amount ?? null;
-      const byCategory = {};
-      (r?.exceptions_by_category || []).forEach(exc => {
-        if (exc.category_id && exc.configuration?.sale_fee_criteria?.percentage_of_fee_amount != null) {
-          byCategory[exc.category_id] = exc.configuration.sale_fee_criteria.percentage_of_fee_amount;
-        }
-      });
-      map[lt] = { default: defPct, byCategory };
-    } catch(e) {}
-  }));
+
+  // Agrupar productos por combinación única lt+category+precio (redondeado a centenas)
+  const combos = {};
+  (window._pubsData || []).forEach(p => {
+    if (!p.listing_type_id || !p.category_id || !p.price) return;
+    const key = p.listing_type_id + '|' + p.category_id + '|' + Math.round(p.price / 100) * 100;
+    if (!combos[key]) combos[key] = { lt: p.listing_type_id, cat: p.category_id, price: p.price, ids: [] };
+    combos[key].ids.push(p.id);
+  });
+
+  const map = {}; // { mla_id: pct }
+  const comboKeys = Object.keys(combos);
+
+  // Consultar en paralelo (máx 10 a la vez)
+  for (let i = 0; i < comboKeys.length; i += 10) {
+    const batch = comboKeys.slice(i, i + 10);
+    await Promise.all(batch.map(async key => {
+      const { lt, cat, price, ids } = combos[key];
+      try {
+        const path = `/sites/MLA/listing_prices?price=${Math.round(price)}&listing_type_id=${lt}&category_id=${cat}`;
+        const r = await apiCall('GET', `/api/proxy-ml?path=${encodeURIComponent(path)}&client_id=${client.id}`);
+        const pct = r?.sale_fee_details?.meli_percentage_fee ?? r?.sale_fee_details?.percentage_fee ?? null;
+        if (pct != null) ids.forEach(id => { map[id] = pct; });
+      } catch(e) {}
+    }));
+  }
+
   window._comisionMap = map;
-  window._comisionMapRaw = map; // debug
   return map;
 }
 
-function getComisionPct(lt, categoryId) {
-  const m = window._comisionMap?.[lt];
-  if (!m) return null;
-  if (categoryId && m.byCategory?.[categoryId] != null) return m.byCategory[categoryId];
-  return m.default;
+function getComisionPct(mlaId, lt, categoryId) {
+  // Primero buscar resultado exacto por MLA
+  if (window._comisionMap?.[mlaId] != null) return window._comisionMap[mlaId];
+  return null;
 }
 
 async function loadDescuentos() {
@@ -3045,15 +3054,15 @@ async function loadDescuentos() {
   connected.forEach(acc => {
     (acc.data.rentabilidad.by_product || []).forEach(p => {
       if (!p.costo_unit) return;
-      // Comisión: usar mapa ML con categoría si disponible, sino histórico real
+      // Comisión: usar mapa ML por MLA si disponible, sino histórico real
       const lt = ltMap[p.id];
       const pub = (window._pubsData || []).find(pub => pub.id === p.id);
       const catId = pub?.category_id || null;
-      const comPctML = lt ? getComisionPct(lt, catId) : null;
+      const comPctML = getComisionPct(p.id, lt, catId);
       const comPctHist = p.revenue > 0 ? (p.comision / p.revenue * 100) : 6;
       const comPct = comPctML != null ? comPctML : parseFloat(comPctHist.toFixed(1));
 
-      // Envío: solo para productos >= $33k (los de abajo pagan cargo fijo, no envío)
+      // Envío: solo para productos >= $33k
       const precioPromedio = p.revenue / (p.units || 1);
       const envioUnit = precioPromedio >= 33000 && p.units > 0 ? Math.round((p.envio_pagado || 0) / p.units) : 0;
       const dias = window._perfDays || 30;
