@@ -2417,6 +2417,7 @@ async function exportarCMV() {
 
   const rows = items.map(i => ({
     'MLA': i.id,
+    'SKU': i.sku || '',
     'Título': i.title,
     'Precio': i.price || '',
     'Facturación período': Math.round(i.revenue || 0),
@@ -2426,8 +2427,7 @@ async function exportarCMV() {
   }));
 
   const ws = XLSX.utils.json_to_sheet(rows);
-  // Anchos de columna
-  ws['!cols'] = [{ wch: 16 }, { wch: 50 }, { wch: 12 }, { wch: 20 }, { wch: 18 }, { wch: 22 }, { wch: 25 }];
+  ws['!cols'] = [{ wch: 16 }, { wch: 12 }, { wch: 50 }, { wch: 12 }, { wch: 20 }, { wch: 18 }, { wch: 22 }, { wch: 25 }];
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'CMV');
   const fecha = new Date().toISOString().slice(0,10);
@@ -2468,7 +2468,7 @@ async function importarCMV(input) {
       // Detectar clave de costo (cualquier columna que incluya "costo")
       const costKey = allRows.length ? Object.keys(allRows[0]).find(k => k.toLowerCase().includes('costo')) : null;
       const mlaKey  = allRows.length ? Object.keys(allRows[0]).find(k => k.toLowerCase().includes('mla')) : 'MLA';
-      const titKey  = allRows.length ? Object.keys(allRows[0]).find(k => k.toLowerCase().includes('títul') || k.toLowerCase().includes('title')) : 'Título';
+      const titKey  = allRows.length ? Object.keys(allRows[0]).find(k => k.toLowerCase().includes('títul') || k.toLowerCase().includes('title') || k.toLowerCase().includes('descrip')) : 'Título';
       const notKey  = allRows.length ? Object.keys(allRows[0]).find(k => k.toLowerCase().includes('nota')) : 'Notas';
 
       if (!costKey) { showToast('❌ No se encontró columna de costo en el archivo'); return; }
