@@ -1140,34 +1140,7 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
       } catch(e) {}
     }
 
-    const byProduct = Object.values(byItem)
-      .sort((a, b) => b.revenue - a.revenue)
-      .map(i => {
-        const prevRev = prevRevenueByItem[i.id] || 0;
-        const trend   = prevRev > 0 ? ((i.revenue - prevRev) / prevRev * 100) : null;
-        const vis     = visitsMap[i.id] || {};
-        return {
-          id:              i.id,
-          title:           i.title,
-          sku:             skuMapDash[i.id] || null,
-          revenue:         i.revenue,
-          revenue_prev:    prevRev,
-          trend_pct:       trend !== null ? parseFloat(trend.toFixed(1)) : null,
-          units:           i.units,
-          visits:          vis.visits || 0,
-          conversion:      vis.conversion || 0,
-          comision:        i.comision || (i.revenue > 0 ? (i.revenue - i.net) : 0),
-          impuestos:       i.impuestos || 0,
-          envio_cobrado:        i.envio_cobrado,
-          envio_pagado:         i.envio_pagado,
-          envio_pagado_no_flex: i.envio_pagado_no_flex || 0,
-          units_no_flex:        i.units_no_flex || 0,
-          resultado_envio:      i.envio_cobrado - i.envio_pagado,
-          ads:             i.ads || 0,
-          neto:            i.net,
-          pct_recibido:        i.revenue > 0 ? ((i.net / i.revenue) * 100).toFixed(1) : '0'
-        };
-      });
+    const byProductBase = Object.values(byItem).sort((a, b) => b.revenue - a.revenue);
 
     const rentabilidad = {
       facturacion:      totalFacturacion,
@@ -1186,6 +1159,35 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
     const costsResDash = await pool.query('SELECT mla_id, costo_unit FROM product_costs WHERE client_id=$1', [clientId]);
     const costsMapDash = {};
     costsResDash.rows.forEach(r => { costsMapDash[r.mla_id] = parseFloat(r.costo_unit)||0; });
+
+    const byProduct = byProductBase.map(i => {
+      const prevRev   = prevRevenueByItem[i.id] || 0;
+      const trend     = prevRev > 0 ? ((i.revenue - prevRev) / prevRev * 100) : null;
+      const vis       = visitsMap[i.id] || {};
+      const costoUnit = costsMapDash[i.id] || null;
+      return {
+        id:              i.id,
+        title:           i.title,
+        sku:             skuMapDash[i.id] || null,
+        revenue:         i.revenue,
+        revenue_prev:    prevRev,
+        trend_pct:       trend !== null ? parseFloat(trend.toFixed(1)) : null,
+        units:           i.units,
+        visits:          vis.visits || 0,
+        conversion:      vis.conversion || 0,
+        comision:        i.comision || (i.revenue > 0 ? (i.revenue - i.net) : 0),
+        impuestos:       i.impuestos || 0,
+        envio_cobrado:        i.envio_cobrado,
+        envio_pagado:         i.envio_pagado,
+        envio_pagado_no_flex: i.envio_pagado_no_flex || 0,
+        units_no_flex:        i.units_no_flex || 0,
+        resultado_envio:      i.envio_cobrado - i.envio_pagado,
+        ads:             i.ads || 0,
+        neto:            i.net,
+        costo_unit:      costoUnit,
+        pct_recibido:    i.revenue > 0 ? ((i.net / i.revenue) * 100).toFixed(1) : '0'
+      };
+    });
     Object.values(byItem).forEach(i => {
       const c = costsMapDash[i.id];
       if (c != null && c > 0) { cmv_total_dash += c * i.units; cmv_cubierto_dash++; }
