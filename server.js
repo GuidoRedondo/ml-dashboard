@@ -3830,8 +3830,9 @@ app.get('/api/proxy-ml', requireAuth, async (req, res) => {
   try {
     const { path, client_id } = req.query;
     if (!path || !client_id) return res.status(400).json({ error: 'Falta path o client_id' });
-    const client = await getActiveClient(client_id);
-    if (!client) return res.status(404).json({ error: 'Cliente no encontrado' });
+    const clientRes = await pool.query('SELECT * FROM clients WHERE id=$1', [client_id]);
+    if (!clientRes.rows.length) return res.status(404).json({ error: 'Cliente no encontrado' });
+    const client = clientRes.rows[0];
     const url = `${ML_API}${path}`;
     const r = await fetch(url, { headers: { 'Authorization': `Bearer ${client.access_token}` } });
     const data = await r.json();
