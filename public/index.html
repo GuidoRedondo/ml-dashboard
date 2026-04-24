@@ -791,10 +791,12 @@ tbody td {
         <div style="display:flex;gap:6px">
           <button id="rentTabAnalisis" onclick="switchRentTab('analisis')" class="sync-btn" style="background:var(--accent)">📊 Análisis</button>
           <button id="rentTabSimulador" onclick="switchRentTab('simulador')" class="sync-btn">🧮 Simulador</button>
+          <button id="rentTabDescuentos" onclick="switchRentTab('descuentos')" class="sync-btn">🏷️ Descuentos</button>
         </div>
       </div>
       <div id="rentabilidadContent"><div style="color:var(--muted);font-size:13px;padding:20px;text-align:center">Sincronizá primero para ver los datos</div></div>
       <div id="simuladorContent" style="display:none"></div>
+      <div id="descuentosContent" style="display:none"></div>
     </div>
 
     <!-- ADS -->
@@ -2764,11 +2766,11 @@ function renderPerfPublicaciones() {
     return;
   }
 
-  // Juntar todos los productos de todas las cuentas
+  // Juntar todos los productos de todas las cuentas (by_product está en rentabilidad)
   let allProducts = [];
   let totalRevenue = 0;
   connected.forEach(acc => {
-    const bp = acc.data?.performance?.by_product;
+    const bp = acc.data?.rentabilidad?.by_product;
     if (!bp) return;
     bp.forEach(p => { allProducts.push({ ...p, cuenta: acc.name }); });
   });
@@ -2786,16 +2788,16 @@ function renderPerfPublicaciones() {
     stockMap[p.id] = dep + full;
   });
 
-  // Filtrar por modo de entrega si hay filtro activo
+  // Filtrar por modo de entrega — top15_by_mode tiene los items por modo
   if (_perfPubModeFilter) {
-    allProducts = allProducts.filter(p => {
-      // Buscar en los datos por modo
-      const acc = connected.find(a => a.data?.performance?.by_product?.some(bp => bp.id === p.id));
-      if (!acc) return true;
+    const modeItemIds = new Set();
+    connected.forEach(acc => {
       const modeData = acc.data?.performance?.top15_by_mode?.[_perfPubModeFilter];
-      if (!modeData) return false;
-      return [...(modeData.revenue || []), ...(modeData.units || [])].some(i => i.id === p.id);
+      if (!modeData) return;
+      [...(modeData.revenue || []), ...(modeData.units || [])].forEach(i => modeItemIds.add(i.id));
     });
+    // Si no hay data por modo, no filtrar (mostrar todos)
+    if (modeItemIds.size > 0) allProducts = allProducts.filter(p => modeItemIds.has(p.id));
   }
 
   // Ordenar — pct_total y stock son calculados
@@ -2920,11 +2922,225 @@ function perfFilterMode(idx) {
 
 // ── SIMULADOR DE PRECIO ────────────────────────────────────────────────────────
 function switchRentTab(tab) {
-  document.getElementById('rentabilidadContent').style.display = tab === 'analisis' ? '' : 'none';
-  document.getElementById('simuladorContent').style.display   = tab === 'simulador' ? '' : 'none';
-  document.getElementById('rentTabAnalisis').style.background  = tab === 'analisis'  ? 'var(--accent)' : 'var(--surface2)';
-  document.getElementById('rentTabSimulador').style.background = tab === 'simulador' ? 'var(--accent)' : 'var(--surface2)';
-  if (tab === 'simulador') loadSimulador();
+  document.getElementById('rentabilidadContent').style.display = tab === 'analisis'   ? '' : 'none';
+  document.getElementById('simuladorContent').style.display    = tab === 'simulador'  ? '' : 'none';
+  document.getElementById('descuentosContent').style.display   = tab === 'descuentos' ? '' : 'none';
+  document.getElementById('rentTabAnalisis').style.background   = tab === 'analisis'   ? 'var(--accent)' : 'var(--surface2)';
+  document.getElementById('rentTabSimulador').style.background  = tab === 'simulador'  ? 'var(--accent)' : 'var(--surface2)';
+  document.getElementById('rentTabDescuentos').style.background = tab === 'descuentos' ? 'var(--accent)' : 'var(--surface2)';
+  if (tab === 'simulador')  loadSimulador();
+  if (tab === 'descuentos') loadDescuentos();
+}
+
+// ── DESCUENTOS (Hotsale / Campañas) ────────────────────────────────────────
+let _descuentosData = null;
+const DESCUENTOS_PRESETS = [3, 5, 10, 15, 20];
+
+function loadDescuentos() {
+  const el = document.getElementById('descuentosContent');
+  if (!el) return;
+  const connected = state.accounts.filter(a => a.data?.rentabilidad?.by_product);
+  if (!connected.length) {
+    el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">Sincronizá primero</div>';
+    return;
+  }
+
+  // Juntar productos con CMV cargado
+  let products = [];
+  connected.forEach(acc => {
+    (acc.data.rentabilidad.by_product || []).forEach(p => {
+      if (!p.hasCMV) return; // solo los que tienen CMV
+      // Comisión promedio real: comision total / revenue
+      const comPct = p.revenue > 0 ? (p.comision / p.revenue * 100) : 6;
+      // Envío promedio real por unidad vendida
+      const envioUnit = p.units > 0 ? ((p.envio_pagado || 0) / p.units) : 0;
+      // Días de cobertura: stock / (unidades / días del período)
+      const client = getActiveClient();
+      const dias = window._perfDays || 30;
+      const stock = (() => {
+        const fullMap = {};
+        if (window._fullStockData?.items) window._fullStockData.items.forEach(f => { fullMap[f.id] = f.stock_full ?? 0; });
+        if (window._pubsData) {
+          const pub = window._pubsData.find(pub => pub.id === p.id);
+          if (pub) {
+            const dep = pub.available_quantity ?? 0;
+            const full = pub.is_full ? (fullMap[p.id] ?? 0) : 0;
+            return dep + full;
+          }
+        }
+        return null;
+      })();
+      const ventasDiarias = p.units / dias;
+      const cobertura = (stock != null && ventasDiarias > 0) ? Math.round(stock / ventasDiarias) : null;
+
+      products.push({
+        id:         p.id,
+        title:      p.title,
+        precio:     p.revenue / (p.units || 1), // precio promedio real
+        costo:      p.costo_unit || 0,
+        comPct:     parseFloat(comPct.toFixed(1)),
+        envioUnit:  Math.round(envioUnit),
+        stock:      stock,
+        cobertura:  cobertura,
+        units:      p.units,
+        cuenta:     acc.name,
+      });
+    });
+  });
+
+  _descuentosData = products;
+  renderDescuentos();
+}
+
+function renderDescuentos() {
+  const el = document.getElementById('descuentosContent');
+  if (!el || !_descuentosData) return;
+
+  // Leer inputs globales
+  const impPct    = parseFloat(document.getElementById('dscImp')?.value  || 0);
+  const tacosPct  = parseFloat(document.getElementById('dscTacos')?.value || 0);
+  const cfPct     = parseFloat(document.getElementById('dscCF')?.value   || 0);
+  const minMargen = parseFloat(document.getElementById('dscMin')?.value  || 15);
+  const dscLibre  = parseFloat(document.getElementById('dscLibre')?.value || 0);
+  const busqueda  = (document.getElementById('dscSearch')?.value || '').toLowerCase();
+
+  const products = _descuentosData.filter(p =>
+    !busqueda || p.id.toLowerCase().includes(busqueda) || p.title.toLowerCase().includes(busqueda)
+  );
+
+  // Función que calcula margen para un precio dado
+  function calcMargen(p, precio, comPct, envioUnit) {
+    const cf    = precio * cfPct / 100;
+    const imp   = precio * impPct / 100;
+    const tacos = precio * tacosPct / 100;
+    const com   = precio * comPct / 100;
+    const cargo = cargoFijoML(precio); // usa función existente
+    const envio = precio >= 33000 ? envioUnit : 0;
+    const costoTotal = p.costo + com + cargo + envio + imp + tacos + cf;
+    const margen = ((precio - costoTotal) / precio * 100);
+    return { margen: parseFloat(margen.toFixed(1)), costoTotal, com, cargo, envio, imp, tacos, cf };
+  }
+
+  function celdaDescuento(p, pct, comPct, envioUnit) {
+    if (pct <= 0) return '<td style="padding:6px 8px;text-align:center;color:var(--muted)">—</td>';
+    const nuevoPrecio = p.precio * (1 - pct/100);
+    const { margen } = calcMargen(p, nuevoPrecio, comPct, envioUnit);
+    const ok = margen >= minMargen;
+    const color = margen >= minMargen + 5 ? '#00e676' : margen >= minMargen ? '#ffd700' : '#ff5252';
+    return `<td style="padding:6px 8px;text-align:center">
+      <div style="font-size:11px;color:var(--muted)">$${Math.round(nuevoPrecio).toLocaleString('es-AR')}</div>
+      <div style="font-size:12px;font-weight:700;color:${color}">${margen.toFixed(1)}%</div>
+    </td>`;
+  }
+
+  // Cobertura badge
+  function cobBadge(dias) {
+    if (dias == null) return '<span style="color:var(--muted)">—</span>';
+    const color = dias >= 30 ? '#00e676' : dias >= 15 ? '#ffd700' : '#ff5252';
+    return `<span style="color:${color};font-weight:700">${dias}d</span>`;
+  }
+
+  const allDescuentos = [...DESCUENTOS_PRESETS, dscLibre > 0 ? dscLibre : null].filter(Boolean);
+
+  const rows = products.map((p, idx) => {
+    // Leer overrides por producto
+    const comPct   = parseFloat(document.getElementById(`dsc_com_${p.id}`)?.value ?? p.comPct);
+    const envioUnit = parseFloat(document.getElementById(`dsc_env_${p.id}`)?.value ?? p.envioUnit);
+    const { margen: margenActual, com, cargo, envio, imp, tacos, cf } = calcMargen(p, p.precio, comPct, envioUnit);
+    const margenColor = margenActual >= minMargen + 5 ? '#00e676' : margenActual >= minMargen ? '#ffd700' : '#ff5252';
+    const stockStr = p.stock == null ? '—' : p.stock.toLocaleString('es-AR');
+    const stockColor = p.stock == null ? 'var(--muted)' : p.stock === 0 ? '#ff5252' : p.stock <= 5 ? '#ff9100' : 'var(--text)';
+
+    return `<tr style="border-bottom:1px solid var(--border);${idx%2===0?'background:rgba(255,255,255,.015)':''}">
+      <td style="padding:6px 8px;font-size:11px;white-space:nowrap">
+        <a href="https://articulo.mercadolibre.com.ar/${p.id}" target="_blank" style="color:var(--accent);text-decoration:none;font-weight:600">${p.id}</a>
+      </td>
+      <td style="padding:6px 8px;font-size:12px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${p.title}">${p.title}</td>
+      <td style="padding:6px 8px;text-align:right;font-size:12px">$${Math.round(p.precio).toLocaleString('es-AR')}</td>
+      <td style="padding:6px 8px;text-align:right;font-size:12px">$${Math.round(p.costo).toLocaleString('es-AR')}</td>
+      <!-- Comisión editable -->
+      <td style="padding:4px 6px;text-align:center">
+        <input id="dsc_com_${p.id}" type="number" value="${comPct}" min="0" max="30" step="0.1"
+          onchange="renderDescuentos()"
+          style="width:52px;padding:3px 5px;border-radius:5px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:11px;text-align:center">%
+      </td>
+      <!-- Envío editable -->
+      <td style="padding:4px 6px;text-align:center">
+        <input id="dsc_env_${p.id}" type="number" value="${envioUnit}" min="0" step="10"
+          onchange="renderDescuentos()"
+          style="width:64px;padding:3px 5px;border-radius:5px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:11px;text-align:center">
+      </td>
+      <!-- Margen actual con tooltip de detalle -->
+      <td style="padding:6px 8px;text-align:center;cursor:help" title="CMV: $${Math.round(p.costo)} | Com: $${Math.round(com)} | Cargo fijo: $${Math.round(cargo)} | Envío: $${Math.round(envio)} | Imp: $${Math.round(imp)} | TACOS: $${Math.round(tacos)} | CF: $${Math.round(cf)}">
+        <span style="font-size:12px;font-weight:700;color:${margenColor}">${margenActual.toFixed(1)}%</span>
+        <span style="font-size:9px;color:var(--muted);margin-left:3px">ℹ️</span>
+      </td>
+      <!-- Stock y cobertura -->
+      <td style="padding:6px 8px;text-align:center;font-size:12px;color:${stockColor}">${stockStr}</td>
+      <td style="padding:6px 8px;text-align:center;font-size:12px">${cobBadge(p.cobertura)}</td>
+      <!-- Escenarios de descuento -->
+      ${DESCUENTOS_PRESETS.map(pct => celdaDescuento(p, pct, comPct, envioUnit)).join('')}
+      ${celdaDescuento(p, dscLibre, comPct, envioUnit)}
+    </tr>`;
+  }).join('');
+
+  function thS(align = 'right') {
+    return `padding:9px 8px;text-align:${align};font-size:11px;font-weight:600;color:var(--muted);position:sticky;top:0;background:var(--surface2);z-index:2;white-space:nowrap`;
+  }
+
+  el.innerHTML = `
+    <!-- Inputs globales -->
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px 20px;margin-bottom:16px">
+      <div style="font-size:13px;font-weight:700;color:var(--text);margin-bottom:12px">⚙️ Parámetros globales</div>
+      <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end">
+        ${['dscImp:Impuestos %:0','dscTacos:TACOS %:0','dscCF:Costos fijos %:0','dscMin:Margen mínimo %:15'].map(s => {
+          const [id, label, def] = s.split(':');
+          return `<div style="display:flex;flex-direction:column;gap:4px">
+            <label style="font-size:11px;color:var(--muted)">${label}</label>
+            <input id="${id}" type="number" value="${def}" min="0" max="100" step="0.1" onchange="renderDescuentos()"
+              style="width:80px;padding:6px 8px;border-radius:7px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px;text-align:center">
+          </div>`;
+        }).join('')}
+        <div style="display:flex;flex-direction:column;gap:4px">
+          <label style="font-size:11px;color:var(--muted)">Descuento libre %</label>
+          <input id="dscLibre" type="number" value="0" min="0" max="80" step="1" onchange="renderDescuentos()"
+            style="width:80px;padding:6px 8px;border-radius:7px;border:1px solid var(--border);background:#6366f133;color:var(--text);font-size:13px;text-align:center">
+        </div>
+        <div style="display:flex;flex-direction:column;gap:4px">
+          <label style="font-size:11px;color:var(--muted)">Buscar</label>
+          <input id="dscSearch" type="text" placeholder="MLA o título..." oninput="renderDescuentos()"
+            style="width:160px;padding:6px 10px;border-radius:7px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:12px">
+        </div>
+        <div style="margin-left:auto;display:flex;align-items:flex-end">
+          <div style="font-size:11px;padding:6px 10px;border-radius:7px;background:var(--surface2);color:var(--muted)">
+            🟢 ≥ mín+5% &nbsp; 🟡 ≥ mín% &nbsp; 🔴 < mín%
+          </div>
+        </div>
+      </div>
+    </div>
+    <!-- Leyenda margen -->
+    <div style="font-size:11px;color:var(--muted);margin-bottom:8px">${products.length} productos con CMV cargado · Hover en margen actual para ver detalle</div>
+    <!-- Tabla -->
+    <div style="overflow-x:auto;max-height:620px;overflow-y:auto;border-radius:10px;border:1px solid var(--border)">
+      <table style="width:100%;border-collapse:collapse;font-size:12px">
+        <thead>
+          <tr style="background:var(--surface2)">
+            <th style="${thS('left')}">MLA</th>
+            <th style="${thS('left')}">Título</th>
+            <th style="${thS()}">Precio</th>
+            <th style="${thS()}">CMV</th>
+            <th style="${thS()}">Comisión</th>
+            <th style="${thS()}">Envío $</th>
+            <th style="${thS()}">Margen actual</th>
+            <th style="${thS()}">Stock</th>
+            <th style="${thS()}">Cobertura</th>
+            ${DESCUENTOS_PRESETS.map(p => `<th style="${thS()};color:#ffd700">-${p}%</th>`).join('')}
+            <th style="${thS()};color:#a78bfa">Libre</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
 }
 
 async function loadSimulador() {
