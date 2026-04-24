@@ -2955,7 +2955,9 @@ function exportDescuentosExcel() {
     const cf = precio * cfPct/100, imp = precio * impPct/100, tacos = precio * tacosPct/100;
     const com = precio * comPct/100, cargo = cargoFijoML(precio);
     const envio = precio >= 33000 ? envioUnit : 0;
-    return parseFloat(((precio - p.costo - com - cargo - envio - imp - tacos - cf) / precio * 100).toFixed(1));
+    const iva21 = 0.21;
+    const ivaDif = Math.max(0, precio/(1+iva21)*iva21 - (p.costo+com+envio)/(1+iva21)*iva21);
+    return parseFloat(((precio - p.costo - com - cargo - envio - imp - tacos - cf - ivaDif) / precio * 100).toFixed(1));
   }
 
   const rows = _descuentosData.map(p => {
@@ -2988,6 +2990,7 @@ function exportDescuentosExcel() {
 }
 
 function loadDescuentos() {
+  window._dscSearchVal = '';
   const el = document.getElementById('descuentosContent');
   if (!el) return;
   const connected = state.accounts.filter(a => a.data?.rentabilidad?.by_product);
@@ -3053,7 +3056,7 @@ function renderDescuentos() {
   const cfPct     = parseFloat(document.getElementById('dscCF')?.value   || 0);
   const minMargen = parseFloat(document.getElementById('dscMin')?.value  || 15);
   const dscLibre  = parseFloat(document.getElementById('dscLibre')?.value || 0);
-  const busqueda  = (document.getElementById('dscSearch')?.value || '').toLowerCase();
+  const busqueda  = (window._dscSearchVal || '').toLowerCase();
 
   let products = _descuentosData.filter(p =>
     !busqueda || p.id.toLowerCase().includes(busqueda) || p.title.toLowerCase().includes(busqueda)
@@ -3084,22 +3087,26 @@ function renderDescuentos() {
     const imp   = precio * impPct / 100;
     const tacos = precio * tacosPct / 100;
     const com   = precio * comPct / 100;
-    const cargo = cargoFijoML(precio); // usa función existente
+    const cargo = cargoFijoML(precio);
     const envio = precio >= 33000 ? envioUnit : 0;
-    const costoTotal = p.costo + com + cargo + envio + imp + tacos + cf;
+    // IVA diferencia: IVA ventas - IVA compras (igual que en rentabilidad)
+    const iva21 = 0.21;
+    const ivaVentas   = precio / (1 + iva21) * iva21;
+    const ivaCompras  = (p.costo + com + envio) / (1 + iva21) * iva21;
+    const ivaDif      = Math.max(0, ivaVentas - ivaCompras);
+    const costoTotal = p.costo + com + cargo + envio + imp + tacos + cf + ivaDif;
     const margen = ((precio - costoTotal) / precio * 100);
-    return { margen: parseFloat(margen.toFixed(1)), costoTotal, com, cargo, envio, imp, tacos, cf };
+    return { margen: parseFloat(margen.toFixed(1)), costoTotal, com, cargo, envio, imp, tacos, cf, ivaDif };
   }
 
   function celdaDescuento(p, pct, comPct, envioUnit) {
     if (pct <= 0) return '<td style="padding:6px 8px;text-align:center;color:var(--muted)">—</td>';
     const nuevoPrecio = p.precio * (1 - pct/100);
     const { margen } = calcMargen(p, nuevoPrecio, comPct, envioUnit);
-    const ok = margen >= minMargen;
-    const color = margen >= minMargen + 5 ? '#00e676' : margen >= minMargen ? '#ffd700' : '#ff5252';
-    return `<td style="padding:6px 8px;text-align:center">
-      <div style="font-size:11px;color:var(--muted)">$${Math.round(nuevoPrecio).toLocaleString('es-AR')}</div>
-      <div style="font-size:12px;font-weight:700;color:${color}">${margen.toFixed(1)}%</div>
+    const color = margen >= minMargen + 5 ? '#00e676' : margen >= minMargen ? '#f59e0b' : '#ff5252';
+    return `<td style="padding:6px 8px;text-align:center;background:${color}11;border-radius:4px">
+      <div style="font-size:12px;font-weight:700;color:var(--text)">$${Math.round(nuevoPrecio).toLocaleString('es-AR')}</div>
+      <div style="font-size:12px;font-weight:800;color:${color}">${margen.toFixed(1)}%</div>
     </td>`;
   }
 
@@ -3121,11 +3128,15 @@ function renderDescuentos() {
     const stockStr = p.stock == null ? '—' : p.stock.toLocaleString('es-AR');
     const stockColor = p.stock == null ? 'var(--muted)' : p.stock === 0 ? '#ff5252' : p.stock <= 5 ? '#ff9100' : 'var(--text)';
 
+    const mlaParts = p.id.match(/^(MLA)(\d+)$/i);
+    const mlaLink = mlaParts ? `MLA-${mlaParts[2]}` : p.id;
     return `<tr style="border-bottom:1px solid var(--border);${idx%2===0?'background:rgba(255,255,255,.015)':''}">
       <td style="padding:6px 8px;font-size:11px;white-space:nowrap">
-        <a href="https://articulo.mercadolibre.com.ar/${p.id}" target="_blank" style="color:var(--accent);text-decoration:none;font-weight:600">${p.id}</a>
+        <span onclick="navigator.clipboard.writeText('${p.id}');this.textContent='✓';setTimeout(()=>this.textContent='${p.id}',1200)" style="color:var(--accent);font-weight:600;cursor:pointer" title="Click para copiar">${p.id}</span>
       </td>
-      <td style="padding:6px 8px;font-size:12px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${p.title}">${p.title}</td>
+      <td style="padding:6px 8px;font-size:12px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${p.title}">
+        <a href="https://articulo.mercadolibre.com.ar/${mlaLink}" target="_blank" style="color:var(--text);text-decoration:none" onmouseover="this.style.textDecoration='underline'" onmouseout="this.style.textDecoration='none'">${p.title}</a>
+      </td>
       <td style="padding:6px 8px;text-align:right;font-size:12px">$${Math.round(p.precio).toLocaleString('es-AR')}</td>
       <td style="padding:6px 8px;text-align:right;font-size:12px">$${Math.round(p.costo).toLocaleString('es-AR')}</td>
       <!-- Comisión editable -->
@@ -3141,7 +3152,7 @@ function renderDescuentos() {
           style="width:64px;padding:3px 5px;border-radius:5px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:11px;text-align:center">
       </td>
       <!-- Margen actual con tooltip de detalle -->
-      <td style="padding:6px 8px;text-align:center;cursor:help" title="CMV: $${Math.round(p.costo)} | Com: $${Math.round(com)} | Cargo fijo: $${Math.round(cargo)} | Envío: $${Math.round(envio)} | Imp: $${Math.round(imp)} | TACOS: $${Math.round(tacos)} | CF: $${Math.round(cf)}">
+      <td style="padding:6px 8px;text-align:center;cursor:help" title="CMV: $${Math.round(p.costo)} | Com: $${Math.round(com)} | Cargo fijo: $${Math.round(cargo)} | Envío: $${Math.round(envio)} | Imp: $${Math.round(imp)} | TACOS: $${Math.round(tacos)} | CF: $${Math.round(cf)} | IVA dif: $${Math.round(ivaDif)}">
         <span style="font-size:12px;font-weight:700;color:${margenColor}">${margenActual.toFixed(1)}%</span>
         <span style="font-size:9px;color:var(--muted);margin-left:3px">ℹ️</span>
       </td>
@@ -3183,7 +3194,7 @@ function renderDescuentos() {
         </div>
         <div style="display:flex;flex-direction:column;gap:4px">
           <label style="font-size:11px;color:var(--muted)">Buscar</label>
-          <input id="dscSearch" type="text" placeholder="MLA o título..." oninput="renderDescuentos()"
+          <input id="dscSearch" type="text" placeholder="MLA o título..." value="${window._dscSearchVal||''}" oninput="window._dscSearchVal=this.value;renderDescuentos()"
             style="width:160px;padding:6px 10px;border-radius:7px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:12px">
         </div>
         <div style="margin-left:auto;display:flex;align-items:flex-end">
