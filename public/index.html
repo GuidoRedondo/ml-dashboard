@@ -334,6 +334,26 @@ input[type="date"]:focus {
 .evo-metric-btn:hover { color: var(--text); }
 .evo-metric-btn.active { background: var(--surface); color: var(--accent); }
 
+/* Cards semanales (fila de 8) */
+.evo-week-card {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 8px 9px;
+  text-align: center;
+  position: relative;
+  transition: transform .12s ease, box-shadow .12s ease;
+}
+.evo-week-card:hover { transform: translateY(-1px); box-shadow: var(--shadow-lg); }
+.evo-week-card.current { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+.evo-week-card-range { font-size: 10px; color: var(--muted); font-weight: 600; letter-spacing: .03em; margin-bottom: 4px; }
+.evo-week-card-value { font-size: 15px; font-weight: 700; color: var(--text); font-family: var(--font-b); line-height: 1.15; }
+.evo-week-card-delta { font-size: 11px; font-weight: 700; margin-top: 4px; display: inline-flex; align-items: center; gap: 3px; padding: 2px 7px; border-radius: 999px; }
+.evo-week-card-delta.up { color: #00e676; background: rgba(0,230,118,.12); }
+.evo-week-card-delta.down { color: #ff5252; background: rgba(255,82,82,.12); }
+.evo-week-card-delta.flat { color: var(--muted); background: rgba(255,255,255,.05); }
+.evo-week-card-current-tag { position: absolute; top: -7px; right: 8px; background: var(--accent); color: #000; font-size: 8px; font-weight: 800; letter-spacing: .08em; padding: 2px 6px; border-radius: 4px; }
+
 /* ── TABLES ── */
 table {
   width: 100%;
@@ -691,6 +711,9 @@ tbody td {
         <div id="evoChart" style="width:100%;height:240px;position:relative"></div>
         <div id="evoLegend" style="display:flex;gap:18px;flex-wrap:wrap;margin-top:8px;font-size:11px;color:var(--muted)"></div>
       </div>
+
+      <!-- Fila 8 cards: facturación semana a semana con delta WoW -->
+      <div id="evoWeekCards" style="display:grid;grid-template-columns:repeat(8,1fr);gap:8px;margin-bottom:16px"></div>
 
       <!-- BLOQUE 1: Ventas -->
       <div style="font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.08em;margin-bottom:8px">📈 VENTAS</div>
@@ -2408,6 +2431,7 @@ async function loadEvolucionSemanal() {
     _initEvoControls();
     renderEvoChart();
     renderEvoKpis();
+    renderEvoWeekCards();
   } catch (e) {
     console.error('[EVO] error:', e);
   } finally {
@@ -2459,6 +2483,55 @@ function renderEvoKpis() {
   setKpi('evoKpiUni', 'evoKpiUniWoW', 'evoKpiUniAvg', cur.unidades,    prev.unidades,    avg('unidades'),    _evoFmtNum);
   setKpi('evoKpiOrd', 'evoKpiOrdWoW', 'evoKpiOrdAvg', cur.ordenes,     prev.ordenes,     avg('ordenes'),     _evoFmtNum);
   setKpi('evoKpiTkt', 'evoKpiTktWoW', 'evoKpiTktAvg', cur.ticket_promedio, prev.ticket_promedio, avg('ticket_promedio'), _evoFmtMoney);
+}
+
+function renderEvoWeekCards() {
+  const data = window._evoState.data;
+  const wrap = document.getElementById('evoWeekCards');
+  if (!wrap || !data || !data.length) return;
+
+  const lastIdx = data.length - 1;
+  const html = data.map((w, i) => {
+    const prev = i > 0 ? data[i - 1] : null;
+    const curFac = w.facturacion || 0;
+    const prevFac = prev ? (prev.facturacion || 0) : 0;
+    let pct = null, deltaCls = 'flat', deltaTxt = '—';
+    if (prevFac > 0) {
+      pct = ((curFac - prevFac) / prevFac) * 100;
+      if (pct > 0.5)      { deltaCls = 'up';   deltaTxt = '▲ ' + pct.toFixed(1) + '%'; }
+      else if (pct < -0.5){ deltaCls = 'down'; deltaTxt = '▼ ' + Math.abs(pct).toFixed(1) + '%'; }
+      else                { deltaCls = 'flat'; deltaTxt = '= ' + pct.toFixed(1) + '%'; }
+    } else if (i === 0) {
+      deltaTxt = 'inicio';
+    }
+
+    // Rango de fecha corto: "10–16 mar"
+    const start = new Date(w.week_start + 'T12:00:00');
+    const end   = new Date(w.week_end   + 'T12:00:00');
+    const sameMonth = start.getMonth() === end.getMonth();
+    const monthStr = end.toLocaleDateString('es-AR', { month: 'short' }).replace('.', '');
+    const rangeTxt = sameMonth
+      ? `${start.getDate()}–${end.getDate()} ${monthStr}`
+      : `${start.getDate()} ${start.toLocaleDateString('es-AR',{month:'short'}).replace('.','')} – ${end.getDate()} ${monthStr}`;
+
+    const isCurrent = (i === lastIdx);
+    const tooltip = `Sem ${i+1} · ${w.week_start} a ${w.week_end}
+Facturación: ${_evoFmtMoney(curFac)}
+Órdenes: ${_evoFmtNum(w.ordenes)}
+Ticket prom.: ${_evoFmtMoney(w.ticket_promedio)}` + (prev ? `
+Sem. anterior: ${_evoFmtMoney(prevFac)}` : '');
+
+    return `
+      <div class="evo-week-card${isCurrent ? ' current' : ''}" title="${tooltip}">
+        ${isCurrent ? '<div class="evo-week-card-current-tag">EN CURSO</div>' : ''}
+        <div class="evo-week-card-range">${rangeTxt}</div>
+        <div class="evo-week-card-value">${_evoFmtMoney(curFac)}</div>
+        <div class="evo-week-card-delta ${deltaCls}">${deltaTxt}</div>
+      </div>
+    `;
+  }).join('');
+
+  wrap.innerHTML = html;
 }
 
 function renderEvoChart() {
