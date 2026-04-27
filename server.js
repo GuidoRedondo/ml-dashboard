@@ -1347,6 +1347,140 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
   } catch(e) { console.error('Dashboard error:', e); res.status(500).json({ error: e.message }); }
 });
 
+// ════════════════════════════════════════════════════════════════════
+//  EVOLUCIÓN SEMANAL — últimas 8 semanas (lunes a domingo, ISO)
+// ════════════════════════════════════════════════════════════════════
+
+function isoMonday(d) {
+  const x = new Date(d);
+  x.setHours(0, 0, 0, 0);
+  const day = x.getDay();
+  const diff = (day === 0 ? -6 : 1 - day);
+  x.setDate(x.getDate() + diff);
+  return x;
+}
+
+function ymdLocal(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+app.get('/api/dashboard/evolucion-semanal', requireAuth, async (req, res) => {
+  try {
+    const clientId = parseInt(req.query.client_id);
+    const weeks = Math.max(1, Math.min(26, parseInt(req.query.weeks) || 8));
+    if (!clientId) return res.status(400).json({ error: 'client_id requerido' });
+
+    const token = await getClientToken(clientId);
+    if (!token) return res.status(403).json({ error: 'Cliente no conectado o token expirado' });
+
+    const headers = { 'Authorization': `Bearer ${token}` };
+    const user = await fetch(`${ML_API}/users/me`, { headers }).then(r => r.json());
+    if (user.error) return res.status(403).json({ error: 'token invalido' });
+    const uid = user.id;
+    const siteId = user.site_id || 'MLA';
+
+    const now = new Date();
+    const currentMonday = isoMonday(now);
+    const startMonday = new Date(currentMonday);
+    startMonday.setDate(startMonday.getDate() - (weeks - 1) * 7);
+
+    const fmt = d => d.toISOString().slice(0, 19) + '.000-00:00';
+    const fromStr = fmt(startMonday);
+    const toStr   = fmt(now);
+
+    const buckets = [];
+    for (let i = 0; i < weeks; i++) {
+      const wMon = new Date(startMonday);
+      wMon.setDate(wMon.getDate() + i * 7);
+      const wSun = new Date(wMon);
+      wSun.setDate(wSun.getDate() + 6);
+      wSun.setHours(23, 59, 59, 999);
+      buckets.push({
+        week_start: ymdLocal(wMon),
+        week_end: ymdLocal(wSun),
+        _startMs: wMon.getTime(),
+        _endMs: wSun.getTime(),
+        facturacion: 0,
+        unidades: 0,
+        ordenes: 0,
+        ticket_promedio: 0,
+        inversion_publi: 0,
+        ventas_publi: 0,
+        tacos: null,
+        roas: null,
+      });
+    }
+
+    const findBucket = (dateMs) => {
+      for (let i = 0; i < buckets.length; i++) {
+        if (dateMs >= buckets[i]._startMs && dateMs <= buckets[i]._endMs) return buckets[i];
+      }
+      return null;
+    };
+
+    const { orders } = await fetchAllOrders(uid, headers, fromStr, toStr);
+
+    orders.forEach(order => {
+      const dt = new Date(order.date_created || order.date_closed).getTime();
+      const b = findBucket(dt);
+      if (!b) return;
+      b.ordenes += 1;
+      (order.order_items || []).forEach(oi => {
+        const qty = oi.quantity || 0;
+        const price = parseFloat(oi.unit_price) || 0;
+        b.unidades += qty;
+        b.facturacion += price * qty;
+      });
+    });
+
+    // Publi (PADS) por semana — un fetch por semana en paralelo
+    try {
+      const advData = await fetch(`${ML_API}/advertising/advertisers?product_id=PADS`, {
+        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'Api-Version': '1' }
+      }).then(r => r.json()).catch(() => ({}));
+
+      const advertisers = advData.advertisers || [];
+      const adv = advertisers.find(a => a.site_id === siteId) || advertisers[0];
+
+      if (adv) {
+        const advId = adv.advertiser_id;
+        const h2 = { 'Authorization': `Bearer ${token}`, 'api-version': '2' };
+        const metrics = 'cost,total_amount';
+
+        await Promise.all(buckets.map(async (b) => {
+          const url = `${ML_API}/advertising/${siteId}/advertisers/${advId}/product_ads/campaigns/search`
+                    + `?limit=1&offset=0&date_from=${b.week_start}&date_to=${b.week_end}`
+                    + `&metrics=${metrics}&metrics_summary=true`;
+          try {
+            const txt = await fetch(url, { headers: h2 }).then(r => r.text());
+            const data = JSON.parse(txt);
+            const s = data.metrics_summary || {};
+            b.inversion_publi = parseFloat(s.cost) || 0;
+            b.ventas_publi    = parseFloat(s.total_amount) || 0;
+          } catch (_) { /* swallow per-week errors */ }
+        }));
+      }
+    } catch (e) {
+      console.warn('[EVO-SEMANAL] PADS fetch falló:', e.message);
+    }
+
+    buckets.forEach(b => {
+      b.ticket_promedio = b.ordenes > 0 ? b.facturacion / b.ordenes : 0;
+      b.tacos = b.facturacion > 0 ? (b.inversion_publi / b.facturacion) * 100 : null;
+      b.roas  = b.inversion_publi > 0 ? (b.ventas_publi / b.inversion_publi) : null;
+      delete b._startMs; delete b._endMs;
+    });
+
+    res.json({ weeks: buckets, generated_at: new Date().toISOString() });
+  } catch (e) {
+    console.error('[EVO-SEMANAL] error:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.get('/api/ads', requireAuth, async (req, res) => {
   try {
     const clientId = parseInt(req.query.client_id);
