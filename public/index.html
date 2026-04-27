@@ -317,6 +317,23 @@ input[type="date"]:focus {
   font-weight: 600;
 }
 
+/* ── EVOLUCIÓN SEMANAL ── */
+.evo-kpi { background: var(--surface2); border-radius: 10px; padding: 12px 14px; }
+.evo-kpi-label { font-size: 10px; font-weight: 700; color: var(--muted); letter-spacing: .06em; margin-bottom: 6px; text-transform: uppercase; }
+.evo-kpi-value { font-size: 22px; font-weight: 700; color: var(--text); font-family: var(--font-b); line-height: 1.1; }
+.evo-kpi-deltas { display: flex; gap: 10px; margin-top: 6px; font-size: 11px; flex-wrap: wrap; }
+.evo-delta { font-weight: 600; }
+.evo-delta-sub { color: var(--muted); font-weight: 500; }
+.evo-delta-up { color: #00e676; }
+.evo-delta-down { color: #ff5252; }
+.evo-metric-btn {
+  padding: 6px 12px; border: none; background: transparent; color: var(--muted);
+  border-radius: 6px; font-size: 12px; font-weight: 600; cursor: pointer;
+  transition: all .15s ease; font-family: inherit;
+}
+.evo-metric-btn:hover { color: var(--text); }
+.evo-metric-btn.active { background: var(--surface); color: var(--accent); }
+
 /* ── TABLES ── */
 table {
   width: 100%;
@@ -648,6 +665,31 @@ tbody td {
         <div id="accountTabs" style="display:flex;gap:8px;flex-wrap:wrap;flex:1">
           <button class="acc-tab active" onclick="filterAccount(null,this)">● Todas las cuentas</button>
         </div>
+      </div>
+
+      <!-- BLOQUE 0: Evolución semanal -->
+      <div style="font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.08em;margin-bottom:8px">📅 EVOLUCIÓN SEMANAL · ÚLTIMAS 8 SEMANAS</div>
+      <div class="kpi-card" style="padding:18px 20px 20px;margin-bottom:16px">
+        <div id="evoKpis" style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px">
+          <div class="evo-kpi"><div class="evo-kpi-label">🧾 Facturación</div><div class="evo-kpi-value" id="evoKpiFac">—</div><div class="evo-kpi-deltas"><span id="evoKpiFacWoW" class="evo-delta">—</span><span id="evoKpiFacAvg" class="evo-delta evo-delta-sub">—</span></div></div>
+          <div class="evo-kpi"><div class="evo-kpi-label">📦 Unidades</div><div class="evo-kpi-value" id="evoKpiUni">—</div><div class="evo-kpi-deltas"><span id="evoKpiUniWoW" class="evo-delta">—</span><span id="evoKpiUniAvg" class="evo-delta evo-delta-sub">—</span></div></div>
+          <div class="evo-kpi"><div class="evo-kpi-label">🛒 Órdenes</div><div class="evo-kpi-value" id="evoKpiOrd">—</div><div class="evo-kpi-deltas"><span id="evoKpiOrdWoW" class="evo-delta">—</span><span id="evoKpiOrdAvg" class="evo-delta evo-delta-sub">—</span></div></div>
+          <div class="evo-kpi"><div class="evo-kpi-label">🎯 Ticket prom.</div><div class="evo-kpi-value" id="evoKpiTkt">—</div><div class="evo-kpi-deltas"><span id="evoKpiTktWoW" class="evo-delta">—</span><span id="evoKpiTktAvg" class="evo-delta evo-delta-sub">—</span></div></div>
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px">
+          <div id="evoMetricSelector" style="display:flex;gap:4px;background:var(--surface2);padding:3px;border-radius:8px">
+            <button class="evo-metric-btn active" data-metric="facturacion">Facturación</button>
+            <button class="evo-metric-btn" data-metric="unidades">Unidades</button>
+            <button class="evo-metric-btn" data-metric="ordenes">Órdenes</button>
+            <button class="evo-metric-btn" data-metric="ticket_promedio">Ticket prom.</button>
+          </div>
+          <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);cursor:pointer;user-select:none">
+            <input type="checkbox" id="evoTogglePubli" checked style="cursor:pointer">
+            <span>Mostrar publi / TACOS</span>
+          </label>
+        </div>
+        <div id="evoChart" style="width:100%;height:240px;position:relative"></div>
+        <div id="evoLegend" style="display:flex;gap:18px;flex-wrap:wrap;margin-top:8px;font-size:11px;color:var(--muted)"></div>
       </div>
 
       <!-- BLOQUE 1: Ventas -->
@@ -1440,6 +1482,7 @@ async function loadDashboardData() {
   }));
 
   updateDashboard();
+  loadEvolucionSemanal();
   showToast('✅ Datos actualizados');
 }
 
@@ -2313,6 +2356,259 @@ function buildEvolutionChart() {
     </div>`).join('');
 
   } catch(e) { console.error('Chart error:', e); }
+}
+
+// ════════════════════════════════════════════════════════════════════
+//  EVOLUCIÓN SEMANAL — últimas 8 semanas (lunes a domingo, ISO)
+// ════════════════════════════════════════════════════════════════════
+window._evoState = window._evoState || {
+  data: null,
+  metric: 'facturacion',
+  showPubli: true,
+  loading: false,
+};
+
+async function loadEvolucionSemanal() {
+  const connected = state.accounts.filter(a => a.id);
+  if (!connected.length) return;
+
+  window._evoState.loading = true;
+  try {
+    const responses = await Promise.all(connected.map(acc =>
+      apiCall('GET', `/api/dashboard/evolucion-semanal?client_id=${acc.id}&weeks=8`)
+        .catch(() => null)
+    ));
+
+    const merged = [];
+    responses.forEach(r => {
+      if (!r || !r.weeks) return;
+      r.weeks.forEach((w, i) => {
+        if (!merged[i]) {
+          merged[i] = {
+            week_start: w.week_start, week_end: w.week_end,
+            facturacion: 0, unidades: 0, ordenes: 0,
+            inversion_publi: 0, ventas_publi: 0,
+          };
+        }
+        merged[i].facturacion    += w.facturacion || 0;
+        merged[i].unidades       += w.unidades || 0;
+        merged[i].ordenes        += w.ordenes || 0;
+        merged[i].inversion_publi+= w.inversion_publi || 0;
+        merged[i].ventas_publi   += w.ventas_publi || 0;
+      });
+    });
+
+    merged.forEach(w => {
+      w.ticket_promedio = w.ordenes > 0 ? w.facturacion / w.ordenes : 0;
+      w.tacos = w.facturacion > 0 ? (w.inversion_publi / w.facturacion) * 100 : null;
+      w.roas  = w.inversion_publi > 0 ? (w.ventas_publi / w.inversion_publi) : null;
+    });
+
+    window._evoState.data = merged;
+    _initEvoControls();
+    renderEvoChart();
+    renderEvoKpis();
+  } catch (e) {
+    console.error('[EVO] error:', e);
+  } finally {
+    window._evoState.loading = false;
+  }
+}
+
+function _evoFmtMoney(n) {
+  if (n == null) return '—';
+  if (Math.abs(n) >= 1e6) return '$' + (n/1e6).toFixed(2) + 'M';
+  if (Math.abs(n) >= 1e3) return '$' + (n/1e3).toFixed(0) + 'K';
+  return '$' + Math.round(n).toLocaleString('es-AR');
+}
+function _evoFmtNum(n) {
+  if (n == null) return '—';
+  return Math.round(n).toLocaleString('es-AR');
+}
+
+function renderEvoKpis() {
+  const data = window._evoState.data;
+  if (!data || data.length < 2) return;
+
+  const cur = data[data.length - 1];
+  const prev = data[data.length - 2];
+  const baseAvg = data.slice(Math.max(0, data.length - 5), data.length - 1);
+  const avg = (key) => {
+    const vals = baseAvg.map(w => w[key] || 0);
+    return vals.length ? vals.reduce((a,b) => a+b, 0) / vals.length : 0;
+  };
+
+  const setKpi = (valId, wowId, avgId, curVal, prevVal, avgVal, formatter) => {
+    const valEl = document.getElementById(valId);
+    if (valEl) valEl.textContent = formatter(curVal);
+    const wowEl = document.getElementById(wowId);
+    const avgEl = document.getElementById(avgId);
+    const wowPct = prevVal > 0 ? ((curVal - prevVal) / prevVal) * 100 : null;
+    const avgPct = avgVal > 0 ? ((curVal - avgVal) / avgVal) * 100 : null;
+    if (wowEl) {
+      if (wowPct == null) { wowEl.textContent = 'vs sem. ant. —'; wowEl.className = 'evo-delta'; }
+      else { wowEl.textContent = `vs sem. ant. ${wowPct >= 0 ? '+' : ''}${wowPct.toFixed(1)}%`; wowEl.className = 'evo-delta ' + (wowPct >= 0 ? 'evo-delta-up' : 'evo-delta-down'); }
+    }
+    if (avgEl) {
+      if (avgPct == null) { avgEl.textContent = 'vs prom. 4s —'; }
+      else { avgEl.textContent = `vs prom. 4s ${avgPct >= 0 ? '+' : ''}${avgPct.toFixed(1)}%`; }
+    }
+  };
+
+  setKpi('evoKpiFac', 'evoKpiFacWoW', 'evoKpiFacAvg', cur.facturacion, prev.facturacion, avg('facturacion'), _evoFmtMoney);
+  setKpi('evoKpiUni', 'evoKpiUniWoW', 'evoKpiUniAvg', cur.unidades,    prev.unidades,    avg('unidades'),    _evoFmtNum);
+  setKpi('evoKpiOrd', 'evoKpiOrdWoW', 'evoKpiOrdAvg', cur.ordenes,     prev.ordenes,     avg('ordenes'),     _evoFmtNum);
+  setKpi('evoKpiTkt', 'evoKpiTktWoW', 'evoKpiTktAvg', cur.ticket_promedio, prev.ticket_promedio, avg('ticket_promedio'), _evoFmtMoney);
+}
+
+function renderEvoChart() {
+  const data = window._evoState.data;
+  const chartEl = document.getElementById('evoChart');
+  const legendEl = document.getElementById('evoLegend');
+  if (!chartEl || !data || !data.length) return;
+
+  const metric = window._evoState.metric;
+  const showPubli = window._evoState.showPubli;
+  const isMoney = (metric === 'facturacion' || metric === 'ticket_promedio');
+
+  const W = chartEl.clientWidth || 900;
+  const H = 240;
+  const padL = 50, padR = 50, padT = 20, padB = 50;
+  const innerW = W - padL - padR;
+  const innerH = H - padT - padB;
+  const n = data.length;
+  const stepX = n > 1 ? innerW / (n - 1) : 0;
+
+  const vals = data.map(w => w[metric] || 0);
+  const maxVal = Math.max(...vals, 1);
+  const publiVals = data.map(w => w.inversion_publi || 0);
+  const maxPubli = Math.max(...publiVals, 1);
+
+  let grid = '';
+  for (let g = 0; g <= 4; g++) {
+    const y = padT + (g / 4) * innerH;
+    grid += `<line x1="${padL}" y1="${y.toFixed(1)}" x2="${padL + innerW}" y2="${y.toFixed(1)}" stroke="rgba(255,255,255,.05)" stroke-width="1"/>`;
+    const v = maxVal * (1 - g / 4);
+    const lbl = isMoney ? _evoFmtMoney(v) : _evoFmtNum(v);
+    grid += `<text x="${padL - 6}" y="${(y + 3).toFixed(1)}" text-anchor="end" font-size="9" fill="rgba(255,255,255,.45)" font-family="sans-serif">${lbl}</text>`;
+    if (showPubli) {
+      const vp = maxPubli * (1 - g / 4);
+      grid += `<text x="${padL + innerW + 6}" y="${(y + 3).toFixed(1)}" text-anchor="start" font-size="9" fill="rgba(99,102,241,.7)" font-family="sans-serif">${_evoFmtMoney(vp)}</text>`;
+    }
+  }
+
+  let publiPath = '', publiArea = '', publiDots = '';
+  if (showPubli && publiVals.some(v => v > 0)) {
+    const pts = publiVals.map((v, i) => {
+      const x = padL + i * stepX;
+      const y = padT + innerH - (v / maxPubli) * innerH;
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    });
+    publiPath = `<polyline points="${pts.join(' ')}" fill="none" stroke="#6366f1" stroke-width="2" stroke-dasharray="5 4" stroke-linejoin="round"/>`;
+    publiArea = `<polygon points="${padL},${padT + innerH} ${pts.join(' ')} ${padL + (n-1) * stepX},${padT + innerH}" fill="#6366f1" opacity="0.06"/>`;
+    publiVals.forEach((v, i) => {
+      if (v <= 0) return;
+      const x = padL + i * stepX;
+      const y = padT + innerH - (v / maxPubli) * innerH;
+      publiDots += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="3" fill="#6366f1" stroke="rgba(0,0,0,.4)" stroke-width="1"/>`;
+    });
+  }
+
+  let mainPath = '', mainArea = '', mainDots = '', mainLabels = '';
+  const pts = vals.map((v, i) => {
+    const x = padL + i * stepX;
+    const y = padT + innerH - (v / maxVal) * innerH;
+    return { x, y, v };
+  });
+  if (vals.some(v => v > 0)) {
+    const ptsStr = pts.map(p => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ');
+    mainPath = `<polyline points="${ptsStr}" fill="none" stroke="#FFD700" stroke-width="2.5" stroke-linejoin="round"/>`;
+    mainArea = `<polygon points="${padL},${padT + innerH} ${ptsStr} ${padL + (n-1) * stepX},${padT + innerH}" fill="#FFD700" opacity="0.08"/>`;
+    pts.forEach(p => {
+      mainDots += `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="3.5" fill="#FFD700" stroke="rgba(0,0,0,.5)" stroke-width="1"/>`;
+    });
+    const last = pts[pts.length - 1];
+    const lblTxt = isMoney ? _evoFmtMoney(last.v) : _evoFmtNum(last.v);
+    const lblY = Math.max(last.y - 8, 12);
+    mainLabels += `<rect x="${(last.x - 28).toFixed(1)}" y="${(lblY - 11).toFixed(1)}" width="56" height="14" rx="3" fill="rgba(0,0,0,.7)"/>`;
+    mainLabels += `<text x="${last.x.toFixed(1)}" y="${(lblY - 1).toFixed(1)}" text-anchor="middle" font-size="10" fill="#FFD700" font-family="sans-serif" font-weight="700">${lblTxt}</text>`;
+  }
+
+  let xLabels = '';
+  data.forEach((w, i) => {
+    const x = padL + i * stepX;
+    const d = new Date(w.week_start + 'T12:00:00');
+    const lbl = d.toLocaleDateString('es-AR', { day: '2-digit', month: 'short' }).replace('.', '');
+    xLabels += `<text x="${x.toFixed(1)}" y="${(H - 26).toFixed(1)}" text-anchor="middle" font-size="10" fill="rgba(255,255,255,.55)" font-family="sans-serif">${lbl}</text>`;
+    if (showPubli && w.tacos != null) {
+      xLabels += `<text x="${x.toFixed(1)}" y="${(H - 12).toFixed(1)}" text-anchor="middle" font-size="9" fill="#6366f1" font-family="sans-serif" font-weight="600">TACOS ${w.tacos.toFixed(1)}%</text>`;
+    }
+  });
+
+  let hoverZones = '';
+  data.forEach((w, i) => {
+    const x = padL + i * stepX;
+    const zoneW = stepX || innerW;
+    const tip = [
+      `Semana ${i+1} · ${w.week_start} a ${w.week_end}`,
+      `Facturación: ${_evoFmtMoney(w.facturacion)}`,
+      `Unidades: ${_evoFmtNum(w.unidades)}`,
+      `Órdenes: ${_evoFmtNum(w.ordenes)}`,
+      `Ticket prom.: ${_evoFmtMoney(w.ticket_promedio)}`,
+      `Inv. publi: ${_evoFmtMoney(w.inversion_publi)}`,
+      w.tacos != null ? `TACOS: ${w.tacos.toFixed(1)}%` : 'TACOS: —',
+      w.roas != null ? `ROAS: ${w.roas.toFixed(2)}` : 'ROAS: —',
+    ].join('\n');
+    hoverZones += `<rect x="${(x - zoneW/2).toFixed(1)}" y="${padT}" width="${zoneW.toFixed(1)}" height="${innerH}" fill="transparent"><title>${tip}</title></rect>`;
+  });
+
+  chartEl.innerHTML = `
+    <svg viewBox="0 0 ${W} ${H}" width="100%" height="100%" preserveAspectRatio="none" style="overflow:visible">
+      ${grid}
+      ${publiArea}${publiPath}${publiDots}
+      ${mainArea}${mainPath}${mainDots}${mainLabels}
+      ${xLabels}
+      ${hoverZones}
+    </svg>
+  `;
+
+  const metricLabels = {
+    facturacion: 'Facturación', unidades: 'Unidades',
+    ordenes: 'Órdenes', ticket_promedio: 'Ticket promedio',
+  };
+  legendEl.innerHTML = `
+    <span style="display:inline-flex;align-items:center;gap:6px"><span style="width:14px;height:3px;background:#FFD700;border-radius:2px"></span>${metricLabels[metric]}</span>
+    ${showPubli ? '<span style="display:inline-flex;align-items:center;gap:6px"><span style="width:14px;height:3px;background:#6366f1;border-radius:2px"></span>Inv. publi (eje derecho)</span>' : ''}
+    <span style="margin-left:auto;color:rgba(255,255,255,.4);font-size:10px">Hover sobre el gráfico para ver detalle</span>
+  `;
+}
+
+function _initEvoControls() {
+  if (window._evoControlsReady) return;
+  window._evoControlsReady = true;
+
+  document.querySelectorAll('#evoMetricSelector .evo-metric-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('#evoMetricSelector .evo-metric-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      window._evoState.metric = btn.dataset.metric;
+      renderEvoChart();
+    });
+  });
+
+  const togg = document.getElementById('evoTogglePubli');
+  if (togg) {
+    togg.addEventListener('change', () => {
+      window._evoState.showPubli = togg.checked;
+      renderEvoChart();
+    });
+  }
+
+  let resizeT;
+  window.addEventListener('resize', () => {
+    clearTimeout(resizeT);
+    resizeT = setTimeout(() => { if (window._evoState.data) renderEvoChart(); }, 150);
+  });
 }
 
 function chartHover(e, el, days, padL, innerW, labels, facByDay, ventasByDay) {
