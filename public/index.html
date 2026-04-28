@@ -605,6 +605,9 @@ tbody td {
       <div class="nav-item" data-page="reputacion" onclick="showPage('reputacion',this)">
         <span class="nav-icon">⭐</span> Reputación
       </div>
+      <div class="nav-item" data-page="alertas" onclick="showPage('alertas',this);loadCentroInteligencia()">
+        <span class="nav-icon">🔔</span> Centro de Inteligencia
+      </div>
     </nav>
   </aside>
 
@@ -1199,6 +1202,44 @@ tbody td {
     <div class="page" id="page-reputacion">
       <h2 style="margin:0 0 20px;font-family:var(--font-b)">Reputación</h2>
       <div id="reputacionContent"><div style="color:var(--muted)">Sincronizá para ver datos</div></div>
+    </div>
+
+    <!-- CENTRO DE INTELIGENCIA -->
+    <div class="page" id="page-alertas">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px;flex-wrap:wrap">
+        <h2 style="margin:0;font-family:var(--font-b);flex:1">🔔 Centro de Inteligencia</h2>
+        <button class="sync-btn" onclick="loadCentroInteligencia()">🔄 Actualizar</button>
+        <button id="ci-run-btn" class="sync-btn" onclick="ejecutarMotorAlertas()" style="background:#6366f1;color:#fff;border:none">⚡ Ejecutar ahora</button>
+      </div>
+
+      <!-- Tabs -->
+      <div style="display:flex;gap:0;margin-bottom:24px;border-bottom:2px solid var(--border)">
+        <button id="ci-tab-alertas" onclick="switchCITab('alertas')"
+          style="padding:8px 20px;border:none;background:none;cursor:pointer;font-family:var(--font);font-size:13px;font-weight:600;color:#6366f1;border-bottom:2px solid #6366f1;margin-bottom:-2px">
+          Alertas
+        </button>
+        <button id="ci-tab-reglas" onclick="switchCITab('reglas')"
+          style="padding:8px 20px;border:none;background:none;cursor:pointer;font-family:var(--font);font-size:13px;font-weight:500;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-2px">
+          Configurar reglas
+        </button>
+      </div>
+
+      <!-- Panel Alertas -->
+      <div id="ci-alertas-panel">
+        <div id="ci-alertas-content">
+          <div style="color:var(--muted);text-align:center;padding:40px">Seleccioná un cliente y hacé clic en Actualizar</div>
+        </div>
+      </div>
+
+      <!-- Panel Reglas -->
+      <div id="ci-reglas-panel" style="display:none">
+        <div style="font-size:12px;color:var(--muted);margin-bottom:16px">
+          Los umbrales se editan como JSON. Guardá por fila. Los cambios aplican sólo al cliente seleccionado.
+        </div>
+        <div id="ci-reglas-content">
+          <div style="color:var(--muted);padding:20px">Cargando...</div>
+        </div>
+      </div>
     </div>
 
     <!-- STOCK -->
@@ -10399,6 +10440,157 @@ function exportStockExcel() {
   const fecha = new Date().toISOString().slice(0,10);
   XLSX.writeFile(wb, `Stock_${(client?.name||'').replace(/\s+/g,'_')}_${fecha}.xlsx`);
   showToast('✅ Excel descargado');
+}
+
+// ── CENTRO DE INTELIGENCIA ────────────────────────────────────────────────────
+
+const CI_REGLAS_LABELS = {
+  caida_ventas:         { titulo: 'Caída de ventas',        desc: 'Facturación 7d vs promedio de las 4 semanas previas' },
+  roas_bajo:            { titulo: 'ROAS bajo sostenido',    desc: 'ROAS promedio por debajo del mínimo configurado' },
+  margen_erosionado:    { titulo: 'Margen erosionado',      desc: 'Margen implícito cae más de N puntos porcentuales MoM' },
+  stock_critico_pareto: { titulo: 'Stock crítico Pareto',   desc: 'SKUs del top Pareto con cobertura insuficiente de stock' },
+  preguntas_pendientes: { titulo: 'Preguntas pendientes',   desc: 'Preguntas de compradores sin responder por más de N horas' },
+};
+
+let _ciActiveTab = 'alertas';
+
+async function loadCentroInteligencia() {
+  const client = getActiveClient();
+  if (!client) {
+    document.getElementById('ci-alertas-content').innerHTML =
+      '<div style="color:var(--muted);text-align:center;padding:40px">Seleccioná un cliente primero</div>';
+    return;
+  }
+  if (_ciActiveTab === 'alertas') await loadCIAlertas();
+  else await loadCIReglas();
+}
+
+async function loadCIAlertas() {
+  const client = getActiveClient();
+  if (!client) return;
+  const el = document.getElementById('ci-alertas-content');
+  el.innerHTML = '<div style="color:var(--muted);padding:20px">Cargando alertas...</div>';
+  const alertas = await apiCall('GET', `/api/alertas?client_id=${client.id}`);
+  if (!alertas) { el.innerHTML = '<div style="color:var(--muted);padding:20px">Error al cargar alertas</div>'; return; }
+  if (!alertas.length) {
+    el.innerHTML = '<div style="color:var(--muted);text-align:center;padding:40px">✅ Sin alertas activas para este cliente</div>';
+    return;
+  }
+  const criticas = alertas.filter(a => a.severidad === 'critical');
+  const warnings = alertas.filter(a => a.severidad === 'warning');
+  const infos    = alertas.filter(a => a.severidad === 'info');
+  let html = '';
+  if (criticas.length) html += ciAlertaGroup('🔴 Críticas', criticas, '#fee2e2', '#dc2626');
+  if (warnings.length) html += ciAlertaGroup('🟡 Warnings', warnings, '#fef3c7', '#d97706');
+  if (infos.length)    html += ciAlertaGroup('🔵 Info',     infos,    '#dbeafe', '#2563eb');
+  el.innerHTML = html;
+}
+
+function ciAlertaGroup(titulo, alertas, bg, color) {
+  let html = `<div style="margin-bottom:20px">
+    <div style="font-size:13px;font-weight:600;color:${color};margin-bottom:10px;font-family:var(--font-b)">${titulo} (${alertas.length})</div>
+    <div style="display:flex;flex-direction:column;gap:8px">`;
+  alertas.forEach(a => {
+    const fecha = new Date(a.created_at).toLocaleDateString('es-AR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'});
+    const vistaBadge = a.estado === 'vista' ? '<span style="font-size:10px;background:#e5e7eb;color:#6b7280;padding:2px 6px;border-radius:4px;margin-left:8px">Vista</span>' : '';
+    html += `<div style="background:${bg};border:1px solid ${color}30;border-radius:10px;padding:14px 16px;display:flex;align-items:flex-start;gap:12px">
+      <div style="flex:1">
+        <div style="font-weight:600;font-size:13px;color:var(--text);margin-bottom:4px">${a.titulo}${vistaBadge}</div>
+        <div style="font-size:12px;color:var(--muted)">${a.mensaje}</div>
+        <div style="font-size:11px;color:var(--muted);margin-top:6px">${fecha}</div>
+      </div>
+      <div style="display:flex;gap:6px;flex-shrink:0;padding-top:2px">
+        ${a.estado !== 'vista' ? `<button onclick="ciMarcarVista(${a.id})" style="padding:4px 10px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:11px;cursor:pointer;font-family:var(--font)">👁 Vista</button>` : ''}
+        <button onclick="ciResolver(${a.id})" style="padding:4px 10px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:11px;cursor:pointer;font-family:var(--font)">✅ Resolver</button>
+      </div>
+    </div>`;
+  });
+  return html + '</div></div>';
+}
+
+async function ciMarcarVista(id) {
+  await apiCall('PUT', `/api/alertas/${id}`, { estado: 'vista' });
+  await loadCIAlertas();
+}
+
+async function ciResolver(id) {
+  await apiCall('PUT', `/api/alertas/${id}`, { estado: 'resuelta' });
+  await loadCIAlertas();
+}
+
+async function ejecutarMotorAlertas() {
+  const btn = document.getElementById('ci-run-btn');
+  btn.disabled = true;
+  btn.textContent = '⏳ Ejecutando...';
+  await apiCall('POST', '/api/alertas/ejecutar');
+  showToast('⚡ Motor de alertas iniciado — puede tardar 1-2 minutos');
+  setTimeout(async () => {
+    btn.disabled = false;
+    btn.textContent = '⚡ Ejecutar ahora';
+    await loadCIAlertas();
+  }, 8000);
+}
+
+function switchCITab(tab) {
+  _ciActiveTab = tab;
+  ['alertas','reglas'].forEach(t => {
+    const btn = document.getElementById(`ci-tab-${t}`);
+    const panel = document.getElementById(`ci-${t}-panel`);
+    const active = t === tab;
+    btn.style.color = active ? '#6366f1' : 'var(--muted)';
+    btn.style.fontWeight = active ? '600' : '500';
+    btn.style.borderBottomColor = active ? '#6366f1' : 'transparent';
+    panel.style.display = active ? 'block' : 'none';
+  });
+  if (tab === 'reglas') loadCIReglas();
+}
+
+async function loadCIReglas() {
+  const client = getActiveClient();
+  if (!client) return;
+  const el = document.getElementById('ci-reglas-content');
+  el.innerHTML = '<div style="color:var(--muted);padding:20px">Cargando...</div>';
+  const reglas = await apiCall('GET', `/api/reglas-alertas?client_id=${client.id}`);
+  if (!reglas) return;
+  let html = `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px;font-family:var(--font)">
+    <thead><tr style="border-bottom:2px solid var(--border)">
+      <th style="text-align:left;padding:10px 12px;color:var(--muted);font-weight:500;white-space:nowrap">Regla</th>
+      <th style="text-align:left;padding:10px 12px;color:var(--muted);font-weight:500">Descripción</th>
+      <th style="text-align:center;padding:10px 12px;color:var(--muted);font-weight:500">Activa</th>
+      <th style="text-align:left;padding:10px 12px;color:var(--muted);font-weight:500">Umbrales (JSON)</th>
+      <th style="padding:10px 12px"></th>
+    </tr></thead><tbody>`;
+  reglas.forEach(r => {
+    const label = CI_REGLAS_LABELS[r.codigo] || { titulo: r.codigo, desc: '' };
+    const umbralStr = JSON.stringify(r.umbral);
+    html += `<tr style="border-bottom:1px solid var(--border)">
+      <td style="padding:12px;font-weight:600;white-space:nowrap">${label.titulo}</td>
+      <td style="padding:12px;color:var(--muted);font-size:12px">${label.desc}</td>
+      <td style="padding:12px;text-align:center">
+        <input type="checkbox" id="ci-hab-${r.codigo}" ${r.habilitada ? 'checked' : ''} style="width:16px;height:16px;cursor:pointer">
+      </td>
+      <td style="padding:12px">
+        <input type="text" id="ci-umb-${r.codigo}" value='${umbralStr}'
+          style="width:100%;min-width:220px;padding:6px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:11px;font-family:monospace">
+      </td>
+      <td style="padding:12px;text-align:center">
+        <button onclick="ciGuardarRegla('${r.codigo}',${client.id})" style="padding:5px 14px;border-radius:6px;border:none;background:#6366f1;color:#fff;font-size:12px;cursor:pointer;font-family:var(--font)">
+          Guardar
+        </button>
+      </td>
+    </tr>`;
+  });
+  html += '</tbody></table></div>';
+  el.innerHTML = html;
+}
+
+async function ciGuardarRegla(codigo, clientId) {
+  const habilitada = document.getElementById(`ci-hab-${codigo}`).checked;
+  let umbral;
+  try { umbral = JSON.parse(document.getElementById(`ci-umb-${codigo}`).value); }
+  catch(e) { showToast('❌ JSON de umbrales inválido'); return; }
+  await apiCall('PUT', `/api/reglas-alertas/${codigo}`, { client_id: clientId, habilitada, umbral });
+  showToast('✅ Regla guardada');
 }
 </script>
 </body>

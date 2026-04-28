@@ -5,6 +5,19 @@ const fetch = require('node-fetch');
 const { Pool } = require('pg');
 const crypto = require('crypto');
 
+// ── CENTRO DE INTELIGENCIA — deps ────────────────────────────────────────────
+let nodeCron = null;
+try { nodeCron = require('node-cron'); } catch(e) { console.log('[CRON] node-cron no instalado — alertas automáticas desactivadas'); }
+
+let resendClient = null;
+try {
+  const { Resend } = require('resend');
+  if (process.env.RESEND_API_KEY) {
+    resendClient = new Resend(process.env.RESEND_API_KEY);
+    console.log('[RESEND] configurado');
+  }
+} catch(e) { console.log('[RESEND] no disponible:', e.message); }
+
 // ── EMAIL (Nodemailer) ────────────────────────────────────────────────────────
 let transporter = null;
 try {
@@ -209,6 +222,26 @@ async function initDB() {
       fecha_venc   DATE,
       created_at   TIMESTAMP   DEFAULT NOW(),
       updated_at   TIMESTAMP   DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS alertas (
+      id          SERIAL PRIMARY KEY,
+      client_id   INTEGER NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+      codigo      VARCHAR(50) NOT NULL,
+      severidad   VARCHAR(10) NOT NULL CHECK (severidad IN ('info','warning','critical')),
+      titulo      VARCHAR(200) NOT NULL,
+      mensaje     TEXT NOT NULL,
+      datos       JSONB DEFAULT '{}',
+      estado      VARCHAR(20) NOT NULL DEFAULT 'nueva' CHECK (estado IN ('nueva','vista','resuelta')),
+      created_at  TIMESTAMP DEFAULT NOW(),
+      updated_at  TIMESTAMP DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS reglas_alertas (
+      id          SERIAL PRIMARY KEY,
+      client_id   INTEGER NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+      codigo      VARCHAR(50) NOT NULL,
+      habilitada  BOOLEAN DEFAULT true,
+      umbral      JSONB DEFAULT '{}',
+      UNIQUE(client_id, codigo)
     );
   `);
 
@@ -790,6 +823,478 @@ async function fetchVisits(itemIds, days, headers) {
     return map;
   } catch(e) { return {}; }
 }
+
+// ── CENTRO DE INTELIGENCIA — motor de alertas ─────────────────────────────────
+
+const REGLAS_DEFAULT = {
+  caida_ventas:          { habilitada: true, umbral: { warning_pct: 0.80, critical_pct: 0.60 } },
+  roas_bajo:             { habilitada: true, umbral: { roas_min: 3, dias: 3 } },
+  margen_erosionado:     { habilitada: true, umbral: { caida_pp: 3 } },
+  stock_critico_pareto:  { habilitada: true, umbral: { dias_cobertura: 7, pareto_pct: 0.20 } },
+  preguntas_pendientes:  { habilitada: true, umbral: { cantidad: 5, horas: 12 } },
+};
+
+async function getRegla(clientId, codigo) {
+  const r = await pool.query(
+    'SELECT * FROM reglas_alertas WHERE client_id=$1 AND codigo=$2',
+    [clientId, codigo]
+  );
+  if (r.rows.length) return r.rows[0];
+  return REGLAS_DEFAULT[codigo] || { habilitada: true, umbral: {} };
+}
+
+async function upsertAlerta(clientId, codigo, severidad, titulo, mensaje, datos = {}) {
+  const existing = await pool.query(
+    `SELECT id FROM alertas WHERE client_id=$1 AND codigo=$2 AND estado != 'resuelta' ORDER BY created_at DESC LIMIT 1`,
+    [clientId, codigo]
+  );
+  if (existing.rows.length) {
+    await pool.query(
+      `UPDATE alertas SET severidad=$1, titulo=$2, mensaje=$3, datos=$4, updated_at=NOW() WHERE id=$5`,
+      [severidad, titulo, mensaje, JSON.stringify(datos), existing.rows[0].id]
+    );
+    return { action: 'updated', id: existing.rows[0].id };
+  }
+  const ins = await pool.query(
+    `INSERT INTO alertas (client_id, codigo, severidad, titulo, mensaje, datos) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
+    [clientId, codigo, severidad, titulo, mensaje, JSON.stringify(datos)]
+  );
+  return { action: 'created', id: ins.rows[0].id };
+}
+
+async function resolveAlerta(clientId, codigo) {
+  await pool.query(
+    `UPDATE alertas SET estado='resuelta', updated_at=NOW() WHERE client_id=$1 AND codigo=$2 AND estado != 'resuelta'`,
+    [clientId, codigo]
+  );
+}
+
+// Regla 1/2 — Caída de ventas
+async function evalRuleCaidaVentas(client) {
+  const regla = await getRegla(client.id, 'caida_ventas');
+  if (!regla.habilitada) return null;
+  const token = await getClientToken(client.id);
+  if (!token) return null;
+  const headers = { 'Authorization': `Bearer ${token}` };
+  try {
+    const user = await fetch(`${ML_API}/users/me`, { headers }).then(r => r.json());
+    if (user.error) return null;
+    const uid = user.id;
+    const now = new Date();
+    const fmt = d => d.toISOString().slice(0,19) + '.000-00:00';
+    const cur7From = new Date(now.getTime() - 7*24*60*60*1000);
+    const prev28From = new Date(now.getTime() - 35*24*60*60*1000);
+    const [cur, prev] = await Promise.all([
+      fetchAllOrders(uid, headers, fmt(cur7From), fmt(now)),
+      fetchAllOrders(uid, headers, fmt(prev28From), fmt(cur7From)),
+    ]);
+    const cur7Rev = cur.orders.reduce((s,o) => s + (parseFloat(o.total_amount)||0), 0);
+    const prev4Avg = prev.orders.reduce((s,o) => s + (parseFloat(o.total_amount)||0), 0) / 4;
+    if (prev4Avg <= 0) return null;
+    const ratio = cur7Rev / prev4Avg;
+    const { warning_pct = 0.80, critical_pct = 0.60 } = regla.umbral || {};
+    const drop = Math.round((1 - ratio) * 100);
+    const fmtARS = v => '$' + Math.round(v).toLocaleString('es-AR');
+    if (ratio < critical_pct) {
+      return upsertAlerta(client.id, 'caida_ventas', 'critical',
+        `Caída fuerte de ventas (${drop}%)`,
+        `Últimos 7 días: ${fmtARS(cur7Rev)} vs promedio semanal: ${fmtARS(prev4Avg)} (caída ${drop}%)`,
+        { cur7Rev, prev4Avg, ratio: ratio.toFixed(2) }
+      );
+    } else if (ratio < warning_pct) {
+      return upsertAlerta(client.id, 'caida_ventas', 'warning',
+        `Caída de ventas (${drop}%)`,
+        `Últimos 7 días: ${fmtARS(cur7Rev)} vs promedio semanal: ${fmtARS(prev4Avg)} (caída ${drop}%)`,
+        { cur7Rev, prev4Avg, ratio: ratio.toFixed(2) }
+      );
+    } else {
+      await resolveAlerta(client.id, 'caida_ventas');
+      return null;
+    }
+  } catch(e) { console.error(`[ALERTA caida_ventas] ${client.name}:`, e.message); return null; }
+}
+
+// Regla 3 — ROAS bajo sostenido
+async function evalRuleRoasBajo(client) {
+  const regla = await getRegla(client.id, 'roas_bajo');
+  if (!regla.habilitada) return null;
+  const token = await getClientToken(client.id);
+  if (!token) return null;
+  const headers = { 'Authorization': `Bearer ${token}` };
+  try {
+    const user = await fetch(`${ML_API}/users/me`, { headers }).then(r => r.json());
+    if (user.error) return null;
+    const siteId = user.site_id || 'MLA';
+    const h1 = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'Api-Version': '1' };
+    const h2 = { 'Authorization': `Bearer ${token}`, 'api-version': '2' };
+    const advData = await fetch(`${ML_API}/advertising/advertisers?product_id=PADS`, { headers: h1 }).then(r => r.json());
+    const advertisers = advData.advertisers || [];
+    if (!advertisers.length) return null;
+    const adv = advertisers.find(a => a.site_id === siteId) || advertisers[0];
+    const advId = adv.advertiser_id;
+    const { roas_min = 3, dias = 3 } = regla.umbral || {};
+    const now = new Date();
+    const fromDate = new Date(now.getTime() - dias*24*60*60*1000).toISOString().slice(0,10);
+    const toDate = now.toISOString().slice(0,10);
+    const metrics = 'cost,total_amount,roas';
+    const url = `${ML_API}/advertising/${siteId}/advertisers/${advId}/product_ads/campaigns/search?limit=50&offset=0&date_from=${fromDate}&date_to=${toDate}&metrics=${metrics}&metrics_summary=true`;
+    const data = await fetch(url, { headers: h2 }).then(r => r.json()).catch(() => ({}));
+    const summary = data.metrics_summary || {};
+    const spend = parseFloat(summary.cost) || 0;
+    const sales = parseFloat(summary.total_amount) || 0;
+    if (spend <= 0) return null;
+    const roas = sales > 0 ? (sales / spend) : 0;
+    if (roas < roas_min) {
+      return upsertAlerta(client.id, 'roas_bajo', 'warning',
+        `ROAS bajo (${roas.toFixed(2)}x) — últimos ${dias} días`,
+        `ROAS de ${roas.toFixed(2)}x está por debajo del mínimo de ${roas_min}x. Inversión: $${Math.round(spend).toLocaleString('es-AR')}`,
+        { roas: roas.toFixed(2), spend, sales, roas_min, dias }
+      );
+    } else {
+      await resolveAlerta(client.id, 'roas_bajo');
+      return null;
+    }
+  } catch(e) { console.error(`[ALERTA roas_bajo] ${client.name}:`, e.message); return null; }
+}
+
+// Regla 5 — Margen erosionado (usa diagnostico_mensual)
+async function evalRuleMargenErosionado(client) {
+  const regla = await getRegla(client.id, 'margen_erosionado');
+  if (!regla.habilitada) return null;
+  try {
+    const { caida_pp = 3 } = regla.umbral || {};
+    // Últimos 2 meses en diagnostico_mensual
+    const r = await pool.query(
+      `SELECT mes, facturacion, pads_inversion, pads_tacos FROM diagnostico_mensual
+       WHERE client_id=$1 AND facturacion > 0
+       ORDER BY mes DESC LIMIT 2`,
+      [client.id]
+    );
+    if (r.rows.length < 2) return null;
+    const [curr, prev] = r.rows;
+    // Proxy de margen: tacos representa el peso de publi sobre facturación
+    // Comparamos (1 - tacos/100) como proxy de margen disponible
+    const tacosNow  = parseFloat(curr.pads_tacos) || 0;
+    const tacosPrev = parseFloat(prev.pads_tacos) || 0;
+    if (tacosPrev <= 0) return null;
+    const delta = tacosPrev - tacosNow; // positivo = mejoró, negativo = empeoró
+    // Adicionalmente: si la facturación cayó y el spend se mantuvo, el margen empeoró
+    const facNow  = parseFloat(curr.facturacion) || 0;
+    const facPrev = parseFloat(prev.facturacion) || 0;
+    const invNow  = parseFloat(curr.pads_inversion) || 0;
+    const invPrev = parseFloat(prev.pads_inversion) || 0;
+    // Margen publi implícito: (fac - inv) / fac * 100
+    const margenNow  = facNow  > 0 ? ((facNow  - invNow)  / facNow  * 100) : null;
+    const margenPrev = facPrev > 0 ? ((facPrev - invPrev) / facPrev * 100) : null;
+    if (margenNow === null || margenPrev === null) return null;
+    const caida = margenPrev - margenNow;
+    if (caida >= caida_pp) {
+      const mesStr = new Date(curr.mes).toLocaleDateString('es-AR', {month:'long', year:'numeric'});
+      return upsertAlerta(client.id, 'margen_erosionado', 'critical',
+        `Margen erosionado (−${caida.toFixed(1)}pp vs mes anterior)`,
+        `Margen implícito cayó ${caida.toFixed(1)}pp en ${mesStr}: ${margenNow.toFixed(1)}% vs ${margenPrev.toFixed(1)}% el mes anterior`,
+        { margenNow: margenNow.toFixed(1), margenPrev: margenPrev.toFixed(1), caida: caida.toFixed(1) }
+      );
+    } else {
+      await resolveAlerta(client.id, 'margen_erosionado');
+      return null;
+    }
+  } catch(e) { console.error(`[ALERTA margen_erosionado] ${client.name}:`, e.message); return null; }
+}
+
+// Regla 6 — Stock crítico Pareto
+async function evalRuleStockPareto(client) {
+  const regla = await getRegla(client.id, 'stock_critico_pareto');
+  if (!regla.habilitada) return null;
+  const token = await getClientToken(client.id);
+  if (!token) return null;
+  const headers = { 'Authorization': `Bearer ${token}` };
+  try {
+    const user = await fetch(`${ML_API}/users/me`, { headers }).then(r => r.json());
+    if (user.error) return null;
+    const uid = user.id;
+    const { dias_cobertura = 7, pareto_pct = 0.20 } = regla.umbral || {};
+    const now = new Date();
+    const fmt = d => d.toISOString().slice(0,19) + '.000-00:00';
+    const from30 = new Date(now.getTime() - 30*24*60*60*1000);
+    const { orders } = await fetchAllOrders(uid, headers, fmt(from30), fmt(now));
+    // Compute revenue + units per item
+    const byItem = {};
+    orders.forEach(o => {
+      (o.order_items || []).forEach(oi => {
+        const id = oi.item?.id; if (!id) return;
+        if (!byItem[id]) byItem[id] = { id, title: oi.item?.title || id, units: 0, revenue: 0 };
+        byItem[id].units += oi.quantity || 0;
+        byItem[id].revenue += (parseFloat(oi.unit_price)||0) * (oi.quantity||0);
+      });
+    });
+    const sorted = Object.values(byItem).sort((a,b) => b.revenue - a.revenue);
+    if (!sorted.length) return null;
+    const totalRev = sorted.reduce((s,i) => s + i.revenue, 0);
+    // Identify Pareto top pareto_pct (default 20%) by revenue
+    let cumRev = 0;
+    const paretoItems = [];
+    for (const item of sorted) {
+      cumRev += item.revenue;
+      paretoItems.push(item);
+      if (cumRev / totalRev >= (1 - pareto_pct)) break; // top 80% of revenue = top ~20% items
+    }
+    // Fetch stock for each Pareto item (batch of 20)
+    const criticos = [];
+    for (let i = 0; i < paretoItems.length; i += 20) {
+      const batch = paretoItems.slice(i, i+20);
+      const ids = batch.map(it => it.id).join(',');
+      const itemsData = await fetch(`${ML_API}/items?ids=${ids}&attributes=id,title,available_quantity`, { headers })
+        .then(r => r.json()).catch(() => []);
+      const arr = Array.isArray(itemsData) ? itemsData : [];
+      arr.forEach(entry => {
+        const item = entry.body || entry;
+        if (!item?.id) return;
+        const stock = parseInt(item.available_quantity) || 0;
+        const meta = batch.find(b => b.id === item.id);
+        if (!meta) return;
+        const velocity = meta.units / 30; // unidades/día
+        const dias = velocity > 0 ? Math.floor(stock / velocity) : 999;
+        if (dias <= dias_cobertura) {
+          criticos.push({ id: item.id, title: item.title || meta.title, stock, dias, velocity: velocity.toFixed(1) });
+        }
+      });
+    }
+    if (!criticos.length) {
+      await resolveAlerta(client.id, 'stock_critico_pareto');
+      return null;
+    }
+    const listado = criticos.slice(0,3).map(c => `${c.id} (${c.dias}d cobertura, stock: ${c.stock}u)`).join('; ');
+    const titulo = `Stock crítico Pareto: ${criticos.length} SKU${criticos.length>1?'s':''} con <${dias_cobertura} días de cobertura`;
+    return upsertAlerta(client.id, 'stock_critico_pareto', 'critical',
+      titulo,
+      `Top ${paretoItems.length} SKUs Pareto. Críticos: ${listado}${criticos.length>3?' y '+( criticos.length-3)+' más':''}`,
+      { criticos, paretoCount: paretoItems.length }
+    );
+  } catch(e) { console.error(`[ALERTA stock_pareto] ${client.name}:`, e.message); return null; }
+}
+
+// Regla 7 — Preguntas pendientes >12hs
+async function evalRulePreguntasPendientes(client) {
+  const regla = await getRegla(client.id, 'preguntas_pendientes');
+  if (!regla.habilitada) return null;
+  const token = await getClientToken(client.id);
+  if (!token) return null;
+  const headers = { 'Authorization': `Bearer ${token}` };
+  try {
+    const user = await fetch(`${ML_API}/users/me`, { headers }).then(r => r.json());
+    if (user.error) return null;
+    const uid = user.id;
+    const { cantidad = 5, horas = 12 } = regla.umbral || {};
+    const cutoff = new Date(Date.now() - horas*60*60*1000);
+    let old = 0, offset = 0;
+    while (true) {
+      const r = await fetch(
+        `${ML_API}/questions/search?seller_id=${uid}&status=UNANSWERED&sort_fields=date_created&sort_types=ASC&limit=50&offset=${offset}`,
+        { headers }
+      ).then(r => r.json()).catch(() => ({}));
+      const qs = r.questions || [];
+      if (!qs.length) break;
+      qs.forEach(q => { if (new Date(q.date_created) < cutoff) old++; });
+      const newest = new Date(qs[qs.length-1].date_created);
+      if (newest >= cutoff || qs.length < 50) break;
+      offset += 50;
+      if (offset > 500) break;
+    }
+    if (old > cantidad) {
+      return upsertAlerta(client.id, 'preguntas_pendientes', 'warning',
+        `${old} pregunta${old!==1?'s':''} sin responder hace más de ${horas}hs`,
+        `Hay ${old} preguntas de compradores sin responder con más de ${horas} horas de antigüedad`,
+        { cantidad_old: old, horas_limite: horas }
+      );
+    } else {
+      await resolveAlerta(client.id, 'preguntas_pendientes');
+      return null;
+    }
+  } catch(e) { console.error(`[ALERTA preguntas] ${client.name}:`, e.message); return null; }
+}
+
+// Motor principal
+async function runAlertEngine() {
+  console.log('[ALERTAS] Iniciando evaluación —', new Date().toISOString());
+  try {
+    const clients = await pool.query(
+      `SELECT * FROM clients WHERE active = true AND access_token IS NOT NULL ORDER BY name`
+    );
+    const evaluators = [
+      evalRuleCaidaVentas,
+      evalRuleRoasBajo,
+      evalRuleMargenErosionado,
+      evalRuleStockPareto,
+      evalRulePreguntasPendientes,
+    ];
+    const newAlerts = [];
+    for (const client of clients.rows) {
+      console.log(`[ALERTAS] Evaluando ${client.name}...`);
+      for (const evalFn of evaluators) {
+        try {
+          const result = await evalFn(client);
+          if (result?.action === 'created') {
+            // Fetch the full alerta for notification
+            const a = await pool.query('SELECT * FROM alertas WHERE id=$1', [result.id]);
+            if (a.rows.length) newAlerts.push({ client, alerta: a.rows[0] });
+          }
+        } catch(e) { console.error(`[ALERTAS] Error en ${evalFn.name} / ${client.name}:`, e.message); }
+      }
+      // Pausa entre clientes para no saturar ML API
+      await new Promise(r => setTimeout(r, 500));
+    }
+    console.log(`[ALERTAS] Evaluación completa — ${newAlerts.length} alertas nuevas`);
+    if (newAlerts.length) await notifyAlerts(newAlerts);
+  } catch(e) { console.error('[ALERTAS] Error en runAlertEngine:', e.message); }
+}
+
+// ── NOTIFIER ──────────────────────────────────────────────────────────────────
+
+function buildAlertsSummary(newAlerts) {
+  // Agrupar por cliente
+  const byClient = {};
+  newAlerts.forEach(({ client, alerta }) => {
+    const k = client.name;
+    if (!byClient[k]) byClient[k] = { client, criticas: [], warnings: [], infos: [] };
+    if (alerta.severidad === 'critical') byClient[k].criticas.push(alerta);
+    else if (alerta.severidad === 'warning') byClient[k].warnings.push(alerta);
+    else byClient[k].infos.push(alerta);
+  });
+  return byClient;
+}
+
+async function sendSlackAlert(newAlerts) {
+  const webhookUrl = process.env.SLACK_WEBHOOK_URL;
+  if (!webhookUrl || !newAlerts.length) return;
+  const byClient = buildAlertsSummary(newAlerts);
+  const now = new Date();
+  const fecha = now.toLocaleDateString('es-AR', { day:'2-digit', month:'2-digit' });
+  let text = `*🔔 Resumen de alertas — ${fecha}*\n\n`;
+  for (const [name, data] of Object.entries(byClient)) {
+    const total = data.criticas.length + data.warnings.length + data.infos.length;
+    if (data.criticas.length) {
+      text += `🔴 *${name}* (${data.criticas.length} crític${data.criticas.length===1?'a':'as'})\n`;
+      data.criticas.forEach(a => { text += `• ${a.titulo}\n`; });
+    }
+    if (data.warnings.length) {
+      text += `🟡 *${name}* (${data.warnings.length} warning${data.warnings.length===1?'':'s'})\n`;
+      data.warnings.forEach(a => { text += `• ${a.titulo}\n`; });
+    }
+    if (data.infos.length) {
+      text += `🔵 *${name}* (${data.infos.length} info${data.infos.length===1?'':'s'})\n`;
+      data.infos.forEach(a => { text += `• ${a.titulo}\n`; });
+    }
+    text += '\n';
+  }
+  const dashUrl = process.env.SELF_URL
+    ? process.env.SELF_URL.replace('/health', '')
+    : (process.env.RAILWAY_PUBLIC_DOMAIN ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}` : '');
+  if (dashUrl) text += `<${dashUrl}|Ver detalle + acciones sugeridas →>`;
+  try {
+    await fetch(webhookUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text })
+    });
+    console.log('[SLACK] Notificación enviada');
+  } catch(e) { console.error('[SLACK] Error:', e.message); }
+}
+
+async function sendEmailAlert(newAlerts) {
+  const to = process.env.ALERT_EMAIL;
+  if (!to || !newAlerts.length) return;
+  const byClient = buildAlertsSummary(newAlerts);
+  const fecha = new Date().toLocaleDateString('es-AR', { day:'2-digit', month:'2-digit', year:'numeric' });
+  let html = `<h2 style="font-family:sans-serif">🔔 Alertas Negocio Redondo — ${fecha}</h2>`;
+  for (const [name, data] of Object.entries(byClient)) {
+    html += `<h3 style="font-family:sans-serif">${name}</h3><ul style="font-family:sans-serif">`;
+    data.criticas.forEach(a => { html += `<li>🔴 <strong>${a.titulo}</strong><br>${a.mensaje}</li>`; });
+    data.warnings.forEach(a => { html += `<li>🟡 <strong>${a.titulo}</strong><br>${a.mensaje}</li>`; });
+    data.infos.forEach(a => { html += `<li>🔵 <strong>${a.titulo}</strong><br>${a.mensaje}</li>`; });
+    html += '</ul>';
+  }
+  // Intentar con Resend primero, sino Nodemailer
+  if (resendClient) {
+    try {
+      await resendClient.emails.send({
+        from: process.env.RESEND_FROM || 'alertas@negocioredondo.com',
+        to,
+        subject: `🔔 ${newAlerts.length} alerta${newAlerts.length!==1?'s':''} nuevas — ${fecha}`,
+        html
+      });
+      console.log('[RESEND] Email de alertas enviado a', to);
+    } catch(e) { console.error('[RESEND] Error:', e.message); }
+  } else {
+    await sendEmail({ to, subject: `🔔 ${newAlerts.length} alertas nuevas — ${fecha}`, html });
+  }
+}
+
+async function notifyAlerts(newAlerts) {
+  await Promise.all([sendSlackAlert(newAlerts), sendEmailAlert(newAlerts)]);
+}
+
+// ── CENTRO DE INTELIGENCIA — API endpoints ────────────────────────────────────
+
+app.get('/api/alertas', requireAuth, async (req, res) => {
+  try {
+    const clientId = parseInt(req.query.client_id);
+    if (!clientId) return res.status(400).json({ error: 'client_id requerido' });
+    const estado = req.query.estado || null;
+    const query = estado
+      ? `SELECT * FROM alertas WHERE client_id=$1 AND estado=$2 ORDER BY severidad DESC, created_at DESC LIMIT 100`
+      : `SELECT * FROM alertas WHERE client_id=$1 AND estado != 'resuelta' ORDER BY severidad DESC, created_at DESC LIMIT 100`;
+    const r = await pool.query(query, estado ? [clientId, estado] : [clientId]);
+    res.json(r.rows);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+app.put('/api/alertas/:id', requireAuth, async (req, res) => {
+  try {
+    const { estado } = req.body;
+    if (!['vista','resuelta','nueva'].includes(estado)) return res.status(400).json({ error: 'estado inválido' });
+    await pool.query(`UPDATE alertas SET estado=$1, updated_at=NOW() WHERE id=$2`, [estado, req.params.id]);
+    res.json({ ok: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/reglas-alertas', requireAuth, async (req, res) => {
+  try {
+    const clientId = parseInt(req.query.client_id);
+    if (!clientId) return res.status(400).json({ error: 'client_id requerido' });
+    // Devolver defaults con overrides del cliente encima
+    const stored = await pool.query('SELECT * FROM reglas_alertas WHERE client_id=$1', [clientId]);
+    const storedMap = {};
+    stored.rows.forEach(r => { storedMap[r.codigo] = r; });
+    const result = Object.entries(REGLAS_DEFAULT).map(([codigo, def]) => ({
+      codigo,
+      habilitada: storedMap[codigo]?.habilitada ?? def.habilitada,
+      umbral: storedMap[codigo]?.umbral ?? def.umbral,
+    }));
+    res.json(result);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+app.put('/api/reglas-alertas/:codigo', requireAuth, async (req, res) => {
+  try {
+    const clientId = parseInt(req.body.client_id);
+    if (!clientId) return res.status(400).json({ error: 'client_id requerido' });
+    const { habilitada, umbral } = req.body;
+    await pool.query(
+      `INSERT INTO reglas_alertas (client_id, codigo, habilitada, umbral)
+       VALUES ($1,$2,$3,$4)
+       ON CONFLICT (client_id, codigo) DO UPDATE SET habilitada=$3, umbral=$4`,
+      [clientId, req.params.codigo, habilitada, JSON.stringify(umbral || {})]
+    );
+    res.json({ ok: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/alertas/ejecutar', requireAuth, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ error: 'Solo admin' });
+  res.json({ ok: true, mensaje: 'Motor de alertas iniciado en background' });
+  runAlertEngine().catch(e => console.error('[ALERTAS] Error manual:', e.message));
+});
 
 app.get('/api/dashboard', requireAuth, async (req, res) => {
   try {
@@ -4209,4 +4714,13 @@ app.get('/api/debug/app-token', requireAuth, async (req, res) => {
 
 initDB().then(() => {
   app.listen(PORT, () => console.log(`Puerto ${PORT}`));
+
+  // ── CRON — Centro de Inteligencia ──────────────────────────────────────────
+  if (nodeCron) {
+    // 08:00 y 18:00 ART (UTC-3 → 11:00 y 21:00 UTC)
+    nodeCron.schedule('0 11,21 * * *', () => {
+      runAlertEngine().catch(e => console.error('[CRON] Error:', e.message));
+    }, { timezone: 'UTC' });
+    console.log('[CRON] Motor de alertas programado: 08:00 y 18:00 ART');
+  }
 }).catch(e => { console.error('DB init error:', e); process.exit(1); });
