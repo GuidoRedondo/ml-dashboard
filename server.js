@@ -1064,11 +1064,15 @@ async function evalRuleStockPareto(client) {
       await resolveAlerta(client.id, 'stock_critico_pareto');
       return null;
     }
-    const listado = criticos.slice(0,3).map(c => `${c.id} (${c.dias}d cobertura, stock: ${c.stock}u)`).join('; ');
-    const titulo = `Stock crítico Pareto: ${criticos.length} SKU${criticos.length>1?'s':''} con <${dias_cobertura} días de cobertura`;
+    const shortTitle = c => { const t = c.title || c.id; return t.length > 45 ? t.slice(0,45)+'…' : t; };
+    const listado = criticos.slice(0,3).map(c =>
+      `• ${shortTitle(c)}: ${c.dias === 0 ? 'sin stock' : c.dias + ' día' + (c.dias !== 1 ? 's' : '')} (${c.stock} u.)`
+    ).join('\n');
+    const resto = criticos.length > 3 ? `\n…y ${criticos.length-3} más` : '';
+    const titulo = `Stock crítico: ${criticos.length} producto${criticos.length>1?'s':''} Pareto con menos de ${dias_cobertura} días de cobertura`;
     return upsertAlerta(client.id, 'stock_critico_pareto', 'critical',
       titulo,
-      `Top ${paretoItems.length} SKUs Pareto. Críticos: ${listado}${criticos.length>3?' y '+( criticos.length-3)+' más':''}`,
+      `De los top ${paretoItems.length} productos Pareto:\n${listado}${resto}`,
       { criticos, paretoCount: paretoItems.length }
     );
   } catch(e) { console.error(`[ALERTA stock_pareto] ${client.name}:`, e.message); return null; }
@@ -1206,12 +1210,24 @@ async function sendEmailAlert(newAlerts) {
   if (!to || !newAlerts.length) return;
   const byClient = buildAlertsSummary(newAlerts);
   const fecha = new Date().toLocaleDateString('es-AR', { day:'2-digit', month:'2-digit', year:'numeric' });
-  let html = `<h2 style="font-family:sans-serif">🔔 Alertas Negocio Redondo — ${fecha}</h2>`;
+  const renderAlertaEmail = (emoji, a) => {
+    let body = a.mensaje.replace(/\n/g, '<br>');
+    if (a.codigo === 'stock_critico_pareto' && a.datos && Array.isArray(a.datos.criticos) && a.datos.criticos.length) {
+      const rows = a.datos.criticos.map(c => {
+        const nombre = (c.title || c.id).length > 55 ? (c.title || c.id).slice(0,55)+'…' : (c.title || c.id);
+        const dias = c.dias === 0 ? '<span style="color:#dc2626">Sin stock</span>' : `${c.dias} día${c.dias!==1?'s':''}`;
+        return `<tr><td style="padding:3px 12px 3px 0;font-size:13px">${nombre}</td><td style="padding:3px 10px;font-size:13px">${dias}</td><td style="padding:3px 0;font-size:13px;color:#6b7280">${c.stock} u.</td></tr>`;
+      }).join('');
+      body = `<table style="border-collapse:collapse;margin-top:6px">${rows}</table>`;
+    }
+    return `<li style="margin-bottom:12px">${emoji} <strong>${a.titulo}</strong><br><div style="font-family:sans-serif;margin-top:4px">${body}</div></li>`;
+  };
+  let html = `<h2 style="font-family:sans-serif;border-bottom:2px solid #e5e7eb;padding-bottom:8px">🔔 Alertas Negocio Redondo — ${fecha}</h2>`;
   for (const [name, data] of Object.entries(byClient)) {
-    html += `<h3 style="font-family:sans-serif">${name}</h3><ul style="font-family:sans-serif">`;
-    data.criticas.forEach(a => { html += `<li>🔴 <strong>${a.titulo}</strong><br>${a.mensaje}</li>`; });
-    data.warnings.forEach(a => { html += `<li>🟡 <strong>${a.titulo}</strong><br>${a.mensaje}</li>`; });
-    data.infos.forEach(a => { html += `<li>🔵 <strong>${a.titulo}</strong><br>${a.mensaje}</li>`; });
+    html += `<div style="background:#f9fafb;border-left:4px solid #6366f1;padding:10px 16px;margin:16px 0 4px;font-family:sans-serif;font-size:15px;font-weight:700">${name}</div><ul style="font-family:sans-serif">`;
+    data.criticas.forEach(a => { html += renderAlertaEmail('🔴', a); });
+    data.warnings.forEach(a => { html += renderAlertaEmail('🟡', a); });
+    data.infos.forEach(a =>    { html += renderAlertaEmail('🔵', a); });
     html += '</ul>';
   }
   // Intentar con Resend primero, sino Nodemailer

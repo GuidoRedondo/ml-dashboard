@@ -10479,11 +10479,32 @@ async function loadCIAlertas() {
   const criticas = alertas.filter(a => a.severidad === 'critical');
   const warnings = alertas.filter(a => a.severidad === 'warning');
   const infos    = alertas.filter(a => a.severidad === 'info');
-  let html = '';
+  let html = `<div style="font-size:12px;color:var(--muted);margin-bottom:12px">Cliente: <strong style="color:var(--text)">${client.name}</strong></div>`;
   if (criticas.length) html += ciAlertaGroup('🔴 Críticas', criticas, '#fee2e2', '#dc2626');
   if (warnings.length) html += ciAlertaGroup('🟡 Warnings', warnings, '#fef3c7', '#d97706');
   if (infos.length)    html += ciAlertaGroup('🔵 Info',     infos,    '#dbeafe', '#2563eb');
   el.innerHTML = html;
+}
+
+function ciRenderDetalle(a) {
+  const datos = a.datos || {};
+  if (a.codigo === 'stock_critico_pareto' && Array.isArray(datos.criticos) && datos.criticos.length) {
+    const rows = datos.criticos.map(c => {
+      const titulo = c.title ? (c.title.length > 50 ? c.title.slice(0,50)+'…' : c.title) : '—';
+      const dias = c.dias === 0 ? '<span style="color:#dc2626;font-weight:600">Sin stock</span>' : `${c.dias} día${c.dias !== 1 ? 's' : ''}`;
+      return `<tr>
+        <td style="padding:4px 8px 4px 0;font-size:11px;color:var(--muted);white-space:nowrap">${c.id}</td>
+        <td style="padding:4px 8px 4px 0;font-size:11px;color:var(--text)">${titulo}</td>
+        <td style="padding:4px 8px;font-size:11px;white-space:nowrap">${dias}</td>
+        <td style="padding:4px 0;font-size:11px;color:var(--muted);white-space:nowrap">${c.stock} u.</td>
+      </tr>`;
+    }).join('');
+    return `<details style="margin-top:8px">
+      <summary style="font-size:11px;color:var(--accent);cursor:pointer;user-select:none">Ver los ${datos.criticos.length} productos</summary>
+      <table style="margin-top:6px;border-collapse:collapse;width:100%">${rows}</table>
+    </details>`;
+  }
+  return `<div style="font-size:12px;color:var(--muted);white-space:pre-line">${a.mensaje}</div>`;
 }
 
 function ciAlertaGroup(titulo, alertas, bg, color) {
@@ -10492,11 +10513,11 @@ function ciAlertaGroup(titulo, alertas, bg, color) {
     <div style="display:flex;flex-direction:column;gap:8px">`;
   alertas.forEach(a => {
     const fecha = new Date(a.created_at).toLocaleDateString('es-AR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'});
-    const vistaBadge = a.estado === 'vista' ? '<span style="font-size:10px;background:#e5e7eb;color:#6b7280;padding:2px 6px;border-radius:4px;margin-left:8px">Vista</span>' : '';
+    const vistaBadge = a.estado === 'vista' ? ' <span style="font-size:10px;background:#e5e7eb;color:#6b7280;padding:2px 6px;border-radius:4px">Vista</span>' : '';
     html += `<div style="background:${bg};border:1px solid ${color}30;border-radius:10px;padding:14px 16px;display:flex;align-items:flex-start;gap:12px">
       <div style="flex:1">
-        <div style="font-weight:600;font-size:13px;color:var(--text);margin-bottom:4px">${a.titulo}${vistaBadge}</div>
-        <div style="font-size:12px;color:var(--muted)">${a.mensaje}</div>
+        <div style="font-weight:600;font-size:13px;color:var(--text);margin-bottom:6px">${a.titulo}${vistaBadge}</div>
+        ${ciRenderDetalle(a)}
         <div style="font-size:11px;color:var(--muted);margin-top:6px">${fecha}</div>
       </div>
       <div style="display:flex;gap:6px;flex-shrink:0;padding-top:2px">
