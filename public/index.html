@@ -690,6 +690,7 @@ tbody td {
       <!-- BLOQUE 0: Evolución semanal -->
       <div style="font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.08em;margin-bottom:8px">📅 EVOLUCIÓN SEMANAL · ÚLTIMAS 8 SEMANAS</div>
       <div class="kpi-card" style="padding:18px 20px 20px;margin-bottom:16px">
+        <div id="evoCurrentWeekNote" style="display:none;margin-bottom:12px;padding:7px 12px;background:rgba(255,145,0,.12);border-radius:8px;border:1px solid rgba(255,145,0,.3);font-size:11px;color:#ff9100;font-weight:600;line-height:1.5"></div>
         <div id="evoKpis" style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px">
           <div class="evo-kpi"><div class="evo-kpi-label">🧾 Facturación</div><div class="evo-kpi-value" id="evoKpiFac">—</div><div class="evo-kpi-deltas"><span id="evoKpiFacWoW" class="evo-delta">—</span><span id="evoKpiFacAvg" class="evo-delta evo-delta-sub">—</span></div></div>
           <div class="evo-kpi"><div class="evo-kpi-label">📦 Unidades</div><div class="evo-kpi-value" id="evoKpiUni">—</div><div class="evo-kpi-deltas"><span id="evoKpiUniWoW" class="evo-delta">—</span><span id="evoKpiUniAvg" class="evo-delta evo-delta-sub">—</span></div></div>
@@ -2456,6 +2457,22 @@ function renderEvoKpis() {
 
   const cur = data[data.length - 1];
   const prev = data[data.length - 2];
+
+  const noteEl = document.getElementById('evoCurrentWeekNote');
+  if (noteEl && cur.week_start) {
+    const startDate = new Date(cur.week_start + 'T12:00:00');
+    const today = new Date();
+    const endDate = new Date(cur.week_end + 'T12:00:00');
+    const isCurrentWeek = today >= startDate && today <= endDate;
+    if (isCurrentWeek) {
+      const startTxt = startDate.toLocaleDateString('es-AR', { weekday: 'short', day: 'numeric', month: 'short' });
+      noteEl.innerHTML = `⚠️ <strong>Semana en curso</strong> · datos desde el ${startTxt} — los números son parciales y pueden aparecer bajos respecto a semanas anteriores`;
+      noteEl.style.display = 'block';
+    } else {
+      noteEl.style.display = 'none';
+    }
+  }
+
   const baseAvg = data.slice(Math.max(0, data.length - 5), data.length - 1);
   const avg = (key) => {
     const vals = baseAvg.map(w => w[key] || 0);
