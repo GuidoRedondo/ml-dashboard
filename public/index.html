@@ -1549,6 +1549,7 @@ async function loadDashboardData() {
   updateDashboard();
   loadEvolucionSemanal();
   showToast('✅ Datos actualizados');
+  if (document.getElementById('page-ads')?.classList.contains('active')) loadAds();
 }
 
 function clientColor(id) {
