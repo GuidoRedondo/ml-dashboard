@@ -1166,33 +1166,51 @@ function buildAlertsSummary(newAlerts) {
   return byClient;
 }
 
+const SLACK_TIPO_CONFIG = {
+  stock_critico_pareto: { emoji: '📦', label: 'Stock crítico Pareto',      short: (a) => `${(a.datos?.criticos?.length) || '?'} productos sin cobertura` },
+  caida_ventas:         { emoji: '📉', label: 'Caída de facturación',       short: (a) => a.titulo },
+  roas_bajo:            { emoji: '📣', label: 'ROAS bajo (publicidad)',      short: (a) => a.titulo },
+  margen_erosionado:    { emoji: '💸', label: 'Margen erosionado',           short: (a) => a.titulo },
+  preguntas_pendientes: { emoji: '❓', label: 'Preguntas sin responder',     short: (a) => a.titulo },
+};
+
 async function sendSlackAlert(newAlerts) {
   const webhookUrl = process.env.SLACK_WEBHOOK_URL;
   if (!webhookUrl || !newAlerts.length) return;
-  const byClient = buildAlertsSummary(newAlerts);
-  const now = new Date();
-  const fecha = now.toLocaleDateString('es-AR', { day:'2-digit', month:'2-digit' });
+  const fecha = new Date().toLocaleDateString('es-AR', { day:'2-digit', month:'2-digit' });
+
+  // Agrupar por tipo de alerta
+  const byTipo = {};
+  newAlerts.forEach(({ client, alerta }) => {
+    const c = alerta.codigo;
+    if (!byTipo[c]) byTipo[c] = [];
+    byTipo[c].push({ client, alerta });
+  });
+
+  // Ordenar: críticas primero, luego warnings
+  const orden = ['stock_critico_pareto','caida_ventas','margen_erosionado','roas_bajo','preguntas_pendientes'];
+  const tiposOrdenados = [
+    ...orden.filter(k => byTipo[k]),
+    ...Object.keys(byTipo).filter(k => !orden.includes(k))
+  ];
+
   let text = `*🔔 Resumen de alertas — ${fecha}*\n\n`;
-  for (const [name, data] of Object.entries(byClient)) {
-    const total = data.criticas.length + data.warnings.length + data.infos.length;
-    if (data.criticas.length) {
-      text += `🔴 *${name}* (${data.criticas.length} crític${data.criticas.length===1?'a':'as'})\n`;
-      data.criticas.forEach(a => { text += `• ${a.titulo}\n`; });
-    }
-    if (data.warnings.length) {
-      text += `🟡 *${name}* (${data.warnings.length} warning${data.warnings.length===1?'':'s'})\n`;
-      data.warnings.forEach(a => { text += `• ${a.titulo}\n`; });
-    }
-    if (data.infos.length) {
-      text += `🔵 *${name}* (${data.infos.length} info${data.infos.length===1?'':'s'})\n`;
-      data.infos.forEach(a => { text += `• ${a.titulo}\n`; });
-    }
+  for (const codigo of tiposOrdenados) {
+    const items = byTipo[codigo];
+    const cfg = SLACK_TIPO_CONFIG[codigo] || { emoji: '🔔', label: codigo, short: a => a.titulo };
+    const sevEmoji = items.some(i => i.alerta.severidad === 'critical') ? '🔴' : '🟡';
+    text += `${sevEmoji} *${cfg.label}* — ${items.length} cliente${items.length !== 1 ? 's' : ''}\n`;
+    items.forEach(({ client, alerta }) => {
+      text += `  • ${client.name}: ${cfg.short(alerta)}\n`;
+    });
     text += '\n';
   }
+
   const dashUrl = process.env.SELF_URL
     ? process.env.SELF_URL.replace('/health', '')
     : (process.env.RAILWAY_PUBLIC_DOMAIN ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}` : '');
-  if (dashUrl) text += `<${dashUrl}|Ver detalle + acciones sugeridas →>`;
+  if (dashUrl) text += `<${dashUrl}|Ver detalle en el dashboard →>`;
+
   try {
     await fetch(webhookUrl, {
       method: 'POST',
