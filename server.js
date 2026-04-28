@@ -1119,7 +1119,7 @@ async function evalRulePreguntasPendientes(client) {
 }
 
 // Motor principal
-async function runAlertEngine() {
+async function runAlertEngine({ forceNotify = false } = {}) {
   console.log('[ALERTAS] Iniciando evaluación —', new Date().toISOString());
   try {
     const clients = await pool.query(
@@ -1138,17 +1138,15 @@ async function runAlertEngine() {
       for (const evalFn of evaluators) {
         try {
           const result = await evalFn(client);
-          if (result?.action === 'created') {
-            // Fetch the full alerta for notification
+          if (result?.action === 'created' || (forceNotify && result?.action === 'updated')) {
             const a = await pool.query('SELECT * FROM alertas WHERE id=$1', [result.id]);
             if (a.rows.length) newAlerts.push({ client, alerta: a.rows[0] });
           }
         } catch(e) { console.error(`[ALERTAS] Error en ${evalFn.name} / ${client.name}:`, e.message); }
       }
-      // Pausa entre clientes para no saturar ML API
       await new Promise(r => setTimeout(r, 500));
     }
-    console.log(`[ALERTAS] Evaluación completa — ${newAlerts.length} alertas nuevas`);
+    console.log(`[ALERTAS] Evaluación completa — ${newAlerts.length} alertas`);
     if (newAlerts.length) await notifyAlerts(newAlerts);
   } catch(e) { console.error('[ALERTAS] Error en runAlertEngine:', e.message); }
 }
@@ -1309,7 +1307,7 @@ app.put('/api/reglas-alertas/:codigo', requireAuth, async (req, res) => {
 app.post('/api/alertas/ejecutar', requireAuth, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ error: 'Solo admin' });
   res.json({ ok: true, mensaje: 'Motor de alertas iniciado en background' });
-  runAlertEngine().catch(e => console.error('[ALERTAS] Error manual:', e.message));
+  runAlertEngine({ forceNotify: true }).catch(e => console.error('[ALERTAS] Error manual:', e.message));
 });
 
 app.get('/api/dashboard', requireAuth, async (req, res) => {
