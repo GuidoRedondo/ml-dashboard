@@ -1,10 +1,24 @@
-# Plan — Centro de Inteligencia
+# Centro de Inteligencia — ML Dashboard
 
-> **Nota**: el inicio de este documento fue cortado al pegarlo. La sección de Capa 1 comienza a mitad de la descripción del motor de evaluación.
+Módulo de automatización para detección de problemas, generación de informes y descubrimiento de oportunidades en las cuentas de clientes Platinum de Negocio Redondo.
+
+## Objetivo
+
+Pasar de "consultar el dashboard cuando me acuerdo" a "el sistema me avisa qué necesita atención y me sugiere qué hacer". Reducir la carga mental de manejar 30 cuentas en paralelo.
+
+## Arquitectura general
+
+Tres componentes nuevos sobre el stack existente (Node + Express + Postgres en Railway):
+
+- **Worker de análisis**: cron que recorre clientes, evalúa reglas, escribe alertas e insights.
+- **Notifier**: lee alertas/insights nuevos, los manda a Slack + email + los muestra en el dashboard.
+- **Generador de informes**: Claude API produce textos en tono Negocio Redondo para informes mensuales al cliente y resúmenes internos.
 
 ---
 
-...rre los clientes, evalúa reglas, persiste en tabla `alertas` con severidad (info / warning / critical). El notifier agrupa por cliente y dispara notificación.
+## Capa 1 — Alertas automáticas
+
+Cron 2x por día (08:00 y 18:00 ART). Recorre los clientes, evalúa reglas, persiste en tabla `alertas` con severidad (info / warning / critical). El notifier agrupa por cliente y dispara notificación.
 
 ## Reglas iniciales
 
