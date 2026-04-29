@@ -832,6 +832,7 @@ const REGLAS_DEFAULT = {
   margen_erosionado:     { habilitada: true, umbral: { caida_pp: 3 } },
   stock_critico_pareto:  { habilitada: true, umbral: { dias_cobertura: 7, pareto_pct: 0.20 } },
   preguntas_pendientes:  { habilitada: true, umbral: { cantidad: 5, horas: 12 } },
+  tacos_alto:            { habilitada: true, umbral: { warning_pct: 15, critical_pct: 25, dias: 30 } },
 };
 
 async function getRegla(clientId, codigo) {
@@ -1118,6 +1119,68 @@ async function evalRulePreguntasPendientes(client) {
   } catch(e) { console.error(`[ALERTA preguntas] ${client.name}:`, e.message); return null; }
 }
 
+// Regla 7 — TACOS alto
+async function evalRuleTacosAlto(client) {
+  const regla = await getRegla(client.id, 'tacos_alto');
+  if (!regla.habilitada) return null;
+  const token = await getClientToken(client.id);
+  if (!token) return null;
+  const headers = { 'Authorization': `Bearer ${token}` };
+  try {
+    const user = await fetch(`${ML_API}/users/me`, { headers }).then(r => r.json());
+    if (user.error) return null;
+    const uid = user.id;
+    const siteId = user.site_id || 'MLA';
+    const { warning_pct = 15, critical_pct = 25, dias = 30 } = regla.umbral || {};
+
+    const now = new Date();
+    const fmt = d => d.toISOString().slice(0,19) + '.000-00:00';
+    const fromDate = new Date(now.getTime() - dias*24*60*60*1000);
+
+    // Facturación total del período
+    const { orders } = await fetchAllOrders(uid, headers, fmt(fromDate), fmt(now));
+    const revenue = orders.reduce((s,o) => s + (parseFloat(o.total_amount)||0), 0);
+    if (revenue <= 0) return null;
+
+    // Gasto en PADS del período
+    const h1 = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'Api-Version': '1' };
+    const h2 = { 'Authorization': `Bearer ${token}`, 'api-version': '2' };
+    const advData = await fetch(`${ML_API}/advertising/advertisers?product_id=PADS`, { headers: h1 }).then(r => r.json());
+    const advertisers = advData.advertisers || [];
+    if (!advertisers.length) return null;
+    const adv = advertisers.find(a => a.site_id === siteId) || advertisers[0];
+    const advId = adv.advertiser_id;
+    const fromStr = fromDate.toISOString().slice(0,10);
+    const toStr = now.toISOString().slice(0,10);
+    const adsData = await fetch(
+      `${ML_API}/advertising/${siteId}/advertisers/${advId}/product_ads/campaigns/search?limit=50&offset=0&date_from=${fromStr}&date_to=${toStr}&metrics=cost&metrics_summary=true`,
+      { headers: h2 }
+    ).then(r => r.json()).catch(() => ({}));
+    const spend = parseFloat((adsData.metrics_summary || {}).cost) || 0;
+    if (spend <= 0) return null;
+
+    const tacos = (spend / revenue) * 100;
+    const fmtARS = v => '$' + Math.round(v).toLocaleString('es-AR');
+
+    if (tacos >= critical_pct) {
+      return upsertAlerta(client.id, 'tacos_alto', 'critical',
+        `TACOS crítico (${tacos.toFixed(1)}%) — últimos ${dias} días`,
+        `TACOS de ${tacos.toFixed(1)}% supera el límite crítico de ${critical_pct}%. Gasto: ${fmtARS(spend)} / Facturación: ${fmtARS(revenue)}`,
+        { tacos: tacos.toFixed(1), spend, revenue, warning_pct, critical_pct, dias }
+      );
+    } else if (tacos >= warning_pct) {
+      return upsertAlerta(client.id, 'tacos_alto', 'warning',
+        `TACOS alto (${tacos.toFixed(1)}%) — últimos ${dias} días`,
+        `TACOS de ${tacos.toFixed(1)}% supera el umbral de ${warning_pct}%. Gasto: ${fmtARS(spend)} / Facturación: ${fmtARS(revenue)}`,
+        { tacos: tacos.toFixed(1), spend, revenue, warning_pct, critical_pct, dias }
+      );
+    } else {
+      await resolveAlerta(client.id, 'tacos_alto');
+      return null;
+    }
+  } catch(e) { console.error(`[ALERTA tacos_alto] ${client.name}:`, e.message); return null; }
+}
+
 // Motor principal
 async function runAlertEngine({ forceNotify = false } = {}) {
   console.log('[ALERTAS] Iniciando evaluación —', new Date().toISOString());
@@ -1128,6 +1191,7 @@ async function runAlertEngine({ forceNotify = false } = {}) {
     const evaluators = [
       evalRuleCaidaVentas,
       evalRuleRoasBajo,
+      evalRuleTacosAlto,
       evalRuleMargenErosionado,
       evalRuleStockPareto,
       evalRulePreguntasPendientes,
@@ -1170,6 +1234,7 @@ const SLACK_TIPO_CONFIG = {
   stock_critico_pareto: { emoji: '📦', label: 'Stock crítico Pareto',      short: (a) => `${(a.datos?.criticos?.length) || '?'} productos sin cobertura` },
   caida_ventas:         { emoji: '📉', label: 'Caída de facturación',       short: (a) => a.titulo },
   roas_bajo:            { emoji: '📣', label: 'ROAS bajo (publicidad)',      short: (a) => a.titulo },
+  tacos_alto:           { emoji: '💰', label: 'TACOS alto',                  short: (a) => a.titulo },
   margen_erosionado:    { emoji: '💸', label: 'Margen erosionado',           short: (a) => a.titulo },
   preguntas_pendientes: { emoji: '❓', label: 'Preguntas sin responder',     short: (a) => a.titulo },
 };
@@ -1188,7 +1253,7 @@ async function sendSlackAlert(newAlerts) {
   });
 
   // Ordenar: críticas primero, luego warnings
-  const orden = ['stock_critico_pareto','caida_ventas','margen_erosionado','roas_bajo','preguntas_pendientes'];
+  const orden = ['stock_critico_pareto','caida_ventas','tacos_alto','margen_erosionado','roas_bajo','preguntas_pendientes'];
   const tiposOrdenados = [
     ...orden.filter(k => byTipo[k]),
     ...Object.keys(byTipo).filter(k => !orden.includes(k))
