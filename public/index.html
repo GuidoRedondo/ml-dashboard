@@ -10894,6 +10894,7 @@ function dpRenderTabla(decisiones, conAcciones) {
       <th style="padding:8px 10px;color:var(--muted);font-weight:600">Tipo</th>
       <th style="padding:8px 10px;color:var(--muted);font-weight:600">Cliente</th>
       <th style="padding:8px 10px;color:var(--muted);font-weight:600">Objeto</th>
+      <th style="padding:8px 10px;color:var(--muted);font-weight:600">Campaña</th>
       <th style="padding:8px 10px;color:var(--muted);font-weight:600">Acción sugerida</th>
       <th style="padding:8px 10px;color:var(--muted);font-weight:600;text-align:right">Impacto</th>
       <th style="padding:8px 10px;color:var(--muted);font-weight:600;text-align:right">Prioridad</th>
@@ -10916,6 +10917,13 @@ function dpRenderTabla(decisiones, conAcciones) {
       <td style="padding:10px 10px;color:var(--muted)">
         <div style="font-size:11px;color:var(--muted)">${d.objeto_id}</div>
         <div style="color:var(--text)">${nombre}</div>
+      </td>
+      <td style="padding:10px 10px;color:var(--muted);font-size:11px;max-width:140px">
+        ${d.nivel === 'campania'
+          ? `<span style="color:var(--muted);font-style:italic">—</span>`
+          : (d.metricas_snapshot?._campania
+              ? `<span title="${d.metricas_snapshot._campania}">${d.metricas_snapshot._campania.length > 25 ? d.metricas_snapshot._campania.slice(0,25)+'…' : d.metricas_snapshot._campania}</span>`
+              : `<span style="color:var(--muted);font-style:italic">sin datos</span>`)}
       </td>
       <td style="padding:10px 10px;max-width:220px;color:var(--text)">${d.accion_sugerida}</td>
       <td style="padding:10px 10px;text-align:right;font-weight:600;color:var(--text)">${fmtARS(d.impacto_estimado_pesos)}</td>

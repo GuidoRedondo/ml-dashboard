@@ -5267,6 +5267,13 @@ async function insertDecision(clientId, { tipo, nivel, objeto_id, objeto_nombre,
 async function evalPubliRules(client, { campaigns, items }, roas_target) {
   let count = 0;
 
+  // Mapa campaign_id → nombre para enriquecer decisiones de ítems
+  const campMap = {};
+  for (const c of campaigns) {
+    const id = String(c.id || c.campaign_id || '');
+    if (id) campMap[id] = c.name || c.campaign_name || id;
+  }
+
   // Regla 1 — Escalar campaña ganadora (ROAS ≥ 1.3× target)
   for (const c of campaigns) {
     try {
@@ -5302,10 +5309,11 @@ async function evalPubliRules(client, { campaigns, items }, roas_target) {
       if (acos <= 0.5 || ventas > 0 || gasto <= 0) continue;
       const itemId = it.item_id || it.id;
       if (await publiDecisionExists(client.id, 'pausar_sangrado', itemId)) continue;
+      const campania = campMap[String(it.campaign_id || '')] || null;
       const datos = { nombre_regla: 'Pausar anuncio sangrando', objeto_id: itemId, objeto_nombre: it.title || itemId, roas_target, roas: (parseFloat(m.roas)||0).toFixed(2), acos: acos.toFixed(2), cvr: (parseFloat(m.cvr)||0).toFixed(3), gasto: Math.round(gasto), ventas_unidades: 0, ventas_amount: 0, accion_default: 'Pausar anuncio del ítem', impacto_estimado: Math.round(gasto) };
       const claude = await callClaudeForDecision(datos);
       const impacto = claude.impacto_pesos || datos.impacto_estimado;
-      await insertDecision(client.id, { tipo: 'pausar_sangrado', nivel: 'item', objeto_id: itemId, objeto_nombre: datos.objeto_nombre, accion: claude.accion, justificacion: claude.justificacion, metricas: m, impacto, prioridad: Math.round(impacto * 1.5) });
+      await insertDecision(client.id, { tipo: 'pausar_sangrado', nivel: 'item', objeto_id: itemId, objeto_nombre: datos.objeto_nombre, accion: claude.accion, justificacion: claude.justificacion, metricas: { ...m, _campania: campania }, impacto, prioridad: Math.round(impacto * 1.5) });
       count++;
     } catch(e) { console.error(`[PUBLI-R3] ${client.name} item ${it.item_id||it.id}:`, e.message); }
   }
@@ -5317,10 +5325,11 @@ async function evalPubliRules(client, { campaigns, items }, roas_target) {
       if (cvr <= 0.05 || gasto <= 0 || roas < roas_target) continue;
       const itemId = it.item_id || it.id;
       if (await publiDecisionExists(client.id, 'subir_puja_headroom', itemId)) continue;
+      const campania = campMap[String(it.campaign_id || '')] || null;
       const datos = { nombre_regla: 'Subir puja — ítem con headroom', objeto_id: itemId, objeto_nombre: it.title || itemId, roas_target, roas: roas.toFixed(2), acos: (parseFloat(m.acos)||0).toFixed(2), cvr: cvr.toFixed(3), gasto: Math.round(gasto), ventas_unidades: m.units_quantity || 0, ventas_amount: Math.round(parseFloat(m.total_amount)||0), accion_default: 'Aumentar puja/prioridad del ítem', impacto_estimado: Math.round(gasto * 0.3) };
       const claude = await callClaudeForDecision(datos);
       const impacto = claude.impacto_pesos || datos.impacto_estimado;
-      await insertDecision(client.id, { tipo: 'subir_puja_headroom', nivel: 'item', objeto_id: itemId, objeto_nombre: datos.objeto_nombre, accion: claude.accion, justificacion: claude.justificacion, metricas: m, impacto, prioridad: Math.round(impacto * 1.0) });
+      await insertDecision(client.id, { tipo: 'subir_puja_headroom', nivel: 'item', objeto_id: itemId, objeto_nombre: datos.objeto_nombre, accion: claude.accion, justificacion: claude.justificacion, metricas: { ...m, _campania: campania }, impacto, prioridad: Math.round(impacto * 1.0) });
       count++;
     } catch(e) { console.error(`[PUBLI-R4] ${client.name} item ${it.item_id||it.id}:`, e.message); }
   }
@@ -5351,10 +5360,11 @@ async function evalPubliRules(client, { campaigns, items }, roas_target) {
             const m = getMet(padsItem); const gasto = parseFloat(m.cost) || 0;
             if (gasto <= 0) continue;
             if (await publiDecisionExists(client.id, 'stockout_protector', item.id)) continue;
+            const campania = campMap[String(padsItem.campaign_id || '')] || null;
             const datos = { nombre_regla: 'Stockout protector', objeto_id: item.id, objeto_nombre: item.title || item.id, roas_target, roas: (parseFloat(m.roas)||0).toFixed(2), acos: (parseFloat(m.acos)||0).toFixed(2), cvr: (parseFloat(m.cvr)||0).toFixed(3), gasto: Math.round(gasto), ventas_unidades: m.units_quantity || 0, ventas_amount: Math.round(parseFloat(m.total_amount)||0), accion_default: `Pausar publi del ítem — stock para ${diasCobertura}d`, impacto_estimado: Math.round(gasto) };
             const claude = await callClaudeForDecision(datos);
             const impacto = claude.impacto_pesos || datos.impacto_estimado;
-            await insertDecision(client.id, { tipo: 'stockout_protector', nivel: 'item', objeto_id: item.id, objeto_nombre: datos.objeto_nombre, accion: claude.accion, justificacion: claude.justificacion, metricas: { ...m, stock, diasCobertura }, impacto, prioridad: Math.round(impacto * 1.5) });
+            await insertDecision(client.id, { tipo: 'stockout_protector', nivel: 'item', objeto_id: item.id, objeto_nombre: datos.objeto_nombre, accion: claude.accion, justificacion: claude.justificacion, metricas: { ...m, stock, diasCobertura, _campania: campania }, impacto, prioridad: Math.round(impacto * 1.5) });
             count++;
           } catch(e) { console.error(`[PUBLI-R6] ${client.name} item ${entry?.body?.id||entry?.id}:`, e.message); }
         }
@@ -5369,10 +5379,11 @@ async function evalPubliRules(client, { campaigns, items }, roas_target) {
       if (gasto <= 10000 || ventas > 0) continue;
       const itemId = it.item_id || it.id;
       if (await publiDecisionExists(client.id, 'discontinuar_muerta', itemId)) continue;
+      const campania = campMap[String(it.campaign_id || '')] || null;
       const datos = { nombre_regla: 'Discontinuar inversión muerta', objeto_id: itemId, objeto_nombre: it.title || itemId, roas_target, roas: '0', acos: 'infinito', cvr: '0', gasto: Math.round(gasto), ventas_unidades: 0, ventas_amount: 0, accion_default: 'Pausar anuncio — sin ventas con inversión alta', impacto_estimado: Math.round(gasto) };
       const claude = await callClaudeForDecision(datos);
       const impacto = claude.impacto_pesos || datos.impacto_estimado;
-      await insertDecision(client.id, { tipo: 'discontinuar_muerta', nivel: 'item', objeto_id: itemId, objeto_nombre: datos.objeto_nombre, accion: claude.accion, justificacion: claude.justificacion, metricas: m, impacto, prioridad: Math.round(impacto * 1.5) });
+      await insertDecision(client.id, { tipo: 'discontinuar_muerta', nivel: 'item', objeto_id: itemId, objeto_nombre: datos.objeto_nombre, accion: claude.accion, justificacion: claude.justificacion, metricas: { ...m, _campania: campania }, impacto, prioridad: Math.round(impacto * 1.5) });
       count++;
     } catch(e) { console.error(`[PUBLI-R7] ${client.name} item ${it.item_id||it.id}:`, e.message); }
   }
