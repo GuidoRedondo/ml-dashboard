@@ -1208,6 +1208,7 @@ tbody td {
     <div class="page" id="page-alertas">
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px;flex-wrap:wrap">
         <h2 style="margin:0;font-family:var(--font-b);flex:1">🔔 Centro de Inteligencia</h2>
+        <span id="ci-ultimo-scaneo" style="font-size:11px;color:var(--muted);white-space:nowrap"></span>
         <button class="sync-btn" onclick="loadCentroInteligencia()">🔄 Actualizar</button>
         <button id="ci-run-btn" class="sync-btn" onclick="ejecutarMotorAlertas()" style="background:#6366f1;color:#fff;border:none">⚡ Ejecutar ahora</button>
       </div>
@@ -10468,6 +10469,27 @@ async function loadCentroInteligencia() {
     document.getElementById('ci-alertas-content').innerHTML =
       '<div style="color:var(--muted);text-align:center;padding:40px">Seleccioná un cliente primero</div>';
     return;
+  }
+  // Mostrar último escaneo
+  const scanEl = document.getElementById('ci-ultimo-scaneo');
+  if (scanEl) {
+    apiCall('GET', '/api/alertas/ultimo-scaneo').then(data => {
+      if (!data) { scanEl.textContent = ''; return; }
+      const fecha = new Date(data.ejecutado_en);
+      const ahora = new Date();
+      const diffMs = ahora - fecha;
+      const diffMin = Math.floor(diffMs / 60000);
+      const diffH = Math.floor(diffMin / 60);
+      const diffD = Math.floor(diffH / 24);
+      let hace;
+      if (diffMin < 2) hace = 'hace un momento';
+      else if (diffMin < 60) hace = `hace ${diffMin} min`;
+      else if (diffH < 24) hace = `hace ${diffH}h`;
+      else hace = `hace ${diffD}d`;
+      const tipoLabel = data.tipo === 'manual' ? 'manual' : 'automático';
+      const count = data.alertas_count > 0 ? ` · ${data.alertas_count} alerta${data.alertas_count !== 1 ? 's' : ''}` : '';
+      scanEl.textContent = `Último escaneo: ${hace} (${tipoLabel}${count})`;
+    });
   }
   if (_ciActiveTab === 'alertas') await loadCIAlertas();
   else await loadCIReglas();

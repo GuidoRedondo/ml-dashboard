@@ -250,6 +250,12 @@ async function initDB() {
       level_id    VARCHAR(30) NOT NULL,
       UNIQUE(client_id, fecha)
     );
+    CREATE TABLE IF NOT EXISTS ci_runs (
+      id              SERIAL PRIMARY KEY,
+      ejecutado_en    TIMESTAMP DEFAULT NOW(),
+      tipo            VARCHAR(10) NOT NULL CHECK (tipo IN ('auto','manual')),
+      alertas_count   INT DEFAULT 0
+    );
   `);
 
   // Create default admin if not exists (password: admin123 - change after first login)
@@ -1322,7 +1328,7 @@ async function evalRuleProductoSinVentas(client) {
 }
 
 // Motor principal
-async function runAlertEngine({ forceNotify = false } = {}) {
+async function runAlertEngine({ forceNotify = false, tipo = 'auto' } = {}) {
   console.log('[ALERTAS] Iniciando evaluación —', new Date().toISOString());
   try {
     const clients = await pool.query(
@@ -1353,6 +1359,7 @@ async function runAlertEngine({ forceNotify = false } = {}) {
       await new Promise(r => setTimeout(r, 500));
     }
     console.log(`[ALERTAS] Evaluación completa — ${newAlerts.length} alertas`);
+    await pool.query(`INSERT INTO ci_runs (tipo, alertas_count) VALUES ($1, $2)`, [tipo, newAlerts.length]);
     if (newAlerts.length) await notifyAlerts(newAlerts);
   } catch(e) { console.error('[ALERTAS] Error en runAlertEngine:', e.message); }
 }
@@ -1534,7 +1541,14 @@ app.put('/api/reglas-alertas/:codigo', requireAuth, async (req, res) => {
 app.post('/api/alertas/ejecutar', requireAuth, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ error: 'Solo admin' });
   res.json({ ok: true, mensaje: 'Motor de alertas iniciado en background' });
-  runAlertEngine({ forceNotify: true }).catch(e => console.error('[ALERTAS] Error manual:', e.message));
+  runAlertEngine({ forceNotify: true, tipo: 'manual' }).catch(e => console.error('[ALERTAS] Error manual:', e.message));
+});
+
+app.get('/api/alertas/ultimo-scaneo', requireAuth, async (req, res) => {
+  try {
+    const r = await pool.query(`SELECT ejecutado_en, tipo, alertas_count FROM ci_runs ORDER BY ejecutado_en DESC LIMIT 1`);
+    res.json(r.rows[0] || null);
+  } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
 // Endpoint para cron externo — protegido con CRON_SECRET, acepta GET y POST
