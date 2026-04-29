@@ -841,6 +841,7 @@ const REGLAS_DEFAULT = {
   preguntas_pendientes:  { habilitada: true, umbral: { cantidad: 5, horas: 12 } },
   tacos_alto:            { habilitada: true, umbral: { warning_pct: 15, critical_pct: 25, dias: 30 } },
   reputacion_bajando:    { habilitada: true, umbral: {} },
+  producto_sin_ventas:   { habilitada: true, umbral: { dias_publicado: 14 } },
 };
 
 async function getRegla(clientId, codigo) {
@@ -1237,6 +1238,89 @@ async function evalRuleReputacionBajando(client) {
   } catch(e) { console.error(`[ALERTA reputacion_bajando] ${client.name}:`, e.message); return null; }
 }
 
+// Regla 9 — Producto nuevo sin ventas
+async function evalRuleProductoSinVentas(client) {
+  const regla = await getRegla(client.id, 'producto_sin_ventas');
+  if (!regla.habilitada) return null;
+  const token = await getClientToken(client.id);
+  if (!token) return null;
+  const headers = { 'Authorization': `Bearer ${token}` };
+  try {
+    const user = await fetch(`${ML_API}/users/me`, { headers }).then(r => r.json());
+    if (user.error) return null;
+    const uid = user.id;
+    const { dias_publicado = 14 } = regla.umbral || {};
+
+    // Fetch all active item IDs
+    let allIds = [];
+    let offset = 0;
+    while (true) {
+      const data = await fetch(
+        `${ML_API}/users/${uid}/items/search?status=active&limit=100&offset=${offset}`,
+        { headers }
+      ).then(r => r.json()).catch(() => ({}));
+      const ids = data.results || [];
+      if (!ids.length) break;
+      allIds = allIds.concat(ids);
+      if (ids.length < 100 || allIds.length >= (data.paging?.total || allIds.length)) break;
+      offset += 100;
+    }
+    if (!allIds.length) return null;
+
+    // Fetch item details in batches of 20
+    const cutoff = Date.now() - dias_publicado * 24 * 60 * 60 * 1000;
+    let candidatos = [];
+    for (let i = 0; i < allIds.length; i += 20) {
+      const batch = allIds.slice(i, i + 20);
+      const raw = await fetch(
+        `${ML_API}/items?ids=${batch.join(',')}&attributes=id,title,date_created,price`,
+        { headers }
+      ).then(r => r.json()).catch(() => []);
+      (Array.isArray(raw) ? raw : []).forEach(entry => {
+        const item = entry.body || entry;
+        if (!item?.id || !item.date_created) return;
+        if (new Date(item.date_created).getTime() <= cutoff) {
+          candidatos.push({ id: item.id, title: item.title || item.id, precio: item.price, date_created: item.date_created });
+        }
+      });
+    }
+    if (!candidatos.length) {
+      await resolveAlerta(client.id, 'producto_sin_ventas');
+      return null;
+    }
+
+    // IDs con ventas en los últimos 90 días
+    const now = new Date();
+    const fmt = d => d.toISOString().slice(0, 19) + '.000-00:00';
+    const from90 = new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000);
+    const { orders } = await fetchAllOrders(uid, headers, fmt(from90), fmt(now));
+    const soldIds = new Set();
+    orders.forEach(o => { (o.order_items || []).forEach(oi => { if (oi.item?.id) soldIds.add(oi.item.id); }); });
+
+    const sinVentas = candidatos
+      .filter(item => !soldIds.has(item.id))
+      .map(item => ({
+        ...item,
+        dias: Math.floor((now.getTime() - new Date(item.date_created).getTime()) / (24 * 60 * 60 * 1000))
+      }))
+      .sort((a, b) => b.dias - a.dias);
+
+    if (!sinVentas.length) {
+      await resolveAlerta(client.id, 'producto_sin_ventas');
+      return null;
+    }
+
+    const shortTitle = t => t.length > 50 ? t.slice(0, 50) + '…' : t;
+    const listado = sinVentas.slice(0, 3).map(i => `• ${shortTitle(i.title)} (${i.id}) — ${i.dias} días sin ventas`).join('\n');
+    const resto = sinVentas.length > 3 ? `\n…y ${sinVentas.length - 3} más` : '';
+    return upsertAlerta(client.id, 'producto_sin_ventas', 'info',
+      `${sinVentas.length} producto${sinVentas.length > 1 ? 's' : ''} publicado${sinVentas.length > 1 ? 's' : ''} sin ventas en 90 días`,
+      `Publicaciones activas con +${dias_publicado} días y 0 ventas en los últimos 90 días:\n${listado}${resto}`,
+      { items: sinVentas, total: sinVentas.length }
+    );
+  } catch(e) { console.error(`[ALERTA producto_sin_ventas] ${client.name}:`, e.message); return null; }
+}
+
 // Motor principal
 async function runAlertEngine({ forceNotify = false } = {}) {
   console.log('[ALERTAS] Iniciando evaluación —', new Date().toISOString());
@@ -1252,6 +1336,7 @@ async function runAlertEngine({ forceNotify = false } = {}) {
       evalRuleStockPareto,
       evalRulePreguntasPendientes,
       evalRuleReputacionBajando,
+      evalRuleProductoSinVentas,
     ];
     const newAlerts = [];
     for (const client of clients.rows) {
@@ -1295,6 +1380,7 @@ const SLACK_TIPO_CONFIG = {
   margen_erosionado:    { emoji: '💸', label: 'Margen erosionado',           short: (a) => a.titulo },
   preguntas_pendientes: { emoji: '❓', label: 'Preguntas sin responder',     short: (a) => a.titulo },
   reputacion_bajando:   { emoji: '⭐', label: 'Reputación bajando',           short: (a) => a.titulo },
+  producto_sin_ventas:  { emoji: '🛒', label: 'Productos sin ventas',         short: (a) => `${a.datos?.total || '?'} productos activos sin ventas en 90d` },
 };
 
 async function sendSlackAlert(newAlerts) {
@@ -1311,7 +1397,7 @@ async function sendSlackAlert(newAlerts) {
   });
 
   // Ordenar: críticas primero, luego warnings
-  const orden = ['reputacion_bajando','stock_critico_pareto','caida_ventas','tacos_alto','margen_erosionado','roas_bajo','preguntas_pendientes'];
+  const orden = ['reputacion_bajando','stock_critico_pareto','caida_ventas','tacos_alto','margen_erosionado','roas_bajo','preguntas_pendientes','producto_sin_ventas'];
   const tiposOrdenados = [
     ...orden.filter(k => byTipo[k]),
     ...Object.keys(byTipo).filter(k => !orden.includes(k))

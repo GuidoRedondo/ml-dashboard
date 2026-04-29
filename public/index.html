@@ -10457,6 +10457,7 @@ const CI_REGLAS_LABELS = {
   stock_critico_pareto: { titulo: 'Stock crítico Pareto',   desc: 'SKUs del top Pareto con cobertura insuficiente de stock' },
   preguntas_pendientes: { titulo: 'Preguntas pendientes',   desc: 'Preguntas de compradores sin responder por más de N horas' },
   reputacion_bajando:   { titulo: 'Reputación bajando',     desc: 'El nivel de reputación del vendedor bajó respecto al día anterior' },
+  producto_sin_ventas:  { titulo: 'Producto sin ventas',    desc: 'Publicaciones activas con más de N días publicadas y 0 ventas en 90 días' },
 };
 
 let _ciActiveTab = 'alertas';
@@ -10508,6 +10509,22 @@ function ciRenderDetalle(a) {
     }).join('');
     return `<details style="margin-top:8px">
       <summary style="font-size:11px;color:var(--accent);cursor:pointer;user-select:none">Ver los ${datos.criticos.length} productos</summary>
+      <table style="margin-top:6px;border-collapse:collapse;width:100%">${rows}</table>
+    </details>`;
+  }
+  if (a.codigo === 'producto_sin_ventas' && Array.isArray(datos.items) && datos.items.length) {
+    const rows = datos.items.map(c => {
+      const titulo = c.title ? (c.title.length > 50 ? c.title.slice(0,50)+'…' : c.title) : '—';
+      const precio = c.precio ? `$${Math.round(c.precio).toLocaleString('es-AR')}` : '—';
+      return `<tr>
+        <td style="padding:4px 8px 4px 0;font-size:11px;color:var(--muted);white-space:nowrap">${c.id}</td>
+        <td style="padding:4px 8px 4px 0;font-size:11px;color:var(--text)">${titulo}</td>
+        <td style="padding:4px 8px;font-size:11px;color:var(--muted);white-space:nowrap">${c.dias} días</td>
+        <td style="padding:4px 0;font-size:11px;color:var(--muted);white-space:nowrap">${precio}</td>
+      </tr>`;
+    }).join('');
+    return `<details style="margin-top:8px">
+      <summary style="font-size:11px;color:var(--accent);cursor:pointer;user-select:none">Ver los ${datos.items.length} productos</summary>
       <table style="margin-top:6px;border-collapse:collapse;width:100%">${rows}</table>
     </details>`;
   }
