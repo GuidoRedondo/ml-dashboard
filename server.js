@@ -243,6 +243,13 @@ async function initDB() {
       umbral      JSONB DEFAULT '{}',
       UNIQUE(client_id, codigo)
     );
+    CREATE TABLE IF NOT EXISTS snapshots_reputacion (
+      id          SERIAL PRIMARY KEY,
+      client_id   INTEGER NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+      fecha       DATE NOT NULL,
+      level_id    VARCHAR(30) NOT NULL,
+      UNIQUE(client_id, fecha)
+    );
   `);
 
   // Create default admin if not exists (password: admin123 - change after first login)
@@ -833,6 +840,7 @@ const REGLAS_DEFAULT = {
   stock_critico_pareto:  { habilitada: true, umbral: { dias_cobertura: 7, pareto_pct: 0.20 } },
   preguntas_pendientes:  { habilitada: true, umbral: { cantidad: 5, horas: 12 } },
   tacos_alto:            { habilitada: true, umbral: { warning_pct: 15, critical_pct: 25, dias: 30 } },
+  reputacion_bajando:    { habilitada: true, umbral: {} },
 };
 
 async function getRegla(clientId, codigo) {
@@ -1181,6 +1189,54 @@ async function evalRuleTacosAlto(client) {
   } catch(e) { console.error(`[ALERTA tacos_alto] ${client.name}:`, e.message); return null; }
 }
 
+// Regla 8 — Reputación bajando
+async function evalRuleReputacionBajando(client) {
+  const regla = await getRegla(client.id, 'reputacion_bajando');
+  if (!regla.habilitada) return null;
+  const token = await getClientToken(client.id);
+  if (!token) return null;
+  const headers = { 'Authorization': `Bearer ${token}` };
+  try {
+    const user = await fetch(`${ML_API}/users/me`, { headers }).then(r => r.json());
+    if (user.error) return null;
+    const level_id = user.seller_reputation?.level_id;
+    if (!level_id) return null;
+
+    const levelNum = l => parseInt((l || '').split('_')[0]) || 0;
+    const levelLabel = {
+      '1_red': 'Rojo', '2_orange': 'Naranja', '3_yellow': 'Amarillo',
+      '4_light_green': 'Verde claro', '5_green': 'Verde'
+    };
+
+    // Snapshot de ayer
+    const yesterday = await pool.query(
+      `SELECT level_id FROM snapshots_reputacion WHERE client_id=$1 AND fecha = CURRENT_DATE - INTERVAL '1 day'`,
+      [client.id]
+    );
+
+    // Guardar (o actualizar) snapshot de hoy
+    await pool.query(
+      `INSERT INTO snapshots_reputacion (client_id, fecha, level_id) VALUES ($1, CURRENT_DATE, $2)
+       ON CONFLICT (client_id, fecha) DO UPDATE SET level_id = EXCLUDED.level_id`,
+      [client.id, level_id]
+    );
+
+    if (!yesterday.rows.length) return null; // primer run, nada que comparar
+
+    const prevLevel = yesterday.rows[0].level_id;
+    if (levelNum(level_id) < levelNum(prevLevel)) {
+      return upsertAlerta(client.id, 'reputacion_bajando', 'critical',
+        `Reputación bajó: ${levelLabel[prevLevel] || prevLevel} → ${levelLabel[level_id] || level_id}`,
+        `La reputación del vendedor bajó un nivel de ${levelLabel[prevLevel] || prevLevel} a ${levelLabel[level_id] || level_id}. Revisá métricas de cancelaciones, mediaciones y demoras.`,
+        { level_id, prevLevel }
+      );
+    } else {
+      await resolveAlerta(client.id, 'reputacion_bajando');
+      return null;
+    }
+  } catch(e) { console.error(`[ALERTA reputacion_bajando] ${client.name}:`, e.message); return null; }
+}
+
 // Motor principal
 async function runAlertEngine({ forceNotify = false } = {}) {
   console.log('[ALERTAS] Iniciando evaluación —', new Date().toISOString());
@@ -1195,6 +1251,7 @@ async function runAlertEngine({ forceNotify = false } = {}) {
       evalRuleMargenErosionado,
       evalRuleStockPareto,
       evalRulePreguntasPendientes,
+      evalRuleReputacionBajando,
     ];
     const newAlerts = [];
     for (const client of clients.rows) {
@@ -1237,6 +1294,7 @@ const SLACK_TIPO_CONFIG = {
   tacos_alto:           { emoji: '💰', label: 'TACOS alto',                  short: (a) => a.titulo },
   margen_erosionado:    { emoji: '💸', label: 'Margen erosionado',           short: (a) => a.titulo },
   preguntas_pendientes: { emoji: '❓', label: 'Preguntas sin responder',     short: (a) => a.titulo },
+  reputacion_bajando:   { emoji: '⭐', label: 'Reputación bajando',           short: (a) => a.titulo },
 };
 
 async function sendSlackAlert(newAlerts) {
@@ -1253,7 +1311,7 @@ async function sendSlackAlert(newAlerts) {
   });
 
   // Ordenar: críticas primero, luego warnings
-  const orden = ['stock_critico_pareto','caida_ventas','tacos_alto','margen_erosionado','roas_bajo','preguntas_pendientes'];
+  const orden = ['reputacion_bajando','stock_critico_pareto','caida_ventas','tacos_alto','margen_erosionado','roas_bajo','preguntas_pendientes'];
   const tiposOrdenados = [
     ...orden.filter(k => byTipo[k]),
     ...Object.keys(byTipo).filter(k => !orden.includes(k))
