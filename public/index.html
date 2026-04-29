@@ -608,6 +608,9 @@ tbody td {
       <div class="nav-item" data-page="alertas" onclick="showPage('alertas',this);loadCentroInteligencia()">
         <span class="nav-icon">🔔</span> Centro de Inteligencia
       </div>
+      <div class="nav-item" data-page="decisiones-publi" onclick="showPage('decisiones-publi',this);loadDecisionesPubli()">
+        <span class="nav-icon">⚡</span> Motor de Publicidad
+      </div>
     </nav>
   </aside>
 
@@ -1254,6 +1257,59 @@ tbody td {
         <button class="sync-btn" onclick="exportStockExcel()" style="background:#16a34a;color:#fff;border:none">📥 Excel</button>
       </div>
       <div id="stockContent"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Sincronizá para ver datos</div></div>
+    </div>
+
+    <!-- MOTOR DE PUBLICIDAD -->
+    <div class="page" id="page-decisiones-publi">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px;flex-wrap:wrap">
+        <h2 style="margin:0;font-family:var(--font-b);flex:1">⚡ Motor de Decisiones — Publicidad</h2>
+        <span id="dp-estado" style="font-size:11px;color:var(--muted);white-space:nowrap"></span>
+        <button class="sync-btn" onclick="loadDecisionesPubli()">🔄 Actualizar</button>
+        <button class="sync-btn" onclick="ejecutarAnalyzerPubli()" id="dp-run-btn" style="background:#6366f1;color:#fff;border:none">⚡ Analizar ahora</button>
+      </div>
+
+      <!-- Config ROAS target + filtros -->
+      <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:center;margin-bottom:20px;padding:12px 16px;background:var(--surface2);border:1px solid var(--border);border-radius:10px">
+        <div style="display:flex;align-items:center;gap:8px">
+          <label style="font-size:12px;color:var(--muted);white-space:nowrap">ROAS target del cliente:</label>
+          <input type="number" id="dp-roas-input" min="0.5" max="20" step="0.5" value="4"
+            style="width:70px;padding:4px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px;font-family:var(--font)">
+          <button onclick="guardarRoasTarget()" style="padding:4px 10px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:12px;cursor:pointer;font-family:var(--font)">Guardar</button>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px">
+          <label style="font-size:12px;color:var(--muted)">Tipo:</label>
+          <select id="dp-filter-tipo" onchange="loadDecisionesPubli()"
+            style="padding:4px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:12px;font-family:var(--font)">
+            <option value="">Todos</option>
+            <option value="escalar_campania">Escalar campaña</option>
+            <option value="reducir_campania">Reducir campaña</option>
+            <option value="pausar_sangrado">Pausar sangrado</option>
+            <option value="subir_puja_headroom">Subir puja</option>
+            <option value="stockout_protector">Stockout</option>
+            <option value="discontinuar_muerta">Inversión muerta</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- Tabs -->
+      <div style="display:flex;gap:0;border-bottom:2px solid var(--border);margin-bottom:20px">
+        <button id="dp-tab-nuevas" onclick="switchDPTab('nuevas')"
+          style="padding:8px 20px;border:none;background:none;cursor:pointer;font-family:var(--font);font-size:13px;font-weight:600;color:#6366f1;border-bottom:2px solid #6366f1;margin-bottom:-2px">
+          Pendientes <span id="dp-badge-nuevas" style="background:#6366f1;color:#fff;border-radius:10px;padding:1px 7px;font-size:11px;margin-left:4px"></span>
+        </button>
+        <button id="dp-tab-aplicadas" onclick="switchDPTab('aplicadas')"
+          style="padding:8px 20px;border:none;background:none;cursor:pointer;font-family:var(--font);font-size:13px;font-weight:500;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-2px">
+          Aplicadas
+        </button>
+        <button id="dp-tab-descartadas" onclick="switchDPTab('descartadas')"
+          style="padding:8px 20px;border:none;background:none;cursor:pointer;font-family:var(--font);font-size:13px;font-weight:500;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-2px">
+          Descartadas
+        </button>
+      </div>
+
+      <div id="dp-content">
+        <div style="color:var(--muted);text-align:center;padding:40px">Hacé clic en Actualizar para cargar las decisiones</div>
+      </div>
     </div>
 
   </main>
@@ -10658,6 +10714,220 @@ async function ciGuardarRegla(codigo, clientId) {
   catch(e) { showToast('❌ JSON de umbrales inválido'); return; }
   await apiCall('PUT', `/api/reglas-alertas/${codigo}`, { client_id: clientId, habilitada, umbral });
   showToast('✅ Regla guardada');
+}
+
+// ── MOTOR DE DECISIONES DE PUBLICIDAD ────────────────────────────────────────
+
+let _dpActiveTab = 'nuevas';
+
+const DP_TIPO_LABELS = {
+  escalar_campania:    { emoji: '🚀', label: 'Escalar campaña',     sev: 'opportunity' },
+  reducir_campania:    { emoji: '📉', label: 'Reducir campaña',     sev: 'warning' },
+  pausar_sangrado:     { emoji: '🩸', label: 'Pausar sangrado',     sev: 'critical' },
+  subir_puja_headroom: { emoji: '📈', label: 'Subir puja',          sev: 'opportunity' },
+  stockout_protector:  { emoji: '📦', label: 'Stockout protector',  sev: 'critical' },
+  discontinuar_muerta: { emoji: '💀', label: 'Inversión muerta',    sev: 'critical' },
+};
+
+const DP_SEV_COLORS = {
+  critical:    { bg: '#fef2f2', border: '#fca5a5', badge: '#dc2626' },
+  warning:     { bg: '#fffbeb', border: '#fcd34d', badge: '#d97706' },
+  opportunity: { bg: '#f0fdf4', border: '#86efac', badge: '#16a34a' },
+};
+
+function switchDPTab(tab) {
+  _dpActiveTab = tab;
+  ['nuevas','aplicadas','descartadas'].forEach(t => {
+    const btn = document.getElementById(`dp-tab-${t}`);
+    const active = t === tab;
+    btn.style.color = active ? '#6366f1' : 'var(--muted)';
+    btn.style.fontWeight = active ? '600' : '500';
+    btn.style.borderBottomColor = active ? '#6366f1' : 'transparent';
+  });
+  loadDecisionesPubli();
+}
+
+async function loadDecisionesPubli() {
+  const el = document.getElementById('dp-content');
+  el.innerHTML = '<div style="color:var(--muted);padding:20px">Cargando...</div>';
+
+  // Cargar ROAS target del cliente activo
+  const client = getActiveClient();
+  if (client) {
+    const clients = await apiCall('GET', '/api/clients').catch(() => []);
+    const found = (clients || []).find(c => c.id === client.id);
+    if (found?.roas_target) document.getElementById('dp-roas-input').value = found.roas_target;
+  }
+
+  const estadoMap = { nuevas: 'nueva', aplicadas: 'aplicada', descartadas: 'descartada' };
+  const estado = estadoMap[_dpActiveTab] || 'nueva';
+  const tipo = document.getElementById('dp-filter-tipo')?.value || '';
+  const clientParam = client ? `&client_id=${client.id}` : '';
+  const tipoParam = tipo ? `&tipo=${tipo}` : '';
+
+  const decisiones = await apiCall('GET', `/api/decisiones-publi?estado=${estado}${clientParam}${tipoParam}`);
+  if (!decisiones) { el.innerHTML = '<div style="color:var(--muted);padding:20px">Error al cargar</div>'; return; }
+
+  // Badge contador pendientes
+  if (_dpActiveTab === 'nuevas') {
+    const badge = document.getElementById('dp-badge-nuevas');
+    if (badge) badge.textContent = decisiones.length || '';
+  }
+
+  if (!decisiones.length) {
+    const msgs = { nuevas: 'No hay decisiones pendientes 🎉', aplicadas: 'Ninguna decisión aplicada todavía', descartadas: 'Ninguna decisión descartada' };
+    el.innerHTML = `<div style="color:var(--muted);text-align:center;padding:60px;font-size:14px">${msgs[_dpActiveTab]}</div>`;
+    return;
+  }
+
+  if (_dpActiveTab === 'nuevas') {
+    el.innerHTML = dpRenderTabla(decisiones, true);
+  } else if (_dpActiveTab === 'aplicadas') {
+    el.innerHTML = dpRenderTabla(decisiones, false);
+  } else {
+    el.innerHTML = dpRenderTabla(decisiones, false);
+  }
+}
+
+function dpRenderTabla(decisiones, conAcciones) {
+  const fmtARS = v => v > 0 ? '$' + Math.round(v).toLocaleString('es-AR') : '—';
+  const fmtAgo = d => {
+    const ms = Date.now() - new Date(d).getTime();
+    const h = Math.floor(ms / 3600000); const days = Math.floor(h / 24);
+    return days > 0 ? `${days}d` : `${h}h`;
+  };
+
+  let html = `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px">
+    <thead><tr style="border-bottom:2px solid var(--border);text-align:left">
+      <th style="padding:8px 10px;color:var(--muted);font-weight:600">Tipo</th>
+      <th style="padding:8px 10px;color:var(--muted);font-weight:600">Cliente</th>
+      <th style="padding:8px 10px;color:var(--muted);font-weight:600">Objeto</th>
+      <th style="padding:8px 10px;color:var(--muted);font-weight:600">Acción sugerida</th>
+      <th style="padding:8px 10px;color:var(--muted);font-weight:600;text-align:right">Impacto</th>
+      <th style="padding:8px 10px;color:var(--muted);font-weight:600;text-align:right">Prioridad</th>
+      <th style="padding:8px 10px;color:var(--muted);font-weight:600">Antigüedad</th>
+      ${conAcciones ? '<th style="padding:8px 10px;color:var(--muted);font-weight:600">Acciones</th>' : ''}
+    </tr></thead><tbody>`;
+
+  decisiones.forEach(d => {
+    const cfg = DP_TIPO_LABELS[d.tipo_decision] || { emoji: '🔹', label: d.tipo_decision, sev: 'warning' };
+    const col = DP_SEV_COLORS[cfg.sev] || DP_SEV_COLORS.warning;
+    const nombre = d.objeto_nombre ? (d.objeto_nombre.length > 45 ? d.objeto_nombre.slice(0,45)+'…' : d.objeto_nombre) : d.objeto_id;
+    html += `<tr style="border-bottom:1px solid var(--border);cursor:pointer" onclick="dpVerDetalle(${d.id})" id="dp-row-${d.id}">
+      <td style="padding:10px 10px;white-space:nowrap">
+        <span style="background:${col.bg};border:1px solid ${col.border};color:${col.badge};border-radius:6px;padding:2px 8px;font-size:11px;font-weight:600">${cfg.emoji} ${cfg.label}</span>
+      </td>
+      <td style="padding:10px 10px;font-weight:600;color:var(--text)">${d.client_name}</td>
+      <td style="padding:10px 10px;color:var(--muted)">
+        <div style="font-size:11px;color:var(--muted)">${d.objeto_id}</div>
+        <div style="color:var(--text)">${nombre}</div>
+      </td>
+      <td style="padding:10px 10px;max-width:220px;color:var(--text)">${d.accion_sugerida}</td>
+      <td style="padding:10px 10px;text-align:right;font-weight:600;color:var(--text)">${fmtARS(d.impacto_estimado_pesos)}</td>
+      <td style="padding:10px 10px;text-align:right;color:var(--muted)">${d.prioridad}</td>
+      <td style="padding:10px 10px;color:var(--muted);white-space:nowrap">${fmtAgo(d.creada_en)}</td>
+      ${conAcciones ? `<td style="padding:10px 6px;white-space:nowrap" onclick="event.stopPropagation()">
+        <button onclick="dpAplicar(${d.id})" title="Marcar aplicada" style="padding:4px 8px;border-radius:6px;border:1px solid #86efac;background:#f0fdf4;color:#16a34a;font-size:11px;cursor:pointer;margin-right:3px">✅</button>
+        <button onclick="dpPosponer(${d.id})" title="Posponer 7 días" style="padding:4px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--muted);font-size:11px;cursor:pointer;margin-right:3px">⏰</button>
+        <button onclick="dpDescartar(${d.id})" title="Descartar" style="padding:4px 8px;border-radius:6px;border:1px solid #fca5a5;background:#fef2f2;color:#dc2626;font-size:11px;cursor:pointer">✕</button>
+      </td>` : ''}
+    </tr>`;
+  });
+
+  html += '</tbody></table></div>';
+  return html;
+}
+
+async function dpVerDetalle(id) {
+  const d = await apiCall('GET', `/api/decisiones-publi/${id}`);
+  if (!d) return;
+  const cfg = DP_TIPO_LABELS[d.tipo_decision] || { emoji: '🔹', label: d.tipo_decision, sev: 'warning' };
+  const col = DP_SEV_COLORS[cfg.sev] || DP_SEV_COLORS.warning;
+  const fmtARS = v => v > 0 ? '$' + Math.round(v).toLocaleString('es-AR') : '—';
+  const metricas = d.metricas_snapshot || {};
+
+  const metricasHtml = Object.entries(metricas).filter(([k]) => !['_raw'].includes(k)).map(([k,v]) =>
+    `<tr><td style="padding:3px 8px 3px 0;color:var(--muted);font-size:11px">${k}</td><td style="padding:3px 0;font-size:11px;font-weight:600">${typeof v === 'number' ? (Number.isInteger(v) ? v.toLocaleString('es-AR') : parseFloat(v).toFixed(3)) : v}</td></tr>`
+  ).join('');
+
+  const drawerHtml = `<div id="dp-drawer-overlay" onclick="dpCerrarDrawer()" style="position:fixed;inset:0;background:#00000050;z-index:1000"></div>
+  <div id="dp-drawer" style="position:fixed;right:0;top:0;bottom:0;width:420px;max-width:95vw;background:var(--surface);border-left:1px solid var(--border);z-index:1001;overflow-y:auto;padding:24px;box-shadow:-4px 0 20px rgba(0,0,0,0.15)">
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:16px">
+      <span style="background:${col.bg};border:1px solid ${col.border};color:${col.badge};border-radius:6px;padding:3px 10px;font-size:12px;font-weight:600">${cfg.emoji} ${cfg.label}</span>
+      <button onclick="dpCerrarDrawer()" style="margin-left:auto;padding:4px 10px;border-radius:6px;border:1px solid var(--border);background:var(--surface);cursor:pointer;font-size:12px">✕ Cerrar</button>
+    </div>
+    <div style="font-weight:600;font-size:14px;margin-bottom:4px">${d.client_name}</div>
+    <div style="color:var(--muted);font-size:12px;margin-bottom:16px">${d.objeto_id} — ${d.objeto_nombre || ''}</div>
+    <div style="background:${col.bg};border:1px solid ${col.border};border-radius:8px;padding:12px;margin-bottom:16px">
+      <div style="font-size:11px;color:var(--muted);margin-bottom:4px">ACCIÓN SUGERIDA</div>
+      <div style="font-weight:600;font-size:13px;color:var(--text)">${d.accion_sugerida}</div>
+    </div>
+    <div style="margin-bottom:16px">
+      <div style="font-size:11px;color:var(--muted);margin-bottom:6px">JUSTIFICACIÓN</div>
+      <div style="font-size:13px;color:var(--text);line-height:1.5">${d.justificacion}</div>
+    </div>
+    <div style="margin-bottom:16px">
+      <div style="font-size:11px;color:var(--muted);margin-bottom:6px">IMPACTO ESTIMADO</div>
+      <div style="font-size:22px;font-weight:700;color:${col.badge}">${fmtARS(d.impacto_estimado_pesos)}/mes</div>
+    </div>
+    <div style="margin-bottom:20px">
+      <div style="font-size:11px;color:var(--muted);margin-bottom:6px">MÉTRICAS (30d)</div>
+      <table style="border-collapse:collapse">${metricasHtml}</table>
+    </div>
+    ${d.estado === 'nueva' ? `<div style="display:flex;gap:8px;flex-wrap:wrap">
+      <button onclick="dpAplicar(${d.id});dpCerrarDrawer()" style="flex:1;padding:9px;border-radius:8px;border:1px solid #86efac;background:#f0fdf4;color:#16a34a;font-size:13px;font-weight:600;cursor:pointer">✅ Marcar aplicada</button>
+      <button onclick="dpPosponer(${d.id})" style="padding:9px 14px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--muted);font-size:13px;cursor:pointer">⏰ Posponer 7d</button>
+      <button onclick="dpDescartar(${d.id})" style="padding:9px 14px;border-radius:8px;border:1px solid #fca5a5;background:#fef2f2;color:#dc2626;font-size:13px;cursor:pointer">✕ Descartar</button>
+    </div>` : `<div style="font-size:12px;color:var(--muted)">Estado: <strong>${d.estado}</strong>${d.aplicada_por ? ` · ${d.aplicada_por}` : ''}</div>`}
+  </div>`;
+
+  const existing = document.getElementById('dp-drawer');
+  if (existing) existing.previousSibling.remove(), existing.remove();
+  document.body.insertAdjacentHTML('beforeend', drawerHtml);
+}
+
+function dpCerrarDrawer() {
+  ['dp-drawer-overlay','dp-drawer'].forEach(id => { const el = document.getElementById(id); if (el) el.remove(); });
+}
+
+async function dpAplicar(id) {
+  await apiCall('PATCH', `/api/decisiones-publi/${id}/aplicar`);
+  showToast('✅ Decisión marcada como aplicada');
+  loadDecisionesPubli();
+}
+
+async function dpDescartar(id) {
+  const motivo = prompt('Motivo del descarte (opcional):') ?? '';
+  if (motivo === null) return;
+  await apiCall('PATCH', `/api/decisiones-publi/${id}/descartar`, { motivo });
+  showToast('Decisión descartada');
+  loadDecisionesPubli();
+}
+
+async function dpPosponer(id) {
+  await apiCall('PATCH', `/api/decisiones-publi/${id}/posponer`, { dias: 7 });
+  showToast('⏰ Decisión pospuesta 7 días');
+  loadDecisionesPubli();
+}
+
+async function guardarRoasTarget() {
+  const client = getActiveClient();
+  if (!client) { showToast('Seleccioná un cliente primero'); return; }
+  const val = parseFloat(document.getElementById('dp-roas-input').value);
+  if (!val || val <= 0) { showToast('❌ ROAS target inválido'); return; }
+  await apiCall('PATCH', `/api/clients/${client.id}/roas-target`, { roas_target: val });
+  showToast(`✅ ROAS target actualizado a ${val}x`);
+}
+
+async function ejecutarAnalyzerPubli() {
+  const btn = document.getElementById('dp-run-btn');
+  btn.disabled = true; btn.textContent = '⏳ Analizando...';
+  await apiCall('POST', '/api/publi-analyzer/ejecutar');
+  showToast('⚡ Motor de publicidad iniciado — puede tardar 2-3 minutos');
+  setTimeout(() => {
+    btn.disabled = false; btn.textContent = '⚡ Analizar ahora';
+    loadDecisionesPubli();
+  }, 15000);
 }
 </script>
 </body>

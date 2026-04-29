@@ -256,6 +256,46 @@ async function initDB() {
       tipo            VARCHAR(10) NOT NULL CHECK (tipo IN ('auto','manual')),
       alertas_count   INT DEFAULT 0
     );
+    CREATE TABLE IF NOT EXISTS metricas_publi (
+      id          SERIAL PRIMARY KEY,
+      client_id   INT NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+      fecha       DATE NOT NULL,
+      nivel       TEXT NOT NULL CHECK (nivel IN ('campania','item')),
+      objeto_id   TEXT NOT NULL,
+      objeto_nombre TEXT,
+      metricas    JSONB NOT NULL,
+      creado_en   TIMESTAMP DEFAULT NOW(),
+      UNIQUE (client_id, fecha, nivel, objeto_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_metricas_publi_cf ON metricas_publi(client_id, fecha DESC);
+    CREATE TABLE IF NOT EXISTS decisiones_publi (
+      id                    SERIAL PRIMARY KEY,
+      client_id             INT NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+      tipo_decision         TEXT NOT NULL,
+      nivel                 TEXT NOT NULL CHECK (nivel IN ('campania','item')),
+      objeto_id             TEXT NOT NULL,
+      objeto_nombre         TEXT,
+      accion_sugerida       TEXT NOT NULL,
+      justificacion         TEXT NOT NULL,
+      metricas_snapshot     JSONB NOT NULL,
+      impacto_estimado_pesos NUMERIC DEFAULT 0,
+      prioridad             INT NOT NULL DEFAULT 0,
+      estado                TEXT NOT NULL DEFAULT 'nueva'
+        CHECK (estado IN ('nueva','aplicada','descartada','vencida','pospuesta')),
+      motivo_descarte       TEXT,
+      posponer_hasta        DATE,
+      aplicada_en           TIMESTAMP,
+      aplicada_por          TEXT,
+      resultado_7d          JSONB,
+      resultado_14d         JSONB,
+      creada_en             TIMESTAMP DEFAULT NOW(),
+      actualizada_en        TIMESTAMP DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_dec_estado ON decisiones_publi(estado, prioridad DESC);
+    CREATE INDEX IF NOT EXISTS idx_dec_cliente ON decisiones_publi(client_id, creada_en DESC);
+    DO $$ BEGIN
+      ALTER TABLE clients ADD COLUMN IF NOT EXISTS roas_target NUMERIC DEFAULT 4;
+    EXCEPTION WHEN OTHERS THEN NULL; END $$;
   `);
 
   // Create default admin if not exists (password: admin123 - change after first login)
@@ -4976,6 +5016,339 @@ app.get('/api/debug/app-token', requireAuth, async (req, res) => {
     const data = await r.json();
     res.json({ db_app_id: row.app_id||null, env_app_id: process.env.ML_APP_ID?process.env.ML_APP_ID.slice(0,6)+'...':null, has_secret: !!client_secret, ml_response: data, got_token: !!data.access_token });
   } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── MOTOR DE DECISIONES DE PUBLICIDAD — Sprint 5 ──────────────────────────────
+
+async function callClaudeForDecision(datos) {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) {
+    return {
+      justificacion: `Regla: ${datos.nombre_regla}. Métricas fuera del rango óptimo para el cliente.`,
+      accion: datos.accion_default || 'Revisar en panel de ML Ads',
+      impacto_pesos: datos.impacto_estimado || 0
+    };
+  }
+  const prompt = `Sos consultor experto en Mercado Libre Ads de Negocio Redondo. Tono directo, informal argentino, foco en plata real (margen, no vanity metrics).
+
+Devolveme estrictamente JSON con esta estructura (sin texto fuera del JSON):
+{"justificacion":"<2 líneas max de por qué actuar>","accion":"<acción concreta con números>","impacto_pesos":<entero, impacto mensual en pesos>}
+
+Datos:
+- Regla: ${datos.nombre_regla}
+- SKU/Campaña: ${datos.objeto_id} — ${datos.objeto_nombre}
+- ROAS target cliente: ${datos.roas_target}
+- Métricas 30d: ROAS=${datos.roas ?? 'n/d'}, ACOS=${datos.acos ?? 'n/d'}, CVR=${datos.cvr ?? 'n/d'}, Gasto=$${datos.gasto ?? 0}
+- Ventas atribuidas: ${datos.ventas_unidades ?? 0} u / $${datos.ventas_amount ?? 0}`;
+
+  try {
+    const resp = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 300, messages: [{ role: 'user', content: prompt }] })
+    }).then(r => r.json());
+    const text = resp.content?.[0]?.text || '{}';
+    const match = text.match(/\{[\s\S]*\}/);
+    if (!match) throw new Error('No JSON');
+    return JSON.parse(match[0]);
+  } catch(e) {
+    console.error('[CLAUDE-PUBLI] Error:', e.message);
+    return { justificacion: `Regla: ${datos.nombre_regla}.`, accion: datos.accion_default || 'Revisar en ML Ads', impacto_pesos: datos.impacto_estimado || 0 };
+  }
+}
+
+async function fetchPADSMetrics(client, days = 30) {
+  const token = await getClientToken(client.id);
+  if (!token) return null;
+  const h1 = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'Api-Version': '1' };
+  const h2 = { 'Authorization': `Bearer ${token}`, 'api-version': '2' };
+  try {
+    const [userResp, advResp] = await Promise.all([
+      fetch(`${ML_API}/users/me`, { headers: h1 }).then(r => r.json()),
+      fetch(`${ML_API}/advertising/advertisers?product_id=PADS`, { headers: h1 }).then(r => r.json())
+    ]);
+    if (userResp.error) return null;
+    const advertisers = advResp.advertisers || [];
+    if (!advertisers.length) return null;
+    const siteId = userResp.site_id || 'MLA';
+    const adv = advertisers.find(a => a.site_id === siteId) || advertisers[0];
+    const advId = adv.advertiser_id;
+    const uid = userResp.id;
+
+    const now = new Date();
+    const fromStr = new Date(now.getTime() - days * 86400000).toISOString().slice(0, 10);
+    const toStr = now.toISOString().slice(0, 10);
+    const mstr = 'clicks,prints,ctr,cost,cpc,acos,cvr,roas,direct_units_quantity,units_quantity,direct_amount,total_amount';
+
+    const [campData, itemData] = await Promise.all([
+      fetch(`${ML_API}/advertising/${siteId}/advertisers/${advId}/product_ads/campaigns/search?date_from=${fromStr}&date_to=${toStr}&metrics=${mstr}&limit=50`, { headers: h2 })
+        .then(r => r.json()).catch(() => ({})),
+      fetch(`${ML_API}/advertising/${siteId}/advertisers/${advId}/product_ads/items/search?date_from=${fromStr}&date_to=${toStr}&metrics=${mstr}&limit=200`, { headers: h2 })
+        .then(r => r.json()).catch(() => ({}))
+    ]);
+
+    return { advId, siteId, uid, campaigns: campData.results || [], items: itemData.results || [] };
+  } catch(e) { console.error(`[PUBLI] fetchPADSMetrics ${client.name}:`, e.message); return null; }
+}
+
+function getMet(obj) {
+  // Normaliza métricas sin importar si vienen en .metrics o directamente
+  return obj?.metrics || obj || {};
+}
+
+async function publiDecisionExists(clientId, tipo, objetoId) {
+  const r = await pool.query(
+    `SELECT id FROM decisiones_publi WHERE client_id=$1 AND tipo_decision=$2 AND objeto_id=$3
+     AND estado='nueva' AND creada_en > NOW() - INTERVAL '7 days' LIMIT 1`,
+    [clientId, tipo, String(objetoId)]
+  );
+  return r.rows.length > 0;
+}
+
+async function insertDecision(clientId, { tipo, nivel, objeto_id, objeto_nombre, accion, justificacion, metricas, impacto, prioridad }) {
+  await pool.query(
+    `INSERT INTO decisiones_publi
+       (client_id, tipo_decision, nivel, objeto_id, objeto_nombre, accion_sugerida, justificacion, metricas_snapshot, impacto_estimado_pesos, prioridad)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+    [clientId, tipo, nivel, String(objeto_id), objeto_nombre || '', accion, justificacion, JSON.stringify(metricas), impacto || 0, prioridad || 0]
+  );
+}
+
+async function evalPubliRules(client, { campaigns, items }, roas_target) {
+  const criticas = ['pausar_sangrado', 'stockout_protector', 'discontinuar_muerta'];
+  let count = 0;
+
+  // Regla 1 — Escalar campaña ganadora (ROAS ≥ 1.3× target)
+  for (const c of campaigns) {
+    const m = getMet(c); const roas = parseFloat(m.roas) || 0; const gasto = parseFloat(m.cost) || 0;
+    if (roas < 1.3 * roas_target || gasto <= 0) continue;
+    if (await publiDecisionExists(client.id, 'escalar_campania', c.id || c.campaign_id)) continue;
+    const datos = { nombre_regla: 'Escalar campaña ganadora', objeto_id: c.id || c.campaign_id, objeto_nombre: c.name || c.campaign_name || 'Campaña', roas_target, roas: roas.toFixed(2), acos: (parseFloat(m.acos)||0).toFixed(2), cvr: (parseFloat(m.cvr)||0).toFixed(3), gasto: Math.round(gasto), ventas_unidades: m.units_quantity || 0, ventas_amount: Math.round(parseFloat(m.total_amount)||0), accion_default: 'Subir presupuesto +20%', impacto_estimado: Math.round(gasto * 0.2) };
+    const claude = await callClaudeForDecision(datos);
+    const impacto = claude.impacto_pesos || datos.impacto_estimado;
+    await insertDecision(client.id, { tipo: 'escalar_campania', nivel: 'campania', objeto_id: datos.objeto_id, objeto_nombre: datos.objeto_nombre, accion: claude.accion, justificacion: claude.justificacion, metricas: m, impacto, prioridad: Math.round(impacto * 1.0) });
+    count++;
+  }
+
+  // Regla 2 — Reducir campaña perdedora (ROAS ≤ 0.7× target, gasto >$5.000)
+  for (const c of campaigns) {
+    const m = getMet(c); const roas = parseFloat(m.roas) || 0; const gasto = parseFloat(m.cost) || 0;
+    if (roas === 0 || roas > 0.7 * roas_target || gasto <= 5000) continue;
+    if (await publiDecisionExists(client.id, 'reducir_campania', c.id || c.campaign_id)) continue;
+    const datos = { nombre_regla: 'Reducir campaña perdedora', objeto_id: c.id || c.campaign_id, objeto_nombre: c.name || c.campaign_name || 'Campaña', roas_target, roas: roas.toFixed(2), acos: (parseFloat(m.acos)||0).toFixed(2), cvr: (parseFloat(m.cvr)||0).toFixed(3), gasto: Math.round(gasto), ventas_unidades: m.units_quantity || 0, ventas_amount: Math.round(parseFloat(m.total_amount)||0), accion_default: 'Bajar presupuesto -30% o cambiar estrategia', impacto_estimado: Math.round(gasto * 0.3) };
+    const claude = await callClaudeForDecision(datos);
+    const impacto = claude.impacto_pesos || datos.impacto_estimado;
+    await insertDecision(client.id, { tipo: 'reducir_campania', nivel: 'campania', objeto_id: datos.objeto_id, objeto_nombre: datos.objeto_nombre, accion: claude.accion, justificacion: claude.justificacion, metricas: m, impacto, prioridad: Math.round(impacto * 1.0) });
+    count++;
+  }
+
+  // Regla 3 — Pausar anuncio sangrando (ACOS >50%, sin ventas)
+  for (const it of items) {
+    const m = getMet(it); const acos = parseFloat(m.acos) || 0; const gasto = parseFloat(m.cost) || 0; const ventas = parseInt(m.units_quantity) || 0;
+    if (acos <= 0.5 || ventas > 0 || gasto <= 0) continue;
+    const itemId = it.item_id || it.id;
+    if (await publiDecisionExists(client.id, 'pausar_sangrado', itemId)) continue;
+    const datos = { nombre_regla: 'Pausar anuncio sangrando', objeto_id: itemId, objeto_nombre: it.title || itemId, roas_target, roas: (parseFloat(m.roas)||0).toFixed(2), acos: acos.toFixed(2), cvr: (parseFloat(m.cvr)||0).toFixed(3), gasto: Math.round(gasto), ventas_unidades: 0, ventas_amount: 0, accion_default: 'Pausar anuncio del ítem', impacto_estimado: Math.round(gasto) };
+    const claude = await callClaudeForDecision(datos);
+    const impacto = claude.impacto_pesos || datos.impacto_estimado;
+    await insertDecision(client.id, { tipo: 'pausar_sangrado', nivel: 'item', objeto_id: itemId, objeto_nombre: datos.objeto_nombre, accion: claude.accion, justificacion: claude.justificacion, metricas: m, impacto, prioridad: Math.round(impacto * 1.5) });
+    count++;
+  }
+
+  // Regla 4 — Subir puja en ítem con headroom (CVR >5%, tiene gasto)
+  for (const it of items) {
+    const m = getMet(it); const cvr = parseFloat(m.cvr) || 0; const gasto = parseFloat(m.cost) || 0; const roas = parseFloat(m.roas) || 0;
+    if (cvr <= 0.05 || gasto <= 0 || roas < roas_target) continue; // solo si ya está rindiendo
+    const itemId = it.item_id || it.id;
+    if (await publiDecisionExists(client.id, 'subir_puja_headroom', itemId)) continue;
+    const datos = { nombre_regla: 'Subir puja — ítem con headroom', objeto_id: itemId, objeto_nombre: it.title || itemId, roas_target, roas: roas.toFixed(2), acos: (parseFloat(m.acos)||0).toFixed(2), cvr: cvr.toFixed(3), gasto: Math.round(gasto), ventas_unidades: m.units_quantity || 0, ventas_amount: Math.round(parseFloat(m.total_amount)||0), accion_default: 'Aumentar puja/prioridad del ítem', impacto_estimado: Math.round(gasto * 0.3) };
+    const claude = await callClaudeForDecision(datos);
+    const impacto = claude.impacto_pesos || datos.impacto_estimado;
+    await insertDecision(client.id, { tipo: 'subir_puja_headroom', nivel: 'item', objeto_id: itemId, objeto_nombre: datos.objeto_nombre, accion: claude.accion, justificacion: claude.justificacion, metricas: m, impacto, prioridad: Math.round(impacto * 1.0) });
+    count++;
+  }
+
+  // Regla 6 — Stockout protector (stock <7 días + gasto publi)
+  const itemsConGasto = items.filter(it => (parseFloat(getMet(it).cost) || 0) > 0);
+  if (itemsConGasto.length) {
+    const token = await getClientToken(client.id);
+    const headers = { 'Authorization': `Bearer ${token}` };
+    for (let i = 0; i < itemsConGasto.length; i += 20) {
+      const batch = itemsConGasto.slice(i, i + 20);
+      const ids = batch.map(it => it.item_id || it.id).join(',');
+      const stockData = await fetch(`${ML_API}/items?ids=${ids}&attributes=id,title,available_quantity,sold_quantity`, { headers })
+        .then(r => r.json()).catch(() => []);
+      const arr = Array.isArray(stockData) ? stockData : [];
+      for (const entry of arr) {
+        const item = entry.body || entry;
+        if (!item?.id) continue;
+        const stock = parseInt(item.available_quantity) || 0;
+        const sold30 = (parseInt(item.sold_quantity) || 0);
+        const velocity = sold30 / 30;
+        const diasCobertura = velocity > 0 ? Math.floor(stock / velocity) : 999;
+        if (diasCobertura >= 7) continue;
+        const padsItem = batch.find(it => (it.item_id || it.id) === item.id);
+        if (!padsItem) continue;
+        const m = getMet(padsItem); const gasto = parseFloat(m.cost) || 0;
+        if (gasto <= 0) continue;
+        if (await publiDecisionExists(client.id, 'stockout_protector', item.id)) continue;
+        const datos = { nombre_regla: 'Stockout protector', objeto_id: item.id, objeto_nombre: item.title || item.id, roas_target, roas: (parseFloat(m.roas)||0).toFixed(2), acos: (parseFloat(m.acos)||0).toFixed(2), cvr: (parseFloat(m.cvr)||0).toFixed(3), gasto: Math.round(gasto), ventas_unidades: m.units_quantity || 0, ventas_amount: Math.round(parseFloat(m.total_amount)||0), accion_default: `Pausar publi del ítem — stock para ${diasCobertura}d`, impacto_estimado: Math.round(gasto) };
+        const claude = await callClaudeForDecision(datos);
+        const impacto = claude.impacto_pesos || datos.impacto_estimado;
+        await insertDecision(client.id, { tipo: 'stockout_protector', nivel: 'item', objeto_id: item.id, objeto_nombre: datos.objeto_nombre, accion: claude.accion, justificacion: claude.justificacion, metricas: { ...m, stock, diasCobertura }, impacto, prioridad: Math.round(impacto * 1.5) });
+        count++;
+      }
+    }
+  }
+
+  // Regla 7 — Discontinuar inversión muerta (gasto >$10.000, 0 ventas)
+  for (const it of items) {
+    const m = getMet(it); const gasto = parseFloat(m.cost) || 0; const ventas = parseInt(m.units_quantity) || 0;
+    if (gasto <= 10000 || ventas > 0) continue;
+    const itemId = it.item_id || it.id;
+    if (await publiDecisionExists(client.id, 'discontinuar_muerta', itemId)) continue;
+    const datos = { nombre_regla: 'Discontinuar inversión muerta', objeto_id: itemId, objeto_nombre: it.title || itemId, roas_target, roas: '0', acos: 'infinito', cvr: '0', gasto: Math.round(gasto), ventas_unidades: 0, ventas_amount: 0, accion_default: 'Pausar anuncio — sin ventas con inversión alta', impacto_estimado: Math.round(gasto) };
+    const claude = await callClaudeForDecision(datos);
+    const impacto = claude.impacto_pesos || datos.impacto_estimado;
+    await insertDecision(client.id, { tipo: 'discontinuar_muerta', nivel: 'item', objeto_id: itemId, objeto_nombre: datos.objeto_nombre, accion: claude.accion, justificacion: claude.justificacion, metricas: m, impacto, prioridad: Math.round(impacto * 1.5) });
+    count++;
+  }
+
+  return count;
+}
+
+async function saveMetricasPubli(clientId, { campaigns, items }) {
+  const fecha = new Date().toISOString().slice(0, 10);
+  for (const c of campaigns) {
+    const id = c.id || c.campaign_id; if (!id) continue;
+    await pool.query(
+      `INSERT INTO metricas_publi (client_id, fecha, nivel, objeto_id, objeto_nombre, metricas)
+       VALUES ($1,$2,'campania',$3,$4,$5)
+       ON CONFLICT (client_id, fecha, nivel, objeto_id) DO UPDATE SET metricas=EXCLUDED.metricas`,
+      [clientId, fecha, String(id), c.name || c.campaign_name || '', JSON.stringify(getMet(c))]
+    ).catch(() => {});
+  }
+  for (const it of items) {
+    const id = it.item_id || it.id; if (!id) continue;
+    await pool.query(
+      `INSERT INTO metricas_publi (client_id, fecha, nivel, objeto_id, objeto_nombre, metricas)
+       VALUES ($1,$2,'item',$3,$4,$5)
+       ON CONFLICT (client_id, fecha, nivel, objeto_id) DO UPDATE SET metricas=EXCLUDED.metricas`,
+      [clientId, fecha, String(id), it.title || '', JSON.stringify(getMet(it))]
+    ).catch(() => {});
+  }
+}
+
+async function runPubliAnalyzer({ tipo = 'auto' } = {}) {
+  console.log('[PUBLI] Iniciando análisis —', new Date().toISOString());
+  try {
+    const clients = await pool.query(`SELECT * FROM clients WHERE active=true AND access_token IS NOT NULL ORDER BY name`);
+    let totalDecisiones = 0;
+    for (const client of clients.rows) {
+      console.log(`[PUBLI] Analizando ${client.name}...`);
+      try {
+        const roas_target = parseFloat(client.roas_target) || 4;
+        const padsData = await fetchPADSMetrics(client, 30);
+        if (!padsData || (!padsData.campaigns.length && !padsData.items.length)) { console.log(`[PUBLI] ${client.name}: sin datos PADS`); continue; }
+        await saveMetricasPubli(client.id, padsData);
+        // Vencer decisiones nuevas con +14 días sin acción
+        await pool.query(`UPDATE decisiones_publi SET estado='vencida', actualizada_en=NOW() WHERE client_id=$1 AND estado='nueva' AND creada_en < NOW() - INTERVAL '14 days'`, [client.id]);
+        const n = await evalPubliRules(client, padsData, roas_target);
+        totalDecisiones += n;
+        console.log(`[PUBLI] ${client.name}: ${n} decisiones nuevas`);
+      } catch(e) { console.error(`[PUBLI] Error en ${client.name}:`, e.message); }
+      await new Promise(r => setTimeout(r, 1000));
+    }
+    await pool.query(`INSERT INTO ci_runs (tipo, alertas_count) VALUES ($1,$2)`, [`publi_${tipo}`, totalDecisiones]).catch(() => {});
+    console.log(`[PUBLI] Análisis completo — ${totalDecisiones} decisiones generadas`);
+  } catch(e) { console.error('[PUBLI] Error en runPubliAnalyzer:', e.message); }
+}
+
+// ── MOTOR PUBLICIDAD — API endpoints ─────────────────────────────────────────
+
+app.get('/api/decisiones-publi', requireAuth, async (req, res) => {
+  try {
+    const { estado = 'nueva', client_id, tipo } = req.query;
+    let q = `SELECT d.*, c.name as client_name FROM decisiones_publi d
+             JOIN clients c ON c.id = d.client_id WHERE 1=1`;
+    const params = [];
+    if (estado) { params.push(estado); q += ` AND d.estado=$${params.length}`; }
+    if (client_id) { params.push(parseInt(client_id)); q += ` AND d.client_id=$${params.length}`; }
+    if (tipo) { params.push(tipo); q += ` AND d.tipo_decision=$${params.length}`; }
+    q += ` ORDER BY d.prioridad DESC, d.creada_en DESC LIMIT 200`;
+    const r = await pool.query(q, params);
+    res.json(r.rows);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/decisiones-publi/stats', requireAuth, async (req, res) => {
+  try {
+    const r = await pool.query(`
+      SELECT tipo_decision,
+        COUNT(*) FILTER (WHERE estado='nueva') AS pendientes,
+        COUNT(*) FILTER (WHERE estado='aplicada') AS aplicadas,
+        COUNT(*) FILTER (WHERE estado='descartada') AS descartadas,
+        COUNT(*) FILTER (WHERE estado='aplicada' AND resultado_7d->>'mejoro'='true') AS mejoraron
+      FROM decisiones_publi GROUP BY tipo_decision ORDER BY tipo_decision`);
+    res.json(r.rows);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/decisiones-publi/:id', requireAuth, async (req, res) => {
+  try {
+    const r = await pool.query(`SELECT d.*, c.name as client_name FROM decisiones_publi d JOIN clients c ON c.id=d.client_id WHERE d.id=$1`, [req.params.id]);
+    if (!r.rows.length) return res.status(404).json({ error: 'No encontrado' });
+    res.json(r.rows[0]);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+app.patch('/api/decisiones-publi/:id/aplicar', requireAuth, async (req, res) => {
+  try {
+    await pool.query(`UPDATE decisiones_publi SET estado='aplicada', aplicada_en=NOW(), aplicada_por=$1, actualizada_en=NOW() WHERE id=$2`,
+      [req.user.username, req.params.id]);
+    res.json({ ok: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+app.patch('/api/decisiones-publi/:id/descartar', requireAuth, async (req, res) => {
+  try {
+    const { motivo } = req.body;
+    await pool.query(`UPDATE decisiones_publi SET estado='descartada', motivo_descarte=$1, actualizada_en=NOW() WHERE id=$2`,
+      [motivo || '', req.params.id]);
+    res.json({ ok: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+app.patch('/api/decisiones-publi/:id/posponer', requireAuth, async (req, res) => {
+  try {
+    const dias = parseInt(req.body.dias) || 7;
+    await pool.query(`UPDATE decisiones_publi SET estado='pospuesta', posponer_hasta=CURRENT_DATE+$1, actualizada_en=NOW() WHERE id=$2`,
+      [dias, req.params.id]);
+    res.json({ ok: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+app.patch('/api/clients/:id/roas-target', requireAuth, async (req, res) => {
+  try {
+    const { roas_target } = req.body;
+    if (!roas_target || isNaN(parseFloat(roas_target))) return res.status(400).json({ error: 'roas_target inválido' });
+    await pool.query('UPDATE clients SET roas_target=$1, updated_at=NOW() WHERE id=$2', [parseFloat(roas_target), req.params.id]);
+    res.json({ ok: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/publi-analyzer/ejecutar', requireAuth, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ error: 'Solo admin' });
+  res.json({ ok: true, mensaje: 'Motor de publicidad iniciado en background' });
+  runPubliAnalyzer({ tipo: 'manual' }).catch(e => console.error('[PUBLI] Error manual:', e.message));
+});
+
+app.all('/api/publi-analyzer/cron', async (req, res) => {
+  const secret = process.env.CRON_SECRET;
+  const auth = req.headers['authorization'] || '';
+  if (!secret || auth !== `Bearer ${secret}`) return res.status(401).json({ error: 'Unauthorized' });
+  res.json({ ok: true, ts: new Date().toISOString() });
+  runPubliAnalyzer({ tipo: 'auto' }).catch(e => console.error('[PUBLI-CRON] Error:', e.message));
 });
 
 initDB().then(() => {
