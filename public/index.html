@@ -1269,12 +1269,21 @@ tbody td {
       </div>
 
       <!-- Config ROAS target + filtros -->
-      <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:center;margin-bottom:20px;padding:12px 16px;background:var(--surface2);border:1px solid var(--border);border-radius:10px">
+      <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:center;margin-bottom:12px;padding:12px 16px;background:var(--surface2);border:1px solid var(--border);border-radius:10px">
         <div style="display:flex;align-items:center;gap:8px">
           <label style="font-size:12px;color:var(--muted);white-space:nowrap">ROAS target del cliente:</label>
           <input type="number" id="dp-roas-input" min="0.5" max="20" step="0.5" value="4"
             style="width:70px;padding:4px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px;font-family:var(--font)">
           <button onclick="guardarRoasTarget()" style="padding:4px 10px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:12px;cursor:pointer;font-family:var(--font)">Guardar</button>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px">
+          <label style="font-size:12px;color:var(--muted)">Nivel:</label>
+          <select id="dp-filter-nivel" onchange="loadDecisionesPubli()"
+            style="padding:4px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:12px;font-family:var(--font)">
+            <option value="">Todos</option>
+            <option value="campania">Campañas</option>
+            <option value="item">Anuncios</option>
+          </select>
         </div>
         <div style="display:flex;align-items:center;gap:8px">
           <label style="font-size:12px;color:var(--muted)">Tipo:</label>
@@ -1289,6 +1298,65 @@ tbody td {
             <option value="discontinuar_muerta">Inversión muerta</option>
           </select>
         </div>
+        <button onclick="toggleDPReglas()" style="margin-left:auto;padding:4px 12px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--muted);font-size:12px;cursor:pointer;font-family:var(--font)">📋 Ver reglas</button>
+      </div>
+
+      <!-- Panel de reglas -->
+      <div id="dp-reglas-panel" style="display:none;margin-bottom:16px;border:1px solid var(--border);border-radius:10px;overflow:hidden">
+        <div style="padding:10px 16px;background:var(--surface2);border-bottom:1px solid var(--border);font-size:12px;font-weight:600;color:var(--muted)">REGLAS ACTIVAS DEL MOTOR</div>
+        <table style="width:100%;border-collapse:collapse;font-size:12px">
+          <thead><tr style="background:var(--surface2);border-bottom:1px solid var(--border)">
+            <th style="padding:7px 12px;text-align:left;color:var(--muted);font-weight:600">#</th>
+            <th style="padding:7px 12px;text-align:left;color:var(--muted);font-weight:600">Nombre</th>
+            <th style="padding:7px 12px;text-align:left;color:var(--muted);font-weight:600">Nivel</th>
+            <th style="padding:7px 12px;text-align:left;color:var(--muted);font-weight:600">Qué detecta</th>
+            <th style="padding:7px 12px;text-align:left;color:var(--muted);font-weight:600">Acción sugerida</th>
+          </tr></thead>
+          <tbody>
+            <tr style="border-bottom:1px solid var(--border)">
+              <td style="padding:8px 12px;color:var(--muted)">R1</td>
+              <td style="padding:8px 12px;font-weight:600">🚀 Escalar campaña</td>
+              <td style="padding:8px 12px"><span style="background:#ede9fe;color:#7c3aed;border-radius:4px;padding:1px 7px;font-size:11px">Campaña</span></td>
+              <td style="padding:8px 12px;color:var(--muted)">ROAS 30d ≥ 1.3× target del cliente</td>
+              <td style="padding:8px 12px">Subir presupuesto +20%</td>
+            </tr>
+            <tr style="border-bottom:1px solid var(--border)">
+              <td style="padding:8px 12px;color:var(--muted)">R2</td>
+              <td style="padding:8px 12px;font-weight:600">📉 Reducir campaña</td>
+              <td style="padding:8px 12px"><span style="background:#ede9fe;color:#7c3aed;border-radius:4px;padding:1px 7px;font-size:11px">Campaña</span></td>
+              <td style="padding:8px 12px;color:var(--muted)">ROAS 30d ≤ 0.7× target y gasto &gt; $5.000</td>
+              <td style="padding:8px 12px">Bajar presupuesto -30% o cambiar estrategia</td>
+            </tr>
+            <tr style="border-bottom:1px solid var(--border)">
+              <td style="padding:8px 12px;color:var(--muted)">R3</td>
+              <td style="padding:8px 12px;font-weight:600">🩸 Pausar sangrado</td>
+              <td style="padding:8px 12px"><span style="background:#e0f2fe;color:#0369a1;border-radius:4px;padding:1px 7px;font-size:11px">Anuncio</span></td>
+              <td style="padding:8px 12px;color:var(--muted)">ACOS &gt; 50%, sin ventas en 30d, con gasto activo</td>
+              <td style="padding:8px 12px">Pausar anuncio del ítem</td>
+            </tr>
+            <tr style="border-bottom:1px solid var(--border)">
+              <td style="padding:8px 12px;color:var(--muted)">R4</td>
+              <td style="padding:8px 12px;font-weight:600">📈 Subir puja</td>
+              <td style="padding:8px 12px"><span style="background:#e0f2fe;color:#0369a1;border-radius:4px;padding:1px 7px;font-size:11px">Anuncio</span></td>
+              <td style="padding:8px 12px;color:var(--muted)">CVR &gt; 5% y ROAS ≥ target — hay margen para escalar</td>
+              <td style="padding:8px 12px">Aumentar puja / prioridad del ítem</td>
+            </tr>
+            <tr style="border-bottom:1px solid var(--border)">
+              <td style="padding:8px 12px;color:var(--muted)">R6</td>
+              <td style="padding:8px 12px;font-weight:600">📦 Stockout protector</td>
+              <td style="padding:8px 12px"><span style="background:#e0f2fe;color:#0369a1;border-radius:4px;padding:1px 7px;font-size:11px">Anuncio</span></td>
+              <td style="padding:8px 12px;color:var(--muted)">Stock &lt; 7 días de cobertura con publi activa y pagando</td>
+              <td style="padding:8px 12px">Pausar publi hasta reponer stock</td>
+            </tr>
+            <tr>
+              <td style="padding:8px 12px;color:var(--muted)">R7</td>
+              <td style="padding:8px 12px;font-weight:600">💀 Inversión muerta</td>
+              <td style="padding:8px 12px"><span style="background:#e0f2fe;color:#0369a1;border-radius:4px;padding:1px 7px;font-size:11px">Anuncio</span></td>
+              <td style="padding:8px 12px;color:var(--muted)">Gasto &gt; $10.000 en 30d con 0 ventas atribuidas</td>
+              <td style="padding:8px 12px">Pausar definitivo — inversión sin retorno</td>
+            </tr>
+          </tbody>
+        </table>
       </div>
 
       <!-- Tabs -->
@@ -10735,6 +10803,11 @@ const DP_SEV_COLORS = {
   opportunity: { bg: '#f0fdf4', border: '#86efac', badge: '#16a34a' },
 };
 
+function toggleDPReglas() {
+  const panel = document.getElementById('dp-reglas-panel');
+  if (panel) panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
+}
+
 function switchDPTab(tab) {
   _dpActiveTab = tab;
   ['nuevas','aplicadas','descartadas'].forEach(t => {
@@ -10762,10 +10835,12 @@ async function loadDecisionesPubli() {
   const estadoMap = { nuevas: 'nueva', aplicadas: 'aplicada', descartadas: 'descartada' };
   const estado = estadoMap[_dpActiveTab] || 'nueva';
   const tipo = document.getElementById('dp-filter-tipo')?.value || '';
+  const nivel = document.getElementById('dp-filter-nivel')?.value || '';
   const clientParam = client ? `&client_id=${client.id}` : '';
   const tipoParam = tipo ? `&tipo=${tipo}` : '';
+  const nivelParam = nivel ? `&nivel=${nivel}` : '';
 
-  const decisiones = await apiCall('GET', `/api/decisiones-publi?estado=${estado}${clientParam}${tipoParam}`);
+  const decisiones = await apiCall('GET', `/api/decisiones-publi?estado=${estado}${clientParam}${tipoParam}${nivelParam}`);
   if (!decisiones) { el.innerHTML = '<div style="color:var(--muted);padding:20px">Error al cargar</div>'; return; }
 
   // Badge contador pendientes
@@ -10813,9 +10888,12 @@ function dpRenderTabla(decisiones, conAcciones) {
     const cfg = DP_TIPO_LABELS[d.tipo_decision] || { emoji: '🔹', label: d.tipo_decision, sev: 'warning' };
     const col = DP_SEV_COLORS[cfg.sev] || DP_SEV_COLORS.warning;
     const nombre = d.objeto_nombre ? (d.objeto_nombre.length > 45 ? d.objeto_nombre.slice(0,45)+'…' : d.objeto_nombre) : d.objeto_id;
+    const nivelBadge = d.nivel === 'campania'
+      ? `<span style="background:#ede9fe;color:#7c3aed;border-radius:4px;padding:1px 6px;font-size:10px;margin-top:3px;display:inline-block">Campaña</span>`
+      : `<span style="background:#e0f2fe;color:#0369a1;border-radius:4px;padding:1px 6px;font-size:10px;margin-top:3px;display:inline-block">Anuncio</span>`;
     html += `<tr style="border-bottom:1px solid var(--border);cursor:pointer" onclick="dpVerDetalle(${d.id})" id="dp-row-${d.id}">
       <td style="padding:10px 10px;white-space:nowrap">
-        <span style="background:${col.bg};border:1px solid ${col.border};color:${col.badge};border-radius:6px;padding:2px 8px;font-size:11px;font-weight:600">${cfg.emoji} ${cfg.label}</span>
+        <span style="background:${col.bg};border:1px solid ${col.border};color:${col.badge};border-radius:6px;padding:2px 8px;font-size:11px;font-weight:600">${cfg.emoji} ${cfg.label}</span><br>${nivelBadge}
       </td>
       <td style="padding:10px 10px;font-weight:600;color:var(--text)">${d.client_name}</td>
       <td style="padding:10px 10px;color:var(--muted)">

@@ -5431,13 +5431,14 @@ async function runPubliAnalyzer({ tipo = 'auto' } = {}) {
 
 app.get('/api/decisiones-publi', requireAuth, async (req, res) => {
   try {
-    const { estado = 'nueva', client_id, tipo } = req.query;
+    const { estado = 'nueva', client_id, tipo, nivel } = req.query;
     let q = `SELECT d.*, c.name as client_name FROM decisiones_publi d
              JOIN clients c ON c.id = d.client_id WHERE 1=1`;
     const params = [];
     if (estado) { params.push(estado); q += ` AND d.estado=$${params.length}`; }
     if (client_id) { params.push(parseInt(client_id)); q += ` AND d.client_id=$${params.length}`; }
     if (tipo) { params.push(tipo); q += ` AND d.tipo_decision=$${params.length}`; }
+    if (nivel) { params.push(nivel); q += ` AND d.nivel=$${params.length}`; }
     q += ` ORDER BY d.prioridad DESC, d.creada_en DESC LIMIT 200`;
     const r = await pool.query(q, params);
     res.json(r.rows);
