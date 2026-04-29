@@ -5622,6 +5622,13 @@ function applyPermissions() {
       if (navEl) navEl.style.display = canSeeSection(s) ? '' : 'none';
     });
   }
+
+  // Centro de Inteligencia y Motor de Publicidad: solo admins y consultores
+  const soloConsultores = role === 'admin' || role === 'consultant' || role === 'colaborador';
+  ['alertas','decisiones-publi'].forEach(p => {
+    const el = document.querySelector(`[data-page="${p}"]`);
+    if (el) el.style.display = soloConsultores ? '' : 'none';
+  });
 }
 
 function initApp() {
