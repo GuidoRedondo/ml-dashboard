@@ -10601,6 +10601,8 @@ const CI_REGLAS_LABELS = {
   preguntas_pendientes: { titulo: 'Preguntas pendientes',   desc: 'Preguntas de compradores sin responder por más de N horas' },
   reputacion_bajando:   { titulo: 'Reputación bajando',     desc: 'El nivel de reputación del vendedor bajó respecto al día anterior' },
   producto_sin_ventas:  { titulo: 'Producto sin ventas',    desc: 'Publicaciones activas con más de N días publicadas y 0 ventas en 90 días' },
+  anuncio_sangrando:    { titulo: 'Anuncio sangrando',      desc: 'Ítems en publi con ACOS por encima del umbral durante N días consecutivos' },
+  oportunidad_escalable:{ titulo: 'Oportunidad escalable',  desc: 'SKUs con alta tasa de conversión (CVR) y baja inversión en publicidad' },
 };
 
 let _ciActiveTab = 'alertas';
@@ -10689,6 +10691,40 @@ function ciRenderDetalle(a) {
     }).join('');
     return `<details style="margin-top:8px">
       <summary style="font-size:11px;color:var(--accent);cursor:pointer;user-select:none">Ver los ${datos.items.length} productos</summary>
+      <table style="margin-top:6px;border-collapse:collapse;width:100%">${rows}</table>
+    </details>`;
+  }
+  if (a.codigo === 'anuncio_sangrando' && Array.isArray(datos.items) && datos.items.length) {
+    const rows = datos.items.map(c => {
+      const nombre = c.nombre ? (c.nombre.length > 50 ? c.nombre.slice(0,50)+'…' : c.nombre) : '—';
+      const gasto = c.gasto ? `$${Math.round(parseFloat(c.gasto)).toLocaleString('es-AR')}` : '—';
+      return `<tr>
+        <td style="padding:4px 8px 4px 0;font-size:11px;color:var(--muted);white-space:nowrap">${c.id}</td>
+        <td style="padding:4px 8px 4px 0;font-size:11px;color:var(--text)">${nombre}</td>
+        <td style="padding:4px 8px;font-size:11px;color:#dc2626;font-weight:600;white-space:nowrap">ACOS ${c.acos_avg}%</td>
+        <td style="padding:4px 8px;font-size:11px;color:var(--muted);white-space:nowrap">${c.dias_alto} días</td>
+        <td style="padding:4px 0;font-size:11px;color:var(--muted);white-space:nowrap">${gasto}</td>
+      </tr>`;
+    }).join('');
+    return `<details style="margin-top:8px">
+      <summary style="font-size:11px;color:var(--accent);cursor:pointer;user-select:none">Ver los ${datos.items.length} anuncios</summary>
+      <table style="margin-top:6px;border-collapse:collapse;width:100%">${rows}</table>
+    </details>`;
+  }
+  if (a.codigo === 'oportunidad_escalable' && Array.isArray(datos.items) && datos.items.length) {
+    const rows = datos.items.map(c => {
+      const nombre = c.nombre ? (c.nombre.length > 50 ? c.nombre.slice(0,50)+'…' : c.nombre) : '—';
+      const gasto = c.gasto ? `$${Math.round(parseFloat(c.gasto)).toLocaleString('es-AR')}` : '—';
+      return `<tr>
+        <td style="padding:4px 8px 4px 0;font-size:11px;color:var(--muted);white-space:nowrap">${c.id}</td>
+        <td style="padding:4px 8px 4px 0;font-size:11px;color:var(--text)">${nombre}</td>
+        <td style="padding:4px 8px;font-size:11px;color:#16a34a;font-weight:600;white-space:nowrap">CVR ${c.cvr_avg}%</td>
+        <td style="padding:4px 8px;font-size:11px;color:var(--muted);white-space:nowrap">${c.ventas} u.</td>
+        <td style="padding:4px 0;font-size:11px;color:var(--muted);white-space:nowrap">${gasto}</td>
+      </tr>`;
+    }).join('');
+    return `<details style="margin-top:8px">
+      <summary style="font-size:11px;color:var(--accent);cursor:pointer;user-select:none">Ver las ${datos.items.length} oportunidades</summary>
       <table style="margin-top:6px;border-collapse:collapse;width:100%">${rows}</table>
     </details>`;
   }

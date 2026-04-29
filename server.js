@@ -888,6 +888,8 @@ const REGLAS_DEFAULT = {
   tacos_alto:            { habilitada: true, umbral: { warning_pct: 15, critical_pct: 25, dias: 30 } },
   reputacion_bajando:    { habilitada: true, umbral: {} },
   producto_sin_ventas:   { habilitada: true, umbral: { dias_publicado: 14 } },
+  anuncio_sangrando:     { habilitada: true, umbral: { acos_min: 50, dias: 5 } },
+  oportunidad_escalable: { habilitada: true, umbral: { cvr_min: 5, gasto_max: 5000, dias: 30 } },
 };
 
 async function getRegla(clientId, codigo) {
@@ -1367,6 +1369,110 @@ async function evalRuleProductoSinVentas(client) {
   } catch(e) { console.error(`[ALERTA producto_sin_ventas] ${client.name}:`, e.message); return null; }
 }
 
+// Regla 11 — Anuncio sangrando (ACOS >50% por +5 días)
+async function evalRuleAnuncioSangrando(client) {
+  const regla = await getRegla(client.id, 'anuncio_sangrando');
+  if (!regla.habilitada) return null;
+  const { acos_min = 50, dias = 5 } = regla.umbral || {};
+  try {
+    const result = await pool.query(`
+      SELECT objeto_id, objeto_nombre,
+             COUNT(*) FILTER (WHERE (metricas->>'acos') IS NOT NULL
+                                AND (metricas->>'acos')::numeric > $3) AS dias_alto,
+             AVG(CASE WHEN (metricas->>'acos') IS NOT NULL
+                      THEN (metricas->>'acos')::numeric END) AS acos_avg,
+             SUM(COALESCE((metricas->>'cost')::numeric, 0)) AS gasto_total
+      FROM metricas_publi
+      WHERE client_id = $1
+        AND nivel = 'item'
+        AND fecha >= CURRENT_DATE - 7
+      GROUP BY objeto_id, objeto_nombre
+      HAVING COUNT(*) FILTER (WHERE (metricas->>'acos') IS NOT NULL
+                                AND (metricas->>'acos')::numeric > $3) >= $2
+      ORDER BY acos_avg DESC NULLS LAST
+    `, [client.id, dias, acos_min]);
+
+    if (!result.rows.length) {
+      await resolveAlerta(client.id, 'anuncio_sangrando');
+      return null;
+    }
+
+    const shorten = t => t && t.length > 45 ? t.slice(0, 45) + '…' : (t || '?');
+    const listado = result.rows.slice(0, 3).map(r =>
+      `• ${shorten(r.objeto_nombre)} — ACOS ${parseFloat(r.acos_avg).toFixed(1)}% prom. (${r.dias_alto} días)`
+    ).join('\n');
+    const resto = result.rows.length > 3 ? `\n…y ${result.rows.length - 3} más` : '';
+
+    return upsertAlerta(client.id, 'anuncio_sangrando', 'warning',
+      `${result.rows.length} anuncio${result.rows.length > 1 ? 's' : ''} con ACOS >${acos_min}% por +${dias} días`,
+      `Anuncios con ACOS sostenido sobre el umbral — revisá si vale la pena seguir invirtiendo:\n${listado}${resto}`,
+      {
+        items: result.rows.map(r => ({
+          id: r.objeto_id,
+          nombre: r.objeto_nombre,
+          acos_avg: parseFloat(r.acos_avg).toFixed(1),
+          dias_alto: parseInt(r.dias_alto),
+          gasto: parseFloat(r.gasto_total || 0).toFixed(0)
+        })),
+        total: result.rows.length
+      }
+    );
+  } catch(e) { console.error(`[ALERTA anuncio_sangrando] ${client.name}:`, e.message); return null; }
+}
+
+// Regla 12 — Oportunidad escalable (CVR >5% + inversión publi baja)
+async function evalRuleOportunidadEscalable(client) {
+  const regla = await getRegla(client.id, 'oportunidad_escalable');
+  if (!regla.habilitada) return null;
+  const { cvr_min = 5, gasto_max = 5000, dias = 30 } = regla.umbral || {};
+  try {
+    const result = await pool.query(`
+      SELECT objeto_id, objeto_nombre,
+             AVG(CASE WHEN (metricas->>'cvr') IS NOT NULL
+                      THEN (metricas->>'cvr')::numeric END) AS cvr_avg,
+             SUM(COALESCE((metricas->>'cost')::numeric, 0)) AS gasto_total,
+             SUM(COALESCE((metricas->>'units_quantity')::numeric, 0)) AS ventas_total,
+             COUNT(*) AS dias_con_datos
+      FROM metricas_publi
+      WHERE client_id = $1
+        AND nivel = 'item'
+        AND fecha >= CURRENT_DATE - $2
+      GROUP BY objeto_id, objeto_nombre
+      HAVING AVG(CASE WHEN (metricas->>'cvr') IS NOT NULL
+                      THEN (metricas->>'cvr')::numeric END) >= $3
+         AND SUM(COALESCE((metricas->>'cost')::numeric, 0)) < $4
+         AND COUNT(*) >= 7
+      ORDER BY cvr_avg DESC NULLS LAST
+    `, [client.id, dias, cvr_min, gasto_max]);
+
+    if (!result.rows.length) {
+      await resolveAlerta(client.id, 'oportunidad_escalable');
+      return null;
+    }
+
+    const shorten = t => t && t.length > 45 ? t.slice(0, 45) + '…' : (t || '?');
+    const listado = result.rows.slice(0, 3).map(r =>
+      `• ${shorten(r.objeto_nombre)} — CVR ${parseFloat(r.cvr_avg).toFixed(1)}%, gasto $${Math.round(parseFloat(r.gasto_total))}`
+    ).join('\n');
+    const resto = result.rows.length > 3 ? `\n…y ${result.rows.length - 3} más` : '';
+
+    return upsertAlerta(client.id, 'oportunidad_escalable', 'info',
+      `${result.rows.length} oportunidad${result.rows.length > 1 ? 'es' : ''} de escalar publicidad`,
+      `SKUs con alta conversión y baja inversión en publicidad — potencial para escalar:\n${listado}${resto}`,
+      {
+        items: result.rows.map(r => ({
+          id: r.objeto_id,
+          nombre: r.objeto_nombre,
+          cvr_avg: parseFloat(r.cvr_avg).toFixed(1),
+          gasto: parseFloat(r.gasto_total || 0).toFixed(0),
+          ventas: parseInt(r.ventas_total || 0)
+        })),
+        total: result.rows.length
+      }
+    );
+  } catch(e) { console.error(`[ALERTA oportunidad_escalable] ${client.name}:`, e.message); return null; }
+}
+
 // Motor principal
 async function runAlertEngine({ forceNotify = false, tipo = 'auto' } = {}) {
   console.log('[ALERTAS] Iniciando evaluación —', new Date().toISOString());
@@ -1383,6 +1489,8 @@ async function runAlertEngine({ forceNotify = false, tipo = 'auto' } = {}) {
       evalRulePreguntasPendientes,
       evalRuleReputacionBajando,
       evalRuleProductoSinVentas,
+      evalRuleAnuncioSangrando,
+      evalRuleOportunidadEscalable,
     ];
     const newAlerts = [];
     for (const client of clients.rows) {
