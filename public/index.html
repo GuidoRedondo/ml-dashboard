@@ -7823,9 +7823,19 @@ function renderPyL(pyl) {
           <div style="font-size:20px;font-weight:800;font-family:var(--font-b);color:#6366f1;margin-top:2px">${fmtM(pyl.gastos_fijos.total)}</div>
           <div style="font-size:11px;color:#6366f1;opacity:.7">${pyl.ingresos.facturacion>0?fmtP(pyl.gastos_fijos.total/pyl.ingresos.facturacion*100):''} de la facturación</div>
         </div>
-        ${Object.entries(pyl.gastos_fijos.items.reduce((acc,g)=>{acc[g.categoria]=(acc[g.categoria]||0)+parseFloat(g.monto);return acc},{}))
-          .sort(([,a],[,b])=>b-a)
-          .map(([cat,monto])=>detalleRow(cat, monto, pyl.ingresos.facturacion)).join('')}
+        ${[...pyl.gastos_fijos.items]
+          .sort((a,b)=>parseFloat(b.monto)-parseFloat(a.monto))
+          .map(g=>`
+            <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 16px;border-bottom:1px solid var(--border)">
+              <div>
+                <span style="font-size:12px;color:var(--muted)">${g.concepto}</span>
+                <span style="font-size:10px;color:var(--muted);opacity:.6;margin-left:6px">${g.categoria}</span>
+              </div>
+              <div style="text-align:right;white-space:nowrap">
+                <span style="font-size:13px;font-weight:600">${fmtM(parseFloat(g.monto))}</span>
+                ${pyl.ingresos.facturacion>0?`<span style="font-size:10px;color:var(--muted);margin-left:6px">${(parseFloat(g.monto)/pyl.ingresos.facturacion*100).toFixed(1)}%</span>`:''}
+              </div>
+            </div>`).join('')}
       </div>` : ''}
 
       <!-- Métricas clave -->
