@@ -1328,8 +1328,8 @@ app.post('/api/alertas/ejecutar', requireAuth, async (req, res) => {
   runAlertEngine({ forceNotify: true }).catch(e => console.error('[ALERTAS] Error manual:', e.message));
 });
 
-// Endpoint para Railway Cron Service — protegido con CRON_SECRET
-app.post('/api/alertas/cron', async (req, res) => {
+// Endpoint para cron externo — protegido con CRON_SECRET, acepta GET y POST
+app.all('/api/alertas/cron', async (req, res) => {
   const secret = process.env.CRON_SECRET;
   const auth = req.headers['authorization'] || '';
   if (!secret || auth !== `Bearer ${secret}`) {
