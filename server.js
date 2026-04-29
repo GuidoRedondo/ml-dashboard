@@ -5044,6 +5044,69 @@ app.get('/api/debug/pads', requireAuth, async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
+// ── DEBUG PUBLI DRY-RUN ──────────────────────────────────────────────────────
+app.get('/api/debug/publi-eval', requireAuth, async (req, res) => {
+  try {
+    const clientId = parseInt(req.query.client_id);
+    if (!clientId) return res.status(400).json({ error: 'client_id requerido' });
+    const clientRow = await pool.query('SELECT * FROM clients WHERE id=$1', [clientId]);
+    if (!clientRow.rows.length) return res.status(404).json({ error: 'Cliente no encontrado' });
+    const client = clientRow.rows[0];
+    const roas_target = parseFloat(client.roas_target) || 4;
+
+    const padsData = await fetchPADSMetrics(client, 30);
+    if (!padsData) return res.json({ error: 'Sin datos PADS (sin token o sin advertisers)' });
+
+    const log = [];
+    const { campaigns, items } = padsData;
+    log.push(`campaigns: ${campaigns.length}, items: ${items.length}, roas_target: ${roas_target}`);
+
+    // Dry-run Rule 1
+    for (const c of campaigns) {
+      const m = getMet(c);
+      const roas = parseFloat(m.roas) || 0;
+      const gasto = parseFloat(m.cost) || 0;
+      const nombre = c.name || c.campaign_name || c.id;
+      log.push(`[R1] Campaña "${nombre}": ROAS=${roas}, threshold=${(1.3*roas_target).toFixed(2)}, gasto=${gasto} → ${roas >= 1.3*roas_target && gasto > 0 ? 'DISPARA ✅' : 'no dispara'}`);
+    }
+
+    // Dry-run Rule 2
+    for (const c of campaigns) {
+      const m = getMet(c);
+      const roas = parseFloat(m.roas) || 0;
+      const gasto = parseFloat(m.cost) || 0;
+      const nombre = c.name || c.campaign_name || c.id;
+      log.push(`[R2] Campaña "${nombre}": ROAS=${roas}, threshold=${(0.7*roas_target).toFixed(2)}, gasto=${gasto} → ${roas > 0 && roas <= 0.7*roas_target && gasto > 5000 ? 'DISPARA ✅' : 'no dispara'}`);
+    }
+
+    // Dry-run Rule 3
+    for (const it of items.slice(0, 10)) {
+      const m = getMet(it);
+      const acos = parseFloat(m.acos) || 0;
+      const gasto = parseFloat(m.cost) || 0;
+      const ventas = parseInt(m.units_quantity) || 0;
+      if (gasto > 0) log.push(`[R3] Item "${it.title || it.item_id}": ACOS=${acos}, gasto=${gasto}, ventas=${ventas} → ${acos > 0.5 && ventas === 0 ? 'DISPARA ✅' : 'no dispara'}`);
+    }
+
+    // Dry-run Rule 4
+    for (const it of items.slice(0, 10)) {
+      const m = getMet(it);
+      const cvr = parseFloat(m.cvr) || 0;
+      const gasto = parseFloat(m.cost) || 0;
+      const roas = parseFloat(m.roas) || 0;
+      if (gasto > 0) log.push(`[R4] Item "${it.title || it.item_id}": CVR=${cvr}, ROAS=${roas}, target=${roas_target} → ${cvr > 0.05 && gasto > 0 && roas >= roas_target ? 'DISPARA ✅' : 'no dispara'}`);
+    }
+
+    // Test insert (sin guardar — sólo chequea que la tabla existe)
+    let tableCheck = 'ok';
+    try {
+      await pool.query('SELECT 1 FROM decisiones_publi LIMIT 1');
+    } catch(e) { tableCheck = `ERROR: ${e.message}`; }
+
+    res.json({ client: client.name, roas_target, campaigns: campaigns.length, items: items.length, tabla_decisiones: tableCheck, dry_run: log });
+  } catch(e) { res.status(500).json({ error: e.message, stack: e.stack }); }
+});
+
 // ── DEBUG APP TOKEN ──────────────────────────────────────────────────────────
 app.get('/api/debug/app-token', requireAuth, async (req, res) => {
   try {
