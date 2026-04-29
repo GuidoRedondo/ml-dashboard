@@ -31,8 +31,8 @@ Cron 2x por día (08:00 y 18:00 ART). Recorre los clientes, evalúa reglas, pers
 | 5  | Margen erosionado             | Margen contribución cae >3pp mes contra mes                             | critical  |
 | 6  | Stock crítico Pareto          | SKU del top 20% Pareto con stock <7 días de venta                       | critical  |
 | 7  | Preguntas pendientes          | >5 preguntas sin responder hace +12hs                                   | warning   |
-| 8  | Reputación bajando            | Color de reputación baja un nivel                                       | critical  |
-| 9  | Producto nuevo sin ventas     | SKU publicado +14 días con 0 ventas                                     | info      |
+| 8  | Reputación bajando ✅          | Color de reputación baja un nivel                                       | critical  |
+| 9  | Producto nuevo sin ventas ✅   | SKU publicado +14 días con 0 ventas en 90 días                          | info      |
 | 10 | Score escalabilidad           | Cae >10 puntos vs mes anterior                                          | warning   |
 | 11 | Anuncio sangrando             | ACOS individual >50% por +5 días                                        | warning   |
 | 12 | Oportunidad escalable         | SKU con conversión >5% e inversión publi <$X                            | info      |
@@ -115,15 +115,25 @@ Cada insight en tabla `insights`: cliente, tipo, descripción, impacto estimado,
 
 ## Roadmap
 
-### Sprint 1 — Fundación + Capa 1 mínima
-- Tablas nuevas en Postgres
-- UI de configuración de reglas
-- Cron + 5 reglas iniciales (caída ventas, ROAS, margen, stock Pareto, preguntas)
-- Notifier a Slack + email
-- Pestaña "Centro de Inteligencia" en dashboard con lista de alertas
+### Sprint 1 — Fundación + Capa 1 mínima ✅ COMPLETO
+- ✅ Tablas nuevas en Postgres (alertas, reglas_alertas, snapshots_reputacion)
+- ✅ UI de configuración de reglas por cliente
+- ✅ Cron externo (cron-job.org) + 9 reglas implementadas:
+  - Caída de ventas (warning + critical)
+  - ROAS bajo sostenido
+  - Margen erosionado
+  - Stock crítico Pareto
+  - Preguntas pendientes
+  - TACOS alto (warning + critical)
+  - Reputación bajando
+  - Producto nuevo sin ventas
+- ✅ Notifier a Slack (agrupado por tipo de alerta) + email
+- ✅ Pestaña "Centro de Inteligencia" con alertas expandibles por cliente
 
 ### Sprint 2 — Capa 1 completa + Informe semanal interno
-- Las 12 reglas funcionando
+- Score de escalabilidad (requiere snapshot mensual previo — mínimo 2 meses de diagnostico_mensual)
+- Regla 11: Anuncio sangrando (ACOS individual >50% por +5 días)
+- Regla 12: Oportunidad escalable (SKU alta conversión + baja inversión publi)
 - Informe semanal a equipo Negocio Redondo
 - Tuning de umbrales por cliente
 
