@@ -1265,6 +1265,7 @@ tbody td {
         <h2 style="margin:0;font-family:var(--font-b);flex:1">⚡ Motor de Decisiones — Publicidad</h2>
         <span id="dp-estado" style="font-size:11px;color:var(--muted);white-space:nowrap"></span>
         <button class="sync-btn" onclick="loadDecisionesPubli()">🔄 Actualizar</button>
+        <button class="sync-btn" onclick="resetearYAnalizar()" title="Borra las pendientes actuales y vuelve a analizar" style="background:#f59e0b;color:#fff;border:none">🗑 Resetear</button>
         <button class="sync-btn" onclick="ejecutarAnalyzerPubli()" id="dp-run-btn" style="background:#6366f1;color:#fff;border:none">⚡ Analizar ahora</button>
       </div>
 
@@ -11020,6 +11021,16 @@ async function guardarRoasTarget() {
   if (!val || val <= 0) { showToast('❌ ROAS target inválido'); return; }
   await apiCall('PATCH', `/api/clients/${client.id}/roas-target`, { roas_target: val });
   showToast(`✅ ROAS target actualizado a ${val}x`);
+}
+
+async function resetearYAnalizar() {
+  const client = getActiveClient();
+  const quien = client ? `el cliente ${client.name}` : 'todos los clientes';
+  if (!confirm(`¿Borrar las decisiones pendientes de ${quien} y volver a analizar?`)) return;
+  const body = client ? { client_id: client.id } : {};
+  await apiCall('POST', '/api/publi-analyzer/resetear', body);
+  showToast('🗑 Decisiones borradas — analizando de nuevo, esperá 2-3 min...');
+  setTimeout(() => loadDecisionesPubli(), 15000);
 }
 
 async function ejecutarAnalyzerPubli() {

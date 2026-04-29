@@ -5518,6 +5518,20 @@ app.post('/api/publi-analyzer/ejecutar', requireAuth, async (req, res) => {
   runPubliAnalyzer({ tipo: 'manual' }).catch(e => console.error('[PUBLI] Error manual:', e.message));
 });
 
+app.post('/api/publi-analyzer/resetear', requireAuth, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ error: 'Solo admin' });
+  try {
+    const { client_id } = req.body;
+    if (client_id) {
+      await pool.query(`DELETE FROM decisiones_publi WHERE client_id=$1 AND estado='nueva'`, [parseInt(client_id)]);
+    } else {
+      await pool.query(`DELETE FROM decisiones_publi WHERE estado='nueva'`);
+    }
+    res.json({ ok: true, mensaje: 'Decisiones pendientes eliminadas. Iniciando análisis...' });
+    runPubliAnalyzer({ tipo: 'manual' }).catch(e => console.error('[PUBLI] Error reset:', e.message));
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
 app.all('/api/publi-analyzer/cron', async (req, res) => {
   const secret = process.env.CRON_SECRET;
   const auth = req.headers['authorization'] || '';
