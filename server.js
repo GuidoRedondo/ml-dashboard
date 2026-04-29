@@ -5000,6 +5000,50 @@ app.post('/api/token', async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
+// ── DEBUG PADS ───────────────────────────────────────────────────────────────
+app.get('/api/debug/pads', requireAuth, async (req, res) => {
+  try {
+    const clientId = parseInt(req.query.client_id);
+    if (!clientId) return res.status(400).json({ error: 'client_id requerido' });
+    const clientRow = await pool.query('SELECT * FROM clients WHERE id=$1', [clientId]);
+    if (!clientRow.rows.length) return res.status(404).json({ error: 'Cliente no encontrado' });
+    const client = clientRow.rows[0];
+    const token = await getClientToken(clientId);
+    if (!token) return res.json({ error: 'Sin token', client: client.name });
+
+    const h1 = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'Api-Version': '1' };
+    const h2 = { 'Authorization': `Bearer ${token}`, 'api-version': '2' };
+
+    const userResp = await fetch(`${ML_API}/users/me`, { headers: h1 }).then(r => r.json());
+    const advResp  = await fetch(`${ML_API}/advertising/advertisers?product_id=PADS`, { headers: h1 }).then(r => r.json());
+    const advertisers = advResp.advertisers || [];
+    if (!advertisers.length) return res.json({ ok: false, user: userResp, advertisers: advResp, nota: 'Sin advertisers PADS' });
+
+    const siteId = userResp.site_id || 'MLA';
+    const adv = advertisers.find(a => a.site_id === siteId) || advertisers[0];
+    const advId = adv.advertiser_id;
+
+    const now = new Date();
+    const fromStr = new Date(now.getTime() - 30 * 86400000).toISOString().slice(0, 10);
+    const toStr = now.toISOString().slice(0, 10);
+    const mstr = 'clicks,prints,ctr,cost,cpc,acos,cvr,roas,direct_units_quantity,units_quantity,direct_amount,total_amount';
+
+    const campUrl = `${ML_API}/advertising/${siteId}/advertisers/${advId}/product_ads/campaigns/search?date_from=${fromStr}&date_to=${toStr}&metrics=${mstr}&limit=5`;
+    const itemUrl = `${ML_API}/advertising/${siteId}/advertisers/${advId}/product_ads/items/search?date_from=${fromStr}&date_to=${toStr}&metrics=${mstr}&limit=5`;
+
+    const [campRaw, itemRaw] = await Promise.all([
+      fetch(campUrl, { headers: h2 }).then(r => r.json()).catch(e => ({ fetch_error: e.message })),
+      fetch(itemUrl, { headers: h2 }).then(r => r.json()).catch(e => ({ fetch_error: e.message }))
+    ]);
+
+    res.json({
+      client: client.name, siteId, advId, roas_target: client.roas_target,
+      campaigns_url: campUrl, campaigns_sample: campRaw,
+      items_url: itemUrl, items_sample: itemRaw
+    });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
 // ── DEBUG APP TOKEN ──────────────────────────────────────────────────────────
 app.get('/api/debug/app-token', requireAuth, async (req, res) => {
   try {
