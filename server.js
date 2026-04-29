@@ -5097,13 +5097,53 @@ app.get('/api/debug/publi-eval', requireAuth, async (req, res) => {
       if (gasto > 0) log.push(`[R4] Item "${it.title || it.item_id}": CVR=${cvr}, ROAS=${roas}, target=${roas_target} → ${cvr > 0.05 && gasto > 0 && roas >= roas_target ? 'DISPARA ✅' : 'no dispara'}`);
     }
 
-    // Test insert (sin guardar — sólo chequea que la tabla existe)
-    let tableCheck = 'ok';
+    // Test insert real (lo borra inmediatamente)
+    let insertTest = 'not run';
     try {
-      await pool.query('SELECT 1 FROM decisiones_publi LIMIT 1');
-    } catch(e) { tableCheck = `ERROR: ${e.message}`; }
+      await pool.query(`SELECT 1 FROM decisiones_publi LIMIT 1`);
+      const ins = await pool.query(
+        `INSERT INTO decisiones_publi (client_id, tipo_decision, nivel, objeto_id, objeto_nombre, accion_sugerida, justificacion, metricas_snapshot, impacto_estimado_pesos, prioridad)
+         VALUES ($1,'test_debug','campania','TEST999','Test Debug','Accion test','Justificacion test','{}',0,0) RETURNING id`,
+        [clientId]
+      );
+      await pool.query(`DELETE FROM decisiones_publi WHERE tipo_decision='test_debug'`);
+      insertTest = `INSERT OK — id fue ${ins.rows[0].id}`;
+    } catch(e) { insertTest = `INSERT ERROR: ${e.message}`; }
 
-    res.json({ client: client.name, roas_target, campaigns: campaigns.length, items: items.length, tabla_decisiones: tableCheck, dry_run: log });
+    // Traza paso a paso de la Regla 1 para la primera campaña que debería disparar
+    const r1trace = [];
+    for (const c of campaigns.slice(0, 3)) {
+      const m = getMet(c);
+      const roas = parseFloat(m.roas) || 0;
+      const gasto = parseFloat(m.cost) || 0;
+      const campId = c.id || c.campaign_id;
+      r1trace.push(`Campaña id=${campId} nombre="${c.name||c.campaign_name}" roas=${roas} gasto=${gasto} threshold=${(1.3*roas_target).toFixed(2)}`);
+      if (roas < 1.3 * roas_target || gasto <= 0) { r1trace.push('  → skip (condición no cumplida)'); continue; }
+      const exists = await publiDecisionExists(clientId, 'escalar_campania', campId).catch(e => `ERROR: ${e.message}`);
+      r1trace.push(`  publiDecisionExists=${exists}`);
+      if (exists === true) { r1trace.push('  → skip (ya existe)'); continue; }
+      const datos = { nombre_regla: 'Escalar campaña ganadora', objeto_id: campId, objeto_nombre: c.name||c.campaign_name||'Campaña', roas_target, roas: roas.toFixed(2), acos: (parseFloat(m.acos)||0).toFixed(2), cvr: (parseFloat(m.cvr)||0).toFixed(3), gasto: Math.round(gasto), ventas_unidades: m.units_quantity||0, ventas_amount: Math.round(parseFloat(m.total_amount)||0), accion_default: 'Subir presupuesto +20%', impacto_estimado: Math.round(gasto * 0.2) };
+      const claude = await callClaudeForDecision(datos).catch(e => ({ error: e.message }));
+      r1trace.push(`  callClaude→ accion="${claude.accion}" justificacion="${(claude.justificacion||'').slice(0,40)}" impacto=${claude.impacto_pesos}`);
+      const impacto = claude.impacto_pesos || datos.impacto_estimado;
+      try {
+        await insertDecision(clientId, { tipo: 'escalar_campania', nivel: 'campania', objeto_id: datos.objeto_id, objeto_nombre: datos.objeto_nombre, accion: claude.accion, justificacion: claude.justificacion, metricas: m, impacto, prioridad: Math.round(impacto * 1.0) });
+        r1trace.push(`  → INSERTADO ✅ (impacto=${impacto})`);
+      } catch(e) {
+        r1trace.push(`  → INSERT ERROR ❌: ${e.message}`);
+      }
+    }
+
+    // Correr evalPubliRules real para este cliente y capturar resultado
+    let evalResult = 'not run';
+    try {
+      const n = await evalPubliRules(clientRow.rows[0], padsData, roas_target);
+      evalResult = `evalPubliRules OK — generó ${n} decisiones`;
+    } catch(e) { evalResult = `evalPubliRules ERROR: ${e.message} | stack: ${e.stack?.split('\n')[1]}`; }
+
+    const totalEnDB = await pool.query('SELECT COUNT(*) FROM decisiones_publi WHERE client_id=$1', [clientId]).then(r => r.rows[0].count).catch(()=>'?');
+
+    res.json({ client: client.name, roas_target, campaigns: campaigns.length, items: items.length, insert_test: insertTest, r1_trace: r1trace, eval_result: evalResult, total_en_db: totalEnDB, dry_run: log });
   } catch(e) { res.status(500).json({ error: e.message, stack: e.stack }); }
 });
 
@@ -5222,103 +5262,116 @@ async function insertDecision(clientId, { tipo, nivel, objeto_id, objeto_nombre,
 }
 
 async function evalPubliRules(client, { campaigns, items }, roas_target) {
-  const criticas = ['pausar_sangrado', 'stockout_protector', 'discontinuar_muerta'];
   let count = 0;
 
   // Regla 1 — Escalar campaña ganadora (ROAS ≥ 1.3× target)
   for (const c of campaigns) {
-    const m = getMet(c); const roas = parseFloat(m.roas) || 0; const gasto = parseFloat(m.cost) || 0;
-    if (roas < 1.3 * roas_target || gasto <= 0) continue;
-    if (await publiDecisionExists(client.id, 'escalar_campania', c.id || c.campaign_id)) continue;
-    const datos = { nombre_regla: 'Escalar campaña ganadora', objeto_id: c.id || c.campaign_id, objeto_nombre: c.name || c.campaign_name || 'Campaña', roas_target, roas: roas.toFixed(2), acos: (parseFloat(m.acos)||0).toFixed(2), cvr: (parseFloat(m.cvr)||0).toFixed(3), gasto: Math.round(gasto), ventas_unidades: m.units_quantity || 0, ventas_amount: Math.round(parseFloat(m.total_amount)||0), accion_default: 'Subir presupuesto +20%', impacto_estimado: Math.round(gasto * 0.2) };
-    const claude = await callClaudeForDecision(datos);
-    const impacto = claude.impacto_pesos || datos.impacto_estimado;
-    await insertDecision(client.id, { tipo: 'escalar_campania', nivel: 'campania', objeto_id: datos.objeto_id, objeto_nombre: datos.objeto_nombre, accion: claude.accion, justificacion: claude.justificacion, metricas: m, impacto, prioridad: Math.round(impacto * 1.0) });
-    count++;
+    try {
+      const m = getMet(c); const roas = parseFloat(m.roas) || 0; const gasto = parseFloat(m.cost) || 0;
+      if (roas < 1.3 * roas_target || gasto <= 0) continue;
+      if (await publiDecisionExists(client.id, 'escalar_campania', c.id || c.campaign_id)) continue;
+      const datos = { nombre_regla: 'Escalar campaña ganadora', objeto_id: c.id || c.campaign_id, objeto_nombre: c.name || c.campaign_name || 'Campaña', roas_target, roas: roas.toFixed(2), acos: (parseFloat(m.acos)||0).toFixed(2), cvr: (parseFloat(m.cvr)||0).toFixed(3), gasto: Math.round(gasto), ventas_unidades: m.units_quantity || 0, ventas_amount: Math.round(parseFloat(m.total_amount)||0), accion_default: 'Subir presupuesto +20%', impacto_estimado: Math.round(gasto * 0.2) };
+      const claude = await callClaudeForDecision(datos);
+      const impacto = claude.impacto_pesos || datos.impacto_estimado;
+      await insertDecision(client.id, { tipo: 'escalar_campania', nivel: 'campania', objeto_id: datos.objeto_id, objeto_nombre: datos.objeto_nombre, accion: claude.accion, justificacion: claude.justificacion, metricas: m, impacto, prioridad: Math.round(impacto * 1.0) });
+      count++;
+    } catch(e) { console.error(`[PUBLI-R1] ${client.name} campaña ${c.id||c.campaign_id}:`, e.message); }
   }
 
   // Regla 2 — Reducir campaña perdedora (ROAS ≤ 0.7× target, gasto >$5.000)
   for (const c of campaigns) {
-    const m = getMet(c); const roas = parseFloat(m.roas) || 0; const gasto = parseFloat(m.cost) || 0;
-    if (roas === 0 || roas > 0.7 * roas_target || gasto <= 5000) continue;
-    if (await publiDecisionExists(client.id, 'reducir_campania', c.id || c.campaign_id)) continue;
-    const datos = { nombre_regla: 'Reducir campaña perdedora', objeto_id: c.id || c.campaign_id, objeto_nombre: c.name || c.campaign_name || 'Campaña', roas_target, roas: roas.toFixed(2), acos: (parseFloat(m.acos)||0).toFixed(2), cvr: (parseFloat(m.cvr)||0).toFixed(3), gasto: Math.round(gasto), ventas_unidades: m.units_quantity || 0, ventas_amount: Math.round(parseFloat(m.total_amount)||0), accion_default: 'Bajar presupuesto -30% o cambiar estrategia', impacto_estimado: Math.round(gasto * 0.3) };
-    const claude = await callClaudeForDecision(datos);
-    const impacto = claude.impacto_pesos || datos.impacto_estimado;
-    await insertDecision(client.id, { tipo: 'reducir_campania', nivel: 'campania', objeto_id: datos.objeto_id, objeto_nombre: datos.objeto_nombre, accion: claude.accion, justificacion: claude.justificacion, metricas: m, impacto, prioridad: Math.round(impacto * 1.0) });
-    count++;
+    try {
+      const m = getMet(c); const roas = parseFloat(m.roas) || 0; const gasto = parseFloat(m.cost) || 0;
+      if (roas === 0 || roas > 0.7 * roas_target || gasto <= 5000) continue;
+      if (await publiDecisionExists(client.id, 'reducir_campania', c.id || c.campaign_id)) continue;
+      const datos = { nombre_regla: 'Reducir campaña perdedora', objeto_id: c.id || c.campaign_id, objeto_nombre: c.name || c.campaign_name || 'Campaña', roas_target, roas: roas.toFixed(2), acos: (parseFloat(m.acos)||0).toFixed(2), cvr: (parseFloat(m.cvr)||0).toFixed(3), gasto: Math.round(gasto), ventas_unidades: m.units_quantity || 0, ventas_amount: Math.round(parseFloat(m.total_amount)||0), accion_default: 'Bajar presupuesto -30% o cambiar estrategia', impacto_estimado: Math.round(gasto * 0.3) };
+      const claude = await callClaudeForDecision(datos);
+      const impacto = claude.impacto_pesos || datos.impacto_estimado;
+      await insertDecision(client.id, { tipo: 'reducir_campania', nivel: 'campania', objeto_id: datos.objeto_id, objeto_nombre: datos.objeto_nombre, accion: claude.accion, justificacion: claude.justificacion, metricas: m, impacto, prioridad: Math.round(impacto * 1.0) });
+      count++;
+    } catch(e) { console.error(`[PUBLI-R2] ${client.name} campaña ${c.id||c.campaign_id}:`, e.message); }
   }
 
   // Regla 3 — Pausar anuncio sangrando (ACOS >50%, sin ventas)
   for (const it of items) {
-    const m = getMet(it); const acos = parseFloat(m.acos) || 0; const gasto = parseFloat(m.cost) || 0; const ventas = parseInt(m.units_quantity) || 0;
-    if (acos <= 0.5 || ventas > 0 || gasto <= 0) continue;
-    const itemId = it.item_id || it.id;
-    if (await publiDecisionExists(client.id, 'pausar_sangrado', itemId)) continue;
-    const datos = { nombre_regla: 'Pausar anuncio sangrando', objeto_id: itemId, objeto_nombre: it.title || itemId, roas_target, roas: (parseFloat(m.roas)||0).toFixed(2), acos: acos.toFixed(2), cvr: (parseFloat(m.cvr)||0).toFixed(3), gasto: Math.round(gasto), ventas_unidades: 0, ventas_amount: 0, accion_default: 'Pausar anuncio del ítem', impacto_estimado: Math.round(gasto) };
-    const claude = await callClaudeForDecision(datos);
-    const impacto = claude.impacto_pesos || datos.impacto_estimado;
-    await insertDecision(client.id, { tipo: 'pausar_sangrado', nivel: 'item', objeto_id: itemId, objeto_nombre: datos.objeto_nombre, accion: claude.accion, justificacion: claude.justificacion, metricas: m, impacto, prioridad: Math.round(impacto * 1.5) });
-    count++;
+    try {
+      const m = getMet(it); const acos = parseFloat(m.acos) || 0; const gasto = parseFloat(m.cost) || 0; const ventas = parseInt(m.units_quantity) || 0;
+      if (acos <= 0.5 || ventas > 0 || gasto <= 0) continue;
+      const itemId = it.item_id || it.id;
+      if (await publiDecisionExists(client.id, 'pausar_sangrado', itemId)) continue;
+      const datos = { nombre_regla: 'Pausar anuncio sangrando', objeto_id: itemId, objeto_nombre: it.title || itemId, roas_target, roas: (parseFloat(m.roas)||0).toFixed(2), acos: acos.toFixed(2), cvr: (parseFloat(m.cvr)||0).toFixed(3), gasto: Math.round(gasto), ventas_unidades: 0, ventas_amount: 0, accion_default: 'Pausar anuncio del ítem', impacto_estimado: Math.round(gasto) };
+      const claude = await callClaudeForDecision(datos);
+      const impacto = claude.impacto_pesos || datos.impacto_estimado;
+      await insertDecision(client.id, { tipo: 'pausar_sangrado', nivel: 'item', objeto_id: itemId, objeto_nombre: datos.objeto_nombre, accion: claude.accion, justificacion: claude.justificacion, metricas: m, impacto, prioridad: Math.round(impacto * 1.5) });
+      count++;
+    } catch(e) { console.error(`[PUBLI-R3] ${client.name} item ${it.item_id||it.id}:`, e.message); }
   }
 
   // Regla 4 — Subir puja en ítem con headroom (CVR >5%, tiene gasto)
   for (const it of items) {
-    const m = getMet(it); const cvr = parseFloat(m.cvr) || 0; const gasto = parseFloat(m.cost) || 0; const roas = parseFloat(m.roas) || 0;
-    if (cvr <= 0.05 || gasto <= 0 || roas < roas_target) continue; // solo si ya está rindiendo
-    const itemId = it.item_id || it.id;
-    if (await publiDecisionExists(client.id, 'subir_puja_headroom', itemId)) continue;
-    const datos = { nombre_regla: 'Subir puja — ítem con headroom', objeto_id: itemId, objeto_nombre: it.title || itemId, roas_target, roas: roas.toFixed(2), acos: (parseFloat(m.acos)||0).toFixed(2), cvr: cvr.toFixed(3), gasto: Math.round(gasto), ventas_unidades: m.units_quantity || 0, ventas_amount: Math.round(parseFloat(m.total_amount)||0), accion_default: 'Aumentar puja/prioridad del ítem', impacto_estimado: Math.round(gasto * 0.3) };
-    const claude = await callClaudeForDecision(datos);
-    const impacto = claude.impacto_pesos || datos.impacto_estimado;
-    await insertDecision(client.id, { tipo: 'subir_puja_headroom', nivel: 'item', objeto_id: itemId, objeto_nombre: datos.objeto_nombre, accion: claude.accion, justificacion: claude.justificacion, metricas: m, impacto, prioridad: Math.round(impacto * 1.0) });
-    count++;
+    try {
+      const m = getMet(it); const cvr = parseFloat(m.cvr) || 0; const gasto = parseFloat(m.cost) || 0; const roas = parseFloat(m.roas) || 0;
+      if (cvr <= 0.05 || gasto <= 0 || roas < roas_target) continue;
+      const itemId = it.item_id || it.id;
+      if (await publiDecisionExists(client.id, 'subir_puja_headroom', itemId)) continue;
+      const datos = { nombre_regla: 'Subir puja — ítem con headroom', objeto_id: itemId, objeto_nombre: it.title || itemId, roas_target, roas: roas.toFixed(2), acos: (parseFloat(m.acos)||0).toFixed(2), cvr: cvr.toFixed(3), gasto: Math.round(gasto), ventas_unidades: m.units_quantity || 0, ventas_amount: Math.round(parseFloat(m.total_amount)||0), accion_default: 'Aumentar puja/prioridad del ítem', impacto_estimado: Math.round(gasto * 0.3) };
+      const claude = await callClaudeForDecision(datos);
+      const impacto = claude.impacto_pesos || datos.impacto_estimado;
+      await insertDecision(client.id, { tipo: 'subir_puja_headroom', nivel: 'item', objeto_id: itemId, objeto_nombre: datos.objeto_nombre, accion: claude.accion, justificacion: claude.justificacion, metricas: m, impacto, prioridad: Math.round(impacto * 1.0) });
+      count++;
+    } catch(e) { console.error(`[PUBLI-R4] ${client.name} item ${it.item_id||it.id}:`, e.message); }
   }
 
   // Regla 6 — Stockout protector (stock <7 días + gasto publi)
-  const itemsConGasto = items.filter(it => (parseFloat(getMet(it).cost) || 0) > 0);
-  if (itemsConGasto.length) {
-    const token = await getClientToken(client.id);
-    const headers = { 'Authorization': `Bearer ${token}` };
-    for (let i = 0; i < itemsConGasto.length; i += 20) {
-      const batch = itemsConGasto.slice(i, i + 20);
-      const ids = batch.map(it => it.item_id || it.id).join(',');
-      const stockData = await fetch(`${ML_API}/items?ids=${ids}&attributes=id,title,available_quantity,sold_quantity`, { headers })
-        .then(r => r.json()).catch(() => []);
-      const arr = Array.isArray(stockData) ? stockData : [];
-      for (const entry of arr) {
-        const item = entry.body || entry;
-        if (!item?.id) continue;
-        const stock = parseInt(item.available_quantity) || 0;
-        const sold30 = (parseInt(item.sold_quantity) || 0);
-        const velocity = sold30 / 30;
-        const diasCobertura = velocity > 0 ? Math.floor(stock / velocity) : 999;
-        if (diasCobertura >= 7) continue;
-        const padsItem = batch.find(it => (it.item_id || it.id) === item.id);
-        if (!padsItem) continue;
-        const m = getMet(padsItem); const gasto = parseFloat(m.cost) || 0;
-        if (gasto <= 0) continue;
-        if (await publiDecisionExists(client.id, 'stockout_protector', item.id)) continue;
-        const datos = { nombre_regla: 'Stockout protector', objeto_id: item.id, objeto_nombre: item.title || item.id, roas_target, roas: (parseFloat(m.roas)||0).toFixed(2), acos: (parseFloat(m.acos)||0).toFixed(2), cvr: (parseFloat(m.cvr)||0).toFixed(3), gasto: Math.round(gasto), ventas_unidades: m.units_quantity || 0, ventas_amount: Math.round(parseFloat(m.total_amount)||0), accion_default: `Pausar publi del ítem — stock para ${diasCobertura}d`, impacto_estimado: Math.round(gasto) };
-        const claude = await callClaudeForDecision(datos);
-        const impacto = claude.impacto_pesos || datos.impacto_estimado;
-        await insertDecision(client.id, { tipo: 'stockout_protector', nivel: 'item', objeto_id: item.id, objeto_nombre: datos.objeto_nombre, accion: claude.accion, justificacion: claude.justificacion, metricas: { ...m, stock, diasCobertura }, impacto, prioridad: Math.round(impacto * 1.5) });
-        count++;
+  try {
+    const itemsConGasto = items.filter(it => (parseFloat(getMet(it).cost) || 0) > 0);
+    if (itemsConGasto.length) {
+      const token = await getClientToken(client.id);
+      const headers = { 'Authorization': `Bearer ${token}` };
+      for (let i = 0; i < itemsConGasto.length; i += 20) {
+        const batch = itemsConGasto.slice(i, i + 20);
+        const ids = batch.map(it => it.item_id || it.id).join(',');
+        const stockData = await fetch(`${ML_API}/items?ids=${ids}&attributes=id,title,available_quantity,sold_quantity`, { headers })
+          .then(r => r.json()).catch(() => []);
+        const arr = Array.isArray(stockData) ? stockData : [];
+        for (const entry of arr) {
+          try {
+            const item = entry.body || entry;
+            if (!item?.id) continue;
+            const stock = parseInt(item.available_quantity) || 0;
+            const sold30 = (parseInt(item.sold_quantity) || 0);
+            const velocity = sold30 / 30;
+            const diasCobertura = velocity > 0 ? Math.floor(stock / velocity) : 999;
+            if (diasCobertura >= 7) continue;
+            const padsItem = batch.find(it => (it.item_id || it.id) === item.id);
+            if (!padsItem) continue;
+            const m = getMet(padsItem); const gasto = parseFloat(m.cost) || 0;
+            if (gasto <= 0) continue;
+            if (await publiDecisionExists(client.id, 'stockout_protector', item.id)) continue;
+            const datos = { nombre_regla: 'Stockout protector', objeto_id: item.id, objeto_nombre: item.title || item.id, roas_target, roas: (parseFloat(m.roas)||0).toFixed(2), acos: (parseFloat(m.acos)||0).toFixed(2), cvr: (parseFloat(m.cvr)||0).toFixed(3), gasto: Math.round(gasto), ventas_unidades: m.units_quantity || 0, ventas_amount: Math.round(parseFloat(m.total_amount)||0), accion_default: `Pausar publi del ítem — stock para ${diasCobertura}d`, impacto_estimado: Math.round(gasto) };
+            const claude = await callClaudeForDecision(datos);
+            const impacto = claude.impacto_pesos || datos.impacto_estimado;
+            await insertDecision(client.id, { tipo: 'stockout_protector', nivel: 'item', objeto_id: item.id, objeto_nombre: datos.objeto_nombre, accion: claude.accion, justificacion: claude.justificacion, metricas: { ...m, stock, diasCobertura }, impacto, prioridad: Math.round(impacto * 1.5) });
+            count++;
+          } catch(e) { console.error(`[PUBLI-R6] ${client.name} item ${entry?.body?.id||entry?.id}:`, e.message); }
+        }
       }
     }
-  }
+  } catch(e) { console.error(`[PUBLI-R6] ${client.name} bloque stockout:`, e.message); }
 
   // Regla 7 — Discontinuar inversión muerta (gasto >$10.000, 0 ventas)
   for (const it of items) {
-    const m = getMet(it); const gasto = parseFloat(m.cost) || 0; const ventas = parseInt(m.units_quantity) || 0;
-    if (gasto <= 10000 || ventas > 0) continue;
-    const itemId = it.item_id || it.id;
-    if (await publiDecisionExists(client.id, 'discontinuar_muerta', itemId)) continue;
-    const datos = { nombre_regla: 'Discontinuar inversión muerta', objeto_id: itemId, objeto_nombre: it.title || itemId, roas_target, roas: '0', acos: 'infinito', cvr: '0', gasto: Math.round(gasto), ventas_unidades: 0, ventas_amount: 0, accion_default: 'Pausar anuncio — sin ventas con inversión alta', impacto_estimado: Math.round(gasto) };
-    const claude = await callClaudeForDecision(datos);
-    const impacto = claude.impacto_pesos || datos.impacto_estimado;
-    await insertDecision(client.id, { tipo: 'discontinuar_muerta', nivel: 'item', objeto_id: itemId, objeto_nombre: datos.objeto_nombre, accion: claude.accion, justificacion: claude.justificacion, metricas: m, impacto, prioridad: Math.round(impacto * 1.5) });
-    count++;
+    try {
+      const m = getMet(it); const gasto = parseFloat(m.cost) || 0; const ventas = parseInt(m.units_quantity) || 0;
+      if (gasto <= 10000 || ventas > 0) continue;
+      const itemId = it.item_id || it.id;
+      if (await publiDecisionExists(client.id, 'discontinuar_muerta', itemId)) continue;
+      const datos = { nombre_regla: 'Discontinuar inversión muerta', objeto_id: itemId, objeto_nombre: it.title || itemId, roas_target, roas: '0', acos: 'infinito', cvr: '0', gasto: Math.round(gasto), ventas_unidades: 0, ventas_amount: 0, accion_default: 'Pausar anuncio — sin ventas con inversión alta', impacto_estimado: Math.round(gasto) };
+      const claude = await callClaudeForDecision(datos);
+      const impacto = claude.impacto_pesos || datos.impacto_estimado;
+      await insertDecision(client.id, { tipo: 'discontinuar_muerta', nivel: 'item', objeto_id: itemId, objeto_nombre: datos.objeto_nombre, accion: claude.accion, justificacion: claude.justificacion, metricas: m, impacto, prioridad: Math.round(impacto * 1.5) });
+      count++;
+    } catch(e) { console.error(`[PUBLI-R7] ${client.name} item ${it.item_id||it.id}:`, e.message); }
   }
 
   return count;
