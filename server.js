@@ -1328,6 +1328,17 @@ app.post('/api/alertas/ejecutar', requireAuth, async (req, res) => {
   runAlertEngine({ forceNotify: true }).catch(e => console.error('[ALERTAS] Error manual:', e.message));
 });
 
+// Endpoint para Railway Cron Service — protegido con CRON_SECRET
+app.post('/api/alertas/cron', async (req, res) => {
+  const secret = process.env.CRON_SECRET;
+  const auth = req.headers['authorization'] || '';
+  if (!secret || auth !== `Bearer ${secret}`) {
+    return res.status(401).json({ error: 'No autorizado' });
+  }
+  res.json({ ok: true, mensaje: 'Motor iniciado', ts: new Date().toISOString() });
+  runAlertEngine().catch(e => console.error('[CRON-EXT] Error:', e.message));
+});
+
 app.get('/api/dashboard', requireAuth, async (req, res) => {
   try {
     const clientId = parseInt(req.query.client_id);
