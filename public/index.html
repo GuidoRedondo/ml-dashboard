@@ -10474,7 +10474,7 @@ async function loadCentroInteligencia() {
   const scanEl = document.getElementById('ci-ultimo-scaneo');
   if (scanEl) {
     apiCall('GET', '/api/alertas/ultimo-scaneo').then(data => {
-      if (!data) { scanEl.textContent = ''; return; }
+      if (!data) { scanEl.textContent = 'Sin escaneos registrados aún'; return; }
       const fecha = new Date(data.ejecutado_en);
       const ahora = new Date();
       const diffMs = ahora - fecha;
