@@ -5194,10 +5194,13 @@ Datos:
       headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
       body: JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 300, messages: [{ role: 'user', content: prompt }] })
     }).then(r => r.json());
+    if (resp.error) throw new Error(`Anthropic API: ${resp.error.message || JSON.stringify(resp.error)}`);
     const text = resp.content?.[0]?.text || '{}';
     const match = text.match(/\{[\s\S]*\}/);
-    if (!match) throw new Error('No JSON');
-    return JSON.parse(match[0]);
+    if (!match) throw new Error('No JSON en respuesta Claude');
+    const result = JSON.parse(match[0]);
+    if (!result.accion || !result.justificacion) throw new Error('JSON de Claude sin campos requeridos');
+    return result;
   } catch(e) {
     console.error('[CLAUDE-PUBLI] Error:', e.message);
     return { justificacion: `Regla: ${datos.nombre_regla}.`, accion: datos.accion_default || 'Revisar en ML Ads', impacto_pesos: datos.impacto_estimado || 0 };
