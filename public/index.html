@@ -3646,12 +3646,13 @@ async function loadDescuentos() {
   const ltMap = {};
   (window._pubsData || []).forEach(p => { if (p.listing_type_id) ltMap[p.id] = p.listing_type_id; });
 
-  // Juntar productos con CMV cargado
+  // Juntar todos los productos (con y sin CMV)
   let products = [];
+  const fullMapGlobal = {};
+  if (window._fullStockData?.items) window._fullStockData.items.forEach(f => { fullMapGlobal[f.id] = f.stock_full ?? 0; });
+
   connected.forEach(acc => {
     (acc.data.rentabilidad.by_product || []).forEach(p => {
-      if (!p.costo_unit) return;
-      // Comisión: usar mapa ML por MLA si disponible, sino histórico real
       const lt = ltMap[p.id];
       const pub = (window._pubsData || []).find(pub => pub.id === p.id);
       const catId = pub?.category_id || null;
@@ -3659,20 +3660,14 @@ async function loadDescuentos() {
       const comPctHist = p.revenue > 0 ? (p.comision / p.revenue * 100) : 6;
       const comPct = comPctML != null ? comPctML : parseFloat(comPctHist.toFixed(1));
 
-      // Envío: solo para productos >= $33k
       const precioPromedio = p.revenue / (p.units || 1);
       const envioUnit = precioPromedio >= 33000 && p.units > 0 ? Math.round((p.envio_pagado || 0) / p.units) : 0;
       const dias = window._perfDays || 30;
       const stock = (() => {
-        const fullMap = {};
-        if (window._fullStockData?.items) window._fullStockData.items.forEach(f => { fullMap[f.id] = f.stock_full ?? 0; });
-        if (window._pubsData) {
-          const pub = window._pubsData.find(pub => pub.id === p.id);
-          if (pub) {
-            const dep = pub.available_quantity ?? 0;
-            const full = pub.is_full ? (fullMap[p.id] ?? 0) : 0;
-            return dep + full;
-          }
+        if (pub) {
+          const dep = pub.available_quantity ?? 0;
+          const full = pub.is_full ? (fullMapGlobal[p.id] ?? 0) : 0;
+          return dep + full;
         }
         return null;
       })();
@@ -3681,8 +3676,9 @@ async function loadDescuentos() {
 
       products.push({
         id: p.id, title: p.title,
-        precio: p.revenue / (p.units || 1),
+        precio: precioPromedio,
         costo: p.costo_unit || 0,
+        hasCMV: !!p.costo_unit,
         comPct: parseFloat(comPct.toFixed(1)),
         comSource: comPctML != null ? 'ML' : 'histórico',
         envioUnit: Math.round(envioUnit),
@@ -3745,6 +3741,12 @@ function renderDescuentos() {
   function celdaDescuento(p, pct, comPct, envioUnit) {
     if (pct <= 0) return '<td style="padding:6px 8px;text-align:center;color:var(--muted)">—</td>';
     const nuevoPrecio = p.precio * (1 - pct/100);
+    if (!p.hasCMV) {
+      return '<td style="padding:6px 8px;text-align:center">'
+        + '<div style="font-size:12px;font-weight:700;color:var(--text)">$' + Math.round(nuevoPrecio).toLocaleString('es-AR') + '</div>'
+        + '<div style="font-size:10px;color:var(--muted)">sin CMV</div>'
+        + '</td>';
+    }
     const { margen, sCosto } = calcMargen(p, nuevoPrecio, comPct, envioUnit);
     const color = margen >= minMargen + 5 ? '#00e676' : margen >= minMargen ? '#f59e0b' : '#ff5252';
     return '<td style="padding:6px 8px;text-align:center;background:' + color + '11">'
@@ -3794,7 +3796,7 @@ function renderDescuentos() {
       + '<a href="https://articulo.mercadolibre.com.ar/' + mlaLink + '" target="_blank" style="color:var(--text);text-decoration:none">' + p.title + '</a>'
       + '</td>';
     html += '<td style="padding:6px 8px;text-align:right;font-size:12px">$' + Math.round(p.precio).toLocaleString('es-AR') + '</td>';
-    html += '<td style="padding:6px 8px;text-align:right;font-size:12px">$' + Math.round(p.costo).toLocaleString('es-AR') + '</td>';
+    html += '<td style="padding:6px 8px;text-align:right;font-size:12px;color:' + (p.hasCMV ? 'var(--text)' : '#f59e0b') + '">' + (p.hasCMV ? '$' + Math.round(p.costo).toLocaleString('es-AR') : '⚠ sin CMV') + '</td>';
     html += '<td style="padding:4px 6px;text-align:center">'
       + '<input id="dsc_com_' + p.id + '" type="number" value="' + comPct + '" min="0" max="30" step="0.1" onchange="renderDescuentos()" style="width:52px;padding:3px 5px;border-radius:5px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:11px;text-align:center">%'
       + '<div style="font-size:9px;color:' + (p.comSource === 'ML' ? '#00e676' : '#f59e0b') + ';margin-top:1px">' + (p.comSource === 'ML' ? '✓ ML' : '≈ hist.') + '</div>'
@@ -3802,11 +3804,13 @@ function renderDescuentos() {
     html += '<td style="padding:4px 6px;text-align:center">'
       + '<input id="dsc_env_' + p.id + '" type="number" value="' + envioUnit + '" min="0" step="10" onchange="renderDescuentos()" style="width:64px;padding:3px 5px;border-radius:5px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:11px;text-align:center">'
       + '</td>';
-    html += '<td style="padding:6px 8px;text-align:center;cursor:help" title="' + tooltip + '">'
-      + '<span style="font-size:12px;font-weight:700;color:' + margenColor + '">' + margenActual.toFixed(1) + '%</span>'
-      + '<span style="font-size:9px;color:var(--muted);margin-left:3px">ℹ️</span>'
-      + (mg.sCosto != null ? '<div style="font-size:10px;color:var(--muted)">s/c: <span style="font-weight:700;color:' + (mg.sCosto >= 0 ? '#00e676' : '#ff5252') + '">' + mg.sCosto.toFixed(1) + '%</span></div>' : '')
-      + '</td>';
+    html += p.hasCMV
+      ? '<td style="padding:6px 8px;text-align:center;cursor:help" title="' + tooltip + '">'
+        + '<span style="font-size:12px;font-weight:700;color:' + margenColor + '">' + margenActual.toFixed(1) + '%</span>'
+        + '<span style="font-size:9px;color:var(--muted);margin-left:3px">ℹ️</span>'
+        + (mg.sCosto != null ? '<div style="font-size:10px;color:var(--muted)">s/c: <span style="font-weight:700;color:' + (mg.sCosto >= 0 ? '#00e676' : '#ff5252') + '">' + mg.sCosto.toFixed(1) + '%</span></div>' : '')
+        + '</td>'
+      : '<td style="padding:6px 8px;text-align:center;color:var(--muted);font-size:11px">—</td>';
     html += '<td style="padding:6px 8px;text-align:center;font-size:12px;color:' + stockColor + '">' + stockStr + '</td>';
     html += '<td style="padding:6px 8px;text-align:center;font-size:12px">' + cobBadge(p.cobertura) + '</td>';
     DESCUENTOS_PRESETS.forEach(function(pct) { html += celdaDescuento(p, pct, comPct, envioUnit); });
@@ -3837,7 +3841,7 @@ function renderDescuentos() {
   }).join('');
 
   tableEl.innerHTML = '<div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">'
-    + '<div style="font-size:11px;color:var(--muted);flex:1">' + products.length + ' productos con CMV cargado · Hover en margen actual para ver detalle</div>'
+    + '<div style="font-size:11px;color:var(--muted);flex:1">' + products.length + ' productos · ' + products.filter(p=>p.hasCMV).length + ' con CMV · Hover en margen para ver detalle</div>'
     + '<button onclick="exportDescuentosExcel()" style="padding:5px 14px;border:none;border-radius:7px;background:#16a34a;color:#fff;font-size:12px;font-weight:600;cursor:pointer">📥 Excel</button>'
     + '</div>'
     + '<div style="overflow-x:auto;max-height:620px;overflow-y:auto;border-radius:10px;border:1px solid var(--border)">'
