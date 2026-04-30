@@ -3632,59 +3632,76 @@ async function loadDescuentos() {
   window._dscSearchVal = '';
   const el = document.getElementById('descuentosContent');
   if (!el) return;
-  const connected = state.accounts.filter(a => a.data?.rentabilidad?.by_product);
-  if (!connected.length) {
-    el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">Sincronizá primero</div>';
+
+  const client = getActiveClient();
+  if (!client) {
+    el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">Seleccioná una cuenta</div>';
     return;
   }
 
-  // Cargar mapa de comisiones desde ML
-  el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">⏳ Cargando comisiones de ML...</div>';
-  const comisionMap = await loadComisionMap();
+  el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">⏳ Cargando publicaciones activas...</div>';
 
-  // Mapa de listing_type por MLA desde _pubsData
+  // Fuente principal: TODAS las publicaciones activas + costos guardados
+  const [itemsData, comisionMap] = await Promise.all([
+    apiCall('GET', `/api/reporte/items-activos?client_id=${client.id}`).catch(() => null),
+    loadComisionMap(),
+  ]);
+
+  if (!itemsData?.items?.length) {
+    el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">No se encontraron publicaciones activas</div>';
+    return;
+  }
+
+  // Mapa de ventas del período (para precio promedio real y datos de envío)
+  const byProductMap = {};
+  state.accounts.filter(a => a.data?.rentabilidad?.by_product).forEach(acc => {
+    (acc.data.rentabilidad.by_product || []).forEach(p => { byProductMap[p.id] = p; });
+  });
+
   const ltMap = {};
   (window._pubsData || []).forEach(p => { if (p.listing_type_id) ltMap[p.id] = p.listing_type_id; });
 
-  // Juntar todos los productos (con y sin CMV)
-  let products = [];
   const fullMapGlobal = {};
   if (window._fullStockData?.items) window._fullStockData.items.forEach(f => { fullMapGlobal[f.id] = f.stock_full ?? 0; });
 
-  connected.forEach(acc => {
-    (acc.data.rentabilidad.by_product || []).forEach(p => {
-      const lt = ltMap[p.id];
-      const pub = (window._pubsData || []).find(pub => pub.id === p.id);
-      const catId = pub?.category_id || null;
-      const comPctML = getComisionPct(p.id, lt, catId);
-      const comPctHist = p.revenue > 0 ? (p.comision / p.revenue * 100) : 6;
-      const comPct = comPctML != null ? comPctML : parseFloat(comPctHist.toFixed(1));
+  const dias = window._perfDays || 30;
 
-      const precioPromedio = p.revenue / (p.units || 1);
-      const envioUnit = precioPromedio >= 33000 && p.units > 0 ? Math.round((p.envio_pagado || 0) / p.units) : 0;
-      const dias = window._perfDays || 30;
-      const stock = (() => {
-        if (pub) {
-          const dep = pub.available_quantity ?? 0;
-          const full = pub.is_full ? (fullMapGlobal[p.id] ?? 0) : 0;
-          return dep + full;
-        }
-        return null;
-      })();
-      const ventasDiarias = p.units / dias;
-      const cobertura = (stock != null && ventasDiarias > 0) ? Math.round(stock / ventasDiarias) : null;
+  const products = itemsData.items.map(item => {
+    const bp  = byProductMap[item.mla_id];
+    const pub = (window._pubsData || []).find(p => p.id === item.mla_id);
 
-      products.push({
-        id: p.id, title: p.title,
-        precio: precioPromedio,
-        costo: p.costo_unit || 0,
-        hasCMV: !!p.costo_unit,
-        comPct: parseFloat(comPct.toFixed(1)),
-        comSource: comPctML != null ? 'ML' : 'histórico',
-        envioUnit: Math.round(envioUnit),
-        stock, cobertura, units: p.units, cuenta: acc.name,
-      });
-    });
+    // Precio: promedio real del período si vendió, si no el precio actual de ML
+    const precio = bp?.units > 0 ? bp.revenue / bp.units : (item.price || 0);
+
+    // Comisión
+    const lt = ltMap[item.mla_id];
+    const catId = pub?.category_id || null;
+    const comPctML  = getComisionPct(item.mla_id, lt, catId);
+    const comPctHist = bp?.revenue > 0 ? (bp.comision / bp.revenue * 100) : 6;
+    const comPct = comPctML != null ? comPctML : parseFloat(comPctHist.toFixed(1));
+
+    // Envío estimado por unidad (solo si vendió y precio >= $33k)
+    const envioUnit = bp && precio >= 33000 && bp.units > 0
+      ? Math.round((bp.envio_pagado || 0) / bp.units) : 0;
+
+    // Stock
+    const stock = pub
+      ? (pub.available_quantity ?? 0) + (pub.is_full ? (fullMapGlobal[item.mla_id] ?? 0) : 0)
+      : (item.stock ?? null);
+
+    const units = bp?.units || 0;
+    const cobertura = (stock != null && units > 0) ? Math.round(stock / (units / dias)) : null;
+
+    return {
+      id: item.mla_id, title: item.title,
+      precio,
+      costo: item.costo_unit || 0,
+      hasCMV: !!(item.has_cost && item.costo_unit > 0),
+      comPct: parseFloat(comPct.toFixed(1)),
+      comSource: comPctML != null ? 'ML' : 'histórico',
+      envioUnit,
+      stock, cobertura, units, cuenta: client.name,
+    };
   });
 
   _descuentosData = products;
