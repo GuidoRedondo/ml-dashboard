@@ -2641,6 +2641,21 @@ app.get('/api/items-full', requireAuth, async (req, res) => {
       });
     });
 
+    // ── 1b. Ventas últimos 30 días fijos (para tarjeta "Activas sin ventas") ─
+    const cutoff30 = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+    const soldLast30 = new Set();
+    if (curFrom <= cutoff30) {
+      // El período seleccionado cubre 30+ días: reusar órdenes ya cargadas
+      orders.forEach(order => {
+        const d = new Date(order.date_created || order.date_closed);
+        if (d >= cutoff30) (order.order_items || []).forEach(oi => { if (oi.item?.id) soldLast30.add(oi.item.id); });
+      });
+    } else {
+      // Período seleccionado < 30 días: fetch adicional
+      const { orders: o30 } = await fetchAllOrders(uid, headers, fmt(cutoff30), fmt(now));
+      o30.forEach(order => (order.order_items || []).forEach(oi => { if (oi.item?.id) soldLast30.add(oi.item.id); }));
+    }
+
     // ── 2. ALL items (active + inactive) ────────────────────────────────────
     async function fetchAllItems(status) {
       const base = `${ML_API}/users/${uid}/items/search?status=${status}&limit=100`;
@@ -2788,7 +2803,7 @@ app.get('/api/items-full', requireAuth, async (req, res) => {
         photo_urls: pics.slice(0,3).map(p => p.url || p.secure_url || ''),
         is_full: isFull,
         is_flex: isFlex,
-        units: item.units, revenue: item.revenue, hasSales: true,
+        units: item.units, revenue: item.revenue, hasSales: true, hasSales30d: soldLast30.has(item.id),
         revenueShare: totalRevenue > 0 ? parseFloat(((item.revenue/totalRevenue)*100).toFixed(2)) : 0,
         visits, conversion: visits > 0 ? parseFloat(((item.units/visits)*100).toFixed(1)) : 0,
         hasAds: ads.hasAds||false, adsStatus: ads.adsStatus||null,
@@ -2823,7 +2838,7 @@ app.get('/api/items-full', requireAuth, async (req, res) => {
         photo_urls: pics.slice(0,3).map(p => p.url || p.secure_url || ''),
         is_full: isFull,
         is_flex: isFlex,
-        units: 0, revenue: 0, hasSales: false,
+        units: 0, revenue: 0, hasSales: false, hasSales30d: soldLast30.has(id),
         revenueShare: 0,
         visits: visitsMap[id] || 0,
         conversion: 0,
