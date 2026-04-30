@@ -1321,14 +1321,14 @@ async function evalRuleProductoSinVentas(client) {
     for (let i = 0; i < allIds.length; i += 20) {
       const batch = allIds.slice(i, i + 20);
       const raw = await fetch(
-        `${ML_API}/items?ids=${batch.join(',')}&attributes=id,title,date_created,price`,
+        `${ML_API}/items?ids=${batch.join(',')}&attributes=id,title,date_created,price,available_quantity`,
         { headers }
       ).then(r => r.json()).catch(() => []);
       (Array.isArray(raw) ? raw : []).forEach(entry => {
         const item = entry.body || entry;
         if (!item?.id || !item.date_created) return;
         if (new Date(item.date_created).getTime() <= cutoff) {
-          candidatos.push({ id: item.id, title: item.title || item.id, precio: item.price, date_created: item.date_created });
+          candidatos.push({ id: item.id, title: item.title || item.id, precio: item.price, date_created: item.date_created, stock: item.available_quantity ?? null });
         }
       });
     }

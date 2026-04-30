@@ -3113,8 +3113,10 @@ async function loadPublicaciones() {
   const pctInactive = (totalSummary.inactive / T * 100).toFixed(0);
   const pctSales    = totalSummary.active > 0 ? (totalSummary.withSales / totalSummary.active * 100).toFixed(0) : 0;
   const pctProblems = (totalSummary.withProblems / T * 100).toFixed(0);
-  const staleCount  = allItems.filter(i => (i.dias_sin_cambio ?? 0) > 20).length;
-  const pctStale    = (staleCount / Math.max(allItems.length, 1) * 100).toFixed(0);
+  const staleCount    = allItems.filter(i => (i.dias_sin_cambio ?? 0) > 20).length;
+  const pctStale      = (staleCount / Math.max(allItems.length, 1) * 100).toFixed(0);
+  const noSalesCount  = allItems.filter(i => i.status === 'active' && !i.hasSales).length;
+  const pctNoSales    = (noSalesCount / Math.max(totalSummary.active, 1) * 100).toFixed(0);
 
   // ── Dashboard cards ───────────────────────────────────────────────────────
   const cards = `
@@ -3172,6 +3174,17 @@ async function loadPublicaciones() {
         <div style="font-size:12px;color:var(--muted)">${pctStale}% del total</div>
         <div style="background:var(--surface2);border-radius:4px;height:4px;margin-top:10px">
           <div style="background:#ff9100;height:100%;width:${Math.min(parseFloat(pctStale),100)}%;border-radius:4px"></div>
+        </div>
+      </div>
+
+      <!-- Activas sin ventas -->
+      <div class="kpi-card" style="padding:18px;cursor:pointer;border:2px solid transparent;transition:border .2s"
+           onclick="filterPubs('nosales',this)" id="pubFilterNoSales">
+        <div class="kpi-label">Activas sin ventas</div>
+        <div style="font-size:28px;font-weight:800;color:#ff5252;margin:8px 0">${noSalesCount.toLocaleString('es-AR')}</div>
+        <div style="font-size:12px;color:var(--muted)">${pctNoSales}% de las activas</div>
+        <div style="background:var(--surface2);border-radius:4px;height:4px;margin-top:10px">
+          <div style="background:#ff5252;height:100%;width:${Math.min(parseFloat(pctNoSales),100)}%;border-radius:4px"></div>
         </div>
       </div>
     </div>`;
@@ -3256,7 +3269,7 @@ function buildPubRows(items, fmt, dias) {
 function filterPubs(type, cardEl) {
   window._pubsFilter = type;
   // Highlight active card
-  ['pubFilterActive','pubFilterInactive','pubFilterSales','pubFilterFull','pubFilterStale'].forEach(id => {
+  ['pubFilterActive','pubFilterInactive','pubFilterSales','pubFilterFull','pubFilterStale','pubFilterNoSales'].forEach(id => {
     const c = document.getElementById(id);
     if (c) c.style.border = '2px solid transparent';
   });
@@ -3276,7 +3289,8 @@ function applyPubsFilter() {
       f === 'inactive' ? (row.dataset.status === 'inactive' || row.dataset.status === 'paused') :
       f === 'sales'    ? row.dataset.hassales === 'true' :
       f === 'full'     ? row.dataset.isfull === '1' :
-      f === 'stale'    ? parseInt(row.dataset.staledays || '0') > 20 : true;
+      f === 'stale'    ? parseInt(row.dataset.staledays || '0') > 20 :
+      f === 'nosales'  ? (row.dataset.status === 'active' && row.dataset.hassales === 'false') : true;
     const matchSearch = !q || row.dataset.search.includes(q);
     const show = matchFilter && matchSearch;
     row.style.display = show ? '' : 'none';
@@ -10700,10 +10714,13 @@ function ciRenderDetalle(a) {
     const rows = datos.items.map(c => {
       const titulo = c.title ? (c.title.length > 50 ? c.title.slice(0,50)+'…' : c.title) : '—';
       const precio = c.precio ? `$${Math.round(c.precio).toLocaleString('es-AR')}` : '—';
+      const stock = c.stock != null ? c.stock : '—';
+      const stockColor = c.stock == null ? 'var(--muted)' : c.stock === 0 ? '#ff5252' : c.stock <= 3 ? '#ff9100' : 'var(--text)';
       return `<tr>
         <td style="padding:4px 8px 4px 0;font-size:11px;color:var(--muted);white-space:nowrap">${c.id}</td>
         <td style="padding:4px 8px 4px 0;font-size:11px;color:var(--text)">${titulo}</td>
         <td style="padding:4px 8px;font-size:11px;color:var(--muted);white-space:nowrap">${c.dias} días</td>
+        <td style="padding:4px 8px;font-size:11px;font-weight:600;color:${stockColor};white-space:nowrap">📦 ${stock}</td>
         <td style="padding:4px 0;font-size:11px;color:var(--muted);white-space:nowrap">${precio}</td>
       </tr>`;
     }).join('');
