@@ -4610,7 +4610,7 @@ function renderRentabilidad(R, allProducts, costsMap) {
       ${kpiCard('🚚','COSTO NETO ENVÍOS',  resultado_envios,   resultado_envios>=0?'#00e676':'#ff5252', pct(Math.abs(resultado_envios), base)+' s/facturación')}
       ${kpiCard('📣','INVERSIÓN ADS',    -R.inversion_ads,    '#ff9100', pct(R.inversion_ads, base)+' s/facturación')}
       ${kpiCard('📦','CMV',              -cmvTotal,            cmvTotal>0?'#ff9100':'var(--muted)', cmvTotal>0?pct(cmvTotal,base)+' s/facturación':'Sin costos cargados')}
-      ${kpiCard('🎯','UTILIDAD FINAL',    utilidad_final,     utilidad_final>=0?'#FFD700':'#ff5252', cmvTotal>0?pct(Math.abs(utilidad_final),base)+' s/facturación':'Sin CMV aún')}
+      ${kpiCard('🎯','UTILIDAD FINAL',    utilidad_final,     utilidad_final>=0?'#FFD700':'#ff5252', cmvTotal>0?pct(Math.abs(utilidad_final),base)+' s/facturación · '+(utilidad_final/cmvTotal*100).toFixed(1)+'% s/costo':'Sin CMV aún')}
     </div>
 
     <!-- Tabla productos -->
@@ -4643,7 +4643,7 @@ function renderRentabilidad(R, allProducts, costsMap) {
               ${th('resultado_envio', 'Res. Envío')}
               ${th('utilidad',    'Utilidad $')}
               ${th('margen',      'Margen %')}
-              ${th('rentabilidad','Rentabilidad %')}
+              ${th('rentabilidad','% s/Costo')}
               ${th('pct_total',   '% Total')}
             </tr>
           </thead>
@@ -4672,7 +4672,7 @@ function renderRentabilidad(R, allProducts, costsMap) {
                 <td style="padding:7px 6px;text-align:right;font-weight:700;color:${margenColor(p.margen)}">
                   ${p.hasCMV ? p.margen + '%' : '<span style="color:var(--muted);font-size:10px">% rec. ' + p.margen + '%</span>'}
                 </td>
-                <td style="padding:7px 6px;text-align:right;font-weight:700;color:${p.rentabilidad!=null?(p.rentabilidad>=0?'#00e676':'#ff5252'):'var(--muted)'}">
+                <td style="padding:7px 6px;text-align:right;font-weight:700;color:${p.rentabilidad!=null?(p.rentabilidad>=0?'#00e676':'#ff5252'):'var(--muted)'}" title="Utilidad neta / CMV × 100">
                   ${p.rentabilidad != null ? p.rentabilidad + '%' : '—'}
                 </td>
                 <td style="padding:7px 6px;text-align:right;color:var(--muted)">${pct(p.revenue, base)}</td>
@@ -4935,7 +4935,7 @@ async function descargarTablaRentabilidad() {
       'Res. Envío':      Math.round(p.resultado_envio || 0),
       'Utilidad $':      utilidad != null ? Math.round(utilidad) : '',
       'Margen %':        margen,
-      'Rentabilidad %':  rentabilidad,
+      '% s/Costo':       rentabilidad,
       '% Total':         base > 0 ? (p.revenue / base * 100).toFixed(1) : '—',
     };
   });
