@@ -3113,10 +3113,12 @@ async function loadPublicaciones() {
   const pctInactive = (totalSummary.inactive / T * 100).toFixed(0);
   const pctSales    = totalSummary.active > 0 ? (totalSummary.withSales / totalSummary.active * 100).toFixed(0) : 0;
   const pctProblems = (totalSummary.withProblems / T * 100).toFixed(0);
+  const staleCount  = allItems.filter(i => (i.dias_sin_cambio ?? 0) > 20).length;
+  const pctStale    = (staleCount / Math.max(allItems.length, 1) * 100).toFixed(0);
 
   // ── Dashboard cards ───────────────────────────────────────────────────────
   const cards = `
-    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px">
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:12px;margin-bottom:20px">
 
       <!-- Activas -->
       <div class="kpi-card" style="padding:18px;cursor:pointer;border:2px solid transparent;transition:border .2s"
@@ -3161,6 +3163,17 @@ async function loadPublicaciones() {
           <div style="background:#00bcd4;height:100%;width:${Math.min(allItems.filter(i=>i.is_full).length/Math.max(allItems.length,1)*100,100)}%;border-radius:4px"></div>
         </div>
       </div>
+
+      <!-- Sin cambios >20 días -->
+      <div class="kpi-card" style="padding:18px;cursor:pointer;border:2px solid transparent;transition:border .2s"
+           onclick="filterPubs('stale',this)" id="pubFilterStale">
+        <div class="kpi-label">Sin cambios +20 días</div>
+        <div style="font-size:28px;font-weight:800;color:#ff9100;margin:8px 0">${staleCount.toLocaleString('es-AR')}</div>
+        <div style="font-size:12px;color:var(--muted)">${pctStale}% del total</div>
+        <div style="background:var(--surface2);border-radius:4px;height:4px;margin-top:10px">
+          <div style="background:#ff9100;height:100%;width:${Math.min(parseFloat(pctStale),100)}%;border-radius:4px"></div>
+        </div>
+      </div>
     </div>`;
 
   el.innerHTML = cards + `
@@ -3190,6 +3203,7 @@ async function loadPublicaciones() {
           <th style="text-align:right;cursor:pointer" onclick="sortPubs('adsClicks')">Clicks Ads ↕</th>
           <th style="text-align:right;cursor:pointer" onclick="sortPubs('adsConversion')">Conv. Ads ↕</th>
           <th style="text-align:center;cursor:pointer" onclick="sortPubs('health')">Health ↕</th>
+          <th style="text-align:right;cursor:pointer" onclick="sortPubs('dias_sin_cambio')">Últ. mod. ↕</th>
         </tr></thead>
         <tbody id="pubsBody">${buildPubRows(allItems, fmt, Math.max(1, Math.round((new Date(range2.date_to) - new Date(range2.date_from)) / (1000*60*60*24))))}</tbody>
       </table>
@@ -3231,15 +3245,18 @@ function buildPubRows(items, fmt, dias) {
     const cobertura = ritmo > 0 && item.available_quantity > 0 ? Math.round(item.available_quantity / ritmo) : null;
     const coberturaStr = cobertura != null ? cobertura + 'd' : '—';
     const coberColor = cobertura == null ? 'var(--muted)' : cobertura <= 7 ? '#ff5252' : cobertura <= 21 ? '#ff9100' : '#00e676';
+    const dsc = item.dias_sin_cambio;
+    const dscColor = dsc == null ? 'var(--muted)' : dsc > 20 ? '#ff9100' : dsc > 7 ? '#FFD700' : '#00e676';
+    const dscStr = dsc != null ? dsc + 'd' : '—';
 
-    return '<tr class="pub-row" data-status="' + item.status + '" data-hassales="' + item.hasSales + '" data-hasproblems="' + item.hasProblems + '" data-isfull="' + (item.is_full?'1':'0') + '" data-search="' + (item.title + item.id + (item.cuenta||'')).toLowerCase() + '">'      + '<td style="font-size:11px"><span style="color:var(--muted);cursor:pointer" title="Click para copiar" onclick="copyMLA(this,\'' + item.id + '\')">'      + item.id + '</span></td>'      + '<td style="max-width:240px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'      + '<a href="https://articulo.mercadolibre.com.ar/' + item.id.replace(/MLA(\d+)/, 'MLA-$1') + '" target="_blank" style="color:var(--text);text-decoration:none" title="Abrir en ML">'      + item.title + '</a></td>'      + '<td>' + statusTag + '</td>'      + '<td style="text-align:center">' + fullTag + '</td>'      + '<td style="text-align:right;font-weight:700;color:' + stockColor + '">' + (item.available_quantity != null ? item.available_quantity.toLocaleString('es-AR') : '—') + '</td>'      + '<td style="text-align:right;font-size:12px;font-weight:700;color:' + ritmoColor + '">' + (ritmo > 0 ? ritmo : '—') + '</td>'      + '<td style="text-align:right;font-size:12px;color:' + coberColor + '">' + coberturaStr + '</td>'      + '<td>' + adsTag + '</td>'      + '<td style="text-align:right;color:#00e676;font-weight:700">' + (item.units || '—') + '</td>'      + '<td style="text-align:right;color:var(--yellow);font-weight:700">' + (item.revenue > 0 ? fmt(item.revenue) : '—') + '</td>'      + '<td style="text-align:right;color:#00e676;font-weight:600">' + (item.adsSales > 0 ? fmt(item.adsSales) : '—') + '</td>'      + '<td style="text-align:right;font-size:12px">' + (item.revenueShare > 0 ? item.revenueShare + '%' : '—') + '</td>'      + '<td style="text-align:right">' + (item.visits > 0 ? item.visits.toLocaleString('es-AR') : '—') + '</td>'      + '<td style="text-align:right;font-size:13px;font-weight:700;color:' + convColor + '">' + (item.conversion > 0 ? item.conversion + '%' : '—') + '</td>'      + '<td style="text-align:right">' + (item.adsClicks > 0 ? item.adsClicks.toLocaleString('es-AR') : '—') + '</td>'      + '<td style="text-align:right;font-size:13px;font-weight:700;color:' + adsConvColor + '">' + (item.adsConversion > 0 ? item.adsConversion + '%' : '—') + '</td>'      + (function(){ if (item.health == null) return '<td style="text-align:center;color:var(--muted);font-size:11px">—</td>'; const h = item.health; const pct = Math.round(h * 100); const color = pct >= 80 ? '#00e676' : pct >= 50 ? '#ff9100' : '#ff5252'; const bar = '<div style="background:var(--surface2);border-radius:3px;height:4px;width:60px;margin:3px auto 0"><div style="background:'+color+';height:100%;width:'+pct+'%;border-radius:3px"></div></div>'; return '<td style="text-align:center"><span style="font-size:12px;font-weight:700;color:'+color+'">' + pct + '%</span>' + bar + '</td>'; })()      + '</tr>';
+    return '<tr class="pub-row" data-status="' + item.status + '" data-hassales="' + item.hasSales + '" data-hasproblems="' + item.hasProblems + '" data-isfull="' + (item.is_full?'1':'0') + '" data-staledays="' + (dsc ?? 0) + '" data-search="' + (item.title + item.id + (item.cuenta||'')).toLowerCase() + '">'      + '<td style="font-size:11px"><span style="color:var(--muted);cursor:pointer" title="Click para copiar" onclick="copyMLA(this,\'' + item.id + '\')">'      + item.id + '</span></td>'      + '<td style="max-width:240px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'      + '<a href="https://articulo.mercadolibre.com.ar/' + item.id.replace(/MLA(\d+)/, 'MLA-$1') + '" target="_blank" style="color:var(--text);text-decoration:none" title="Abrir en ML">'      + item.title + '</a></td>'      + '<td>' + statusTag + '</td>'      + '<td style="text-align:center">' + fullTag + '</td>'      + '<td style="text-align:right;font-weight:700;color:' + stockColor + '">' + (item.available_quantity != null ? item.available_quantity.toLocaleString('es-AR') : '—') + '</td>'      + '<td style="text-align:right;font-size:12px;font-weight:700;color:' + ritmoColor + '">' + (ritmo > 0 ? ritmo : '—') + '</td>'      + '<td style="text-align:right;font-size:12px;color:' + coberColor + '">' + coberturaStr + '</td>'      + '<td>' + adsTag + '</td>'      + '<td style="text-align:right;color:#00e676;font-weight:700">' + (item.units || '—') + '</td>'      + '<td style="text-align:right;color:var(--yellow);font-weight:700">' + (item.revenue > 0 ? fmt(item.revenue) : '—') + '</td>'      + '<td style="text-align:right;color:#00e676;font-weight:600">' + (item.adsSales > 0 ? fmt(item.adsSales) : '—') + '</td>'      + '<td style="text-align:right;font-size:12px">' + (item.revenueShare > 0 ? item.revenueShare + '%' : '—') + '</td>'      + '<td style="text-align:right">' + (item.visits > 0 ? item.visits.toLocaleString('es-AR') : '—') + '</td>'      + '<td style="text-align:right;font-size:13px;font-weight:700;color:' + convColor + '">' + (item.conversion > 0 ? item.conversion + '%' : '—') + '</td>'      + '<td style="text-align:right">' + (item.adsClicks > 0 ? item.adsClicks.toLocaleString('es-AR') : '—') + '</td>'      + '<td style="text-align:right;font-size:13px;font-weight:700;color:' + adsConvColor + '">' + (item.adsConversion > 0 ? item.adsConversion + '%' : '—') + '</td>'      + (function(){ if (item.health == null) return '<td style="text-align:center;color:var(--muted);font-size:11px">—</td>'; const h = item.health; const pct = Math.round(h * 100); const color = pct >= 80 ? '#00e676' : pct >= 50 ? '#ff9100' : '#ff5252'; const bar = '<div style="background:var(--surface2);border-radius:3px;height:4px;width:60px;margin:3px auto 0"><div style="background:'+color+';height:100%;width:'+pct+'%;border-radius:3px"></div></div>'; return '<td style="text-align:center"><span style="font-size:12px;font-weight:700;color:'+color+'">' + pct + '%</span>' + bar + '</td>'; })()      + '<td style="text-align:right;font-size:12px;font-weight:700;color:' + dscColor + '">' + dscStr + '</td>'      + '</tr>';
   }).join('');
 }
 
 function filterPubs(type, cardEl) {
   window._pubsFilter = type;
   // Highlight active card
-  ['pubFilterActive','pubFilterInactive','pubFilterSales','pubFilterFull'].forEach(id => {
+  ['pubFilterActive','pubFilterInactive','pubFilterSales','pubFilterFull','pubFilterStale'].forEach(id => {
     const c = document.getElementById(id);
     if (c) c.style.border = '2px solid transparent';
   });
@@ -3258,7 +3275,8 @@ function applyPubsFilter() {
       f === 'active'   ? row.dataset.status === 'active' :
       f === 'inactive' ? (row.dataset.status === 'inactive' || row.dataset.status === 'paused') :
       f === 'sales'    ? row.dataset.hassales === 'true' :
-      f === 'full'     ? row.dataset.isfull === '1' : true;
+      f === 'full'     ? row.dataset.isfull === '1' :
+      f === 'stale'    ? parseInt(row.dataset.staledays || '0') > 20 : true;
     const matchSearch = !q || row.dataset.search.includes(q);
     const show = matchFilter && matchSearch;
     row.style.display = show ? '' : 'none';
