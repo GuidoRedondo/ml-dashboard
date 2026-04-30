@@ -2505,15 +2505,18 @@ app.get('/api/ads-anuncios', requireAuth, async (req, res) => {
 
     if (!allItems.length) return res.json({ items: [] });
 
-    // ── 2. Títulos de ítems (batch) ──────────────────────────────────────────
+    // ── 2. Títulos + stock de ítems (batch) ─────────────────────────────────
     const headers = { 'Authorization': `Bearer ${token}` };
     const itemIds = [...new Set(allItems.map(i => i.item_id))];
-    const titleMap = {}, campaignMap = {};
+    const titleMap = {}, stockMap = {}, campaignMap = {};
     for (let i = 0; i < itemIds.length; i += 20) {
       const batch = itemIds.slice(i, i + 20);
-      const data  = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,title`, { headers }).then(r => r.json()).catch(() => []);
+      const data  = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,title,available_quantity`, { headers }).then(r => r.json()).catch(() => []);
       (Array.isArray(data) ? data : []).forEach(r => {
-        if (r.code === 200 && r.body) titleMap[r.body.id] = r.body.title;
+        if (r.code === 200 && r.body) {
+          titleMap[r.body.id] = r.body.title;
+          stockMap[r.body.id] = r.body.available_quantity ?? null;
+        }
       });
     }
 
@@ -2530,13 +2533,14 @@ app.get('/api/ads-anuncios', requireAuth, async (req, res) => {
       }
     } catch(e) {}
 
-    // ── 4. Ventas totales por ítem para TACOS real ────────────────────────────
+    // ── 4. Ventas totales por ítem para TACOS real + unidades para cobertura ──
     const uid = user.id;
     const authHeaders = { 'Authorization': `Bearer ${token}` };
     const fmt = d => d.toISOString().slice(0,19) + '.000-00:00';
     const dateFrom = new Date(fromDate + 'T00:00:00');
     const dateTo   = new Date(toDate   + 'T23:59:59');
-    const revenueByItem = {};
+    const periodDays = Math.max(1, Math.round((dateTo - dateFrom) / (24*60*60*1000)));
+    const revenueByItem = {}, unitsByItem = {};
     try {
       const { orders } = await fetchAllOrders(uid, authHeaders, fmt(dateFrom), fmt(dateTo));
       orders.forEach(order => {
@@ -2544,6 +2548,7 @@ app.get('/api/ads-anuncios', requireAuth, async (req, res) => {
           const id = oi.item?.id;
           if (!id) return;
           revenueByItem[id] = (revenueByItem[id] || 0) + (parseFloat(oi.unit_price)||0) * (oi.quantity||0);
+          unitsByItem[id]   = (unitsByItem[id]   || 0) + (oi.quantity||0);
         });
       });
     } catch(e) {}
@@ -2553,13 +2558,19 @@ app.get('/api/ads-anuncios', requireAuth, async (req, res) => {
       const totalRevenue = revenueByItem[i.item_id] || 0;
       const tacos = i.inversion > 0 && totalRevenue > 0 ? (i.inversion / totalRevenue * 100) : null;
       const ctr   = i.clics > 0 && i.impresiones > 0 ? (i.clics / i.impresiones * 100) : 0;
+      const stock = stockMap[i.item_id] ?? null;
+      const units = unitsByItem[i.item_id] || 0;
+      const ritmo = units / periodDays;
+      const cobertura_dias = stock != null && ritmo > 0 ? Math.round(stock / ritmo) : null;
       return {
         ...i,
-        title:          titleMap[i.item_id] || i.item_id,
-        campaign:       campaignMap[i.campaign_id] || (i.campaign_id ? `#${i.campaign_id}` : '—'),
+        title:             titleMap[i.item_id] || i.item_id,
+        campaign:          campaignMap[i.campaign_id] || (i.campaign_id ? `#${i.campaign_id}` : '—'),
         tacos,
         ctr,
         facturacion_total: totalRevenue,
+        stock,
+        cobertura_dias,
       };
     }).sort((a, b) => b.inversion - a.inversion);
 

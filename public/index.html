@@ -5812,33 +5812,26 @@ function exportAdsAnunciosExcel() {
   const { items, from, to } = _adsAnunciosData;
   const client = getActiveClient();
   const XLSX = window.XLSX;
-  const stockMapExp = {};
-  const fullMapExp = {};
-  if (window._fullStockData?.items) window._fullStockData.items.forEach(f => { fullMapExp[f.id] = f.stock_full ?? 0; });
-  if (window._pubsData) window._pubsData.forEach(p => {
-    const dep = p.available_quantity ?? 0;
-    const full = p.is_full ? (fullMapExp[p.id] ?? 0) : 0;
-    stockMapExp[p.id] = dep + full;
-  });
   const rows = items.map(i => ({
-    'MLA':          i.item_id,
-    'Título':       i.title,
-    'Campaña':      i.campaign,
-    'TACOS (%)':    i.tacos != null ? parseFloat(i.tacos.toFixed(2)) : '',
-    'ROAS':         i.roas > 0 ? parseFloat(i.roas.toFixed(2)) : '',
-    'Inversión':    Math.round(i.inversion),
-    'Ingresos Ads': Math.round(i.ingresos),
-    'Ventas':       i.ventas,
-    'CTR (%)':      i.ctr > 0 ? parseFloat(i.ctr.toFixed(3)) : '',
+    'MLA':            i.item_id,
+    'Título':         i.title,
+    'Campaña':        i.campaign,
+    'TACOS (%)':      i.tacos != null ? parseFloat(i.tacos.toFixed(2)) : '',
+    'ROAS':           i.roas > 0 ? parseFloat(i.roas.toFixed(2)) : '',
+    'Inversión':      Math.round(i.inversion),
+    'Ingresos Ads':   Math.round(i.ingresos),
+    'Ventas':         i.ventas,
+    'CTR (%)':        i.ctr > 0 ? parseFloat(i.ctr.toFixed(3)) : '',
     'Conversión (%)': i.cvr > 0 ? parseFloat(i.cvr.toFixed(2)) : '',
-    'Impresiones':  i.impresiones,
-    'Clics':        i.clics,
-    'CPC':          Math.round(i.cpc),
-    'Stock':        stockMapExp[i.item_id] ?? '',
+    'Impresiones':    i.impresiones,
+    'Clics':          i.clics,
+    'CPC':            Math.round(i.cpc),
+    'Stock':          i.stock ?? '',
+    'Cobertura (días)': i.cobertura_dias ?? '',
   }));
   const wb = XLSX.utils.book_new();
   const ws = XLSX.utils.json_to_sheet(rows);
-  ws['!cols'] = [18,40,20,11,8,12,14,9,9,14,13,9,10,9].map(w => ({ wch: w }));
+  ws['!cols'] = [18,40,20,11,8,12,14,9,9,14,13,9,10,9,15].map(w => ({ wch: w }));
   XLSX.utils.book_append_sheet(wb, ws, 'Anuncios');
   XLSX.writeFile(wb, `Anuncios_${(client?.name||'').replace(/\s+/g,'_')}_${from}_${to}.xlsx`);
   showToast('✅ Excel descargado');
@@ -5897,28 +5890,12 @@ function renderAdsAnuncios(data) {
   const acosColor = v => !v || v<=0 ? 'var(--muted)' : v<=15 ? '#00e676' : v<=25 ? '#ff9100' : '#ff5252';
   const roasColor = v => !v || v<=0 ? 'var(--muted)' : v>=6 ? '#00e676' : v>=3 ? '#ff9100' : '#ff5252';
 
-  // Mapa de stock: para items FULL suma stock_full + available_quantity (depósito)
-  const adsStockMap = {};
-  const adsFullMap = {};
-  if (window._fullStockData?.items?.length) {
-    window._fullStockData.items.forEach(f => { adsFullMap[f.id] = f.stock_full ?? 0; });
-  }
-  if (window._pubsData && window._pubsData.length) {
-    window._pubsData.forEach(p => {
-      const deposito = p.available_quantity ?? 0;
-      const full = p.is_full ? (adsFullMap[p.id] ?? 0) : 0;
-      adsStockMap[p.id] = { total: deposito + full, full, deposito: p.is_full ? deposito : null, is_full: p.is_full };
-    });
-  }
+  const cobColor = v => v == null ? 'var(--muted)' : v <= 7 ? '#ff5252' : v <= 21 ? '#ff9100' : '#00e676';
+  const stockColor = v => v == null ? 'var(--muted)' : v === 0 ? '#ff5252' : v <= 5 ? '#ff9100' : '#00e676';
 
   const rows = sorted.map((i, idx) => {
-    const stockData = adsStockMap[i.item_id];
-    const stockTotal = stockData?.total ?? null;
-    const stockStr = stockTotal == null ? '—'
-      : stockData.is_full
-        ? `${stockTotal} (F:${stockData.full} D:${stockData.deposito})`
-        : stockTotal.toLocaleString('es-AR');
-    const stockColor = stockTotal == null ? 'var(--muted)' : stockTotal === 0 ? '#ff5252' : stockTotal <= 5 ? '#ff9100' : '#00e676';
+    const stockStr = i.stock == null ? '—' : i.stock.toLocaleString('es-AR');
+    const cobStr   = i.cobertura_dias == null ? '—' : i.cobertura_dias + 'd';
     return `
     <tr data-search="${(i.item_id + ' ' + i.title).toLowerCase()}" data-campaign="${(i.campaign||'').toLowerCase()}" style="border-bottom:1px solid var(--border);${idx%2===0?'background:rgba(255,255,255,.02)':''}">
       <td style="padding:7px 10px;font-size:12px;white-space:nowrap">
@@ -5936,7 +5913,8 @@ function renderAdsAnuncios(data) {
       <td style="padding:7px 10px;text-align:right;font-size:12px;color:var(--muted)">${(i.impresiones||0).toLocaleString('es-AR')}</td>
       <td style="padding:7px 10px;text-align:right;font-size:12px">${fmtN(i.clics)}</td>
       <td style="padding:7px 10px;text-align:right;font-size:12px;color:var(--muted)">${fmt(i.cpc)}</td>
-      <td style="padding:7px 10px;text-align:right;font-size:12px;font-weight:700;color:${stockColor}">${stockStr}</td>
+      <td style="padding:7px 10px;text-align:right;font-size:12px;font-weight:700;color:${stockColor(i.stock)}">${stockStr}</td>
+      <td style="padding:7px 10px;text-align:right;font-size:12px;font-weight:700;color:${cobColor(i.cobertura_dias)}">${cobStr}</td>
     </tr>`;
   }).join('');
 
@@ -5971,14 +5949,15 @@ function renderAdsAnuncios(data) {
           ${th('cvr',        'Conversión')}
           ${th('impresiones','Impresiones')}
           ${th('clics',      'Clics')}
-          ${th('cpc',        'CPC')}
-          <th style="padding:8px 10px;text-align:right;font-size:11px;font-weight:600;color:var(--muted);border-bottom:1px solid var(--border);white-space:nowrap">Stock</th>
+          ${th('cpc',           'CPC')}
+          ${th('stock',         'Stock')}
+          ${th('cobertura_dias','Cobertura')}
         </tr></thead>
         <tbody>${rows}</tbody>
       </table>
     </div>
     <div style="font-size:11px;color:var(--muted);margin-top:10px">
-      TACOS = Inversión / Ingresos · ROAS = Ingresos / Inversión · CTR = Clics / Impresiones · Conversión = Ventas / Clics · Click en columnas para ordenar
+      TACOS = Inversión / Ingresos · ROAS = Ingresos / Inversión · CTR = Clics / Impresiones · Conversión = Ventas / Clics · Cobertura = Stock / (Ventas/días período) · Click en columnas para ordenar
     </div>`;
 }
 
