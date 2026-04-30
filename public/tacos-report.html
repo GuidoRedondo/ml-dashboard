@@ -1,0 +1,658 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Análisis TACOS 90 días — Negocio Redondo</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: 'Inter', sans-serif;
+    font-size: 13px;
+    color: #1a1a2e;
+    background: #fff;
+    line-height: 1.55;
+  }
+
+  /* ── PORTADA ── */
+  .cover {
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    padding: 80px 60px;
+    background: linear-gradient(135deg, #0f0f23 0%, #1a1a3e 50%, #0d1b2a 100%);
+    color: #fff;
+    page-break-after: always;
+  }
+  .cover-tag {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 3px;
+    text-transform: uppercase;
+    color: #00e676;
+    margin-bottom: 24px;
+  }
+  .cover h1 {
+    font-size: 48px;
+    font-weight: 800;
+    line-height: 1.1;
+    margin-bottom: 16px;
+  }
+  .cover h1 span { color: #00e676; }
+  .cover-sub {
+    font-size: 18px;
+    color: rgba(255,255,255,0.6);
+    margin-bottom: 48px;
+    font-weight: 400;
+  }
+  .cover-meta {
+    display: flex;
+    gap: 48px;
+    margin-bottom: 60px;
+  }
+  .cover-meta-item label {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    color: rgba(255,255,255,0.4);
+    display: block;
+    margin-bottom: 4px;
+  }
+  .cover-meta-item span {
+    font-size: 22px;
+    font-weight: 700;
+    color: #fff;
+  }
+  .cover-meta-item span small {
+    font-size: 14px;
+    font-weight: 400;
+    color: rgba(255,255,255,0.5);
+  }
+  .cover-footer {
+    margin-top: auto;
+    padding-top: 40px;
+    border-top: 1px solid rgba(255,255,255,0.1);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .cover-footer .brand {
+    font-size: 13px;
+    font-weight: 700;
+    color: #00e676;
+    letter-spacing: 1px;
+  }
+  .cover-footer .date {
+    font-size: 11px;
+    color: rgba(255,255,255,0.4);
+  }
+
+  /* ── PÁGINA ── */
+  .page {
+    padding: 48px 52px;
+    max-width: 900px;
+    margin: 0 auto;
+  }
+  .page-break { page-break-before: always; }
+
+  /* ── SECCIÓN TÍTULO ── */
+  .section-title {
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 3px;
+    text-transform: uppercase;
+    color: #00b894;
+    margin-bottom: 8px;
+  }
+  h2 {
+    font-size: 26px;
+    font-weight: 800;
+    color: #0f0f23;
+    margin-bottom: 6px;
+  }
+  .section-lead {
+    font-size: 13px;
+    color: #555;
+    margin-bottom: 28px;
+    max-width: 680px;
+  }
+
+  /* ── KPIS GRANDES ── */
+  .kpi-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 16px;
+    margin-bottom: 36px;
+  }
+  .kpi-card {
+    background: #f8f9fc;
+    border-radius: 12px;
+    padding: 20px 18px;
+    border-left: 3px solid #e0e0e0;
+  }
+  .kpi-card.green  { border-color: #00b894; }
+  .kpi-card.blue   { border-color: #0984e3; }
+  .kpi-card.orange { border-color: #fd9644; }
+  .kpi-card.red    { border-color: #e17055; }
+  .kpi-label {
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: #888;
+    margin-bottom: 8px;
+  }
+  .kpi-value {
+    font-size: 28px;
+    font-weight: 800;
+    color: #0f0f23;
+    line-height: 1;
+    margin-bottom: 4px;
+  }
+  .kpi-sub { font-size: 11px; color: #aaa; }
+
+  /* ── TABLAS ── */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-bottom: 28px;
+    font-size: 12px;
+  }
+  thead tr {
+    background: #0f0f23;
+    color: #fff;
+  }
+  thead th {
+    padding: 10px 12px;
+    font-weight: 600;
+    font-size: 11px;
+    letter-spacing: 0.5px;
+    text-align: left;
+  }
+  thead th.r { text-align: right; }
+  tbody tr { border-bottom: 1px solid #f0f0f0; }
+  tbody tr:hover { background: #fafafa; }
+  tbody td { padding: 9px 12px; color: #2d2d2d; }
+  tbody td.r { text-align: right; font-weight: 600; }
+  tbody td.muted { color: #aaa; font-size: 11px; }
+
+  .badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 20px;
+    font-size: 10px;
+    font-weight: 700;
+  }
+  .badge-green  { background: #d4edda; color: #155724; }
+  .badge-yellow { background: #fff3cd; color: #856404; }
+  .badge-orange { background: #ffe5cc; color: #c05c00; }
+  .badge-red    { background: #f8d7da; color: #721c24; }
+
+  /* ── HIGHLIGHT BOX ── */
+  .highlight {
+    background: linear-gradient(135deg, #f0fff8, #e8f8f5);
+    border: 1px solid #b2dfdb;
+    border-radius: 10px;
+    padding: 20px 22px;
+    margin-bottom: 20px;
+  }
+  .highlight.red-bg {
+    background: linear-gradient(135deg, #fff5f5, #fff0f0);
+    border-color: #ffcdd2;
+  }
+  .highlight.blue-bg {
+    background: linear-gradient(135deg, #f0f8ff, #e8f4fd);
+    border-color: #b3d9f9;
+  }
+  .highlight h4 {
+    font-size: 13px;
+    font-weight: 700;
+    margin-bottom: 8px;
+    color: #0f0f23;
+  }
+  .highlight p, .highlight li { font-size: 12px; color: #444; margin-bottom: 4px; }
+  .highlight ul { padding-left: 16px; }
+
+  /* ── PATRÓN CARD ── */
+  .pattern-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin-bottom: 28px;
+  }
+  .pattern-card {
+    border: 1px solid #eee;
+    border-radius: 10px;
+    padding: 18px 20px;
+  }
+  .pattern-card h4 {
+    font-size: 12px;
+    font-weight: 700;
+    color: #0f0f23;
+    margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .pattern-card p { font-size: 11.5px; color: #555; margin-bottom: 6px; }
+  .pattern-card .insight {
+    background: #f8f9fc;
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-size: 11px;
+    color: #0f0f23;
+    font-weight: 500;
+    margin-top: 8px;
+  }
+
+  /* ── BENCHMARK ── */
+  .benchmark-table thead tr { background: #2d3436; }
+  .benchmark-table tbody td.r { font-weight: 600; }
+  .benchmark-table .bad  { color: #e17055; }
+  .benchmark-table .ok   { color: #fdcb6e; }
+  .benchmark-table .good { color: #00b894; }
+  .benchmark-table .best { color: #0984e3; font-weight: 700; }
+
+  /* ── ALERTA ── */
+  .alert-item {
+    display: flex;
+    gap: 14px;
+    padding: 16px 18px;
+    border-radius: 10px;
+    margin-bottom: 14px;
+    align-items: flex-start;
+  }
+  .alert-item.red    { background: #fff5f5; border: 1px solid #ffcdd2; }
+  .alert-item.yellow { background: #fffbf0; border: 1px solid #ffecb3; }
+  .alert-item.green  { background: #f0fff8; border: 1px solid #c8e6c9; }
+  .alert-icon { font-size: 22px; line-height: 1; flex-shrink: 0; }
+  .alert-body h4 { font-size: 12px; font-weight: 700; color: #0f0f23; margin-bottom: 4px; }
+  .alert-body p  { font-size: 11.5px; color: #555; }
+
+  /* ── FOOTER ── */
+  .report-footer {
+    margin-top: 48px;
+    padding-top: 16px;
+    border-top: 1px solid #eee;
+    display: flex;
+    justify-content: space-between;
+    font-size: 10px;
+    color: #bbb;
+  }
+
+  /* ── PRINT ── */
+  @media print {
+    body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    .cover { min-height: 100vh; }
+    .page-break { page-break-before: always; }
+    .no-break { page-break-inside: avoid; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ═══════════ PORTADA ═══════════ -->
+<div class="cover">
+  <div class="cover-tag">Negocio Redondo Latam · Informe Interno</div>
+  <h1>Análisis de<br><span>Publicidad ML</span><br>— Cartera Completa</h1>
+  <div class="cover-sub">TACOS, ROAS y patrones de comportamiento<br>en 22 cuentas activas · Últimos 90 días</div>
+  <div class="cover-meta">
+    <div class="cover-meta-item">
+      <label>Período</label>
+      <span>90 días <small>(ene–abr 2026)</small></span>
+    </div>
+    <div class="cover-meta-item">
+      <label>Cuentas</label>
+      <span>22 <small>clientes</small></span>
+    </div>
+    <div class="cover-meta-item">
+      <label>Facturación total</label>
+      <span>$2.96B <small>ARS</small></span>
+    </div>
+    <div class="cover-meta-item">
+      <label>Inversión en ads</label>
+      <span>$215M <small>ARS</small></span>
+    </div>
+  </div>
+  <div class="cover-footer">
+    <span class="brand">NEGOCIO REDONDO LATAM</span>
+    <span class="date">Abril 2026 · Uso interno — no distribuir</span>
+  </div>
+</div>
+
+
+<!-- ═══════════ PÁGINA 1 — OVERVIEW ═══════════ -->
+<div class="page page-break">
+  <div class="section-title">01 — Overview de cartera</div>
+  <h2>Panorama general</h2>
+  <p class="section-lead">Métricas consolidadas de las 22 cuentas activas. TACOS ponderado por facturación.</p>
+
+  <div class="kpi-grid">
+    <div class="kpi-card green">
+      <div class="kpi-label">TACOS ponderado</div>
+      <div class="kpi-value">7.3%</div>
+      <div class="kpi-sub">Gasto / Facturación total</div>
+    </div>
+    <div class="kpi-card blue">
+      <div class="kpi-label">ROAS ponderado</div>
+      <div class="kpi-value">6.8x</div>
+      <div class="kpi-sub">Ventas ads / Gasto</div>
+    </div>
+    <div class="kpi-card orange">
+      <div class="kpi-label">Inversión en ads</div>
+      <div class="kpi-value">$215M</div>
+      <div class="kpi-sub">ARS · 90 días</div>
+    </div>
+    <div class="kpi-card red">
+      <div class="kpi-label">Facturación cartera</div>
+      <div class="kpi-value">$2.96B</div>
+      <div class="kpi-sub">ARS · 90 días</div>
+    </div>
+  </div>
+
+  <div class="section-title">Segmentación por TACOS</div>
+
+  <table class="no-break">
+    <thead>
+      <tr>
+        <th>Cliente</th>
+        <th class="r">TACOS</th>
+        <th class="r">ROAS</th>
+        <th class="r">ACOS</th>
+        <th class="r">CTR</th>
+        <th class="r">CVR prom.</th>
+        <th>Nivel</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr><td>Virtual House</td><td class="r">0.66%</td><td class="r">6.90x</td><td class="r">14.5%</td><td class="r">0.30%</td><td class="r">—</td><td><span class="badge badge-green">Excelente</span></td></tr>
+      <tr><td>Basale</td><td class="r">1.11%</td><td class="r">24.10x</td><td class="r">4.2%</td><td class="r">0.33%</td><td class="r">1.7%</td><td><span class="badge badge-green">Excelente</span></td></tr>
+      <tr><td>Kobe Japan</td><td class="r">1.23%</td><td class="r">3.81x</td><td class="r">26.2%</td><td class="r">0.14%</td><td class="r">2.1%</td><td><span class="badge badge-green">Excelente</span></td></tr>
+      <tr><td>LT Repuestos</td><td class="r">1.50%</td><td class="r">7.25x</td><td class="r">13.8%</td><td class="r">0.18%</td><td class="r">2.0%</td><td><span class="badge badge-green">Excelente</span></td></tr>
+      <tr><td>EC Group</td><td class="r">1.54%</td><td class="r">4.87x</td><td class="r">20.5%</td><td class="r">0.23%</td><td class="r">1.0%</td><td><span class="badge badge-green">Excelente</span></td></tr>
+      <tr><td>Vale Doble</td><td class="r">2.22%</td><td class="r">9.94x</td><td class="r">10.1%</td><td class="r">0.33%</td><td class="r">7.0%</td><td><span class="badge badge-green">Excelente</span></td></tr>
+      <tr><td>Highs</td><td class="r">2.74%</td><td class="r">7.87x</td><td class="r">12.7%</td><td class="r">0.32%</td><td class="r">2.2%</td><td><span class="badge badge-green">Excelente</span></td></tr>
+      <tr><td>Bazar del Pacífico</td><td class="r">3.06%</td><td class="r">10.19x</td><td class="r">9.8%</td><td class="r">0.18%</td><td class="r">5.1%</td><td><span class="badge badge-yellow">Normal</span></td></tr>
+      <tr><td>Coolcase</td><td class="r">3.32%</td><td class="r">8.43x</td><td class="r">11.9%</td><td class="r">0.27%</td><td class="r">5.4%</td><td><span class="badge badge-yellow">Normal</span></td></tr>
+      <tr><td>Lencería Bombón</td><td class="r">3.40%</td><td class="r">9.49x</td><td class="r">10.5%</td><td class="r">0.39%</td><td class="r">8.7%</td><td><span class="badge badge-yellow">Normal</span></td></tr>
+      <tr><td>Sima</td><td class="r">3.78%</td><td class="r">9.43x</td><td class="r">10.6%</td><td class="r">0.47%</td><td class="r">3.5%</td><td><span class="badge badge-yellow">Normal</span></td></tr>
+      <tr><td>Makom</td><td class="r">3.86%</td><td class="r">7.41x</td><td class="r">13.5%</td><td class="r">0.15%</td><td class="r">1.0%</td><td><span class="badge badge-yellow">Normal</span></td></tr>
+      <tr><td>La Casa Lopez</td><td class="r">6.65%</td><td class="r">7.63x</td><td class="r">13.1%</td><td class="r">0.36%</td><td class="r">3.7%</td><td><span class="badge badge-yellow">Normal</span></td></tr>
+      <tr><td>Yakka</td><td class="r">8.32%</td><td class="r">6.85x</td><td class="r">14.6%</td><td class="r">0.33%</td><td class="r">5.5%</td><td><span class="badge badge-orange">Elevado</span></td></tr>
+      <tr><td>Aquamarket</td><td class="r">8.81%</td><td class="r">3.99x</td><td class="r">25.1%</td><td class="r">0.12%</td><td class="r">1.1%</td><td><span class="badge badge-orange">Elevado</span></td></tr>
+      <tr><td>Imago</td><td class="r">8.78%</td><td class="r">6.36x</td><td class="r">15.7%</td><td class="r">0.19%</td><td class="r">3.3%</td><td><span class="badge badge-orange">Elevado</span></td></tr>
+      <tr><td>White Salud</td><td class="r">8.80%</td><td class="r">5.49x</td><td class="r">18.2%</td><td class="r">0.25%</td><td class="r">4.4%</td><td><span class="badge badge-orange">Elevado</span></td></tr>
+      <tr><td>Luminocity</td><td class="r">10.18%</td><td class="r">5.97x</td><td class="r">16.7%</td><td class="r">0.18%</td><td class="r">2.2%</td><td><span class="badge badge-orange">Elevado</span></td></tr>
+      <tr><td>AB Fitness</td><td class="r">10.64%</td><td class="r">8.09x</td><td class="r">12.4%</td><td class="r">0.51%</td><td class="r">7.4%</td><td><span class="badge badge-orange">Elevado</span></td></tr>
+      <tr><td>Viuma</td><td class="r">10.67%</td><td class="r">6.91x</td><td class="r">14.5%</td><td class="r">0.29%</td><td class="r">5.3%</td><td><span class="badge badge-orange">Elevado</span></td></tr>
+      <tr><td>Cloe Cosmética</td><td class="r">14.30%</td><td class="r">2.53x</td><td class="r">39.5%</td><td class="r">0.17%</td><td class="r">1.9%</td><td><span class="badge badge-red">Crítico</span></td></tr>
+      <tr><td><strong>Vecasina</strong></td><td class="r"><strong>15.02%</strong></td><td class="r">6.36x</td><td class="r">15.7%</td><td class="r">0.24%</td><td class="r">9.8%</td><td><span class="badge badge-red">Crítico</span></td></tr>
+    </tbody>
+  </table>
+
+  <div class="highlight blue-bg">
+    <h4>Nota sobre Vecasina</h4>
+    <p>TACOS 15% con ROAS 6.36x y CVR 9.8% es un caso atípico: el TACOS elevado no se debe a mal rendimiento de los anuncios sino a que reinvierte agresivamente en publicidad sobre una facturación muy concentrada en pocos ítems de alta demanda. No es un problema de eficiencia sino de modelo de crecimiento con alta dependencia de ads.</p>
+  </div>
+
+  <div class="report-footer">
+    <span>Negocio Redondo Latam · Informe interno · Abril 2026</span>
+    <span>Página 1</span>
+  </div>
+</div>
+
+
+<!-- ═══════════ PÁGINA 2 — PATRONES ═══════════ -->
+<div class="page page-break">
+  <div class="section-title">02 — Patrones generales</div>
+  <h2>Lo que funciona en MLA</h2>
+  <p class="section-lead">Seis patrones recurrentes identificados en el comportamiento de los 22 clientes durante los últimos 90 días.</p>
+
+  <div class="pattern-grid">
+    <div class="pattern-card no-break">
+      <h4>📊 A — El CTR es el indicador líder</h4>
+      <p>Los 4 clientes con mejor CTR (Sima 0.47%, AB Fitness 0.51%, Lencería 0.39%, La Casa Lopez 0.36%) tienen todos TACOS por debajo del 7%, independientemente del volumen de gasto.</p>
+      <p>Un CTR bajo (&lt;0.20%) predice problemas estructurales aunque el ACOS parezca controlado: el algoritmo no está mostrando el anuncio a compradores relevantes.</p>
+      <div class="insight">CTR &gt; 0.30% = listing bien posicionado · CTR &lt; 0.15% = problema de relevancia, no de puja</div>
+    </div>
+    <div class="pattern-card no-break">
+      <h4>🎯 B — CVR &gt; 3% es el umbral de rentabilidad</h4>
+      <p>Clientes con CVR alto tienen TACOS bajo aunque inviertan fuerte. Lencería Bombón (CVR 7–17%) gasta $3.8M con TACOS 3.4%. AB Fitness "Colchonetas Catálogo" (CVR 11.24%) es la campaña más rentable del portafolio.</p>
+      <p>Los clientes con CVR &lt;2% tienen TACOS elevado aunque el ACOS aparezca aceptable: baja visibilidad = ACOS artificialmente bajo.</p>
+      <div class="insight">Cuando CVR es bajo, revisar listing antes de tocar la puja</div>
+    </div>
+    <div class="pattern-card no-break">
+      <h4>🗂️ C — Menos campañas, mejor performance</h4>
+      <p>Los mejores performers tienen 2–3 campañas activas bien segmentadas. La dispersión en muchas campañas fragmenta el presupuesto y confunde al algoritmo.</p>
+      <table style="margin:8px 0;font-size:11px">
+        <tr style="background:none;"><td style="padding:2px 8px 2px 0"><strong>2–3 campañas</strong></td><td>Vale Doble, Lencería, Bazar</td><td style="text-align:right;color:#00b894"><strong>TACOS 2.9%</strong></td></tr>
+        <tr style="background:none;border:none"><td style="padding:2px 8px 2px 0">4–7 campañas</td><td>La Casa Lopez, Highs</td><td style="text-align:right;color:#fd9644">TACOS 4.4%</td></tr>
+        <tr style="background:none;border:none"><td style="padding:2px 8px 2px 0">8+ campañas</td><td>White Salud, Imago</td><td style="text-align:right;color:#e17055">TACOS 9.3%</td></tr>
+      </table>
+      <div class="insight">La excepción válida: segmentación por temporada (Imago, indumentaria)</div>
+    </div>
+    <div class="pattern-card no-break">
+      <h4>🌿 D — El efecto halo es real y medible</h4>
+      <p>Varios ítems generan más ventas orgánicas que ventas directas de ads. La publicidad sirve de tracción para posicionamiento orgánico.</p>
+      <p><strong>EC Group MLA1656885723</strong>: $303K en ads → $2.1M ventas ads, <strong>$18.5M ventas orgánicas</strong> (9x).</p>
+      <p><strong>Kobe Japan</strong>: 9 de 19 top ítems gastan sin convertir en ads pero generan tráfico orgánico activo.</p>
+      <div class="insight">Antes de pausar un anuncio "sin conversión", verificar si hay ventas orgánicas activas</div>
+    </div>
+    <div class="pattern-card no-break">
+      <h4>⚖️ E — Categoría define el TACOS posible</h4>
+      <p>No todas las categorías compiten en el mismo rango. El TACOS "bueno" varía según el mercado:</p>
+      <table style="margin:8px 0;font-size:11px">
+        <tr style="background:none"><td style="padding:2px 8px 2px 0">Lencería / moda básica</td><td style="color:#00b894;font-weight:600">2–5%</td></tr>
+        <tr style="background:none;border:none"><td style="padding:2px 8px 2px 0">Artículos del hogar</td><td style="color:#00b894;font-weight:600">2–6%</td></tr>
+        <tr style="background:none;border:none"><td style="padding:2px 8px 2px 0">Fitness / accesorios</td><td style="color:#fdcb6e;font-weight:600">3–10%</td></tr>
+        <tr style="background:none;border:none"><td style="padding:2px 8px 2px 0">Iluminación / ventilación</td><td style="color:#fd9644;font-weight:600">8–12%</td></tr>
+        <tr style="background:none;border:none"><td style="padding:2px 8px 2px 0">Cosméticos / salud</td><td style="color:#e17055;font-weight:600">10–18%</td></tr>
+        <tr style="background:none;border:none"><td style="padding:2px 8px 2px 0">Electrónica reacondicionada</td><td style="color:#fdcb6e;font-weight:600">1–4% (difícil escalar)</td></tr>
+      </table>
+    </div>
+    <div class="pattern-card no-break">
+      <h4>⚠️ F — Concentración de gasto = riesgo operacional</h4>
+      <p>Cuando un solo ítem concentra más del 15% del presupuesto total, cualquier problema (stock, algoritmo, competidor) colapsa el TACOS general.</p>
+      <table style="margin:8px 0;font-size:11px">
+        <tr style="background:none"><td style="padding:2px 8px 2px 0">Vecasina</td><td style="color:#e17055;font-weight:600">24.8%</td><td style="color:#888">en 1 ítem</td></tr>
+        <tr style="background:none;border:none"><td style="padding:2px 8px 2px 0">Luminocity</td><td style="color:#e17055;font-weight:600">19.8%</td><td style="color:#888">en 1 ítem</td></tr>
+        <tr style="background:none;border:none"><td style="padding:2px 8px 2px 0">Viuma</td><td style="color:#e17055;font-weight:600">20.5%</td><td style="color:#888">en 1 ítem</td></tr>
+        <tr style="background:none;border:none"><td style="padding:2px 8px 2px 0">White Salud</td><td style="color:#e17055;font-weight:600">11.6%</td><td style="color:#888">ROAS 0 (!)</td></tr>
+      </table>
+      <div class="insight">Regla práctica: ningún ítem debería superar el 15% del gasto mensual</div>
+    </div>
+  </div>
+
+  <div class="report-footer">
+    <span>Negocio Redondo Latam · Informe interno · Abril 2026</span>
+    <span>Página 2</span>
+  </div>
+</div>
+
+
+<!-- ═══════════ PÁGINA 3 — OPORTUNIDADES Y ALERTAS ═══════════ -->
+<div class="page page-break">
+  <div class="section-title">03 — Oportunidades y alertas</div>
+  <h2>Acciones prioritarias</h2>
+  <p class="section-lead">Tres niveles de acción identificados: alertas inmediatas (dinero quemado activo), subinversión (crecimiento bloqueado), y buenas prácticas replicables.</p>
+
+  <div class="section-title" style="margin-top:4px">🔴 Alertas inmediatas — dinero quemado activo</div>
+
+  <div class="alert-item red">
+    <div class="alert-icon">🩸</div>
+    <div class="alert-body">
+      <h4>White Salud — MLA2044077562: $3.33M gastados con ROAS 0 en 90 días</h4>
+      <p>El ítem más costoso del portafolio no generó una sola venta atribuida a ads. Con 6.907 clics registrados y CVR 0, el problema es estructural: stock agotado, ítem pausado en ML o disconexión de atribución. Este caso debería haber sido detectado en la primera semana por el Motor de Publicidad. Verificar estado del ítem urgente.</p>
+    </div>
+  </div>
+
+  <div class="alert-item red">
+    <div class="alert-icon">🔥</div>
+    <div class="alert-body">
+      <h4>Kobe Japan — 41% del presupuesto quemado ($210K de $506K)</h4>
+      <p>Campaña "Campaña - Rendimiento": ACOS 167%, ROAS 0.60x. Campaña "TEST sin campaña": $83K gastados con $0 en ventas. La única campaña rentable es "+Rendimiento" (ROAS 6.28x). Acción: pausar las dos campañas deficitarias y redirigir el presupuesto a la ganadora.</p>
+    </div>
+  </div>
+
+  <div class="alert-item red">
+    <div class="alert-icon">💄</div>
+    <div class="alert-body">
+      <h4>Cloe Cosmética — ACOS 39.5%, TACOS 14.3%, modelo inviable en la categoría actual</h4>
+      <p>Con márgenes típicos de cosméticos del 40–60%, la publicidad está consumiendo entre el 25% y el 35% del margen bruto. Dos ítems en ACOS 47% y 70%. El problema no es operacional sino de categoría: cosméticos en MLA tiene CVR estructuralmente bajo (1–2%) por desconfianza del comprador. Revisar si la estrategia de canal es correcta o si conviene priorizar catálogo propio.</p>
+    </div>
+  </div>
+
+  <div class="section-title" style="margin-top:24px">🟡 Subinversión — crecimiento bloqueado</div>
+
+  <div class="alert-item yellow">
+    <div class="alert-icon">📈</div>
+    <div class="alert-body">
+      <h4>Basale — ROAS 24x con solo $888K invertidos sobre $80M de facturación</h4>
+      <p>Tres ítems tienen ROAS de 47x, 104x y 109x respectivamente. Con ese nivel de retorno, podrían multiplicar por 5 la inversión (de $888K a ~$4.5M) y el TACOS seguiría siendo menor al 5.5%. Estimación de upside: +$80M–100M adicionales en ventas atribuidas en 90 días.</p>
+    </div>
+  </div>
+
+  <div class="alert-item yellow">
+    <div class="alert-icon">🏠</div>
+    <div class="alert-body">
+      <h4>Virtual House — TACOS 0.66% sobre $180M de facturación con 122 ítems activos</h4>
+      <p>Están invirtiendo solo $1.18M. Con ROAS 6.9x, pueden al menos triplicar la inversión manteniendo rentabilidad. La estructura de 3 campañas activas es correcta. Solo necesitan más presupuesto.</p>
+    </div>
+  </div>
+
+  <div class="alert-item yellow">
+    <div class="alert-icon">💻</div>
+    <div class="alert-body">
+      <h4>EC Group — ítem MLA1656885723 genera $18.5M orgánicos con $303K de inversión</h4>
+      <p>El efecto halo más extremo del portafolio: cada peso invertido en ads genera 9 pesos en ventas orgánicas adicionales. Escalar la inversión en este ítem específico tiene un ROI difícil de igualar en cualquier otro canal.</p>
+    </div>
+  </div>
+
+  <div class="section-title" style="margin-top:24px">🟢 Buenas prácticas replicables</div>
+
+  <div class="alert-item green">
+    <div class="alert-icon">🏅</div>
+    <div class="alert-body">
+      <h4>Sima — CTR 0.47%, TACOS 3.78%: segmentación por línea de producto</h4>
+      <p>7 campañas creadas, 4 activas (Refrigeración, Calefacción, Lavado, Motores). Cada campaña tiene su propio universo de búsquedas. El CTR más alto de la cartera después de AB Fitness. Replicable en cualquier cliente con 3+ líneas de producto diferenciadas.</p>
+    </div>
+  </div>
+
+  <div class="alert-item green">
+    <div class="alert-icon">👙</div>
+    <div class="alert-body">
+      <h4>Lencería Bombón — ítem MLA916404558: CVR 17.12% y ACOS 6.23%</h4>
+      <p>El mejor ítem optimizado del portafolio. CVR 17% en MLA es extraordinario y sugiere combinación perfecta de precio, fotos, reputación y título. Es el caso de estudio para mostrar a clientes qué significa tener un listing "listo para escalar". Revisar sus 6 fotos, título y precio como benchmark.</p>
+    </div>
+  </div>
+
+  <div class="report-footer">
+    <span>Negocio Redondo Latam · Informe interno · Abril 2026</span>
+    <span>Página 3</span>
+  </div>
+</div>
+
+
+<!-- ═══════════ PÁGINA 4 — BENCHMARKS ═══════════ -->
+<div class="page page-break">
+  <div class="section-title">04 — Benchmarks</div>
+  <h2>Referencia real para MLA Argentina</h2>
+  <p class="section-lead">Rangos derivados de datos reales de la cartera (Q1 2026). Útiles como referencia en consultorías y auditorías.</p>
+
+  <table class="benchmark-table">
+    <thead>
+      <tr>
+        <th>Métrica</th>
+        <th class="r">Malo</th>
+        <th class="r">Aceptable</th>
+        <th class="r">Bueno</th>
+        <th class="r">Excelente</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>TACOS</strong> <span class="muted">Gasto / Facturación total</span></td>
+        <td class="r bad">&gt; 12%</td>
+        <td class="r ok">8–12%</td>
+        <td class="r good">3–8%</td>
+        <td class="r best">&lt; 3%</td>
+      </tr>
+      <tr>
+        <td><strong>ROAS</strong> <span class="muted">Ventas ads / Gasto</span></td>
+        <td class="r bad">&lt; 4x</td>
+        <td class="r ok">4–6x</td>
+        <td class="r good">6–9x</td>
+        <td class="r best">&gt; 9x</td>
+      </tr>
+      <tr>
+        <td><strong>ACOS global</strong> <span class="muted">Gasto / Ventas ads</span></td>
+        <td class="r bad">&gt; 30%</td>
+        <td class="r ok">20–30%</td>
+        <td class="r good">12–20%</td>
+        <td class="r best">&lt; 12%</td>
+      </tr>
+      <tr>
+        <td><strong>CTR</strong> <span class="muted">Clics / Impresiones</span></td>
+        <td class="r bad">&lt; 0.15%</td>
+        <td class="r ok">0.15–0.25%</td>
+        <td class="r good">0.25–0.35%</td>
+        <td class="r best">&gt; 0.35%</td>
+      </tr>
+      <tr>
+        <td><strong>CVR campaña</strong> <span class="muted">Ventas / Clics</span></td>
+        <td class="r bad">&lt; 1%</td>
+        <td class="r ok">1–3%</td>
+        <td class="r good">3–7%</td>
+        <td class="r best">&gt; 7%</td>
+      </tr>
+      <tr>
+        <td><strong>% ítems ACOS crítico</strong> <span class="muted">Ítems con ACOS &gt; 35%</span></td>
+        <td class="r bad">&gt; 15%</td>
+        <td class="r ok">10–15%</td>
+        <td class="r good">5–10%</td>
+        <td class="r best">&lt; 5%</td>
+      </tr>
+      <tr>
+        <td><strong>Concentración top ítem</strong> <span class="muted">% gasto en 1 ítem</span></td>
+        <td class="r bad">&gt; 25%</td>
+        <td class="r ok">15–25%</td>
+        <td class="r good">8–15%</td>
+        <td class="r best">&lt; 8%</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="section-title" style="margin-top:8px">Conclusión</div>
+
+  <div class="highlight">
+    <h4>La variable más palancable en el corto plazo es el CVR, no el ACOS</h4>
+    <p>Un ACOS "alto" con CVR alto generalmente indica categoría competitiva pero producto que convierte bien: la solución es optimizar el listing (fotos, título, precio), no bajar la puja.</p>
+    <p>Un ACOS "bajo" con CVR bajo generalmente significa que el algoritmo dejó de mostrar el anuncio por irrelevancia. La puja baja es síntoma, no causa.</p>
+  </div>
+
+  <div class="highlight">
+    <h4>El patrón más repetido en clientes con TACOS bajo</h4>
+    <ul>
+      <li>Pocas campañas (2–3) bien nombradas por segmento de producto</li>
+      <li>Presupuesto diario no limitante (el algoritmo necesita datos para optimizar)</li>
+      <li>Ítems con CTR &gt; 0.30% como "locomotoras" del portafolio</li>
+      <li>Revisión periódica de ítems con ACOS crítico (no set-and-forget)</li>
+    </ul>
+  </div>
+
+  <div class="highlight blue-bg">
+    <h4>La oportunidad más grande de la cartera</h4>
+    <p>Los clientes con ROAS &gt; 8x y TACOS &lt; 3% (Basale, Virtual House, LT Repuestos) están dejando ventas sobre la mesa cada día por subinversión. Escalar su presupuesto es la acción de mayor impacto a corto plazo con el menor riesgo operacional de toda la cartera.</p>
+  </div>
+
+  <div class="report-footer">
+    <span>Negocio Redondo Latam · Informe interno · Abril 2026</span>
+    <span>Página 4</span>
+  </div>
+</div>
+
+</body>
+</html>
