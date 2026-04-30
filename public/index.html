@@ -3736,18 +3736,21 @@ function renderDescuentos() {
     const iva21 = 0.21;
     const ivaDif = Math.max(0, precio/(1+iva21)*iva21 - (p.costo+com+envio)/(1+iva21)*iva21);
     const costoTotal = p.costo + com + cargo + envio + imp + tacos + cf + ivaDif;
-    const margen = ((precio - costoTotal) / precio * 100);
-    return { margen: parseFloat(margen.toFixed(1)), costoTotal, com, cargo, envio, imp, tacos, cf, ivaDif };
+    const utilidad = precio - costoTotal;
+    const margen = (utilidad / precio * 100);
+    const sCosto = p.costo > 0 ? utilidad / p.costo * 100 : null;
+    return { margen: parseFloat(margen.toFixed(1)), sCosto: sCosto != null ? parseFloat(sCosto.toFixed(1)) : null, costoTotal, com, cargo, envio, imp, tacos, cf, ivaDif };
   }
 
   function celdaDescuento(p, pct, comPct, envioUnit) {
     if (pct <= 0) return '<td style="padding:6px 8px;text-align:center;color:var(--muted)">—</td>';
     const nuevoPrecio = p.precio * (1 - pct/100);
-    const { margen } = calcMargen(p, nuevoPrecio, comPct, envioUnit);
+    const { margen, sCosto } = calcMargen(p, nuevoPrecio, comPct, envioUnit);
     const color = margen >= minMargen + 5 ? '#00e676' : margen >= minMargen ? '#f59e0b' : '#ff5252';
     return '<td style="padding:6px 8px;text-align:center;background:' + color + '11">'
       + '<div style="font-size:12px;font-weight:700;color:var(--text)">$' + Math.round(nuevoPrecio).toLocaleString('es-AR') + '</div>'
       + '<div style="font-size:12px;font-weight:800;color:' + color + '">' + margen.toFixed(1) + '%</div>'
+      + (sCosto != null ? '<div style="font-size:10px;color:var(--muted)">s/c: ' + sCosto.toFixed(1) + '%</div>' : '')
       + '</td>';
   }
 
@@ -3802,6 +3805,7 @@ function renderDescuentos() {
     html += '<td style="padding:6px 8px;text-align:center;cursor:help" title="' + tooltip + '">'
       + '<span style="font-size:12px;font-weight:700;color:' + margenColor + '">' + margenActual.toFixed(1) + '%</span>'
       + '<span style="font-size:9px;color:var(--muted);margin-left:3px">ℹ️</span>'
+      + (mg.sCosto != null ? '<div style="font-size:10px;color:var(--muted)">s/c: <span style="font-weight:700;color:' + (mg.sCosto >= 0 ? '#00e676' : '#ff5252') + '">' + mg.sCosto.toFixed(1) + '%</span></div>' : '')
       + '</td>';
     html += '<td style="padding:6px 8px;text-align:center;font-size:12px;color:' + stockColor + '">' + stockStr + '</td>';
     html += '<td style="padding:6px 8px;text-align:center;font-size:12px">' + cobBadge(p.cobertura) + '</td>';
