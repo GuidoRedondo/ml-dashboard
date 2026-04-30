@@ -5665,6 +5665,175 @@ app.all('/api/publi-analyzer/cron', async (req, res) => {
   runPubliAnalyzer({ tipo: 'auto' }).catch(e => console.error('[PUBLI-CRON] Error:', e.message));
 });
 
+// ── ANÁLISIS TACOS 90 DÍAS — todos los clientes ────────────────────────────
+app.get('/api/admin/tacos-report', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const clients = (await pool.query(`SELECT id, name FROM clients ORDER BY name`)).rows;
+    const now = new Date();
+    const from90 = new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000);
+    const fmt = d => d.toISOString().slice(0,10);
+    const dateFrom = fmt(from90);
+    const dateTo   = fmt(now);
+
+    const report = [];
+
+    for (const client of clients) {
+      try {
+        const token = await getClientToken(client.id);
+        if (!token) { report.push({ client: client.name, error: 'sin token' }); continue; }
+
+        const headers  = { 'Authorization': `Bearer ${token}` };
+        const h1 = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'Api-Version': '1' };
+        const h2 = { 'Authorization': `Bearer ${token}`, 'api-version': '2' };
+
+        const user = await fetch(`${ML_API}/users/me`, { headers }).then(r => r.json());
+        if (user.error) { report.push({ client: client.name, error: user.error }); continue; }
+        const uid = user.id;
+        const siteId = user.site_id || 'MLA';
+
+        // Facturación 90 días
+        const { orders } = await fetchAllOrders(uid, headers,
+          from90.toISOString().slice(0,19) + '.000-00:00',
+          now.toISOString().slice(0,19)    + '.000-00:00'
+        );
+        let facturacion = 0;
+        const ventasPorItem = {};
+        orders.forEach(o => {
+          (o.order_items || []).forEach(oi => {
+            const id = oi.item?.id; if (!id) return;
+            const rev = (parseFloat(oi.unit_price)||0) * (oi.quantity||0);
+            facturacion += rev;
+            if (!ventasPorItem[id]) ventasPorItem[id] = { units: 0, revenue: 0 };
+            ventasPorItem[id].units   += oi.quantity || 0;
+            ventasPorItem[id].revenue += rev;
+          });
+        });
+
+        // Ads 90 días
+        let advId = null;
+        try {
+          const advData = await fetch(`${ML_API}/advertising/advertisers?product_id=PADS`, { headers: h1 }).then(r => r.json());
+          const adv = (advData.advertisers||[]).find(a => a.site_id === siteId) || (advData.advertisers||[])[0];
+          if (adv) advId = adv.advertiser_id;
+        } catch(e) {}
+
+        if (!advId) { report.push({ client: client.name, error: 'sin advertiser_id' }); continue; }
+
+        // Campañas
+        const metrics = 'clicks,prints,cost,acos,roas,direct_amount,total_amount,units_quantity,cvr';
+        let campañas = [], offset = 0;
+        while (true) {
+          const url = `${ML_API}/advertising/${siteId}/advertisers/${advId}/product_ads/campaigns/search?limit=100&offset=${offset}&date_from=${dateFrom}&date_to=${dateTo}&metrics=${metrics}`;
+          const d = await fetch(url, { headers: h2 }).then(r => r.json()).catch(() => ({}));
+          const results = d.results || [];
+          campañas = campañas.concat(results);
+          if (results.length < 100 || campañas.length >= (d.paging?.total||0)) break;
+          offset += 100;
+        }
+
+        // Items con ads
+        let adsItems = [], offsetI = 0;
+        while (true) {
+          const url = `${ML_API}/advertising/${siteId}/advertisers/${advId}/product_ads/ads/search?limit=100&offset=${offsetI}&date_from=${dateFrom}&date_to=${dateTo}&metrics=${metrics}`;
+          const d = await fetch(url, { headers: h2 }).then(r => r.json()).catch(() => ({}));
+          const results = d.results || [];
+          adsItems = adsItems.concat(results);
+          if (results.length < 100 || adsItems.length >= (d.paging?.total||0)) break;
+          offsetI += 100;
+        }
+
+        // Agregar totales de ads
+        let gastoTotal = 0, ventasAdsTotal = 0, clicksTotal = 0, impressionsTotal = 0, unitsAds = 0;
+        const campañasData = campañas.map(c => {
+          const m = c.metrics || {};
+          const gasto = parseFloat(m.cost)||0;
+          const vtas  = parseFloat(m.total_amount)||0;
+          gastoTotal       += gasto;
+          ventasAdsTotal   += vtas;
+          clicksTotal      += parseFloat(m.clicks)||0;
+          impressionsTotal += parseFloat(m.prints)||0;
+          unitsAds         += parseFloat(m.units_quantity)||0;
+          return {
+            id: c.id || c.campaign_id,
+            nombre: c.name || c.campaign_name || '—',
+            estado: c.status,
+            gasto: Math.round(gasto),
+            ventas_ads: Math.round(vtas),
+            roas: parseFloat(m.roas)||0,
+            acos: parseFloat(m.acos)||0,
+            clicks: parseFloat(m.clicks)||0,
+            cvr: parseFloat(m.cvr)||0,
+          };
+        });
+
+        const tacos = facturacion > 0 ? parseFloat(((gastoTotal / facturacion) * 100).toFixed(2)) : null;
+        const roasGlobal = gastoTotal > 0 ? parseFloat((ventasAdsTotal / gastoTotal).toFixed(2)) : null;
+        const acosGlobal = ventasAdsTotal > 0 ? parseFloat(((gastoTotal / ventasAdsTotal) * 100).toFixed(2)) : null;
+        const ctr = impressionsTotal > 0 ? parseFloat(((clicksTotal / impressionsTotal) * 100).toFixed(3)) : null;
+
+        // Top items por gasto en ads
+        const topItemsAds = adsItems
+          .map(it => {
+            const m = it.metrics || {};
+            const g = parseFloat(m.cost)||0;
+            const v = ventasPorItem[it.item_id] || {};
+            return {
+              item_id: it.item_id,
+              gasto: Math.round(g),
+              ventas_ads: Math.round(parseFloat(m.total_amount)||0),
+              ventas_organicas: Math.round((v.revenue||0) - (parseFloat(m.direct_amount)||0)),
+              acos: parseFloat(m.acos)||0,
+              roas: parseFloat(m.roas)||0,
+              cvr: parseFloat(m.cvr)||0,
+              clicks: parseFloat(m.clicks)||0,
+            };
+          })
+          .filter(i => i.gasto > 0)
+          .sort((a,b) => b.gasto - a.gasto)
+          .slice(0, 20);
+
+        // Distribución ACOS por ítem
+        const acosDistribucion = { bajo: 0, medio: 0, alto: 0, critico: 0 };
+        adsItems.forEach(it => {
+          const acos = parseFloat(it.metrics?.acos)||0;
+          if (acos === 0) return;
+          if (acos < 10)      acosDistribucion.bajo++;
+          else if (acos < 20) acosDistribucion.medio++;
+          else if (acos < 35) acosDistribucion.alto++;
+          else                acosDistribucion.critico++;
+        });
+
+        report.push({
+          client: client.name,
+          periodo: { desde: dateFrom, hasta: dateTo, dias: 90 },
+          facturacion: Math.round(facturacion),
+          gasto_ads: Math.round(gastoTotal),
+          ventas_ads: Math.round(ventasAdsTotal),
+          tacos,
+          roas: roasGlobal,
+          acos_global: acosGlobal,
+          ctr,
+          clicks: Math.round(clicksTotal),
+          impressions: Math.round(impressionsTotal),
+          units_ads: Math.round(unitsAds),
+          total_orders: orders.length,
+          campañas_count: campañas.length,
+          items_con_ads: adsItems.filter(i => (parseFloat(i.metrics?.cost)||0) > 0).length,
+          campañas: campañasData,
+          acos_distribucion: acosDistribucion,
+          top_items_ads: topItemsAds,
+        });
+      } catch(e) {
+        report.push({ client: client.name, error: e.message });
+      }
+    }
+
+    res.json({ generado: new Date().toISOString(), clientes: report.length, data: report });
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 initDB().then(() => {
   app.listen(PORT, () => console.log(`Puerto ${PORT}`));
 
