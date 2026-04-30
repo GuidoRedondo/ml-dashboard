@@ -4376,6 +4376,7 @@ function calcularSimulador() {
         <td style="padding:7px 10px;font-size:12px;font-weight:700;color:#ff5252">⚠ Precio piso</td>
         <td style="padding:7px 10px;text-align:right;font-size:13px;font-weight:700;color:#ff5252">${fmt(Math.round(pisoPrecio))}</td>
         <td style="padding:7px 10px;text-align:right;font-size:13px;font-weight:700;color:#ff5252">0.0%</td>
+        <td style="padding:7px 10px;text-align:right;font-size:12px;color:var(--muted)">—</td>
         <td style="padding:7px 10px;text-align:right;font-size:12px;color:var(--muted)">$0</td>
       </tr>`;
     })() : '';
@@ -4390,6 +4391,7 @@ function calcularSimulador() {
         </td>
         <td style="padding:7px 10px;text-align:right;font-size:13px;${isBase ? 'font-weight:700;' : ''}">${fmt(Math.round(p2))}</td>
         <td style="padding:7px 10px;text-align:right;font-size:13px;font-weight:700;color:${mc}">${d2.margenReal.toFixed(1)}%</td>
+        <td style="padding:7px 10px;text-align:right;font-size:12px;color:${d2.utilidad>=0?'#00e676':'#ff5252'}">${cmv > 0 ? (d2.utilidad/cmv*100).toFixed(1)+'%' : '—'}</td>
         <td style="padding:7px 10px;text-align:right;font-size:12px;color:#00e676">${fmt(Math.round(d2.utilidad))}</td>
       </tr>`;
     }).join('');
@@ -4416,6 +4418,11 @@ function calcularSimulador() {
             <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">Utilidad / ud.</div>
             <div style="font-size:20px;font-weight:700;color:#00e676">${fmt(d.utilidad)}</div>
           </div>
+          ${cmv > 0 ? `<div style="width:1px;height:44px;background:var(--border)"></div>
+          <div>
+            <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">% s/Costo</div>
+            <div style="font-size:20px;font-weight:700;color:${(d.utilidad/cmv*100)>=0?'#00e676':'#ff5252'}">${(d.utilidad/cmv*100).toFixed(1)}%</div>
+          </div>` : ''}
         </div>
         ${htmlDesglose(precio, d)}
       </div>
@@ -4429,6 +4436,7 @@ function calcularSimulador() {
               <th style="padding:8px 10px;text-align:left;font-size:11px;font-weight:600;color:var(--muted)">Variacion</th>
               <th style="padding:8px 10px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Precio</th>
               <th style="padding:8px 10px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Margen %</th>
+              <th style="padding:8px 10px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">% s/Costo</th>
               <th style="padding:8px 10px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Utilidad</th>
             </tr></thead>
             <tbody>${sensHtml}</tbody>
@@ -4468,6 +4476,7 @@ function calcularSimulador() {
       <div style="font-size:11px;color:var(--muted);margin-bottom:4px">${e.label} — ${fmtPn(e.pct * 100)}</div>
       <div style="font-size:26px;font-weight:800;font-family:var(--font-b);color:var(--accent)">${fmt(p)}</div>
       <div style="font-size:12px;color:#00e676;margin-top:4px">Utilidad: ${fmt(d.utilidad)}</div>
+      ${cmv > 0 ? `<div style="font-size:11px;color:var(--muted);margin-top:2px">% s/Costo: <span style="font-weight:700;color:${(d.utilidad/cmv*100)>=0?'#00e676':'#ff5252'}">${(d.utilidad/cmv*100).toFixed(1)}%</span></div>` : ''}
     </div>`;
   }).join('');
 
