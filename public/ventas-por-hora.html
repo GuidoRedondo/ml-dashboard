@@ -150,9 +150,11 @@
     <div class="subtitle" id="subtitle">Promedio diario · últimos 7 días</div>
   </div>
   <div class="controls">
-    <button class="period-btn active" data-days="7"  onclick="setPeriod(7)">7 días</button>
-    <button class="period-btn"        data-days="14" onclick="setPeriod(14)">14 días</button>
-    <button class="period-btn"        data-days="30" onclick="setPeriod(30)">30 días</button>
+    <div id="periodSelector" style="display:flex;gap:6px">
+      <button class="period-btn active" data-days="7"  onclick="setPeriod(7)">7 días</button>
+      <button class="period-btn"        data-days="14" onclick="setPeriod(14)">14 días</button>
+      <button class="period-btn"        data-days="30" onclick="setPeriod(30)">30 días</button>
+    </div>
     <button class="refresh-btn" onclick="loadAll()">🔄 Actualizar</button>
   </div>
 </header>
@@ -171,7 +173,9 @@
     <span class="corte-src manual" id="meSrc">sin dato API</span>
   </label>
   <span class="corte-alert-inline" id="corteAlert" style="display:none">⚠ Menos de 60 min para corte Flex</span>
+  <button class="refresh-btn" onclick="debugCortes()" title="Ver respuestas crudas de todos los endpoints de horario de corte">🔍 Debug cortes</button>
 </div>
+<pre id="debugCortesPre" style="display:none;background:#1A1D2E;color:#e2e8f0;border-radius:10px;padding:14px;font-size:11px;overflow:auto;max-height:400px;margin-bottom:16px"></pre>
 
 <div class="grid" id="grid"></div>
 <div id="tooltip"></div>
@@ -185,13 +189,16 @@ const CHANNELS = [
 // Horas mostradas: 7 a 23
 const HOURS = Array.from({ length: 17 }, (_, i) => i + 7);
 
-const CLIENT_ID = new URLSearchParams(location.search).get('client_id');
+const params    = new URLSearchParams(location.search);
+const CLIENT_ID = params.get('client_id');
+// Período sincronizado con el temporizador de la app
+const URL_FROM  = params.get('date_from');  // YYYY-MM-DD
+const URL_TO    = params.get('date_to');
 
 // Estado global
-let _period   = 7;   // días seleccionados
-let _aggData  = {};  // { channel: { hour: { total, days } } }
-let _numDays  = 0;   // días con al menos una orden
-let _rawTotal = 0;
+let _period   = 7;   // usado solo si no hay URL_FROM/URL_TO
+let _aggData  = {};
+let _numDays  = 1;
 const canvases = {};
 const tooltip  = document.getElementById('tooltip');
 
@@ -200,11 +207,32 @@ if (!CLIENT_ID) {
   document.getElementById('grid').innerHTML =
     '<div class="empty-state">Seleccioná un cliente en la app principal</div>';
 } else {
+  initUI();
   loadAll();
 }
 
+function initUI() {
+  if (URL_FROM && URL_TO) {
+    // Fecha sincronizada con la app — ocultar selector manual
+    document.getElementById('periodSelector').style.display = 'none';
+    const d1 = URL_FROM.split('-').slice(1).join('/'); // MM/DD → DD/MM
+    const d2 = URL_TO.split('-').slice(1).join('/');
+    document.getElementById('subtitle').textContent =
+      `Promedio diario por hora · ${URL_FROM.slice(8)}/${URL_FROM.slice(5,7)} → ${URL_TO.slice(8)}/${URL_TO.slice(5,7)}`;
+    // días del período
+    _numDays = Math.max(1, Math.round(
+      (new Date(URL_TO + 'T23:59:59') - new Date(URL_FROM + 'T00:00:00')) / (24*60*60*1000)
+    ));
+  } else {
+    document.getElementById('subtitle').textContent =
+      `Promedio diario por hora · últimos ${_period} días`;
+  }
+}
+
 function setPeriod(days) {
+  if (URL_FROM) return; // período bloqueado por temporizador
   _period = days;
+  _numDays = days;
   document.querySelectorAll('.period-btn').forEach(b =>
     b.classList.toggle('active', +b.dataset.days === days));
   document.getElementById('subtitle').textContent =
@@ -245,16 +273,21 @@ async function loadCortes() {
 async function loadData() {
   const grid = document.getElementById('grid');
   try {
-    const r = await fetch(`/api/ventas-por-hora?client_id=${CLIENT_ID}&days=${_period}`, { credentials: 'include' });
+    // Usar rango del temporizador si está disponible, si no usar days
+    const apiParams = URL_FROM && URL_TO
+      ? `client_id=${CLIENT_ID}&date_from=${URL_FROM}&date_to=${URL_TO}`
+      : `client_id=${CLIENT_ID}&days=${_period}`;
+    const r = await fetch(`/api/ventas-por-hora?${apiParams}`, { credentials: 'include' });
     const d = await r.json();
     if (d.error) throw new Error(d.error);
 
     const days = d.days || {};
-    _rawTotal  = d.total || 0;
 
-    // Días con al menos una venta
-    const dayKeys = Object.keys(days);
-    _numDays = Math.max(dayKeys.length, 1);
+    // _numDays: si viene del temporizador ya fue calculado en initUI; si no, usar días con órdenes
+    if (!URL_FROM) {
+      const dayKeys = Object.keys(days);
+      _numDays = Math.max(dayKeys.length, 1);
+    }
 
     // Agregar: suma total por canal+hora
     const agg = {};
@@ -500,6 +533,20 @@ function redrawAll() {
   document.getElementById(id)?.addEventListener('change', redrawAll));
 
 window.addEventListener('resize', redrawAll);
+
+// ── Debug cortes ──────────────────────────────────────────────────────────────
+async function debugCortes() {
+  const pre = document.getElementById('debugCortesPre');
+  pre.style.display = '';
+  pre.textContent = '⏳ Consultando endpoints de ML...';
+  try {
+    const r = await fetch(`/api/debug/shipping-schedule?client_id=${CLIENT_ID}`, { credentials: 'include' });
+    const d = await r.json();
+    pre.textContent = JSON.stringify(d, null, 2);
+  } catch(e) {
+    pre.textContent = 'Error: ' + e.message;
+  }
+}
 </script>
 </body>
 </html>

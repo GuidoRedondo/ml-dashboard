@@ -3351,8 +3351,9 @@ function switchPerfTab(tab) {
     const client = getActiveClient();
     const iframe = document.getElementById('iframe-ventas-hora');
     if (iframe && client) {
-      const target = `/ventas-por-hora.html?client_id=${client.id}`;
-      if (!iframe.src.endsWith(target)) iframe.src = target;
+      const { date_from, date_to } = getDateRange();
+      const target = `/ventas-por-hora.html?client_id=${client.id}&date_from=${date_from}&date_to=${date_to}`;
+      iframe.src = target; // siempre recargar para reflejar cambios de período
     }
   }
 }

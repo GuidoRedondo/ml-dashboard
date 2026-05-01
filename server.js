@@ -1830,8 +1830,10 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
     const byProvincePerMode = {};
     const byHourPerMode     = {};
 
+    const ARG_MS = -3 * 60 * 60 * 1000;
     curData.orders.forEach((order, orderIdx) => {
-      const hour = new Date(order.date_created).getHours();
+      const argDate = new Date(new Date(order.date_created).getTime() + ARG_MS);
+      const hour    = argDate.getUTCHours();
       byHour[hour]++;
 
       const shipId = order.shipping && order.shipping.id;
@@ -1852,7 +1854,7 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
       byProvincePerMode[mode][province] = (byProvincePerMode[mode][province] || 0) + 1;
 
       if (!byHourPerMode[mode]) byHourPerMode[mode] = new Array(24).fill(0);
-      byHourPerMode[mode][hour]++;
+      byHourPerMode[mode][hour]++; // hour ya en ARG time
 
       // Per item — use item-level sale_fee directly, prorate taxes+shipping by revenue fraction
       const orderItemsRevenue = (order.order_items || []).reduce((s, oi) =>
@@ -4040,10 +4042,11 @@ app.get('/api/ventas-por-hora', requireAuth, async (req, res) => {
     const uid = user.id;
 
     // Acepta date_from/date_to explícitos o days_back
+    // Importante: usar la misma construcción que /api/dashboard (sin TZ = UTC en Railway)
     let dateTo, dateFrom;
     if (req.query.date_from && req.query.date_to) {
-      dateFrom = new Date(req.query.date_from + 'T00:00:00-03:00');
-      dateTo   = new Date(req.query.date_to   + 'T23:59:59-03:00');
+      dateFrom = new Date(req.query.date_from + 'T00:00:00');
+      dateTo   = new Date(req.query.date_to   + 'T23:59:59');
     } else {
       const days_back = parseInt(req.query.days) || 7;
       dateTo   = new Date();
@@ -4151,6 +4154,46 @@ app.get('/api/logistica/cortes', requireAuth, async (req, res) => {
     res.json({ flex: flexCutoff, me: meCutoff, raw });
   } catch(e) {
     console.error('[CORTES]', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── DEBUG: todos los endpoints de schedule para investigar cortes ─────────────
+app.get('/api/debug/shipping-schedule', requireAuth, async (req, res) => {
+  try {
+    const client_id = parseInt(req.query.client_id);
+    const token = await getClientToken(client_id);
+    if (!token) return res.status(403).json({ error: 'Sin token' });
+
+    const headers = { 'Authorization': `Bearer ${token}` };
+    const user    = await fetch(`${ML_API}/users/me`, { headers }).then(r => r.json());
+    const uid     = user.id;
+    const siteId  = user.site_id || 'MLA';
+
+    const tryEndpoint = async (url) => {
+      try {
+        const r = await fetch(url, { headers });
+        const body = await r.json().catch(() => null);
+        return { status: r.status, url, body };
+      } catch(e) {
+        return { status: 'error', url, error: e.message };
+      }
+    };
+
+    const results = await Promise.all([
+      tryEndpoint(`${ML_API}/users/${uid}/shipping/schedule`),
+      tryEndpoint(`${ML_API}/users/${uid}/shipping/schedule/self_service`),
+      tryEndpoint(`${ML_API}/users/${uid}/shipping/schedule/cross_docking`),
+      tryEndpoint(`${ML_API}/users/${uid}/shipping/schedule/fulfillment`),
+      tryEndpoint(`${ML_API}/users/${uid}/shipping_preferences`),
+      tryEndpoint(`${ML_API}/flex/sites/${siteId}/users/${uid}/services`),
+      tryEndpoint(`${ML_API}/flex/sites/${siteId}/users/${uid}/schedules`),
+      tryEndpoint(`${ML_API}/users/${uid}/shipping/schedule/me2`),
+      tryEndpoint(`${ML_API}/users/${uid}/shipping/schedule/coleta`),
+    ]);
+
+    res.json({ uid, siteId, results });
+  } catch(e) {
     res.status(500).json({ error: e.message });
   }
 });
