@@ -804,6 +804,10 @@ tbody td {
           style="padding:8px 18px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-2px;font-family:var(--font-b)">
           📋 Publicaciones
         </button>
+        <button id="tab-perf-ventas-hora" onclick="switchPerfTab('ventas-hora')"
+          style="padding:8px 18px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-2px;font-family:var(--font-b)">
+          🕐 Ventas por hora
+        </button>
       </div>
       <!-- Tab Análisis -->
       <div id="perf-tab-analisis">
@@ -821,6 +825,10 @@ tbody td {
       <!-- Tab Publicaciones -->
       <div id="perf-tab-publicaciones" style="display:none">
         <div id="perfPubContent"></div>
+      </div>
+      <!-- Tab Ventas por hora -->
+      <div id="perf-tab-ventas-hora" style="display:none">
+        <iframe src="/ventas-por-hora.html" style="width:100%;height:700px;border:none;border-radius:12px" loading="lazy"></iframe>
       </div>
     </div>
 
@@ -3327,7 +3335,7 @@ let _perfPubModeFilter = null;
 
 function switchPerfTab(tab) {
   _perfActiveTab = tab;
-  ['analisis','publicaciones'].forEach(t => {
+  ['analisis','publicaciones','ventas-hora'].forEach(t => {
     const el  = document.getElementById(`perf-tab-${t}`);
     const btn = document.getElementById(`tab-perf-${t}`);
     if (el)  el.style.display  = t === tab ? '' : 'none';
@@ -3337,7 +3345,7 @@ function switchPerfTab(tab) {
     }
   });
   const btnExport = document.getElementById('btnExportPerf');
-  if (btnExport) btnExport.style.display = tab === 'publicaciones' ? 'none' : '';
+  if (btnExport) btnExport.style.display = (tab === 'publicaciones' || tab === 'ventas-hora') ? 'none' : '';
   if (tab === 'publicaciones') { window._perfPubSearch = ''; renderPerfPublicaciones(); }
 }
 
