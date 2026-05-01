@@ -4039,9 +4039,16 @@ app.get('/api/ventas-por-hora', requireAuth, async (req, res) => {
     const user = await fetch(`${ML_API}/users/me`, { headers }).then(r => r.json());
     const uid = user.id;
 
-    const days_back = parseInt(req.query.days) || 7;
-    const dateTo   = new Date();
-    const dateFrom = new Date(dateTo.getTime() - days_back * 24 * 60 * 60 * 1000);
+    // Acepta date_from/date_to explícitos o days_back
+    let dateTo, dateFrom;
+    if (req.query.date_from && req.query.date_to) {
+      dateFrom = new Date(req.query.date_from + 'T00:00:00-03:00');
+      dateTo   = new Date(req.query.date_to   + 'T23:59:59-03:00');
+    } else {
+      const days_back = parseInt(req.query.days) || 7;
+      dateTo   = new Date();
+      dateFrom = new Date(dateTo.getTime() - days_back * 24 * 60 * 60 * 1000);
+    }
     const fmt = d => d.toISOString().slice(0,19) + '.000-00:00';
 
     const { orders } = await fetchAllOrders(uid, headers, fmt(dateFrom), fmt(dateTo));
@@ -4076,8 +4083,8 @@ app.get('/api/ventas-por-hora', requireAuth, async (req, res) => {
   }
 });
 
-// GET /api/logistica/corte-flex — horario de corte Flex desde la API de ML
-app.get('/api/logistica/corte-flex', requireAuth, async (req, res) => {
+// GET /api/logistica/cortes — horarios de corte Flex y ME desde la API de ML
+app.get('/api/logistica/cortes', requireAuth, async (req, res) => {
   try {
     const client_id = parseInt(req.query.client_id);
     const token = await getClientToken(client_id);
@@ -4087,29 +4094,63 @@ app.get('/api/logistica/corte-flex', requireAuth, async (req, res) => {
     const user    = await fetch(`${ML_API}/users/me`, { headers }).then(r => r.json());
     const uid     = user.id;
     const siteId  = user.site_id || 'MLA';
+    const raw     = {};
 
+    // Día actual (0=dom, 1=lun ... 6=sáb) en Argentina
+    const ARG_OFFSET_MS = -3 * 60 * 60 * 1000;
+    const nowArg  = new Date(Date.now() + ARG_OFFSET_MS);
+    const todayDow = nowArg.getUTCDay(); // 0=Sun
+
+    const mlDayNames = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
+    const todayName  = mlDayNames[todayDow];
+
+    // ── FLEX cutoff via schedule/self_service ─────────────────────────────────
     let flexCutoff = null;
-    let raw = {};
-
     try {
-      const svcData = await fetch(`${ML_API}/flex/sites/${siteId}/users/${uid}/services`, { headers }).then(r => r.json());
-      raw.services = svcData;
-      const services = svcData.results || (Array.isArray(svcData) ? svcData : []);
-      if (services.length) {
-        const svcId    = services[0].id;
-        const cfgData  = await fetch(`${ML_API}/flex/sites/${siteId}/users/${uid}/services/${svcId}/configurations/delivery-ranges/v1`, { headers }).then(r => r.json());
-        raw.config = cfgData;
-        const ranges   = cfgData.results || cfgData.delivery_ranges || (Array.isArray(cfgData) ? cfgData : []);
-        const weekday  = ranges.find(r => r.day_type === 'weekday') || ranges[0];
-        if (weekday?.cutoff) {
-          flexCutoff = String(weekday.cutoff).slice(0, 5); // HH:MM
-        }
-      }
-    } catch(e) { raw.error = e.message; }
+      const flexSched = await fetch(`${ML_API}/users/${uid}/shipping/schedule/self_service`, { headers }).then(r => r.json());
+      raw.flexSched = flexSched;
+      // Estructura: array de { day, cutoff } o { schedule: [...] }
+      const items = Array.isArray(flexSched) ? flexSched
+                  : (flexSched.schedule || flexSched.results || []);
+      const todayEntry = items.find(d => (d.day || '').toLowerCase() === todayName);
+      const anyEntry   = items[0];
+      const entry      = todayEntry || anyEntry;
+      if (entry?.cutoff) flexCutoff = String(entry.cutoff).slice(0, 5);
+    } catch(e) { raw.flexSchedError = e.message; }
 
-    res.json({ flex: flexCutoff, raw });
+    // Fallback: flex services config
+    if (!flexCutoff) {
+      try {
+        const svcData = await fetch(`${ML_API}/flex/sites/${siteId}/users/${uid}/services`, { headers }).then(r => r.json());
+        raw.flexServices = svcData;
+        const services = svcData.results || (Array.isArray(svcData) ? svcData : []);
+        if (services.length) {
+          const svcId   = services[0].id;
+          const cfgData = await fetch(`${ML_API}/flex/sites/${siteId}/users/${uid}/services/${svcId}/configurations/delivery-ranges/v1`, { headers }).then(r => r.json());
+          raw.flexConfig = cfgData;
+          const ranges  = cfgData.results || cfgData.delivery_ranges || (Array.isArray(cfgData) ? cfgData : []);
+          const weekday = ranges.find(r => r.day_type === 'weekday') || ranges[0];
+          if (weekday?.cutoff) flexCutoff = String(weekday.cutoff).slice(0, 5);
+        }
+      } catch(e) { raw.flexServicesError = e.message; }
+    }
+
+    // ── ME cutoff via schedule/cross_docking ─────────────────────────────────
+    let meCutoff = null;
+    try {
+      const meSched = await fetch(`${ML_API}/users/${uid}/shipping/schedule/cross_docking`, { headers }).then(r => r.json());
+      raw.meSched = meSched;
+      const items = Array.isArray(meSched) ? meSched
+                  : (meSched.schedule || meSched.results || []);
+      const todayEntry = items.find(d => (d.day || '').toLowerCase() === todayName);
+      const anyEntry   = items[0];
+      const entry      = todayEntry || anyEntry;
+      if (entry?.cutoff) meCutoff = String(entry.cutoff).slice(0, 5);
+    } catch(e) { raw.meSchedError = e.message; }
+
+    res.json({ flex: flexCutoff, me: meCutoff, raw });
   } catch(e) {
-    console.error('[CORTE-FLEX]', e.message);
+    console.error('[CORTES]', e.message);
     res.status(500).json({ error: e.message });
   }
 });

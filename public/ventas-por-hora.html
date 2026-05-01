@@ -11,8 +11,7 @@
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
   :root {
-    --font:   'Poppins', sans-serif;
-    --font-b: 'Poppins', sans-serif;
+    --font:        'Poppins', sans-serif;
     --bg:          #F5F6FA;
     --surface:     #FFFFFF;
     --surface2:    #F0F2F8;
@@ -23,44 +22,35 @@
     --accent-text: #1A1D2E;
     --shadow:      0 2px 12px rgba(0,0,0,0.07);
     --shadow-lg:   0 8px 32px rgba(0,0,0,0.10);
-    --red:         #FF4444;
-    /* colores de canal */
     --flex: #00b37a;
     --me:   #3B82F6;
     --full: #9333ea;
-    --corte-color: #FF4444;
   }
 
   body {
-    background: var(--bg);
-    color: var(--text);
-    font-family: var(--font);
-    font-size: 14px;
-    -webkit-font-smoothing: antialiased;
-    min-height: 100vh;
-    padding: 24px 24px 48px;
+    background: var(--bg); color: var(--text); font-family: var(--font);
+    font-size: 14px; -webkit-font-smoothing: antialiased;
+    min-height: 100vh; padding: 20px 20px 40px;
   }
 
   header {
-    display: flex;
-    align-items: flex-end;
-    justify-content: space-between;
-    margin-bottom: 18px;
-    flex-wrap: wrap;
-    gap: 12px;
+    display: flex; align-items: flex-start; justify-content: space-between;
+    margin-bottom: 16px; flex-wrap: wrap; gap: 12px;
   }
-  h1 { font-family: var(--font-b); font-size: 20px; font-weight: 700; color: var(--text); }
+  h1 { font-size: 19px; font-weight: 700; }
   h1 span { color: var(--flex); }
-  .subtitle { font-size: 11px; color: var(--muted); font-weight: 600; letter-spacing: .06em; text-transform: uppercase; margin-top: 3px; }
+  .subtitle { font-size: 11px; color: var(--muted); font-weight: 600;
+    letter-spacing: .06em; text-transform: uppercase; margin-top: 3px; }
 
-  .controls { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
-  .day-btn {
+  .controls { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+
+  .period-btn {
     background: var(--surface); border: 1px solid var(--border); color: var(--muted);
     font-family: var(--font); font-size: 12px; font-weight: 600;
-    padding: 5px 13px; border-radius: 8px; cursor: pointer; transition: all .15s;
+    padding: 5px 14px; border-radius: 8px; cursor: pointer; transition: all .15s;
   }
-  .day-btn:hover { background: var(--surface2); border-color: #C5CAE0; color: var(--text); }
-  .day-btn.active { background: var(--accent); border-color: var(--accent); color: var(--accent-text); font-weight: 700; }
+  .period-btn:hover  { background: var(--surface2); border-color: #C5CAE0; color: var(--text); }
+  .period-btn.active { background: var(--accent); border-color: var(--accent); color: var(--accent-text); font-weight: 700; }
 
   .refresh-btn {
     background: var(--surface2); border: 1px solid var(--border); color: var(--muted);
@@ -69,34 +59,55 @@
   }
   .refresh-btn:hover { background: var(--border); color: var(--text); }
 
+  /* KPI strip */
+  .kpi-strip {
+    display: flex; gap: 12px; margin-bottom: 16px; flex-wrap: wrap;
+  }
+  .kpi-pill {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+    padding: 10px 16px; display: flex; align-items: center; gap: 10px;
+    box-shadow: var(--shadow); flex: 1; min-width: 140px;
+  }
+  .kpi-dot { width: 10px; height: 10px; border-radius: 3px; flex-shrink: 0; }
+  .kpi-info { display: flex; flex-direction: column; }
+  .kpi-label { font-size: 10px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .05em; }
+  .kpi-value { font-size: 18px; font-weight: 700; line-height: 1.2; }
+  .kpi-sub   { font-size: 10px; color: var(--muted); font-weight: 500; }
+
+  /* Corte strip */
   .corte-strip {
-    background: var(--surface); border: 1px solid var(--border); border-radius: 14px;
-    padding: 14px 20px; margin-bottom: 18px;
-    display: flex; gap: 28px; flex-wrap: wrap; align-items: center;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+    padding: 12px 18px; margin-bottom: 16px;
+    display: flex; gap: 24px; flex-wrap: wrap; align-items: center;
     box-shadow: var(--shadow);
   }
   .corte-strip label {
     font-size: 11px; font-weight: 600; color: var(--muted);
     text-transform: uppercase; letter-spacing: .06em;
-    display: flex; align-items: center; gap: 10px;
+    display: flex; align-items: center; gap: 8px;
   }
   .corte-strip input[type="time"] {
     background: var(--surface2); border: 1px solid var(--border); color: var(--text);
     font-family: var(--font); font-size: 13px; font-weight: 500;
-    padding: 5px 10px; border-radius: 8px; cursor: pointer; outline: none;
-    transition: border-color .15s;
+    padding: 4px 9px; border-radius: 8px; cursor: pointer; outline: none; transition: border-color .15s;
   }
   .corte-strip input[type="time"]:focus { border-color: var(--accent); }
-  .corte-src { font-size: 10px; font-weight: 600; margin-left: 4px; }
-  .corte-src.api  { color: #00b37a; }
+  .corte-src { font-size: 10px; font-weight: 600; margin-left: 2px; }
+  .corte-src.api    { color: #00b37a; }
   .corte-src.manual { color: var(--muted); }
+  .corte-alert-inline {
+    font-size: 11px; font-weight: 600; color: #FF4444;
+    background: rgba(255,68,68,.08); border: 1px solid rgba(255,68,68,.2);
+    border-radius: 7px; padding: 3px 10px;
+  }
 
-  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
-  @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
+  /* Cards */
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+  @media (max-width: 860px) { .grid { grid-template-columns: 1fr; } }
 
   .card {
     background: var(--surface); border: 1px solid var(--border); border-radius: 14px;
-    padding: 18px 18px 12px; box-shadow: var(--shadow);
+    padding: 16px 16px 10px; box-shadow: var(--shadow);
     position: relative; overflow: hidden; transition: box-shadow .2s;
   }
   .card:hover { box-shadow: var(--shadow-lg); }
@@ -108,34 +119,27 @@
   .card[data-ch="me"]::before   { background: var(--me); }
   .card[data-ch="full"]::before { background: var(--full); }
 
-  .card-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
-  .card-title { font-family: var(--font-b); font-size: 14px; font-weight: 700; color: var(--text); display: flex; align-items: center; gap: 8px; }
-  .card-dot { width: 9px; height: 9px; border-radius: 3px; flex-shrink: 0; }
-  .card-total { font-size: 11px; color: var(--muted); font-weight: 500; }
-  .card-total strong { font-family: var(--font-b); font-size: 15px; font-weight: 700; color: var(--text); margin-right: 2px; }
+  .card-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+  .card-title  { font-size: 13px; font-weight: 700; display: flex; align-items: center; gap: 7px; }
+  .card-dot    { width: 8px; height: 8px; border-radius: 3px; flex-shrink: 0; }
+  .card-stats  { display: flex; flex-direction: column; align-items: flex-end; }
+  .card-total  { font-size: 11px; color: var(--muted); }
+  .card-total strong { font-size: 15px; font-weight: 700; color: var(--text); margin-right: 2px; }
+  .card-peak   { font-size: 10px; color: var(--muted); margin-top: 1px; }
 
   canvas { display: block; width: 100% !important; }
 
-  .corte-alert {
-    margin-top: 16px; background: rgba(255,68,68,.07); border: 1px solid rgba(255,68,68,.25);
-    border-radius: 10px; padding: 12px 18px; font-size: 13px; font-weight: 600; color: var(--red);
-    display: flex; align-items: center; gap: 8px;
-  }
-  .corte-alert.hidden { display: none; }
-
-  .empty-state {
-    padding: 60px 20px; text-align: center; color: var(--muted);
-    font-size: 13px; grid-column: 1 / -1;
-  }
+  .empty-state { padding: 60px 20px; text-align: center; color: var(--muted); font-size: 13px; grid-column: 1 / -1; }
 
   #tooltip {
     position: fixed; background: var(--surface); border: 1px solid var(--border);
     border-radius: 10px; padding: 10px 14px; font-size: 12px; font-family: var(--font);
-    pointer-events: none; display: none; z-index: 100; min-width: 150px; box-shadow: var(--shadow-lg);
+    pointer-events: none; display: none; z-index: 100; min-width: 160px; box-shadow: var(--shadow-lg);
   }
-  #tooltip .tt-hour { font-family: var(--font-b); font-size: 13px; font-weight: 700; color: var(--text); margin-bottom: 6px; }
+  #tooltip .tt-hour { font-size: 13px; font-weight: 700; color: var(--text); margin-bottom: 4px; }
   #tooltip .tt-val  { color: var(--muted); font-size: 12px; }
   #tooltip .tt-val strong { color: var(--text); font-weight: 700; }
+  #tooltip .tt-sub  { font-size: 10px; color: var(--muted); margin-top: 2px; }
 </style>
 </head>
 <body>
@@ -143,92 +147,130 @@
 <header>
   <div>
     <h1>Ventas por <span>hora</span></h1>
-    <div class="subtitle" id="subtitle">Canal de envío · Últimos 7 días</div>
+    <div class="subtitle" id="subtitle">Promedio diario · últimos 7 días</div>
   </div>
   <div class="controls">
-    <div id="dayBtns" style="display:flex;gap:6px;flex-wrap:wrap"></div>
-    <button class="refresh-btn" onclick="loadData()">🔄 Actualizar</button>
+    <button class="period-btn active" data-days="7"  onclick="setPeriod(7)">7 días</button>
+    <button class="period-btn"        data-days="14" onclick="setPeriod(14)">14 días</button>
+    <button class="period-btn"        data-days="30" onclick="setPeriod(30)">30 días</button>
+    <button class="refresh-btn" onclick="loadAll()">🔄 Actualizar</button>
   </div>
 </header>
+
+<div class="kpi-strip" id="kpiStrip"></div>
 
 <div class="corte-strip">
   <label>
     Corte Flex
     <input type="time" id="corteFlex" value="14:00" oninput="redrawAll()" />
-    <span class="corte-src manual" id="flexSrc">manual</span>
+    <span class="corte-src manual" id="flexSrc">sin dato API</span>
   </label>
   <label>
     Corte ME
     <input type="time" id="corteMe" value="16:00" oninput="redrawAll()" />
     <span class="corte-src manual" id="meSrc">sin dato API</span>
   </label>
+  <span class="corte-alert-inline" id="corteAlert" style="display:none">⚠ Menos de 60 min para corte Flex</span>
 </div>
 
 <div class="grid" id="grid"></div>
-<div class="corte-alert hidden" id="corteAlert">⚠ Faltan menos de 60 min para el corte Flex</div>
 <div id="tooltip"></div>
 
 <script>
 const CHANNELS = [
-  { key: 'flex', label: 'Flex',             color: '#00b37a', corteId: 'corteFlex' },
-  { key: 'me',   label: 'Mercado Envíos',   color: '#3B82F6', corteId: 'corteMe' },
-  { key: 'full', label: 'Full',             color: '#9333ea', corteId: null },
+  { key: 'flex', label: 'Flex',           color: '#00b37a', corteId: 'corteFlex' },
+  { key: 'me',   label: 'Mercado Envíos', color: '#3B82F6', corteId: 'corteMe'  },
+  { key: 'full', label: 'Full',           color: '#9333ea', corteId: null        },
 ];
-const HOURS = Array.from({length: 18}, (_, i) => i + 7); // 7..24
+// Horas mostradas: 7 a 23
+const HOURS = Array.from({ length: 17 }, (_, i) => i + 7);
 
-// ── Client ID desde URL ────────────────────────────────────────────────────────
 const CLIENT_ID = new URLSearchParams(location.search).get('client_id');
 
-// ── Estado ────────────────────────────────────────────────────────────────────
-let _daysData   = {};   // { "YYYY-MM-DD": { hour: { flex, me, full } } }
-let _dayKeys    = [];   // fechas ordenadas desc
-let _activeDay  = 0;    // índice en _dayKeys
-const canvases  = {};
-const tooltip   = document.getElementById('tooltip');
+// Estado global
+let _period   = 7;   // días seleccionados
+let _aggData  = {};  // { channel: { hour: { total, days } } }
+let _numDays  = 0;   // días con al menos una orden
+let _rawTotal = 0;
+const canvases = {};
+const tooltip  = document.getElementById('tooltip');
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 if (!CLIENT_ID) {
   document.getElementById('grid').innerHTML =
     '<div class="empty-state">Seleccioná un cliente en la app principal</div>';
 } else {
-  loadCorteFlex();
-  loadData();
+  loadAll();
 }
 
-// ── Fetch corte Flex desde API ─────────────────────────────────────────────────
-async function loadCorteFlex() {
+function setPeriod(days) {
+  _period = days;
+  document.querySelectorAll('.period-btn').forEach(b =>
+    b.classList.toggle('active', +b.dataset.days === days));
+  document.getElementById('subtitle').textContent =
+    `Promedio diario por hora · últimos ${days} días`;
+  loadAll();
+}
+
+// ── Carga paralela: datos + cortes ────────────────────────────────────────────
+async function loadAll() {
+  const grid = document.getElementById('grid');
+  grid.innerHTML = '<div class="empty-state">⏳ Cargando órdenes...</div>';
+  document.getElementById('kpiStrip').innerHTML = '';
+
+  await Promise.all([ loadData(), loadCortes() ]);
+}
+
+// ── Fetch cortes desde API unificada ──────────────────────────────────────────
+async function loadCortes() {
   try {
-    const r = await fetch(`/api/logistica/corte-flex?client_id=${CLIENT_ID}`, { credentials: 'include' });
+    const r = await fetch(`/api/logistica/cortes?client_id=${CLIENT_ID}`, { credentials: 'include' });
     const d = await r.json();
+
     if (d.flex) {
       document.getElementById('corteFlex').value = d.flex;
-      document.getElementById('flexSrc').textContent = '✓ API';
-      document.getElementById('flexSrc').className = 'corte-src api';
-      redrawAll();
+      const el = document.getElementById('flexSrc');
+      el.textContent = '✓ API'; el.className = 'corte-src api';
     }
+    if (d.me) {
+      document.getElementById('corteMe').value = d.me;
+      const el = document.getElementById('meSrc');
+      el.textContent = '✓ API'; el.className = 'corte-src api';
+    }
+    redrawAll();
   } catch(e) {}
 }
 
-// ── Fetch datos de ventas ──────────────────────────────────────────────────────
+// ── Fetch datos de ventas y agrega ────────────────────────────────────────────
 async function loadData() {
   const grid = document.getElementById('grid');
-  grid.innerHTML = '<div class="empty-state">⏳ Cargando órdenes...</div>';
-
   try {
-    const r = await fetch(`/api/ventas-por-hora?client_id=${CLIENT_ID}&days=7`, { credentials: 'include' });
+    const r = await fetch(`/api/ventas-por-hora?client_id=${CLIENT_ID}&days=${_period}`, { credentials: 'include' });
     const d = await r.json();
     if (d.error) throw new Error(d.error);
 
-    _daysData = d.days || {};
-    _dayKeys  = Object.keys(_daysData).sort().reverse(); // más reciente primero
+    const days = d.days || {};
+    _rawTotal  = d.total || 0;
 
-    if (!_dayKeys.length) {
-      grid.innerHTML = '<div class="empty-state">Sin órdenes en los últimos 7 días</div>';
-      return;
-    }
+    // Días con al menos una venta
+    const dayKeys = Object.keys(days);
+    _numDays = Math.max(dayKeys.length, 1);
 
-    _activeDay = 0;
-    buildDayButtons();
+    // Agregar: suma total por canal+hora
+    const agg = {};
+    CHANNELS.forEach(ch => { agg[ch.key] = {}; HOURS.forEach(h => { agg[ch.key][h] = 0; }); });
+
+    dayKeys.forEach(dateKey => {
+      const dayData = days[dateKey] || {};
+      HOURS.forEach(h => {
+        const slot = dayData[h] || { flex: 0, me: 0, full: 0 };
+        CHANNELS.forEach(ch => { agg[ch.key][h] += (slot[ch.key] || 0); });
+      });
+    });
+
+    _aggData = agg;
+
+    buildKpis();
     buildCards();
     redrawAll();
   } catch(e) {
@@ -236,31 +278,52 @@ async function loadData() {
   }
 }
 
-// ── Botones de día ────────────────────────────────────────────────────────────
-function buildDayButtons() {
-  const container = document.getElementById('dayBtns');
-  container.innerHTML = '';
-  _dayKeys.forEach((date, i) => {
-    const btn = document.createElement('button');
-    btn.className = 'day-btn' + (i === 0 ? ' active' : '');
-    btn.textContent = formatDayLabel(date, i);
-    btn.title = date;
-    btn.onclick = () => { _activeDay = i; updateDayButtons(); redrawAll(); };
-    container.appendChild(btn);
+// ── KPI pills ─────────────────────────────────────────────────────────────────
+function buildKpis() {
+  const strip = document.getElementById('kpiStrip');
+  strip.innerHTML = '';
+
+  const totals = {};
+  CHANNELS.forEach(ch => {
+    totals[ch.key] = HOURS.reduce((s, h) => s + _aggData[ch.key][h], 0);
   });
+  const grandTotal = Object.values(totals).reduce((a, b) => a + b, 0);
+
+  // Total general
+  addKpi(strip, '#FFD600', 'Total', grandTotal,
+    `${(grandTotal / _numDays).toFixed(1)} / día`, '#1A1D2E');
+
+  CHANNELS.forEach(ch => {
+    const t    = totals[ch.key];
+    const pct  = grandTotal ? (t / grandTotal * 100).toFixed(0) : 0;
+    const avg  = (t / _numDays).toFixed(1);
+    addKpi(strip, ch.color, ch.label, t, `${avg}/día · ${pct}%`);
+  });
+
+  // Período
+  const pill = document.createElement('div');
+  pill.className = 'kpi-pill';
+  pill.style.cssText = 'flex:0 0 auto;min-width:120px;background:#F8F9FF;';
+  pill.innerHTML = `
+    <div class="kpi-info" style="width:100%">
+      <div class="kpi-label">Período</div>
+      <div class="kpi-value" style="font-size:16px">${_period} días</div>
+      <div class="kpi-sub">${_numDays} días con ventas</div>
+    </div>`;
+  strip.appendChild(pill);
 }
 
-function updateDayButtons() {
-  document.querySelectorAll('#dayBtns .day-btn').forEach((b, i) =>
-    b.classList.toggle('active', i === _activeDay));
-}
-
-function formatDayLabel(dateStr, idx) {
-  if (idx === 0) return 'Hoy';
-  if (idx === 1) return 'Ayer';
-  const d = new Date(dateStr + 'T12:00:00');
-  const days = ['Dom','Lun','Mar','Mié','Jue','Vie','Sáb'];
-  return days[d.getDay()] + ' ' + d.getDate() + '/' + (d.getMonth()+1);
+function addKpi(parent, color, label, value, sub, textColor) {
+  const el = document.createElement('div');
+  el.className = 'kpi-pill';
+  el.innerHTML = `
+    <div class="kpi-dot" style="background:${color}"></div>
+    <div class="kpi-info">
+      <div class="kpi-label">${label}</div>
+      <div class="kpi-value" style="color:${textColor||color}">${value}</div>
+      <div class="kpi-sub">${sub}</div>
+    </div>`;
+  parent.appendChild(el);
 }
 
 // ── Cards ─────────────────────────────────────────────────────────────────────
@@ -273,25 +336,24 @@ function buildCards() {
     card.setAttribute('data-ch', ch.key);
     card.innerHTML = `
       <div class="card-header">
-        <div class="card-title"><div class="card-dot" style="background:${ch.color}"></div>${ch.label}</div>
-        <div class="card-total" id="total-${ch.key}"></div>
+        <div class="card-title">
+          <div class="card-dot" style="background:${ch.color}"></div>${ch.label}
+        </div>
+        <div class="card-stats">
+          <div class="card-total" id="total-${ch.key}"></div>
+          <div class="card-peak"  id="peak-${ch.key}"></div>
+        </div>
       </div>
-      <canvas id="canvas-${ch.key}" height="130"></canvas>
-    `;
+      <canvas id="canvas-${ch.key}" height="130"></canvas>`;
     grid.appendChild(card);
     canvases[ch.key] = card.querySelector('canvas');
     attachTooltip(canvases[ch.key], ch);
   });
 }
 
-// ── Dibujar canal ─────────────────────────────────────────────────────────────
-function getHourData() {
-  const dateKey = _dayKeys[_activeDay];
-  const dayData = _daysData[dateKey] || {};
-  return HOURS.map(h => {
-    const slot = dayData[h] || { flex: 0, me: 0, full: 0 };
-    return slot;
-  });
+// ── Dibujo ────────────────────────────────────────────────────────────────────
+function getAvgData(chKey) {
+  return HOURS.map(h => _aggData[chKey] ? (_aggData[chKey][h] || 0) / _numDays : 0);
 }
 
 function drawChannel(ch) {
@@ -299,19 +361,22 @@ function drawChannel(ch) {
   if (!canvas) return;
   const dpr  = window.devicePixelRatio || 1;
   const rect = canvas.parentElement.getBoundingClientRect();
-  const W = rect.width - 36, H = 130;
+  const W = Math.max(rect.width - 32, 200), H = 130;
   canvas.width  = W * dpr; canvas.height = H * dpr;
   canvas.style.width  = W + 'px'; canvas.style.height = H + 'px';
-  const c = canvas.getContext('2d');
-  c.scale(dpr, dpr);
-  c.clearRect(0, 0, W, H);
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, W, H);
 
-  const hourData = getHourData();
-  const data     = hourData.map(r => r[ch.key]);
-  const maxVal   = Math.max(...data, 1);
-  const total    = data.reduce((a, b) => a + b, 0);
+  const avgData = getAvgData(ch.key);
+  const maxVal  = Math.max(...avgData, 0.5);
+  const total   = HOURS.reduce((s, h) => s + (_aggData[ch.key]?.[h] || 0), 0);
+  const peakH   = HOURS[avgData.indexOf(Math.max(...avgData))];
+
   document.getElementById('total-' + ch.key).innerHTML =
     `<strong>${total}</strong> pedidos`;
+  document.getElementById('peak-' + ch.key).textContent =
+    total > 0 ? `pico: ${peakH}:00 h` : '';
 
   const padL=30, padR=10, padT=10, padB=22;
   const chartW = W - padL - padR;
@@ -321,57 +386,60 @@ function drawChannel(ch) {
   // Grid lines
   [0, 0.25, 0.5, 0.75, 1].forEach(frac => {
     const y = padT + chartH - chartH * frac;
-    c.beginPath();
-    c.strokeStyle = frac === 0 ? '#E4E7F0' : '#F0F2F8';
-    c.lineWidth = 1;
-    c.moveTo(padL, y); c.lineTo(padL + chartW, y); c.stroke();
+    ctx.beginPath();
+    ctx.strokeStyle = frac === 0 ? '#E4E7F0' : '#F0F2F8';
+    ctx.lineWidth = 1;
+    ctx.moveTo(padL, y); ctx.lineTo(padL + chartW, y); ctx.stroke();
     if (frac > 0) {
-      c.fillStyle = '#8B90A7';
-      c.font = '9px Poppins, sans-serif';
-      c.textAlign = 'right';
-      c.fillText(Math.round(maxVal * frac), padL - 4, y + 3);
+      const label = maxVal >= 2 ? Math.round(maxVal * frac).toString()
+                                : (maxVal * frac).toFixed(1);
+      ctx.fillStyle = '#8B90A7';
+      ctx.font = '9px Poppins, sans-serif';
+      ctx.textAlign = 'right';
+      ctx.fillText(label, padL - 4, y + 3);
     }
   });
 
-  // Bars
-  data.forEach((val, i) => {
+  // Bars (promedio = valores decimales)
+  avgData.forEach((val, i) => {
     if (!val) return;
-    const x = padL + i * barW + 2, bw = barW - 4;
+    const x  = padL + i * barW + 2, bw = barW - 4;
     const bh = (val / maxVal) * chartH;
     const y  = padT + chartH - bh;
-    const grad = c.createLinearGradient(0, y, 0, y + bh);
+    const grad = ctx.createLinearGradient(0, y, 0, y + bh);
     grad.addColorStop(0, ch.color + 'cc');
     grad.addColorStop(1, ch.color + '22');
-    c.fillStyle = grad;
-    roundRect(c, x, y, bw, bh, 3); c.fill();
+    ctx.fillStyle = grad;
+    roundRect(ctx, x, y, bw, bh, 3);
+    ctx.fill();
   });
 
-  // Hour labels
-  c.fillStyle = '#8B90A7';
-  c.font = '9px Poppins, sans-serif';
-  c.textAlign = 'center';
+  // Etiquetas de hora
+  ctx.fillStyle = '#8B90A7';
+  ctx.font = '9px Poppins, sans-serif';
+  ctx.textAlign = 'center';
   HOURS.forEach((h, i) => {
     if (i % 3 !== 0) return;
-    c.fillText(h + 'h', padL + i * barW + barW / 2, padT + chartH + 14);
+    ctx.fillText(h + 'h', padL + i * barW + barW / 2, padT + chartH + 14);
   });
 
-  // Corte line
+  // Línea de corte
   const corteH = getCorteH(ch.corteId);
   if (corteH !== null) {
     const minH = HOURS[0], maxH = HOURS[HOURS.length - 1] + 1;
     if (corteH >= minH && corteH <= maxH) {
       const frac = (corteH - minH) / (maxH - minH);
-      const x = padL + frac * chartW;
-      c.save();
-      c.beginPath(); c.setLineDash([4, 3]);
-      c.strokeStyle = '#FF4444'; c.lineWidth = 1.5; c.globalAlpha = .85;
-      c.moveTo(x, padT); c.lineTo(x, padT + chartH); c.stroke();
-      c.setLineDash([]); c.globalAlpha = 1;
-      c.fillStyle = '#FF4444';
-      c.font = '600 9px Poppins, sans-serif';
-      c.textAlign = frac > .75 ? 'right' : 'left';
-      c.fillText('corte', x + (frac > .75 ? -4 : 4), padT + 10);
-      c.restore();
+      const x    = padL + frac * chartW;
+      ctx.save();
+      ctx.beginPath(); ctx.setLineDash([4, 3]);
+      ctx.strokeStyle = '#FF4444'; ctx.lineWidth = 1.5; ctx.globalAlpha = .85;
+      ctx.moveTo(x, padT); ctx.lineTo(x, padT + chartH); ctx.stroke();
+      ctx.setLineDash([]); ctx.globalAlpha = 1;
+      ctx.fillStyle = '#FF4444';
+      ctx.font = '600 9px Poppins, sans-serif';
+      ctx.textAlign = frac > .75 ? 'right' : 'left';
+      ctx.fillText('corte', x + (frac > .75 ? -4 : 4), padT + 10);
+      ctx.restore();
     }
   }
 }
@@ -380,8 +448,10 @@ function roundRect(ctx, x, y, w, h, r) {
   if (h <= 0 || w <= 0) return;
   r = Math.min(r, h / 2, w / 2);
   ctx.beginPath();
-  ctx.moveTo(x+r, y); ctx.lineTo(x+w-r, y); ctx.quadraticCurveTo(x+w, y, x+w, y+r);
-  ctx.lineTo(x+w, y+h); ctx.lineTo(x, y+h); ctx.lineTo(x, y+r); ctx.quadraticCurveTo(x, y, x+r, y);
+  ctx.moveTo(x + r, y); ctx.lineTo(x + w - r, y);
+  ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+  ctx.lineTo(x + w, y + h); ctx.lineTo(x, y + h);
+  ctx.lineTo(x, y + r); ctx.quadraticCurveTo(x, y, x + r, y);
   ctx.closePath();
 }
 
@@ -400,12 +470,15 @@ function attachTooltip(canvas, ch) {
     const barW = (rect.width - 40) / HOURS.length;
     const idx  = Math.floor((mx - 30) / barW);
     if (idx < 0 || idx >= HOURS.length) { tooltip.style.display = 'none'; return; }
-    const hourData = getHourData();
-    const val = hourData[idx]?.[ch.key] || 0;
-    tooltip.innerHTML = `<div class="tt-hour" style="color:${ch.color}">${ch.label} · ${HOURS[idx]}:00</div><div class="tt-val"><strong>${val}</strong> pedido${val !== 1 ? 's' : ''}</div>`;
+    const avg   = getAvgData(ch.key)[idx];
+    const total = _aggData[ch.key]?.[HOURS[idx]] || 0;
+    tooltip.innerHTML = `
+      <div class="tt-hour" style="color:${ch.color}">${ch.label} · ${HOURS[idx]}:00 h</div>
+      <div class="tt-val"><strong>${avg.toFixed(1)}</strong> pedidos / día (prom.)</div>
+      <div class="tt-sub">${total} totales en ${_numDays} días</div>`;
     tooltip.style.display = 'block';
-    tooltip.style.left = (e.clientX + 12) + 'px';
-    tooltip.style.top  = (e.clientY - 16) + 'px';
+    tooltip.style.left = (e.clientX + 14) + 'px';
+    tooltip.style.top  = (e.clientY - 18) + 'px';
   });
   canvas.addEventListener('mouseleave', () => { tooltip.style.display = 'none'; });
 }
@@ -413,16 +486,18 @@ function attachTooltip(canvas, ch) {
 function redrawAll() {
   CHANNELS.forEach(drawChannel);
   // Alerta corte Flex
-  const now    = new Date();
   const corteH = getCorteH('corteFlex');
-  const nowH   = now.getHours() + now.getMinutes() / 60;
-  document.getElementById('corteAlert')
-    .classList.toggle('hidden', !(corteH - nowH > 0 && corteH - nowH < 1));
+  if (corteH !== null) {
+    const now  = new Date();
+    const nowH = now.getHours() + now.getMinutes() / 60;
+    const diff = corteH - nowH;
+    document.getElementById('corteAlert').style.display =
+      (diff > 0 && diff < 1) ? '' : 'none';
+  }
 }
 
-['corteFlex','corteMe'].forEach(id => {
-  document.getElementById(id)?.addEventListener('change', redrawAll);
-});
+['corteFlex','corteMe'].forEach(id =>
+  document.getElementById(id)?.addEventListener('change', redrawAll));
 
 window.addEventListener('resize', redrawAll);
 </script>
