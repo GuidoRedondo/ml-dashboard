@@ -13,7 +13,6 @@
   :root {
     --font:   'Poppins', sans-serif;
     --font-b: 'Poppins', sans-serif;
-
     --bg:          #F5F6FA;
     --surface:     #FFFFFF;
     --surface2:    #F0F2F8;
@@ -22,19 +21,14 @@
     --muted:       #8B90A7;
     --accent:      #FFD600;
     --accent-text: #1A1D2E;
-    --green:       #00C851;
-    --red:         #FF4444;
-    --orange:      #FF8800;
-    --blue:        #3B82F6;
     --shadow:      0 2px 12px rgba(0,0,0,0.07);
     --shadow-lg:   0 8px 32px rgba(0,0,0,0.10);
-
-    /* colores semánticos del canal — no modificar */
-    --flex:   #00b37a;
-    --coleta: #e07020;
-    --me2:    #3B82F6;
-    --full:   #9333ea;
-    --corte:  #FF4444;
+    --red:         #FF4444;
+    /* colores de canal */
+    --flex: #00b37a;
+    --me:   #3B82F6;
+    --full: #9333ea;
+    --corte-color: #FF4444;
   }
 
   body {
@@ -44,210 +38,103 @@
     font-size: 14px;
     -webkit-font-smoothing: antialiased;
     min-height: 100vh;
-    padding: 28px 24px 48px;
+    padding: 24px 24px 48px;
   }
 
-  /* ── HEADER ── */
   header {
     display: flex;
     align-items: flex-end;
     justify-content: space-between;
-    margin-bottom: 20px;
+    margin-bottom: 18px;
     flex-wrap: wrap;
     gap: 12px;
   }
-
-  h1 {
-    font-family: var(--font-b);
-    font-size: 22px;
-    font-weight: 700;
-    color: var(--text);
-    line-height: 1.1;
-  }
+  h1 { font-family: var(--font-b); font-size: 20px; font-weight: 700; color: var(--text); }
   h1 span { color: var(--flex); }
+  .subtitle { font-size: 11px; color: var(--muted); font-weight: 600; letter-spacing: .06em; text-transform: uppercase; margin-top: 3px; }
 
-  .subtitle {
-    font-size: 11px;
-    color: var(--muted);
-    font-weight: 600;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    margin-top: 4px;
-  }
-
-  /* ── DAY BUTTONS ── */
-  .controls { display: flex; gap: 6px; flex-wrap: wrap; }
-
+  .controls { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
   .day-btn {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    color: var(--muted);
-    font-family: var(--font);
-    font-size: 12px;
-    font-weight: 600;
-    padding: 6px 14px;
-    border-radius: 8px;
-    cursor: pointer;
-    transition: all 0.15s;
-    white-space: nowrap;
+    background: var(--surface); border: 1px solid var(--border); color: var(--muted);
+    font-family: var(--font); font-size: 12px; font-weight: 600;
+    padding: 5px 13px; border-radius: 8px; cursor: pointer; transition: all .15s;
   }
   .day-btn:hover { background: var(--surface2); border-color: #C5CAE0; color: var(--text); }
-  .day-btn.active {
-    background: var(--accent);
-    border-color: var(--accent);
-    color: var(--accent-text);
-    font-weight: 700;
-  }
+  .day-btn.active { background: var(--accent); border-color: var(--accent); color: var(--accent-text); font-weight: 700; }
 
-  /* ── CORTE STRIP ── */
+  .refresh-btn {
+    background: var(--surface2); border: 1px solid var(--border); color: var(--muted);
+    font-family: var(--font); font-size: 12px; font-weight: 600;
+    padding: 5px 13px; border-radius: 8px; cursor: pointer; transition: all .15s;
+  }
+  .refresh-btn:hover { background: var(--border); color: var(--text); }
+
   .corte-strip {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 14px;
-    padding: 14px 20px;
-    margin-bottom: 20px;
-    display: flex;
-    gap: 28px;
-    flex-wrap: wrap;
-    align-items: center;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 14px;
+    padding: 14px 20px; margin-bottom: 18px;
+    display: flex; gap: 28px; flex-wrap: wrap; align-items: center;
     box-shadow: var(--shadow);
   }
-
   .corte-strip label {
-    font-size: 11px;
-    font-weight: 600;
-    color: var(--muted);
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    display: flex;
-    align-items: center;
-    gap: 10px;
+    font-size: 11px; font-weight: 600; color: var(--muted);
+    text-transform: uppercase; letter-spacing: .06em;
+    display: flex; align-items: center; gap: 10px;
   }
-
   .corte-strip input[type="time"] {
-    background: var(--surface2);
-    border: 1px solid var(--border);
-    color: var(--text);
-    font-family: var(--font);
-    font-size: 13px;
-    font-weight: 500;
-    padding: 5px 10px;
-    border-radius: 8px;
-    cursor: pointer;
-    outline: none;
-    transition: border-color 0.15s;
+    background: var(--surface2); border: 1px solid var(--border); color: var(--text);
+    font-family: var(--font); font-size: 13px; font-weight: 500;
+    padding: 5px 10px; border-radius: 8px; cursor: pointer; outline: none;
+    transition: border-color .15s;
   }
   .corte-strip input[type="time"]:focus { border-color: var(--accent); }
+  .corte-src { font-size: 10px; font-weight: 600; margin-left: 4px; }
+  .corte-src.api  { color: #00b37a; }
+  .corte-src.manual { color: var(--muted); }
 
-  /* ── CARD GRID ── */
-  .grid {
-    display: grid;
-    grid-template-columns: repeat(2, 1fr);
-    gap: 16px;
-  }
-  @media (max-width: 640px) { .grid { grid-template-columns: 1fr; } }
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+  @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
 
   .card {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 14px;
-    padding: 18px 18px 12px;
-    box-shadow: var(--shadow);
-    position: relative;
-    overflow: hidden;
-    transition: box-shadow 0.2s;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 14px;
+    padding: 18px 18px 12px; box-shadow: var(--shadow);
+    position: relative; overflow: hidden; transition: box-shadow .2s;
   }
   .card:hover { box-shadow: var(--shadow-lg); }
-
   .card::before {
-    content: '';
-    position: absolute;
-    top: 0; left: 0; right: 0;
-    height: 3px;
+    content: ''; position: absolute; top: 0; left: 0; right: 0; height: 3px;
     border-radius: 14px 14px 0 0;
   }
-  .card[data-ch="flex"]::before   { background: var(--flex); }
-  .card[data-ch="coleta"]::before { background: var(--coleta); }
-  .card[data-ch="me2"]::before    { background: var(--me2); }
-  .card[data-ch="full"]::before   { background: var(--full); }
+  .card[data-ch="flex"]::before { background: var(--flex); }
+  .card[data-ch="me"]::before   { background: var(--me); }
+  .card[data-ch="full"]::before { background: var(--full); }
 
-  .card-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin-bottom: 14px;
-  }
-
-  .card-title {
-    font-family: var(--font-b);
-    font-size: 14px;
-    font-weight: 700;
-    color: var(--text);
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-
-  .card-dot {
-    width: 9px; height: 9px;
-    border-radius: 3px;
-    flex-shrink: 0;
-  }
-
-  .card-total {
-    font-size: 11px;
-    color: var(--muted);
-    font-weight: 500;
-  }
-  .card-total strong {
-    font-family: var(--font-b);
-    font-size: 15px;
-    font-weight: 700;
-    color: var(--text);
-    margin-right: 2px;
-  }
+  .card-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+  .card-title { font-family: var(--font-b); font-size: 14px; font-weight: 700; color: var(--text); display: flex; align-items: center; gap: 8px; }
+  .card-dot { width: 9px; height: 9px; border-radius: 3px; flex-shrink: 0; }
+  .card-total { font-size: 11px; color: var(--muted); font-weight: 500; }
+  .card-total strong { font-family: var(--font-b); font-size: 15px; font-weight: 700; color: var(--text); margin-right: 2px; }
 
   canvas { display: block; width: 100% !important; }
 
-  /* ── CORTE ALERT ── */
   .corte-alert {
-    margin-top: 16px;
-    background: rgba(255,68,68,0.07);
-    border: 1px solid rgba(255,68,68,0.25);
-    border-radius: 10px;
-    padding: 12px 18px;
-    font-size: 13px;
-    font-weight: 600;
-    color: var(--red);
-    display: flex;
-    align-items: center;
-    gap: 8px;
+    margin-top: 16px; background: rgba(255,68,68,.07); border: 1px solid rgba(255,68,68,.25);
+    border-radius: 10px; padding: 12px 18px; font-size: 13px; font-weight: 600; color: var(--red);
+    display: flex; align-items: center; gap: 8px;
   }
   .corte-alert.hidden { display: none; }
 
-  /* ── TOOLTIP ── */
+  .empty-state {
+    padding: 60px 20px; text-align: center; color: var(--muted);
+    font-size: 13px; grid-column: 1 / -1;
+  }
+
   #tooltip {
-    position: fixed;
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 10px 14px;
-    font-size: 12px;
-    font-family: var(--font);
-    pointer-events: none;
-    display: none;
-    z-index: 100;
-    min-width: 140px;
-    box-shadow: var(--shadow-lg);
+    position: fixed; background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; padding: 10px 14px; font-size: 12px; font-family: var(--font);
+    pointer-events: none; display: none; z-index: 100; min-width: 150px; box-shadow: var(--shadow-lg);
   }
-  #tooltip .tt-hour {
-    font-family: var(--font-b);
-    font-size: 13px;
-    font-weight: 700;
-    color: var(--text);
-    margin-bottom: 6px;
-  }
-  #tooltip .tt-val { color: var(--muted); font-size: 12px; }
+  #tooltip .tt-hour { font-family: var(--font-b); font-size: 13px; font-weight: 700; color: var(--text); margin-bottom: 6px; }
+  #tooltip .tt-val  { color: var(--muted); font-size: 12px; }
   #tooltip .tt-val strong { color: var(--text); font-weight: 700; }
 </style>
 </head>
@@ -256,14 +143,25 @@
 <header>
   <div>
     <h1>Ventas por <span>hora</span></h1>
-    <div class="subtitle">Canal de envío · Corte same day</div>
+    <div class="subtitle" id="subtitle">Canal de envío · Últimos 7 días</div>
   </div>
-  <div class="controls" id="dayBtns"></div>
+  <div class="controls">
+    <div id="dayBtns" style="display:flex;gap:6px;flex-wrap:wrap"></div>
+    <button class="refresh-btn" onclick="loadData()">🔄 Actualizar</button>
+  </div>
 </header>
 
 <div class="corte-strip">
-  <label>Corte Flex <input type="time" id="corteFlex" value="14:00" /></label>
-  <label>Corte Coleta <input type="time" id="corteColeta" value="15:30" /></label>
+  <label>
+    Corte Flex
+    <input type="time" id="corteFlex" value="14:00" oninput="redrawAll()" />
+    <span class="corte-src manual" id="flexSrc">manual</span>
+  </label>
+  <label>
+    Corte ME
+    <input type="time" id="corteMe" value="16:00" oninput="redrawAll()" />
+    <span class="corte-src manual" id="meSrc">sin dato API</span>
+  </label>
 </div>
 
 <div class="grid" id="grid"></div>
@@ -272,82 +170,153 @@
 
 <script>
 const CHANNELS = [
-  { key: 'flex',   label: 'Flex',   color: '#00b37a', corteId: 'corteFlex' },
-  { key: 'coleta', label: 'Coleta', color: '#e07020', corteId: 'corteColeta' },
-  { key: 'me2',    label: 'ME2',    color: '#3B82F6', corteId: null },
-  { key: 'full',   label: 'Full',   color: '#9333ea', corteId: null },
+  { key: 'flex', label: 'Flex',             color: '#00b37a', corteId: 'corteFlex' },
+  { key: 'me',   label: 'Mercado Envíos',   color: '#3B82F6', corteId: 'corteMe' },
+  { key: 'full', label: 'Full',             color: '#9333ea', corteId: null },
 ];
-const HOURS = Array.from({length: 18}, (_, i) => i + 7);
-const DAYS  = ['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom'];
+const HOURS = Array.from({length: 18}, (_, i) => i + 7); // 7..24
 
-function generateDay() {
-  const p1 = [9,10,11,12], p2 = [15,16,17,18];
-  return HOURS.map(h => {
-    const b = (p1.includes(h) || p2.includes(h)) ? 9 : 2;
-    return { flex: Math.floor(Math.random()*(b+5)), coleta: Math.floor(Math.random()*(b+3)), me2: Math.floor(Math.random()*(b+7)), full: Math.floor(Math.random()*(b+4)) };
+// ── Client ID desde URL ────────────────────────────────────────────────────────
+const CLIENT_ID = new URLSearchParams(location.search).get('client_id');
+
+// ── Estado ────────────────────────────────────────────────────────────────────
+let _daysData   = {};   // { "YYYY-MM-DD": { hour: { flex, me, full } } }
+let _dayKeys    = [];   // fechas ordenadas desc
+let _activeDay  = 0;    // índice en _dayKeys
+const canvases  = {};
+const tooltip   = document.getElementById('tooltip');
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+if (!CLIENT_ID) {
+  document.getElementById('grid').innerHTML =
+    '<div class="empty-state">Seleccioná un cliente en la app principal</div>';
+} else {
+  loadCorteFlex();
+  loadData();
+}
+
+// ── Fetch corte Flex desde API ─────────────────────────────────────────────────
+async function loadCorteFlex() {
+  try {
+    const r = await fetch(`/api/logistica/corte-flex?client_id=${CLIENT_ID}`, { credentials: 'include' });
+    const d = await r.json();
+    if (d.flex) {
+      document.getElementById('corteFlex').value = d.flex;
+      document.getElementById('flexSrc').textContent = '✓ API';
+      document.getElementById('flexSrc').className = 'corte-src api';
+      redrawAll();
+    }
+  } catch(e) {}
+}
+
+// ── Fetch datos de ventas ──────────────────────────────────────────────────────
+async function loadData() {
+  const grid = document.getElementById('grid');
+  grid.innerHTML = '<div class="empty-state">⏳ Cargando órdenes...</div>';
+
+  try {
+    const r = await fetch(`/api/ventas-por-hora?client_id=${CLIENT_ID}&days=7`, { credentials: 'include' });
+    const d = await r.json();
+    if (d.error) throw new Error(d.error);
+
+    _daysData = d.days || {};
+    _dayKeys  = Object.keys(_daysData).sort().reverse(); // más reciente primero
+
+    if (!_dayKeys.length) {
+      grid.innerHTML = '<div class="empty-state">Sin órdenes en los últimos 7 días</div>';
+      return;
+    }
+
+    _activeDay = 0;
+    buildDayButtons();
+    buildCards();
+    redrawAll();
+  } catch(e) {
+    grid.innerHTML = `<div class="empty-state">Error: ${e.message}</div>`;
+  }
+}
+
+// ── Botones de día ────────────────────────────────────────────────────────────
+function buildDayButtons() {
+  const container = document.getElementById('dayBtns');
+  container.innerHTML = '';
+  _dayKeys.forEach((date, i) => {
+    const btn = document.createElement('button');
+    btn.className = 'day-btn' + (i === 0 ? ' active' : '');
+    btn.textContent = formatDayLabel(date, i);
+    btn.title = date;
+    btn.onclick = () => { _activeDay = i; updateDayButtons(); redrawAll(); };
+    container.appendChild(btn);
   });
 }
-const allData = DAYS.map(() => generateDay());
-let activeDay = 4;
-const canvases = {};
-const tooltip = document.getElementById('tooltip');
 
-// Day buttons
-const dayContainer = document.getElementById('dayBtns');
-DAYS.forEach((d, i) => {
-  const btn = document.createElement('button');
-  btn.className = 'day-btn' + (i === activeDay ? ' active' : '');
-  btn.textContent = d;
-  btn.onclick = () => { activeDay = i; updateAll(); };
-  dayContainer.appendChild(btn);
-});
+function updateDayButtons() {
+  document.querySelectorAll('#dayBtns .day-btn').forEach((b, i) =>
+    b.classList.toggle('active', i === _activeDay));
+}
 
-// Build cards
-const grid = document.getElementById('grid');
-CHANNELS.forEach(ch => {
-  const card = document.createElement('div');
-  card.className = 'card';
-  card.setAttribute('data-ch', ch.key);
-  card.innerHTML = `
-    <div class="card-header">
-      <div class="card-title"><div class="card-dot" style="background:${ch.color}"></div>${ch.label}</div>
-      <div class="card-total" id="total-${ch.key}"></div>
-    </div>
-    <canvas id="canvas-${ch.key}" height="140"></canvas>
-  `;
-  grid.appendChild(card);
-  const canvas = card.querySelector('canvas');
-  canvases[ch.key] = canvas;
-  attachTooltip(canvas, ch);
-});
+function formatDayLabel(dateStr, idx) {
+  if (idx === 0) return 'Hoy';
+  if (idx === 1) return 'Ayer';
+  const d = new Date(dateStr + 'T12:00:00');
+  const days = ['Dom','Lun','Mar','Mié','Jue','Vie','Sáb'];
+  return days[d.getDay()] + ' ' + d.getDate() + '/' + (d.getMonth()+1);
+}
 
-function getCorteH(id) {
-  if (!id) return null;
-  const [h, m] = document.getElementById(id).value.split(':').map(Number);
-  return h + m / 60;
+// ── Cards ─────────────────────────────────────────────────────────────────────
+function buildCards() {
+  const grid = document.getElementById('grid');
+  grid.innerHTML = '';
+  CHANNELS.forEach(ch => {
+    const card = document.createElement('div');
+    card.className = 'card';
+    card.setAttribute('data-ch', ch.key);
+    card.innerHTML = `
+      <div class="card-header">
+        <div class="card-title"><div class="card-dot" style="background:${ch.color}"></div>${ch.label}</div>
+        <div class="card-total" id="total-${ch.key}"></div>
+      </div>
+      <canvas id="canvas-${ch.key}" height="130"></canvas>
+    `;
+    grid.appendChild(card);
+    canvases[ch.key] = card.querySelector('canvas');
+    attachTooltip(canvases[ch.key], ch);
+  });
+}
+
+// ── Dibujar canal ─────────────────────────────────────────────────────────────
+function getHourData() {
+  const dateKey = _dayKeys[_activeDay];
+  const dayData = _daysData[dateKey] || {};
+  return HOURS.map(h => {
+    const slot = dayData[h] || { flex: 0, me: 0, full: 0 };
+    return slot;
+  });
 }
 
 function drawChannel(ch) {
   const canvas = canvases[ch.key];
-  const dpr = window.devicePixelRatio || 1;
+  if (!canvas) return;
+  const dpr  = window.devicePixelRatio || 1;
   const rect = canvas.parentElement.getBoundingClientRect();
-  const W = rect.width - 36;
-  const H = 140;
-  canvas.width = W * dpr; canvas.height = H * dpr;
-  canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
+  const W = rect.width - 36, H = 130;
+  canvas.width  = W * dpr; canvas.height = H * dpr;
+  canvas.style.width  = W + 'px'; canvas.style.height = H + 'px';
   const c = canvas.getContext('2d');
   c.scale(dpr, dpr);
   c.clearRect(0, 0, W, H);
 
-  const data = allData[activeDay].map(r => r[ch.key]);
-  const maxVal = Math.max(...data, 1);
-  const total = data.reduce((a,b) => a+b, 0);
-  document.getElementById('total-' + ch.key).innerHTML = `<strong>${total}</strong> pedidos`;
+  const hourData = getHourData();
+  const data     = hourData.map(r => r[ch.key]);
+  const maxVal   = Math.max(...data, 1);
+  const total    = data.reduce((a, b) => a + b, 0);
+  document.getElementById('total-' + ch.key).innerHTML =
+    `<strong>${total}</strong> pedidos`;
 
   const padL=30, padR=10, padT=10, padB=22;
   const chartW = W - padL - padR;
   const chartH = H - padT - padB;
-  const barW = chartW / HOURS.length;
+  const barW   = chartW / HOURS.length;
 
   // Grid lines
   [0, 0.25, 0.5, 0.75, 1].forEach(frac => {
@@ -366,10 +335,10 @@ function drawChannel(ch) {
 
   // Bars
   data.forEach((val, i) => {
-    const x = padL + i * barW + 2;
-    const bw = barW - 4;
+    if (!val) return;
+    const x = padL + i * barW + 2, bw = barW - 4;
     const bh = (val / maxVal) * chartH;
-    const y = padT + chartH - bh;
+    const y  = padT + chartH - bh;
     const grad = c.createLinearGradient(0, y, 0, y + bh);
     grad.addColorStop(0, ch.color + 'cc');
     grad.addColorStop(1, ch.color + '22');
@@ -389,19 +358,19 @@ function drawChannel(ch) {
   // Corte line
   const corteH = getCorteH(ch.corteId);
   if (corteH !== null) {
-    const minH = HOURS[0], maxH = HOURS[HOURS.length-1]+1;
+    const minH = HOURS[0], maxH = HOURS[HOURS.length - 1] + 1;
     if (corteH >= minH && corteH <= maxH) {
       const frac = (corteH - minH) / (maxH - minH);
       const x = padL + frac * chartW;
       c.save();
-      c.beginPath(); c.setLineDash([4,3]);
-      c.strokeStyle = '#FF4444'; c.lineWidth = 1.5; c.globalAlpha = 0.85;
+      c.beginPath(); c.setLineDash([4, 3]);
+      c.strokeStyle = '#FF4444'; c.lineWidth = 1.5; c.globalAlpha = .85;
       c.moveTo(x, padT); c.lineTo(x, padT + chartH); c.stroke();
       c.setLineDash([]); c.globalAlpha = 1;
       c.fillStyle = '#FF4444';
       c.font = '600 9px Poppins, sans-serif';
-      c.textAlign = frac > 0.75 ? 'right' : 'left';
-      c.fillText('corte', x + (frac > 0.75 ? -4 : 4), padT + 10);
+      c.textAlign = frac > .75 ? 'right' : 'left';
+      c.fillText('corte', x + (frac > .75 ? -4 : 4), padT + 10);
       c.restore();
     }
   }
@@ -409,23 +378,31 @@ function drawChannel(ch) {
 
 function roundRect(ctx, x, y, w, h, r) {
   if (h <= 0 || w <= 0) return;
-  r = Math.min(r, h/2, w/2);
+  r = Math.min(r, h / 2, w / 2);
   ctx.beginPath();
   ctx.moveTo(x+r, y); ctx.lineTo(x+w-r, y); ctx.quadraticCurveTo(x+w, y, x+w, y+r);
   ctx.lineTo(x+w, y+h); ctx.lineTo(x, y+h); ctx.lineTo(x, y+r); ctx.quadraticCurveTo(x, y, x+r, y);
   ctx.closePath();
 }
 
+function getCorteH(id) {
+  if (!id) return null;
+  const el = document.getElementById(id);
+  if (!el) return null;
+  const [h, m] = el.value.split(':').map(Number);
+  return h + m / 60;
+}
+
 function attachTooltip(canvas, ch) {
   canvas.addEventListener('mousemove', e => {
     const rect = canvas.getBoundingClientRect();
-    const mx = e.clientX - rect.left;
-    const chartW = rect.width - 40;
-    const barW = chartW / HOURS.length;
-    const idx = Math.floor((mx - 30) / barW);
+    const mx   = e.clientX - rect.left;
+    const barW = (rect.width - 40) / HOURS.length;
+    const idx  = Math.floor((mx - 30) / barW);
     if (idx < 0 || idx >= HOURS.length) { tooltip.style.display = 'none'; return; }
-    const val = allData[activeDay][idx][ch.key];
-    tooltip.innerHTML = `<div class="tt-hour" style="color:${ch.color}">${ch.label} · ${HOURS[idx]}:00</div><div class="tt-val"><strong>${val}</strong> pedidos</div>`;
+    const hourData = getHourData();
+    const val = hourData[idx]?.[ch.key] || 0;
+    tooltip.innerHTML = `<div class="tt-hour" style="color:${ch.color}">${ch.label} · ${HOURS[idx]}:00</div><div class="tt-val"><strong>${val}</strong> pedido${val !== 1 ? 's' : ''}</div>`;
     tooltip.style.display = 'block';
     tooltip.style.left = (e.clientX + 12) + 'px';
     tooltip.style.top  = (e.clientY - 16) + 'px';
@@ -433,19 +410,21 @@ function attachTooltip(canvas, ch) {
   canvas.addEventListener('mouseleave', () => { tooltip.style.display = 'none'; });
 }
 
-function updateAll() {
+function redrawAll() {
   CHANNELS.forEach(drawChannel);
-  document.querySelectorAll('.day-btn').forEach((b, i) => b.classList.toggle('active', i === activeDay));
-  const now = new Date();
+  // Alerta corte Flex
+  const now    = new Date();
   const corteH = getCorteH('corteFlex');
-  const nowH = now.getHours() + now.getMinutes()/60;
-  document.getElementById('corteAlert').classList.toggle('hidden', !(corteH - nowH > 0 && corteH - nowH < 1));
+  const nowH   = now.getHours() + now.getMinutes() / 60;
+  document.getElementById('corteAlert')
+    .classList.toggle('hidden', !(corteH - nowH > 0 && corteH - nowH < 1));
 }
 
-document.getElementById('corteFlex').addEventListener('change', updateAll);
-document.getElementById('corteColeta').addEventListener('change', updateAll);
-window.addEventListener('resize', updateAll);
-requestAnimationFrame(() => requestAnimationFrame(updateAll));
+['corteFlex','corteMe'].forEach(id => {
+  document.getElementById(id)?.addEventListener('change', redrawAll);
+});
+
+window.addEventListener('resize', redrawAll);
 </script>
 </body>
 </html>

@@ -4028,6 +4028,92 @@ app.get('/api/debug/order', requireAuth, async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message, stack: e.stack }); }
 });
 
+// ── VENTAS POR HORA ───────────────────────────────────────────────────────────
+app.get('/api/ventas-por-hora', requireAuth, async (req, res) => {
+  try {
+    const client_id = parseInt(req.query.client_id);
+    const token = await getClientToken(client_id);
+    if (!token) return res.status(403).json({ error: 'Sin token' });
+
+    const headers = { 'Authorization': `Bearer ${token}` };
+    const user = await fetch(`${ML_API}/users/me`, { headers }).then(r => r.json());
+    const uid = user.id;
+
+    const days_back = parseInt(req.query.days) || 7;
+    const dateTo   = new Date();
+    const dateFrom = new Date(dateTo.getTime() - days_back * 24 * 60 * 60 * 1000);
+    const fmt = d => d.toISOString().slice(0,19) + '.000-00:00';
+
+    const { orders } = await fetchAllOrders(uid, headers, fmt(dateFrom), fmt(dateTo));
+
+    // Argentina = UTC-3, sin DST
+    const ARG_OFFSET_MS = -3 * 60 * 60 * 1000;
+    const days = {}; // { "YYYY-MM-DD": { hour: { flex, me, full } } }
+
+    orders.forEach(order => {
+      const utc  = new Date(order.date_created);
+      const arg  = new Date(utc.getTime() + ARG_OFFSET_MS);
+      const date = arg.toISOString().slice(0, 10);
+      const hour = arg.getUTCHours();
+
+      const lt   = (order.shipping?.logistic_type || '').toLowerCase();
+      const tags = order.tags || [];
+
+      let ch;
+      if (tags.includes('fulfill') || lt === 'fulfillment') ch = 'full';
+      else if (lt === 'self_service' || lt.includes('flex'))  ch = 'flex';
+      else ch = 'me';
+
+      if (!days[date]) days[date] = {};
+      if (!days[date][hour]) days[date][hour] = { flex: 0, me: 0, full: 0 };
+      days[date][hour][ch]++;
+    });
+
+    res.json({ days, total: orders.length });
+  } catch(e) {
+    console.error('[VENTAS-HORA]', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// GET /api/logistica/corte-flex — horario de corte Flex desde la API de ML
+app.get('/api/logistica/corte-flex', requireAuth, async (req, res) => {
+  try {
+    const client_id = parseInt(req.query.client_id);
+    const token = await getClientToken(client_id);
+    if (!token) return res.status(403).json({ error: 'Sin token' });
+
+    const headers = { 'Authorization': `Bearer ${token}` };
+    const user    = await fetch(`${ML_API}/users/me`, { headers }).then(r => r.json());
+    const uid     = user.id;
+    const siteId  = user.site_id || 'MLA';
+
+    let flexCutoff = null;
+    let raw = {};
+
+    try {
+      const svcData = await fetch(`${ML_API}/flex/sites/${siteId}/users/${uid}/services`, { headers }).then(r => r.json());
+      raw.services = svcData;
+      const services = svcData.results || (Array.isArray(svcData) ? svcData : []);
+      if (services.length) {
+        const svcId    = services[0].id;
+        const cfgData  = await fetch(`${ML_API}/flex/sites/${siteId}/users/${uid}/services/${svcId}/configurations/delivery-ranges/v1`, { headers }).then(r => r.json());
+        raw.config = cfgData;
+        const ranges   = cfgData.results || cfgData.delivery_ranges || (Array.isArray(cfgData) ? cfgData : []);
+        const weekday  = ranges.find(r => r.day_type === 'weekday') || ranges[0];
+        if (weekday?.cutoff) {
+          flexCutoff = String(weekday.cutoff).slice(0, 5); // HH:MM
+        }
+      }
+    } catch(e) { raw.error = e.message; }
+
+    res.json({ flex: flexCutoff, raw });
+  } catch(e) {
+    console.error('[CORTE-FLEX]', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.get('/api/logistica', requireAuth, async (req, res) => {
   try {
     const uid = req.query.uid;
