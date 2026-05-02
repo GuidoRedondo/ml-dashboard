@@ -9910,10 +9910,30 @@ async function initDestaqueTab() {
   loadTendencias();
   const sel = document.getElementById('destaqueCategSel');
   if (!sel) return;
+
   if (sel.options.length > 1) {
     if (sel.value) loadDestaqueHighlights(sel.value);
     return;
   }
+
+  // Reutilizar opciones del selector del tab Mercado si ya están cargadas
+  const mercadoSel = document.getElementById('mercadoMLCatSelect');
+  if (mercadoSel && mercadoSel.options.length > 1) {
+    Array.from(mercadoSel.options).forEach((opt, i) => {
+      if (i === 0) return;
+      const o = document.createElement('option');
+      o.value = opt.value;
+      o.textContent = opt.textContent;
+      sel.appendChild(o);
+    });
+    sel.value = sel.options[1]?.value || '';
+    if (sel.value) loadDestaqueHighlights(sel.value);
+    return;
+  }
+
+  const hlEl = document.getElementById('destaqueHighlightsEl');
+  hlEl.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:20px;text-align:center;background:var(--surface);border:1px solid var(--border);border-radius:12px">⏳ Cargando categorías...</div>';
+
   try {
     const data = await apiCall('GET', `/api/competencia/categorias?client_id=${client.id}`);
     if (data?.categories?.length) {
@@ -9925,8 +9945,12 @@ async function initDestaqueTab() {
       });
       sel.value = data.categories[0].id;
       loadDestaqueHighlights(sel.value);
+    } else {
+      hlEl.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:20px;text-align:center;background:var(--surface);border:1px solid var(--border);border-radius:12px">Sin categorías activas para esta cuenta</div>';
     }
-  } catch(e) { console.error('Error cargando categorías destaque:', e); }
+  } catch(e) {
+    hlEl.innerHTML = `<div style="color:#ef4444;font-size:13px;padding:20px;background:var(--surface);border:1px solid var(--border);border-radius:12px">Error cargando categorías: ${e.message}</div>`;
+  }
 }
 
 async function loadDestaqueHighlights(categoryId) {
