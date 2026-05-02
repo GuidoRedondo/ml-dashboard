@@ -4777,10 +4777,10 @@ app.get('/api/competencia/highlights', requireAuth, async (req, res) => {
       { headers }
     ).then(r => r.json()).catch(() => ({}));
 
-    console.log(`[HIGHLIGHTS] cat=${category_id} keys=${Object.keys(hlRes||{}).join(',')} error=${hlRes.error||''} count=${(hlRes.content||[]).length}`);
+    console.log(`[HIGHLIGHTS] cat=${category_id} keys=${Object.keys(hlRes||{}).join(',')} error=${hlRes.error||''} count=${(hlRes.content||[]).length} raw=${JSON.stringify(hlRes).slice(0,200)}`);
 
     const content = hlRes.content || [];
-    if (!content.length) return res.json({ items: [], category_id });
+    if (!content.length) return res.json({ items: [], category_id, _raw: hlRes });
 
     const ids = content.slice(0, 20).map(c => c.id).join(',');
     const itemsRes = await fetch(
@@ -4829,9 +4829,9 @@ app.get('/api/competencia/tendencias', requireAuth, async (req, res) => {
       { headers }
     ).then(r => r.json()).catch(() => []);
 
-    console.log(`[TENDENCIAS] type=${typeof trends} isArray=${Array.isArray(trends)} count=${Array.isArray(trends)?trends.length:'-'} error=${trends?.error||''}`);
+    console.log(`[TENDENCIAS] type=${typeof trends} isArray=${Array.isArray(trends)} count=${Array.isArray(trends)?trends.length:'-'} raw=${JSON.stringify(trends).slice(0,200)}`);
 
-    res.json({ trends: Array.isArray(trends) ? trends : [] });
+    res.json({ trends: Array.isArray(trends) ? trends : [], _raw: Array.isArray(trends) ? null : trends });
   } catch(e) {
     console.error('[TENDENCIAS]', e.message);
     res.status(500).json({ error: e.message });

@@ -9973,7 +9973,8 @@ function renderDestaqueHighlights(data) {
   const el = document.getElementById('destaqueHighlightsEl');
   const { items } = data;
   if (!items?.length) {
-    el.innerHTML = '<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:24px;text-align:center;color:var(--muted);font-size:13px">Sin publicaciones destacadas para esta categoría</div>';
+    const raw = data._raw ? JSON.stringify(data._raw).slice(0, 200) : '(vacío)';
+    el.innerHTML = `<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px;color:var(--muted);font-size:12px">Sin publicaciones destacadas<br><span style="font-size:11px;opacity:.7">Respuesta ML: ${raw}</span></div>`;
     return;
   }
   const fmtP = p => '$' + Math.round(p).toLocaleString('es-AR');
@@ -10024,7 +10025,8 @@ function renderTendencias(data) {
   const el = document.getElementById('destaqueTendenciasEl');
   const { trends } = data;
   if (!trends?.length) {
-    el.innerHTML = '<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:24px;text-align:center;color:var(--muted);font-size:13px">Sin tendencias disponibles</div>';
+    const raw = data._raw ? JSON.stringify(data._raw).slice(0, 200) : '(array vacío)';
+    el.innerHTML = `<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px;color:var(--muted);font-size:12px">Sin tendencias disponibles<br><span style="font-size:11px;opacity:.7">Respuesta ML: ${raw}</span></div>`;
     return;
   }
   let html = `<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden">
