@@ -9964,9 +9964,8 @@ async function loadDestaqueHighlights(categoryId) {
   el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:30px;text-align:center;background:var(--surface);border:1px solid var(--border);border-radius:12px">⏳ Cargando top del mercado...</div>';
   try {
     const { token } = await apiCall('GET', `/api/competencia/ml-token?client_id=${client.id}`);
-    const r = await fetch(`https://api.mercadolibre.com/sites/MLA/search?category=${categoryId}&limit=20`, {
-      headers: { 'Authorization': `Bearer ${token}` }
-    });
+    // access_token como query param evita el preflight CORS que ML rechaza
+    const r = await fetch(`https://api.mercadolibre.com/sites/MLA/search?category=${categoryId}&limit=20&access_token=${token}`);
     const data = await r.json();
     if (data.error) throw new Error(`ML: ${data.message || data.error}`);
     const items = (data.results || []).map((it, i) => ({
@@ -10028,9 +10027,7 @@ async function loadTendencias(categoryId) {
   el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:30px;text-align:center;background:var(--surface);border:1px solid var(--border);border-radius:12px">⏳ Cargando más vendidos...</div>';
   try {
     const { token } = await apiCall('GET', `/api/competencia/ml-token?client_id=${client.id}`);
-    const r = await fetch(`https://api.mercadolibre.com/sites/MLA/search?category=${categoryId}&sort=sold_quantity_desc&limit=20`, {
-      headers: { 'Authorization': `Bearer ${token}` }
-    });
+    const r = await fetch(`https://api.mercadolibre.com/sites/MLA/search?category=${categoryId}&sort=sold_quantity_desc&limit=20&access_token=${token}`);
     const data = await r.json();
     if (data.error) throw new Error(`ML: ${data.message || data.error}`);
     const items = (data.results || []).map((it, i) => ({
