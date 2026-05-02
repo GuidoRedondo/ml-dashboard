@@ -255,18 +255,69 @@ async function loadCortes() {
     const r = await fetch(`/api/logistica/cortes?client_id=${CLIENT_ID}`, { credentials: 'include' });
     const d = await r.json();
 
-    if (d.flex) {
-      document.getElementById('corteFlex').value = d.flex;
-      const el = document.getElementById('flexSrc');
-      el.textContent = '✓ API'; el.className = 'corte-src api';
+    // Flex
+    const flexEl  = document.getElementById('corteFlex');
+    const flexSrc = document.getElementById('flexSrc');
+    if (!d.flex_available) {
+      flexSrc.textContent = 'sin Flex';
+      flexSrc.className   = 'corte-src manual';
+      flexEl.disabled = true;
+      flexEl.style.opacity = '0.4';
+    } else if (d.flex) {
+      flexEl.value        = d.flex;
+      flexSrc.textContent = '✓ API';
+      flexSrc.className   = 'corte-src api';
     }
+
+    // ME (cross_docking) — muestra hoy + resumen semanal
     if (d.me) {
       document.getElementById('corteMe').value = d.me;
-      const el = document.getElementById('meSrc');
-      el.textContent = '✓ API'; el.className = 'corte-src api';
+      const meSrc = document.getElementById('meSrc');
+      meSrc.textContent = '✓ API';
+      meSrc.className   = 'corte-src api';
     }
+    // Mostrar schedule semanal de ME si varía
+    if (d.me_schedule && Object.keys(d.me_schedule).length) {
+      renderMeSchedule(d.me_schedule);
+    }
+
     redrawAll();
   } catch(e) {}
+}
+
+const DAY_LABELS = { monday:'Lun', tuesday:'Mar', wednesday:'Mié', thursday:'Jue', friday:'Vie', saturday:'Sáb', sunday:'Dom' };
+
+function renderMeSchedule(byDay) {
+  // Agrupa días con mismo horario: "Lun–Mar 12:45 · Mié–Jue 13:30"
+  const groups = [];
+  let prev = null;
+  const order = ['monday','tuesday','wednesday','thursday','friday','saturday','sunday'];
+  order.forEach(day => {
+    const cutoff = byDay[day];
+    if (!cutoff) return;
+    if (prev && prev.cutoff === cutoff) {
+      prev.days.push(day);
+    } else {
+      prev = { cutoff, days: [day] };
+      groups.push(prev);
+    }
+  });
+  if (!groups.length) return;
+  const parts = groups.map(g => {
+    const labels = g.days.map(d => DAY_LABELS[d]);
+    const range  = labels.length > 2
+      ? labels[0] + '–' + labels[labels.length - 1]
+      : labels.join('/');
+    return range + ' ' + g.cutoff;
+  });
+  let el = document.getElementById('meScheduleInfo');
+  if (!el) {
+    el = document.createElement('span');
+    el.id = 'meScheduleInfo';
+    el.style.cssText = 'font-size:10px;color:var(--muted);font-weight:500;margin-left:6px';
+    document.getElementById('meSrc').insertAdjacentElement('afterend', el);
+  }
+  el.textContent = '(' + parts.join(' · ') + ')';
 }
 
 // ── Fetch datos de ventas y agrega ────────────────────────────────────────────

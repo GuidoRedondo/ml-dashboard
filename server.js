@@ -4097,61 +4097,82 @@ app.get('/api/logistica/cortes', requireAuth, async (req, res) => {
     const user    = await fetch(`${ML_API}/users/me`, { headers }).then(r => r.json());
     const uid     = user.id;
     const siteId  = user.site_id || 'MLA';
-    const raw     = {};
 
-    // Día actual (0=dom, 1=lun ... 6=sáb) en Argentina
+    // Día actual en Argentina (0=Dom … 6=Sáb)
     const ARG_OFFSET_MS = -3 * 60 * 60 * 1000;
-    const nowArg  = new Date(Date.now() + ARG_OFFSET_MS);
-    const todayDow = nowArg.getUTCDay(); // 0=Sun
+    const nowArg   = new Date(Date.now() + ARG_OFFSET_MS);
+    const todayDow = nowArg.getUTCDay();
+    const ML_DAYS  = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
+    const todayKey = ML_DAYS[todayDow];
 
-    const mlDayNames = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
-    const todayName  = mlDayNames[todayDow];
+    // ── Helper: extrae cutoffs de la estructura { schedule: { monday: { work, detail[{cutoff}] } } }
+    function parseCrossDockingSchedule(body) {
+      const sched = body.schedule || {};
+      const byDay = {}; // { monday: "12:45", ... }
+      for (const [day, info] of Object.entries(sched)) {
+        if (info.work && Array.isArray(info.detail) && info.detail.length) {
+          const c = info.detail[0].cutoff;
+          if (c) byDay[day] = String(c).slice(0, 5);
+        }
+      }
+      // Cutoff de hoy; si no trabaja hoy, el siguiente día laborable
+      const todayCutoff = byDay[todayKey] || null;
+      // Primer día laborable disponible como fallback
+      const anyDay = ML_DAYS.find(d => byDay[d]);
+      return { today: todayCutoff, byDay, fallback: anyDay ? byDay[anyDay] : null };
+    }
 
     // ── FLEX cutoff via schedule/self_service ─────────────────────────────────
-    let flexCutoff = null;
+    let flexCutoff    = null;
+    let flexSchedule  = {};
+    let flexAvailable = false;
     try {
-      const flexSched = await fetch(`${ML_API}/users/${uid}/shipping/schedule/self_service`, { headers }).then(r => r.json());
-      raw.flexSched = flexSched;
-      // Estructura: array de { day, cutoff } o { schedule: [...] }
-      const items = Array.isArray(flexSched) ? flexSched
-                  : (flexSched.schedule || flexSched.results || []);
-      const todayEntry = items.find(d => (d.day || '').toLowerCase() === todayName);
-      const anyEntry   = items[0];
-      const entry      = todayEntry || anyEntry;
-      if (entry?.cutoff) flexCutoff = String(entry.cutoff).slice(0, 5);
-    } catch(e) { raw.flexSchedError = e.message; }
+      const r   = await fetch(`${ML_API}/users/${uid}/shipping/schedule/self_service`, { headers });
+      const body = await r.json();
+      if (r.status === 200 && body.schedule) {
+        flexAvailable = true;
+        const parsed  = parseCrossDockingSchedule(body);
+        flexCutoff    = parsed.today || parsed.fallback;
+        flexSchedule  = parsed.byDay;
+      }
+      // 404 "Seller does not have schedule" → flexAvailable stays false
+    } catch(e) {}
 
-    // Fallback: flex services config
-    if (!flexCutoff) {
+    // Fallback: flex services config (solo si el endpoint schedule dio 200 pero sin cutoff)
+    if (flexAvailable && !flexCutoff) {
       try {
         const svcData = await fetch(`${ML_API}/flex/sites/${siteId}/users/${uid}/services`, { headers }).then(r => r.json());
-        raw.flexServices = svcData;
         const services = svcData.results || (Array.isArray(svcData) ? svcData : []);
         if (services.length) {
           const svcId   = services[0].id;
           const cfgData = await fetch(`${ML_API}/flex/sites/${siteId}/users/${uid}/services/${svcId}/configurations/delivery-ranges/v1`, { headers }).then(r => r.json());
-          raw.flexConfig = cfgData;
           const ranges  = cfgData.results || cfgData.delivery_ranges || (Array.isArray(cfgData) ? cfgData : []);
           const weekday = ranges.find(r => r.day_type === 'weekday') || ranges[0];
           if (weekday?.cutoff) flexCutoff = String(weekday.cutoff).slice(0, 5);
         }
-      } catch(e) { raw.flexServicesError = e.message; }
+      } catch(e) {}
     }
 
-    // ── ME cutoff via schedule/cross_docking ─────────────────────────────────
-    let meCutoff = null;
+    // ── ME (cross_docking) cutoff ─────────────────────────────────────────────
+    let meCutoff   = null;
+    let meSchedule = {};
     try {
-      const meSched = await fetch(`${ML_API}/users/${uid}/shipping/schedule/cross_docking`, { headers }).then(r => r.json());
-      raw.meSched = meSched;
-      const items = Array.isArray(meSched) ? meSched
-                  : (meSched.schedule || meSched.results || []);
-      const todayEntry = items.find(d => (d.day || '').toLowerCase() === todayName);
-      const anyEntry   = items[0];
-      const entry      = todayEntry || anyEntry;
-      if (entry?.cutoff) meCutoff = String(entry.cutoff).slice(0, 5);
-    } catch(e) { raw.meSchedError = e.message; }
+      const r   = await fetch(`${ML_API}/users/${uid}/shipping/schedule/cross_docking`, { headers });
+      const body = await r.json();
+      if (r.status === 200 && body.schedule) {
+        const parsed = parseCrossDockingSchedule(body);
+        meCutoff     = parsed.today || parsed.fallback;
+        meSchedule   = parsed.byDay;
+      }
+    } catch(e) {}
 
-    res.json({ flex: flexCutoff, me: meCutoff, raw });
+    res.json({
+      flex:          flexCutoff,
+      flex_available: flexAvailable,
+      flex_schedule: flexSchedule,
+      me:            meCutoff,
+      me_schedule:   meSchedule,
+    });
   } catch(e) {
     console.error('[CORTES]', e.message);
     res.status(500).json({ error: e.message });
