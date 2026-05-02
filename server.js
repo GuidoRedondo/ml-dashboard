@@ -772,6 +772,38 @@ async function getAppToken(clientId) {
   }
 }
 
+// ── SHIPPING MODE (solo logistic_type — sin costos, más liviano) ─────────────
+// Devuelve { [shipmentId]: 'flex'|'me'|'full' }
+async function fetchShippingModes(orders, headers) {
+  const shipIds = [...new Set(
+    orders.map(o => o.shipping && o.shipping.id).filter(Boolean)
+  )];
+  if (!shipIds.length) return {};
+
+  const modeMap = {};
+  for (let i = 0; i < shipIds.length; i += 20) {
+    const batch = shipIds.slice(i, i + 20);
+    const results = await Promise.all(
+      batch.map(id =>
+        fetch(`${ML_API}/shipments/${id}`, { headers })
+          .then(r => r.json())
+          .catch(() => null)
+      )
+    );
+    results.forEach((s, idx) => {
+      if (!s) return;
+      const lt = (s.logistic_type || '').toLowerCase();
+      const sn = (s.shipping_option?.name || '').toLowerCase();
+      let ch;
+      if (lt === 'fulfillment' || sn.includes('fulfillment'))                                 ch = 'full';
+      else if (lt === 'flex' || lt === 'self_service' || lt.includes('flex') || sn.includes('flex')) ch = 'flex';
+      else                                                                                     ch = 'me';
+      modeMap[batch[idx]] = ch;
+    });
+  }
+  return modeMap;
+}
+
 // ── SHIPPING COSTS + METADATA ─────────────────────────────────────────────────
 async function fetchShippingCosts(orders, headers) {
   const shipIds = [...new Set(
@@ -4056,6 +4088,9 @@ app.get('/api/ventas-por-hora', requireAuth, async (req, res) => {
 
     const { orders } = await fetchAllOrders(uid, headers, fmt(dateFrom), fmt(dateTo));
 
+    // Obtener modo real de cada envío (igual que el dashboard — fuente de verdad)
+    const modeMap = await fetchShippingModes(orders, headers);
+
     // Argentina = UTC-3, sin DST
     const ARG_OFFSET_MS = -3 * 60 * 60 * 1000;
     const days = {}; // { "YYYY-MM-DD": { hour: { flex, me, full } } }
@@ -4066,13 +4101,16 @@ app.get('/api/ventas-por-hora', requireAuth, async (req, res) => {
       const date = arg.toISOString().slice(0, 10);
       const hour = arg.getUTCHours();
 
-      const lt   = (order.shipping?.logistic_type || '').toLowerCase();
-      const tags = order.tags || [];
-
-      let ch;
-      if (tags.includes('fulfill') || lt === 'fulfillment') ch = 'full';
-      else if (lt === 'self_service' || lt.includes('flex'))  ch = 'flex';
-      else ch = 'me';
+      // Clasificar por modo real del envío; fallback a logistic_type del order
+      const shipId = order.shipping?.id;
+      let ch = shipId && modeMap[shipId] ? modeMap[shipId] : null;
+      if (!ch) {
+        const lt   = (order.shipping?.logistic_type || '').toLowerCase();
+        const tags = order.tags || [];
+        if (tags.includes('fulfill') || lt === 'fulfillment') ch = 'full';
+        else if (lt === 'flex' || lt === 'self_service' || lt.includes('flex')) ch = 'flex';
+        else ch = 'me';
+      }
 
       if (!days[date]) days[date] = {};
       if (!days[date][hour]) days[date][hour] = { flex: 0, me: 0, full: 0 };
