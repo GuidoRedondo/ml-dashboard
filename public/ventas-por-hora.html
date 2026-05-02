@@ -189,12 +189,12 @@ const HOURS = Array.from({ length: 17 }, (_, i) => i + 7);
 
 const params    = new URLSearchParams(location.search);
 const CLIENT_ID = params.get('client_id');
-// Período sincronizado con el temporizador de la app
-const URL_FROM  = params.get('date_from');  // YYYY-MM-DD
-const URL_TO    = params.get('date_to');
 
-// Estado global
-let _period   = 7;   // usado solo si no hay URL_FROM/URL_TO
+// Fechas efectivas — mutables: arrancan con el temporizador de la app
+// y el usuario las puede sobreescribir con los botones de período
+let _dateFrom = params.get('date_from') || null;  // YYYY-MM-DD
+let _dateTo   = params.get('date_to')   || null;
+let _period   = 7;   // fallback si no hay fechas
 let _aggData  = {};
 let _numDays  = 1;
 const canvases = {};
@@ -210,32 +210,46 @@ if (!CLIENT_ID) {
 }
 
 function initUI() {
-  if (URL_FROM && URL_TO) {
-    // Fecha sincronizada con la app — ocultar selector manual
-    document.getElementById('periodSelector').style.display = 'none';
-    const d1 = URL_FROM.split('-').slice(1).join('/'); // MM/DD → DD/MM
-    const d2 = URL_TO.split('-').slice(1).join('/');
-    document.getElementById('subtitle').textContent =
-      `Promedio diario por hora · ${URL_FROM.slice(8)}/${URL_FROM.slice(5,7)} → ${URL_TO.slice(8)}/${URL_TO.slice(5,7)}`;
-    // días del período
-    _numDays = Math.max(1, Math.round(
-      (new Date(URL_TO + 'T23:59:59') - new Date(URL_FROM + 'T00:00:00')) / (24*60*60*1000)
-    ));
+  // Marcar qué botón corresponde al período actual
+  if (_dateFrom && _dateTo) {
+    const days = Math.round(
+      (new Date(_dateTo + 'T23:59:59') - new Date(_dateFrom + 'T00:00:00')) / (24*60*60*1000)
+    );
+    _numDays = Math.max(1, days);
+    // Activar botón si coincide con 7/14/30
+    const match = [7, 14, 30].find(d => Math.abs(d - days) <= 1);
+    document.querySelectorAll('.period-btn').forEach(b =>
+      b.classList.toggle('active', match && +b.dataset.days === match));
+    updateSubtitle();
   } else {
-    document.getElementById('subtitle').textContent =
-      `Promedio diario por hora · últimos ${_period} días`;
+    // Sin fechas del temporizador: usar _period por defecto
+    setPeriod(_period, false);
   }
 }
 
-function setPeriod(days) {
-  if (URL_FROM) return; // período bloqueado por temporizador
+function updateSubtitle() {
+  const el = document.getElementById('subtitle');
+  if (_dateFrom && _dateTo) {
+    const f = `${_dateFrom.slice(8)}/${_dateFrom.slice(5,7)}`;
+    const t = `${_dateTo.slice(8)}/${_dateTo.slice(5,7)}`;
+    el.textContent = `Promedio diario por hora · ${f} → ${t}`;
+  } else {
+    el.textContent = `Promedio diario por hora · últimos ${_period} días`;
+  }
+}
+
+function setPeriod(days, reload = true) {
   _period = days;
-  _numDays = days;
+  // Calcular fechas desde hoy
+  const now  = new Date();
+  const from = new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
+  _dateFrom  = from.toISOString().slice(0, 10);
+  _dateTo    = now.toISOString().slice(0, 10);
+  _numDays   = days;
   document.querySelectorAll('.period-btn').forEach(b =>
     b.classList.toggle('active', +b.dataset.days === days));
-  document.getElementById('subtitle').textContent =
-    `Promedio diario por hora · últimos ${days} días`;
-  loadAll();
+  updateSubtitle();
+  if (reload) loadAll();
 }
 
 // ── Carga paralela: datos + cortes ────────────────────────────────────────────
@@ -322,21 +336,13 @@ function renderMeSchedule(byDay) {
 async function loadData() {
   const grid = document.getElementById('grid');
   try {
-    // Usar rango del temporizador si está disponible, si no usar days
-    const apiParams = URL_FROM && URL_TO
-      ? `client_id=${CLIENT_ID}&date_from=${URL_FROM}&date_to=${URL_TO}`
-      : `client_id=${CLIENT_ID}&days=${_period}`;
+    const apiParams = `client_id=${CLIENT_ID}&date_from=${_dateFrom}&date_to=${_dateTo}`;
     const r = await fetch(`/api/ventas-por-hora?${apiParams}`, { credentials: 'include' });
     const d = await r.json();
     if (d.error) throw new Error(d.error);
 
     const days    = d.days || {};
     const dayKeys = Object.keys(days);
-
-    // _numDays: si viene del temporizador ya fue calculado en initUI; si no, usar días con órdenes
-    if (!URL_FROM) {
-      _numDays = Math.max(dayKeys.length, 1);
-    }
 
     // Agregar: suma total por canal+hora
     const agg = {};
