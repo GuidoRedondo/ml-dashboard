@@ -5251,7 +5251,7 @@ function loadPerformance() {
 
   connected.forEach(acc => {
     const perf = acc.data.performance;
-    totVisits   += acc.data?.stats?.cur?.total_visits || 0;
+    totVisits   += acc.data?.stats?.total_visits || 0;
     adsImpr     += acc.data?._adsData?.impressions   || 0;
     adsClicks   += acc.data?._adsData?.clicks        || 0;
     adsUnits    += acc.data?._adsData?.units         || 0;
