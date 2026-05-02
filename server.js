@@ -4763,80 +4763,14 @@ app.get('/api/competencia/item', requireAuth, async (req, res) => {
   }
 });
 
-app.get('/api/competencia/highlights', requireAuth, async (req, res) => {
+// Devuelve el token ML del cliente para que el browser pueda llamar a ML directo
+// (evita el 403 por IP de cloud en búsquedas de categoría)
+app.get('/api/competencia/ml-token', requireAuth, async (req, res) => {
   try {
-    const { client_id, category_id } = req.query;
-    if (!category_id) return res.status(400).json({ error: 'Falta category_id' });
-
-    const appToken = await getAppToken(parseInt(client_id));
-    const token    = await getClientToken(parseInt(client_id));
-    if (!token && !appToken) return res.status(403).json({ error: 'Sin token' });
-    const headers = { 'Authorization': `Bearer ${appToken || token}` };
-
-    // Top del mercado: búsqueda por relevancia (orden por defecto de ML = lo que ML promueve)
-    const searchRes = await fetch(
-      `${ML_API}/sites/MLA/search?category=${category_id}&limit=20`,
-      { headers }
-    ).then(r => r.json()).catch(() => ({}));
-
-    const results = searchRes.results || [];
-    const items = results.map((it, i) => ({
-      position:       i + 1,
-      id:             it.id,
-      title:          it.title,
-      price:          it.price,
-      original_price: it.original_price,
-      thumbnail:      it.thumbnail,
-      permalink:      it.permalink,
-      sold_quantity:  it.sold_quantity,
-      free_shipping:  it.shipping?.free_shipping,
-      listing_type:   it.listing_type_id,
-      condition:      it.condition,
-      seller_id:      it.seller?.id,
-    }));
-
-    res.json({ items, category_id, _raw: items.length ? null : searchRes });
-  } catch(e) {
-    console.error('[HIGHLIGHTS]', e.message);
-    res.status(500).json({ error: e.message });
-  }
-});
-
-app.get('/api/competencia/tendencias', requireAuth, async (req, res) => {
-  try {
-    const { client_id, category_id } = req.query;
-    if (!category_id) return res.status(400).json({ error: 'Falta category_id' });
-
-    const appToken = await getAppToken(parseInt(client_id));
-    const token    = await getClientToken(parseInt(client_id));
-    if (!token && !appToken) return res.status(403).json({ error: 'Sin token' });
-    const headers = { 'Authorization': `Bearer ${appToken || token}` };
-
-    // Más vendidos en la categoría (ventas = lo que el mercado está comprando)
-    const searchRes = await fetch(
-      `${ML_API}/sites/MLA/search?category=${category_id}&sort=sold_quantity_desc&limit=20`,
-      { headers }
-    ).then(r => r.json()).catch(() => ({}));
-
-    const results = searchRes.results || [];
-    const items = results.map((it, i) => ({
-      position:      i + 1,
-      id:            it.id,
-      title:         it.title,
-      price:         it.price,
-      thumbnail:     it.thumbnail,
-      permalink:     it.permalink,
-      sold_quantity: it.sold_quantity,
-      free_shipping: it.shipping?.free_shipping,
-      listing_type:  it.listing_type_id,
-      seller_id:     it.seller?.id,
-    }));
-
-    res.json({ items, category_id, _raw: items.length ? null : searchRes });
-  } catch(e) {
-    console.error('[TENDENCIAS]', e.message);
-    res.status(500).json({ error: e.message });
-  }
+    const token = await getClientToken(parseInt(req.query.client_id));
+    if (!token) return res.status(403).json({ error: 'Sin token' });
+    res.json({ token });
+  } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
 app.get('/api/competencia', requireAuth, async (req, res) => {

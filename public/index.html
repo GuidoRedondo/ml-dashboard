@@ -9961,10 +9961,22 @@ async function loadDestaqueHighlights(categoryId) {
   const el = document.getElementById('destaqueHighlightsEl');
   const client = getActiveClient();
   if (!client || !categoryId) return;
-  el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:30px;text-align:center;background:var(--surface);border:1px solid var(--border);border-radius:12px">⏳ Cargando publicaciones destacadas...</div>';
+  el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:30px;text-align:center;background:var(--surface);border:1px solid var(--border);border-radius:12px">⏳ Cargando top del mercado...</div>';
   try {
-    const data = await apiCall('GET', `/api/competencia/highlights?client_id=${client.id}&category_id=${categoryId}`);
-    renderDestaqueHighlights(data);
+    const { token } = await apiCall('GET', `/api/competencia/ml-token?client_id=${client.id}`);
+    const r = await fetch(`https://api.mercadolibre.com/sites/MLA/search?category=${categoryId}&limit=20`, {
+      headers: { 'Authorization': `Bearer ${token}` }
+    });
+    const data = await r.json();
+    if (data.error) throw new Error(`ML: ${data.message || data.error}`);
+    const items = (data.results || []).map((it, i) => ({
+      position: i + 1, id: it.id, title: it.title, price: it.price,
+      original_price: it.original_price, thumbnail: it.thumbnail,
+      permalink: it.permalink, sold_quantity: it.sold_quantity,
+      free_shipping: it.shipping?.free_shipping, listing_type: it.listing_type_id,
+      condition: it.condition,
+    }));
+    renderDestaqueHighlights({ items });
   } catch(e) {
     el.innerHTML = `<div style="color:#ef4444;font-size:13px;padding:20px;background:var(--surface);border:1px solid var(--border);border-radius:12px">Error: ${e.message}</div>`;
   }
@@ -10015,8 +10027,19 @@ async function loadTendencias(categoryId) {
   if (!client || !el || !categoryId) return;
   el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:30px;text-align:center;background:var(--surface);border:1px solid var(--border);border-radius:12px">⏳ Cargando más vendidos...</div>';
   try {
-    const data = await apiCall('GET', `/api/competencia/tendencias?client_id=${client.id}&category_id=${categoryId}`);
-    renderTendencias(data);
+    const { token } = await apiCall('GET', `/api/competencia/ml-token?client_id=${client.id}`);
+    const r = await fetch(`https://api.mercadolibre.com/sites/MLA/search?category=${categoryId}&sort=sold_quantity_desc&limit=20`, {
+      headers: { 'Authorization': `Bearer ${token}` }
+    });
+    const data = await r.json();
+    if (data.error) throw new Error(`ML: ${data.message || data.error}`);
+    const items = (data.results || []).map((it, i) => ({
+      position: i + 1, id: it.id, title: it.title, price: it.price,
+      thumbnail: it.thumbnail, permalink: it.permalink,
+      sold_quantity: it.sold_quantity, free_shipping: it.shipping?.free_shipping,
+      listing_type: it.listing_type_id,
+    }));
+    renderTendencias({ items });
   } catch(e) {
     el.innerHTML = `<div style="color:#ef4444;font-size:13px;padding:20px;background:var(--surface);border:1px solid var(--border);border-radius:12px">Error: ${e.message}</div>`;
   }
