@@ -4777,24 +4777,29 @@ app.get('/api/competencia/highlights', requireAuth, async (req, res) => {
       { headers }
     ).then(r => r.json()).catch(() => ({}));
 
-    console.log(`[HIGHLIGHTS] cat=${category_id} keys=${Object.keys(hlRes||{}).join(',')} error=${hlRes.error||''} count=${(hlRes.content||[]).length} raw=${JSON.stringify(hlRes).slice(0,200)}`);
+    console.log(`[HIGHLIGHTS] cat=${category_id} keys=${Object.keys(hlRes||{}).join(',')} error=${hlRes.error||''} count=${(hlRes.content||[]).length} raw=${JSON.stringify(hlRes).slice(0,300)}`);
 
     const content = hlRes.content || [];
     if (!content.length) return res.json({ items: [], category_id, _raw: hlRes });
 
-    const ids = content.slice(0, 20).map(c => c.id).join(',');
-    const itemsRes = await fetch(
-      `${ML_API}/items?ids=${ids}&attributes=id,title,price,original_price,thumbnail,permalink,sold_quantity,available_quantity,seller_id,shipping,listing_type_id,condition`,
-      { headers }
-    ).then(r => r.json()).catch(() => []);
+    // Fetch each item individually to avoid multiget issues with app token
+    const ids = content.slice(0, 20).map(c => c.id);
+    const userToken = await getClientToken(parseInt(client_id));
+    const itemHeaders = userToken ? { 'Authorization': `Bearer ${userToken}` } : headers;
 
-    const items = (Array.isArray(itemsRes) ? itemsRes : [])
-      .filter(r => r.code === 200)
-      .map(r => {
-        const it = r.body;
-        const hlEntry = content.find(c => c.id === it.id) || {};
+    const itemResults = await Promise.all(ids.map(id =>
+      fetch(`${ML_API}/items/${id}?attributes=id,title,price,original_price,thumbnail,permalink,sold_quantity,shipping,listing_type_id,condition`, { headers: itemHeaders })
+        .then(r => r.json()).catch(() => null)
+    ));
+
+    console.log(`[HIGHLIGHTS] items fetched=${itemResults.length} first=${JSON.stringify(itemResults[0])?.slice(0,150)}`);
+
+    const items = itemResults
+      .filter(it => it && it.id && !it.error)
+      .map((it, i) => {
+        const hlEntry = content.find(c => c.id === it.id) || content[i] || {};
         return {
-          position: hlEntry.position || 0,
+          position: hlEntry.position || i + 1,
           id: it.id,
           title: it.title,
           price: it.price,
@@ -4809,7 +4814,7 @@ app.get('/api/competencia/highlights', requireAuth, async (req, res) => {
       })
       .sort((a, b) => a.position - b.position);
 
-    res.json({ items, category_id });
+    res.json({ items, category_id, _raw: items.length ? null : { content_count: content.length, first_id: ids[0], first_item: itemResults[0] } });
   } catch(e) {
     console.error('[HIGHLIGHTS]', e.message);
     res.status(500).json({ error: e.message });
@@ -4820,18 +4825,32 @@ app.get('/api/competencia/tendencias', requireAuth, async (req, res) => {
   try {
     const { client_id } = req.query;
 
-    const appToken = await getAppToken(parseInt(client_id));
-    if (!appToken) return res.status(403).json({ error: 'Sin app token disponible' });
-    const headers = { 'Authorization': `Bearer ${appToken}` };
+    const token = await getClientToken(parseInt(client_id));
+    if (!token) return res.status(403).json({ error: 'Sin token' });
+    const headers = { 'Authorization': `Bearer ${token}` };
 
-    const trends = await fetch(
+    // Try both known trend endpoints
+    let trends = null;
+    const endpoints = [
       `${ML_API}/sites/MLA/trends`,
-      { headers }
-    ).then(r => r.json()).catch(() => []);
+      `${ML_API}/sites/MLA/trend_searches`,
+    ];
+    for (const url of endpoints) {
+      const r = await fetch(url, { headers }).then(res => res.json()).catch(() => null);
+      console.log(`[TENDENCIAS] url=${url} type=${typeof r} isArray=${Array.isArray(r)} raw=${JSON.stringify(r)?.slice(0,200)}`);
+      if (Array.isArray(r) && r.length) { trends = r; break; }
+      if (r && !r.error) { trends = r; break; }
+    }
 
-    console.log(`[TENDENCIAS] type=${typeof trends} isArray=${Array.isArray(trends)} count=${Array.isArray(trends)?trends.length:'-'} raw=${JSON.stringify(trends).slice(0,200)}`);
+    if (!trends) {
+      // Try without auth (public endpoint)
+      const r = await fetch(`${ML_API}/sites/MLA/trends`).then(res => res.json()).catch(() => null);
+      console.log(`[TENDENCIAS no-auth] type=${typeof r} isArray=${Array.isArray(r)} raw=${JSON.stringify(r)?.slice(0,200)}`);
+      if (r && !r.error) trends = r;
+    }
 
-    res.json({ trends: Array.isArray(trends) ? trends : [], _raw: Array.isArray(trends) ? null : trends });
+    const trendList = Array.isArray(trends) ? trends : [];
+    res.json({ trends: trendList, _raw: trendList.length ? null : trends });
   } catch(e) {
     console.error('[TENDENCIAS]', e.message);
     res.status(500).json({ error: e.message });
