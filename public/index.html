@@ -5251,7 +5251,6 @@ function loadPerformance() {
 
   connected.forEach(acc => {
     const perf = acc.data.performance;
-    console.log('[TRAFICO] acc.id=', acc.id, 'stats=', JSON.stringify(acc.data?.stats)?.slice(0,200));
     totVisits   += acc.data?.stats?.total_visits || 0;
     adsImpr     += acc.data?._adsData?.impressions   || 0;
     adsClicks   += acc.data?._adsData?.clicks        || 0;
@@ -5292,11 +5291,13 @@ function loadPerformance() {
   const totalOrders = Object.values(byMode).reduce((a,b)=>a+b,0) || 1;
 
   // ── Tráfico orgánico vs pago ─────────────────────────────────────────────
-  const organicVisits = Math.max(0, totVisits - adsClicks);
+  // total_visits = visitas a ítems con ventas (desde dashboard)
+  // adsClicks    = clics pago (puede incluir ítems sin ventas → no restar)
   const organicOrders = Math.max(0, totalOrders - adsUnits);
-  const organicConv   = organicVisits > 0 ? organicOrders / organicVisits * 100 : 0;
-  const paidCTR       = adsImpr    > 0 ? adsClicks / adsImpr    * 100 : 0;
-  const paidConv      = adsClicks  > 0 ? adsUnits  / adsClicks  * 100 : 0;
+  const organicConv   = totVisits > 0 ? organicOrders / totVisits * 100 : 0;
+  const totalConv     = totVisits > 0 ? totalOrders   / totVisits * 100 : 0;
+  const paidCTR       = adsImpr   > 0 ? adsClicks / adsImpr  * 100 : 0;
+  const paidConv      = adsClicks > 0 ? adsUnits  / adsClicks * 100 : 0;
   const hasAds        = adsImpr > 0 || adsClicks > 0;
 
   function funnelHtml(steps, color) {
@@ -5539,20 +5540,23 @@ function loadPerformance() {
           <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:16px">
             <div style="text-align:center;background:var(--surface2);border-radius:10px;padding:9px 4px">
               <div style="font-size:9px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.04em;margin-bottom:3px">Visitas</div>
-              <div style="font-size:16px;font-weight:700">${fmtK(organicVisits)}</div>
+              <div style="font-size:16px;font-weight:700">${fmtK(totVisits)}</div>
+              <div style="font-size:9px;color:var(--muted)">prod. con ventas</div>
             </div>
             <div style="text-align:center;background:var(--surface2);border-radius:10px;padding:9px 4px">
-              <div style="font-size:9px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.04em;margin-bottom:3px">Pedidos</div>
+              <div style="font-size:9px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.04em;margin-bottom:3px">Pedidos org.</div>
               <div style="font-size:16px;font-weight:700">${organicOrders.toLocaleString('es-AR')}</div>
+              <div style="font-size:9px;color:var(--muted)">sin ads</div>
             </div>
             <div style="text-align:center;background:rgba(0,230,118,.1);border:1px solid rgba(0,230,118,.25);border-radius:10px;padding:9px 4px">
-              <div style="font-size:9px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.04em;margin-bottom:3px">Conv.</div>
-              <div style="font-size:16px;font-weight:700;color:#00e676">${organicConv.toFixed(1)}%</div>
+              <div style="font-size:9px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.04em;margin-bottom:3px">Conv. total</div>
+              <div style="font-size:16px;font-weight:700;color:#00e676">${totalConv.toFixed(1)}%</div>
+              <div style="font-size:9px;color:var(--muted)">pedidos / visitas</div>
             </div>
           </div>
           ${funnelHtml([
-            { label: 'Visitas orgánicas', value: organicVisits, valueStr: fmtK(organicVisits), pct: null, note: null },
-            { label: 'Pedidos',           value: organicOrders, valueStr: organicOrders.toLocaleString('es-AR'), pct: organicConv.toFixed(1)+'%', note: 'conv.' },
+            { label: 'Visitas (prod. con ventas)', value: totVisits,     valueStr: fmtK(totVisits),                          pct: null,                    note: null },
+            { label: 'Pedidos orgánicos (sin ads)', value: organicOrders, valueStr: organicOrders.toLocaleString('es-AR'), pct: organicConv.toFixed(1)+'%', note: 'conv.' },
           ], '#00e676')}
         </div>
 
