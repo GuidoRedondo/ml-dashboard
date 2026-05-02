@@ -9905,8 +9905,12 @@ function switchCompTab(tab) {
 }
 
 async function initDestaqueTab() {
+  const hlEl = document.getElementById('destaqueHighlightsEl');
   const client = getActiveClient();
-  if (!client) return;
+  if (!client) {
+    if (hlEl) hlEl.innerHTML = '<div style="color:#f59e0b;font-size:13px;padding:20px;background:var(--surface);border:1px solid var(--border);border-radius:12px">⚠️ Sin cuenta activa seleccionada</div>';
+    return;
+  }
   loadTendencias();
   const sel = document.getElementById('destaqueCategSel');
   if (!sel) return;
@@ -9931,8 +9935,7 @@ async function initDestaqueTab() {
     return;
   }
 
-  const hlEl = document.getElementById('destaqueHighlightsEl');
-  hlEl.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:20px;text-align:center;background:var(--surface);border:1px solid var(--border);border-radius:12px">⏳ Cargando categorías...</div>';
+  if (hlEl) hlEl.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:20px;text-align:center;background:var(--surface);border:1px solid var(--border);border-radius:12px">⏳ Cargando categorías...</div>';
 
   try {
     const data = await apiCall('GET', `/api/competencia/categorias?client_id=${client.id}`);
@@ -9946,10 +9949,10 @@ async function initDestaqueTab() {
       sel.value = data.categories[0].id;
       loadDestaqueHighlights(sel.value);
     } else {
-      hlEl.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:20px;text-align:center;background:var(--surface);border:1px solid var(--border);border-radius:12px">Sin categorías activas para esta cuenta</div>';
+      if (hlEl) hlEl.innerHTML = `<div style="color:var(--muted);font-size:13px;padding:20px;background:var(--surface);border:1px solid var(--border);border-radius:12px">Sin categorías activas — respuesta: ${JSON.stringify(data).slice(0,120)}</div>`;
     }
   } catch(e) {
-    hlEl.innerHTML = `<div style="color:#ef4444;font-size:13px;padding:20px;background:var(--surface);border:1px solid var(--border);border-radius:12px">Error cargando categorías: ${e.message}</div>`;
+    if (hlEl) hlEl.innerHTML = `<div style="color:#ef4444;font-size:13px;padding:20px;background:var(--surface);border:1px solid var(--border);border-radius:12px">Error: ${e.message}</div>`;
   }
 }
 
