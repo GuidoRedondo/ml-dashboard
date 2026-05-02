@@ -5291,34 +5291,47 @@ function loadPerformance() {
   const totalOrders = Object.values(byMode).reduce((a,b)=>a+b,0) || 1;
 
   // ── Tráfico orgánico vs pago ─────────────────────────────────────────────
-  // total_visits = visitas a ítems con ventas (desde dashboard)
-  // adsClicks    = clics pago (puede incluir ítems sin ventas → no restar)
+  const totalTraffic  = totVisits + adsClicks;
   const organicOrders = Math.max(0, totalOrders - adsUnits);
-  const organicConv   = totVisits > 0 ? organicOrders / totVisits * 100 : 0;
-  const totalConv     = totVisits > 0 ? totalOrders   / totVisits * 100 : 0;
-  const paidCTR       = adsImpr   > 0 ? adsClicks / adsImpr  * 100 : 0;
-  const paidConv      = adsClicks > 0 ? adsUnits  / adsClicks * 100 : 0;
+  const organicConv   = totVisits    > 0 ? organicOrders / totVisits    * 100 : 0;
+  const totalConv     = totalTraffic > 0 ? totalOrders   / totalTraffic * 100 : 0;
+  const paidCTR       = adsImpr      > 0 ? adsClicks     / adsImpr      * 100 : 0;
+  const paidConv      = adsClicks    > 0 ? adsUnits      / adsClicks    * 100 : 0;
+  const pctOrganic    = totalOrders  > 0 ? organicOrders / totalOrders  * 100 : 0;
+  const pctPaid       = totalOrders  > 0 ? adsUnits      / totalOrders  * 100 : 0;
   const hasAds        = adsImpr > 0 || adsClicks > 0;
 
-  function funnelHtml(steps, color) {
-    const maxV = steps[0]?.value || 1;
-    return steps.map((s, i) => {
-      const barPct = Math.max(4, Math.round(s.value / maxV * 100));
-      const notLast = i < steps.length - 1;
-      return `
-        <div style="margin-bottom:${notLast ? '10px' : '0'}">
-          <div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:3px">
-            <span style="color:var(--muted);font-weight:600">${s.label}</span>
-            <span style="font-weight:700;color:var(--text)">${s.valueStr}${s.note ? `<span style="font-size:10px;color:var(--muted);margin-left:5px">${s.note}</span>` : ''}</span>
-          </div>
-          <div style="background:var(--surface2);border-radius:6px;height:26px;overflow:hidden">
-            <div style="width:${barPct}%;height:100%;background:${color};border-radius:6px;opacity:${1 - i * 0.18};display:flex;align-items:center;padding-left:9px;min-width:30px">
-              ${s.pct != null ? `<span style="font-size:10px;font-weight:700;color:#fff;white-space:nowrap">${s.pct}</span>` : ''}
-            </div>
-          </div>
-          ${notLast ? `<div style="text-align:left;padding-left:${barPct/2}%;font-size:10px;color:var(--muted);margin-top:1px;line-height:1">↓</div>` : ''}
-        </div>`;
-    }).join('');
+  // ── Embudo SVG con trapezoides ───────────────────────────────────────────
+  function svgFunnel(stages, color) {
+    const W = 260, MAX_W = 220, STAGE_H = 54, GAP_H = 28, PT = 6;
+    const H = stages.length * STAGE_H + (stages.length - 1) * GAP_H + PT * 2;
+    const maxVal = stages[0].value || 1;
+    // Anchura proporcional con mínimo del 22% para que siempre sea legible
+    const widths = stages.map(s => Math.max(MAX_W * 0.22, (s.value / maxVal) * MAX_W));
+
+    let out = `<svg viewBox="0 0 ${W} ${H}" style="width:100%;display:block">`;
+    stages.forEach((s, i) => {
+      const topW = widths[i];
+      const botW = i < stages.length - 1 ? widths[i + 1] : Math.max(MAX_W * 0.12, widths[i] * 0.65);
+      const y1   = PT + i * (STAGE_H + GAP_H);
+      const y2   = y1 + STAGE_H;
+      const x1   = (W - topW) / 2, x2 = (W - botW) / 2;
+      const midY = (y1 + y2) / 2;
+      const alpha = (1 - i * 0.13).toFixed(2);
+
+      out += `<polygon points="${x1.toFixed(1)},${y1} ${(x1+topW).toFixed(1)},${y1} ${(x2+botW).toFixed(1)},${y2} ${x2.toFixed(1)},${y2}" fill="${color}" opacity="${alpha}"/>`;
+      out += `<text x="${W/2}" y="${(midY-7).toFixed(1)}" text-anchor="middle" font-size="13" font-weight="700" fill="white" font-family="Poppins,sans-serif">${s.valueStr}</text>`;
+      out += `<text x="${W/2}" y="${(midY+9).toFixed(1)}" text-anchor="middle" font-size="9" fill="rgba(255,255,255,.82)" font-family="Poppins,sans-serif">${s.label}</text>`;
+
+      if (i < stages.length - 1) {
+        const conv = stages[i+1].value / Math.max(s.value, 1) * 100;
+        const convStr = conv < 0.1 ? conv.toFixed(3)+'%' : conv < 1 ? conv.toFixed(2)+'%' : conv.toFixed(1)+'%';
+        const gy = (y2 + GAP_H / 2 + 5).toFixed(1);
+        out += `<text x="${W/2}" y="${gy}" text-anchor="middle" font-size="10" fill="${color}" font-family="Poppins,sans-serif" font-weight="600">↓ ${convStr}</text>`;
+      }
+    });
+    out += '</svg>';
+    return out;
   }
 
   function getFilteredItems(items) {
@@ -5532,71 +5545,80 @@ function loadPerformance() {
     <!-- TRÁFICO + EMBUDOS -->
     <div class="kpi-card" style="padding:18px;margin-bottom:12px">
       <div class="kpi-label" style="margin-bottom:16px">🔍 Tráfico y Conversión</div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px">
+
+      <!-- Tres embudos -->
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:20px">
+
+        <!-- TOTAL -->
+        <div>
+          <div style="font-size:12px;font-weight:700;color:#3b82f6;text-align:center;margin-bottom:10px">📊 Total</div>
+          ${svgFunnel([
+            { label: 'Visitas + Clicks', value: totalTraffic,  valueStr: fmtK(totalTraffic)                       },
+            { label: 'Pedidos',          value: totalOrders,   valueStr: totalOrders.toLocaleString('es-AR')       },
+          ], '#3b82f6')}
+        </div>
 
         <!-- ORGÁNICO -->
         <div>
-          <div style="font-size:13px;font-weight:700;color:#00e676;margin-bottom:12px">🌱 Orgánico</div>
-          <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:16px">
-            <div style="text-align:center;background:var(--surface2);border-radius:10px;padding:9px 4px">
-              <div style="font-size:9px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.04em;margin-bottom:3px">Visitas</div>
-              <div style="font-size:16px;font-weight:700">${fmtK(totVisits)}</div>
-              <div style="font-size:9px;color:var(--muted)">prod. con ventas</div>
-            </div>
-            <div style="text-align:center;background:var(--surface2);border-radius:10px;padding:9px 4px">
-              <div style="font-size:9px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.04em;margin-bottom:3px">Pedidos org.</div>
-              <div style="font-size:16px;font-weight:700">${organicOrders.toLocaleString('es-AR')}</div>
-              <div style="font-size:9px;color:var(--muted)">sin ads</div>
-            </div>
-            <div style="text-align:center;background:rgba(0,230,118,.1);border:1px solid rgba(0,230,118,.25);border-radius:10px;padding:9px 4px">
-              <div style="font-size:9px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.04em;margin-bottom:3px">Conv. total</div>
-              <div style="font-size:16px;font-weight:700;color:#00e676">${totalConv.toFixed(1)}%</div>
-              <div style="font-size:9px;color:var(--muted)">pedidos / visitas</div>
-            </div>
-          </div>
-          ${funnelHtml([
-            { label: 'Visitas (prod. con ventas)', value: totVisits,     valueStr: fmtK(totVisits),                          pct: null,                    note: null },
-            { label: 'Pedidos orgánicos (sin ads)', value: organicOrders, valueStr: organicOrders.toLocaleString('es-AR'), pct: organicConv.toFixed(1)+'%', note: 'conv.' },
-          ], '#00e676')}
+          <div style="font-size:12px;font-weight:700;color:#22c55e;text-align:center;margin-bottom:10px">🌱 Orgánico</div>
+          ${svgFunnel([
+            { label: 'Visitas',          value: totVisits,     valueStr: fmtK(totVisits)                           },
+            { label: 'Pedidos org.',     value: organicOrders, valueStr: organicOrders.toLocaleString('es-AR')     },
+          ], '#22c55e')}
         </div>
 
         <!-- PUBLICIDAD -->
         <div>
-          <div style="font-size:13px;font-weight:700;color:#FFD700;margin-bottom:12px">📢 Publicidad</div>
-          ${!hasAds ? `<div style="color:var(--muted);font-size:12px;padding:20px 0">Sin datos de publicidad para este período</div>` : `
-          <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:16px">
-            <div style="text-align:center;background:var(--surface2);border-radius:10px;padding:9px 4px">
-              <div style="font-size:9px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.04em;margin-bottom:3px">Impresiones</div>
-              <div style="font-size:16px;font-weight:700">${fmtK(adsImpr)}</div>
-            </div>
-            <div style="text-align:center;background:var(--surface2);border-radius:10px;padding:9px 4px">
-              <div style="font-size:9px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.04em;margin-bottom:3px">Clicks</div>
-              <div style="font-size:16px;font-weight:700">${fmtK(adsClicks)}</div>
-            </div>
-            <div style="text-align:center;background:var(--surface2);border-radius:10px;padding:9px 4px">
-              <div style="font-size:9px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.04em;margin-bottom:3px">Pedidos ads</div>
-              <div style="font-size:16px;font-weight:700">${adsUnits.toLocaleString('es-AR')}</div>
-            </div>
-          </div>
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:16px">
-            <div style="text-align:center;background:rgba(255,214,0,.1);border:1px solid rgba(255,214,0,.25);border-radius:10px;padding:9px 4px">
-              <div style="font-size:9px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.04em;margin-bottom:3px">CTR</div>
-              <div style="font-size:16px;font-weight:700;color:#FFD700">${paidCTR.toFixed(2)}%</div>
-              <div style="font-size:9px;color:var(--muted)">clicks / impresiones</div>
-            </div>
-            <div style="text-align:center;background:rgba(255,214,0,.1);border:1px solid rgba(255,214,0,.25);border-radius:10px;padding:9px 4px">
-              <div style="font-size:9px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.04em;margin-bottom:3px">Conv. clicks</div>
-              <div style="font-size:16px;font-weight:700;color:#FFD700">${paidConv.toFixed(1)}%</div>
-              <div style="font-size:9px;color:var(--muted)">pedidos / clicks</div>
-            </div>
-          </div>
-          ${funnelHtml([
-            { label: 'Impresiones',  value: adsImpr,   valueStr: fmtK(adsImpr),                         pct: null,                   note: null },
-            { label: 'Clicks',       value: adsClicks, valueStr: fmtK(adsClicks),                       pct: paidCTR.toFixed(2)+'%', note: 'CTR' },
-            { label: 'Pedidos ads',  value: adsUnits,  valueStr: adsUnits.toLocaleString('es-AR'),      pct: paidConv.toFixed(1)+'%', note: 'conv.' },
-          ], '#FFD700')}`}
+          <div style="font-size:12px;font-weight:700;color:#facc15;text-align:center;margin-bottom:10px">📢 Publicidad</div>
+          ${!hasAds
+            ? `<div style="color:var(--muted);font-size:11px;text-align:center;padding:30px 0">Sin datos de publicidad</div>`
+            : svgFunnel([
+                { label: 'Impresiones', value: adsImpr,   valueStr: fmtK(adsImpr)                            },
+                { label: 'Clicks',      value: adsClicks, valueStr: fmtK(adsClicks)                          },
+                { label: 'Pedidos ads', value: adsUnits,  valueStr: adsUnits.toLocaleString('es-AR')         },
+              ], '#facc15')
+          }
         </div>
+      </div>
 
+      <!-- Barra de origen de pedidos -->
+      <div style="margin-bottom:16px">
+        <div style="display:flex;justify-content:space-between;font-size:11px;font-weight:600;color:var(--muted);margin-bottom:5px">
+          <span>Origen de pedidos</span>
+          <span>${totalOrders.toLocaleString('es-AR')} pedidos totales</span>
+        </div>
+        <div style="display:flex;height:22px;border-radius:8px;overflow:hidden;gap:2px">
+          <div style="background:#22c55e;width:${pctOrganic.toFixed(1)}%;display:flex;align-items:center;justify-content:center;min-width:40px">
+            <span style="font-size:10px;font-weight:700;color:#fff">${pctOrganic.toFixed(0)}% org.</span>
+          </div>
+          <div style="background:#facc15;flex:1;display:flex;align-items:center;justify-content:center;min-width:40px">
+            <span style="font-size:10px;font-weight:700;color:#1a1d2e">${pctPaid.toFixed(0)}% ads</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- 4 KPIs decisorios -->
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px">
+        <div style="text-align:center;background:rgba(59,130,246,.08);border:1px solid rgba(59,130,246,.2);border-radius:10px;padding:10px 6px">
+          <div style="font-size:9px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.04em;margin-bottom:3px">Conv. Global</div>
+          <div style="font-size:18px;font-weight:700;color:#3b82f6">${totalConv.toFixed(1)}%</div>
+          <div style="font-size:9px;color:var(--muted)">pedidos / tráfico</div>
+        </div>
+        <div style="text-align:center;background:rgba(34,197,94,.08);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:10px 6px">
+          <div style="font-size:9px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.04em;margin-bottom:3px">Conv. Orgánica</div>
+          <div style="font-size:18px;font-weight:700;color:#22c55e">${organicConv.toFixed(1)}%</div>
+          <div style="font-size:9px;color:var(--muted)">pedidos / visitas</div>
+        </div>
+        <div style="text-align:center;background:rgba(250,204,21,.08);border:1px solid rgba(250,204,21,.2);border-radius:10px;padding:10px 6px">
+          <div style="font-size:9px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.04em;margin-bottom:3px">CTR Ads</div>
+          <div style="font-size:18px;font-weight:700;color:#facc15">${hasAds ? paidCTR.toFixed(2)+'%' : '—'}</div>
+          <div style="font-size:9px;color:var(--muted)">clicks / impresiones</div>
+        </div>
+        <div style="text-align:center;background:rgba(250,204,21,.08);border:1px solid rgba(250,204,21,.2);border-radius:10px;padding:10px 6px">
+          <div style="font-size:9px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.04em;margin-bottom:3px">Conv. Clicks</div>
+          <div style="font-size:18px;font-weight:700;color:#facc15">${hasAds ? paidConv.toFixed(1)+'%' : '—'}</div>
+          <div style="font-size:9px;color:var(--muted)">pedidos / clicks</div>
+        </div>
       </div>
     </div>
 
