@@ -330,11 +330,11 @@ async function loadData() {
     const d = await r.json();
     if (d.error) throw new Error(d.error);
 
-    const days = d.days || {};
+    const days    = d.days || {};
+    const dayKeys = Object.keys(days);
 
     // _numDays: si viene del temporizador ya fue calculado en initUI; si no, usar días con órdenes
     if (!URL_FROM) {
-      const dayKeys = Object.keys(days);
       _numDays = Math.max(dayKeys.length, 1);
     }
 
