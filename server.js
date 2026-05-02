@@ -3765,12 +3765,15 @@ app.get('/api/competencia/categorias', requireAuth, async (req, res) => {
   try {
     const { client_id } = req.query;
     if (!client_id) return res.status(400).json({ error: 'Falta client_id' });
-    const client = await getActiveClient(client_id);
-    if (!client) return res.status(404).json({ error: 'Cliente no encontrado' });
-    const headers = { 'Authorization': `Bearer ${client.access_token}` };
+    const token = await getClientToken(parseInt(client_id));
+    if (!token) return res.status(403).json({ error: 'Sin token' });
+    const headers = { 'Authorization': `Bearer ${token}` };
+    const clientRes = await pool.query('SELECT ml_user_id FROM clients WHERE id=$1', [client_id]);
+    const ml_user_id = clientRes.rows[0]?.ml_user_id;
+    if (!ml_user_id) return res.status(400).json({ error: 'Cliente sin ML User ID' });
 
     // Traer items activos y agrupar por categoría
-    const itemsResp = await fetch(`${ML_API}/users/${client.ml_user_id}/items/search?status=active&limit=100`, { headers }).then(r => r.json());
+    const itemsResp = await fetch(`${ML_API}/users/${ml_user_id}/items/search?status=active&limit=100`, { headers }).then(r => r.json());
     const itemIds = itemsResp.results || [];
     if (!itemIds.length) return res.json({ categories: [] });
 
