@@ -4760,6 +4760,81 @@ app.get('/api/competencia/item', requireAuth, async (req, res) => {
   }
 });
 
+app.get('/api/competencia/highlights', requireAuth, async (req, res) => {
+  try {
+    const { client_id, category_id } = req.query;
+    if (!category_id) return res.status(400).json({ error: 'Falta category_id' });
+
+    const appToken = await getAppToken(parseInt(client_id));
+    if (!appToken) return res.status(403).json({ error: 'Sin app token disponible' });
+    const headers = { 'Authorization': `Bearer ${appToken}` };
+
+    const hlRes = await fetch(
+      `${ML_API}/highlights/MLA/category/${category_id}`,
+      { headers }
+    ).then(r => r.json()).catch(() => ({}));
+
+    console.log(`[HIGHLIGHTS] cat=${category_id} keys=${Object.keys(hlRes||{}).join(',')} error=${hlRes.error||''} count=${(hlRes.content||[]).length}`);
+
+    const content = hlRes.content || [];
+    if (!content.length) return res.json({ items: [], category_id });
+
+    const ids = content.slice(0, 20).map(c => c.id).join(',');
+    const itemsRes = await fetch(
+      `${ML_API}/items?ids=${ids}&attributes=id,title,price,original_price,thumbnail,permalink,sold_quantity,available_quantity,seller_id,shipping,listing_type_id,condition`,
+      { headers }
+    ).then(r => r.json()).catch(() => []);
+
+    const items = (Array.isArray(itemsRes) ? itemsRes : [])
+      .filter(r => r.code === 200)
+      .map(r => {
+        const it = r.body;
+        const hlEntry = content.find(c => c.id === it.id) || {};
+        return {
+          position: hlEntry.position || 0,
+          id: it.id,
+          title: it.title,
+          price: it.price,
+          original_price: it.original_price,
+          thumbnail: it.thumbnail,
+          permalink: it.permalink,
+          sold_quantity: it.sold_quantity,
+          free_shipping: it.shipping?.free_shipping,
+          listing_type: it.listing_type_id,
+          condition: it.condition,
+        };
+      })
+      .sort((a, b) => a.position - b.position);
+
+    res.json({ items, category_id });
+  } catch(e) {
+    console.error('[HIGHLIGHTS]', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/competencia/tendencias', requireAuth, async (req, res) => {
+  try {
+    const { client_id } = req.query;
+
+    const appToken = await getAppToken(parseInt(client_id));
+    if (!appToken) return res.status(403).json({ error: 'Sin app token disponible' });
+    const headers = { 'Authorization': `Bearer ${appToken}` };
+
+    const trends = await fetch(
+      `${ML_API}/sites/MLA/trends`,
+      { headers }
+    ).then(r => r.json()).catch(() => []);
+
+    console.log(`[TENDENCIAS] type=${typeof trends} isArray=${Array.isArray(trends)} count=${Array.isArray(trends)?trends.length:'-'} error=${trends?.error||''}`);
+
+    res.json({ trends: Array.isArray(trends) ? trends : [] });
+  } catch(e) {
+    console.error('[TENDENCIAS]', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.get('/api/competencia', requireAuth, async (req, res) => {
   try {
     const uid = req.query.uid;

@@ -1035,6 +1035,10 @@ tbody td {
           style="padding:8px 18px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-2px;font-family:var(--font-b)">
           🔍 Diagnóstico
         </button>
+        <button id="tab-comp-destaque" onclick="switchCompTab('destaque')"
+          style="padding:8px 18px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-2px;font-family:var(--font-b)">
+          🔥 Destaque & Tendencias
+        </button>
       </div>
       <!-- Tab: Mis Categorías -->
       <div id="comp-tab-categorias">
@@ -1079,6 +1083,24 @@ tbody td {
       <!-- Tab: Diagnóstico -->
       <div id="comp-tab-diagnostico" style="display:none">
         <div id="compDiagContent"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Seleccioná un MLA para analizar</div></div>
+      </div>
+      <!-- Tab: Destaque & Tendencias -->
+      <div id="comp-tab-destaque" style="display:none">
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:14px 18px;margin-bottom:16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+          <span style="font-size:13px;font-weight:600;color:var(--text)">📂 Categoría</span>
+          <select id="destaqueCategSel" onchange="loadDestaqueHighlights(this.value)"
+            style="flex:1;min-width:240px;padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px">
+            <option value="">— Seleccioná una categoría —</option>
+          </select>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+          <div id="destaqueHighlightsEl">
+            <div style="color:var(--muted);font-size:13px;padding:30px;text-align:center;background:var(--surface);border:1px solid var(--border);border-radius:12px">Seleccioná una categoría para ver las publicaciones destacadas</div>
+          </div>
+          <div id="destaqueTendenciasEl">
+            <div style="color:var(--muted);font-size:13px;padding:30px;text-align:center;background:var(--surface);border:1px solid var(--border);border-radius:12px">⏳ Cargando tendencias...</div>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -9867,7 +9889,7 @@ async function loadMercadoML() {
 
 function switchCompTab(tab) {
   _compActiveTab = tab;
-  ['categorias','mercado','diagnostico'].forEach(t => {
+  ['categorias','mercado','diagnostico','destaque'].forEach(t => {
     const el  = document.getElementById(`comp-tab-${t}`);
     const btn = document.getElementById(`tab-comp-${t}`);
     if (el)  el.style.display  = t === tab ? '' : 'none';
@@ -9879,6 +9901,116 @@ function switchCompTab(tab) {
   if (tab === 'categorias' && !_catVentasLoaded) loadCatVentas();
   if (tab === 'mercado')     { loadCompetencia(); initMercadoMLCats(); }
   if (tab === 'diagnostico') loadDiagnostico();
+  if (tab === 'destaque')    initDestaqueTab();
+}
+
+async function initDestaqueTab() {
+  const client = getActiveClient();
+  if (!client) return;
+  loadTendencias();
+  const sel = document.getElementById('destaqueCategSel');
+  if (!sel) return;
+  if (sel.options.length > 1) {
+    if (sel.value) loadDestaqueHighlights(sel.value);
+    return;
+  }
+  try {
+    const data = await apiCall('GET', `/api/competencia/categorias?client_id=${client.id}`);
+    if (data?.categories?.length) {
+      data.categories.forEach(c => {
+        const opt = document.createElement('option');
+        opt.value = c.id;
+        opt.textContent = `${c.name} (${c.count} pub.)`;
+        sel.appendChild(opt);
+      });
+      sel.value = data.categories[0].id;
+      loadDestaqueHighlights(sel.value);
+    }
+  } catch(e) { console.error('Error cargando categorías destaque:', e); }
+}
+
+async function loadDestaqueHighlights(categoryId) {
+  const el = document.getElementById('destaqueHighlightsEl');
+  const client = getActiveClient();
+  if (!client || !categoryId) return;
+  el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:30px;text-align:center;background:var(--surface);border:1px solid var(--border);border-radius:12px">⏳ Cargando publicaciones destacadas...</div>';
+  try {
+    const data = await apiCall('GET', `/api/competencia/highlights?client_id=${client.id}&category_id=${categoryId}`);
+    renderDestaqueHighlights(data);
+  } catch(e) {
+    el.innerHTML = `<div style="color:#ef4444;font-size:13px;padding:20px;background:var(--surface);border:1px solid var(--border);border-radius:12px">Error: ${e.message}</div>`;
+  }
+}
+
+function renderDestaqueHighlights(data) {
+  const el = document.getElementById('destaqueHighlightsEl');
+  const { items } = data;
+  if (!items?.length) {
+    el.innerHTML = '<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:24px;text-align:center;color:var(--muted);font-size:13px">Sin publicaciones destacadas para esta categoría</div>';
+    return;
+  }
+  const fmtP = p => '$' + Math.round(p).toLocaleString('es-AR');
+  const typeLabel = t => {
+    if (!t) return '';
+    if (t === 'gold_premium') return '<span style="font-size:10px;background:#f59e0b;color:#fff;padding:1px 5px;border-radius:4px">Premium</span>';
+    if (t === 'gold_special') return '<span style="font-size:10px;background:#6366f1;color:#fff;padding:1px 5px;border-radius:4px">Especial</span>';
+    return '';
+  };
+  let html = `<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden">
+    <div style="padding:13px 16px;border-bottom:1px solid var(--border);font-size:13px;font-weight:700;color:var(--text)">⭐ Publicaciones Destacadas (${items.length})</div>
+    <div style="overflow-y:auto;max-height:520px">`;
+  items.forEach(item => {
+    const discount = item.original_price && item.price < item.original_price
+      ? Math.round((1 - item.price / item.original_price) * 100) : 0;
+    html += `<div style="display:flex;gap:10px;padding:10px 14px;border-bottom:1px solid var(--border);align-items:center">
+      <div style="font-size:11px;color:var(--muted);min-width:22px;text-align:center;font-weight:700">#${item.position || ''}</div>
+      <img src="${item.thumbnail}" style="width:48px;height:48px;object-fit:contain;border-radius:6px;background:#fff;flex-shrink:0" loading="lazy" onerror="this.style.display='none'">
+      <div style="flex:1;min-width:0">
+        <a href="${item.permalink}" target="_blank" style="color:var(--text);text-decoration:none;font-size:12px;font-weight:500;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${item.title}">${item.title}</a>
+        <div style="display:flex;gap:6px;align-items:center;margin-top:3px;flex-wrap:wrap">
+          <span style="font-size:13px;font-weight:700;color:var(--accent)">${fmtP(item.price)}</span>
+          ${discount ? `<span style="font-size:10px;background:#16a34a;color:#fff;padding:1px 5px;border-radius:4px">-${discount}%</span>` : ''}
+          ${item.free_shipping ? '<span style="font-size:10px;color:#22c55e;font-weight:600">✔ Gratis</span>' : ''}
+          ${typeLabel(item.listing_type)}
+        </div>
+      </div>
+    </div>`;
+  });
+  html += '</div></div>';
+  el.innerHTML = html;
+}
+
+async function loadTendencias() {
+  const el = document.getElementById('destaqueTendenciasEl');
+  const client = getActiveClient();
+  if (!client || !el) return;
+  el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:30px;text-align:center;background:var(--surface);border:1px solid var(--border);border-radius:12px">⏳ Cargando tendencias...</div>';
+  try {
+    const data = await apiCall('GET', `/api/competencia/tendencias?client_id=${client.id}`);
+    renderTendencias(data);
+  } catch(e) {
+    el.innerHTML = `<div style="color:#ef4444;font-size:13px;padding:20px;background:var(--surface);border:1px solid var(--border);border-radius:12px">Error: ${e.message}</div>`;
+  }
+}
+
+function renderTendencias(data) {
+  const el = document.getElementById('destaqueTendenciasEl');
+  const { trends } = data;
+  if (!trends?.length) {
+    el.innerHTML = '<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:24px;text-align:center;color:var(--muted);font-size:13px">Sin tendencias disponibles</div>';
+    return;
+  }
+  let html = `<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden">
+    <div style="padding:13px 16px;border-bottom:1px solid var(--border);font-size:13px;font-weight:700;color:var(--text)">🔥 Tendencias de Búsqueda — Argentina</div>
+    <div style="overflow-y:auto;max-height:520px">`;
+  trends.forEach((t, i) => {
+    html += `<div style="display:flex;align-items:center;gap:10px;padding:9px 16px;border-bottom:1px solid var(--border)">
+      <span style="font-size:12px;font-weight:700;color:var(--muted);min-width:24px">#${i + 1}</span>
+      <a href="${t.url}" target="_blank" style="flex:1;font-size:13px;color:var(--accent);text-decoration:none;font-weight:500">${t.keyword}</a>
+    </div>`;
+  });
+  html += '</div></div>';
+  el.innerHTML = html;
 }
 
 async function loadCatVentas() {
