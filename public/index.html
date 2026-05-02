@@ -1088,7 +1088,7 @@ tbody td {
       <div id="comp-tab-destaque" style="display:none">
         <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:14px 18px;margin-bottom:16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap">
           <span style="font-size:13px;font-weight:600;color:var(--text)">📂 Categoría</span>
-          <select id="destaqueCategSel" onchange="loadDestaqueHighlights(this.value)"
+          <select id="destaqueCategSel" onchange="loadDestaqueHighlights(this.value);loadTendencias(this.value)"
             style="flex:1;min-width:240px;padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px">
             <option value="">— Seleccioná una categoría —</option>
           </select>
@@ -9916,7 +9916,7 @@ async function initDestaqueTab() {
   if (!sel) return;
 
   if (sel.options.length > 1) {
-    if (sel.value) loadDestaqueHighlights(sel.value);
+    if (sel.value) { loadDestaqueHighlights(sel.value); loadTendencias(sel.value); }
     return;
   }
 
@@ -9931,7 +9931,7 @@ async function initDestaqueTab() {
       sel.appendChild(o);
     });
     sel.value = sel.options[1]?.value || '';
-    if (sel.value) loadDestaqueHighlights(sel.value);
+    if (sel.value) { loadDestaqueHighlights(sel.value); loadTendencias(sel.value); }
     return;
   }
 
@@ -9948,6 +9948,7 @@ async function initDestaqueTab() {
       });
       sel.value = data.categories[0].id;
       loadDestaqueHighlights(sel.value);
+      loadTendencias(sel.value);
     } else {
       if (hlEl) hlEl.innerHTML = `<div style="color:var(--muted);font-size:13px;padding:20px;background:var(--surface);border:1px solid var(--border);border-radius:12px">Sin categorías activas — respuesta: ${JSON.stringify(data).slice(0,120)}</div>`;
     }
@@ -9985,7 +9986,7 @@ function renderDestaqueHighlights(data) {
     return '';
   };
   let html = `<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden">
-    <div style="padding:13px 16px;border-bottom:1px solid var(--border);font-size:13px;font-weight:700;color:var(--text)">⭐ Publicaciones Destacadas (${items.length})</div>
+    <div style="padding:13px 16px;border-bottom:1px solid var(--border);font-size:13px;font-weight:700;color:var(--text)">⭐ Top del Mercado por Relevancia (${items.length})</div>
     <div style="overflow-y:auto;max-height:520px">`;
   items.forEach(item => {
     const discount = item.original_price && item.price < item.original_price
@@ -10008,13 +10009,13 @@ function renderDestaqueHighlights(data) {
   el.innerHTML = html;
 }
 
-async function loadTendencias() {
+async function loadTendencias(categoryId) {
   const el = document.getElementById('destaqueTendenciasEl');
   const client = getActiveClient();
-  if (!client || !el) return;
-  el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:30px;text-align:center;background:var(--surface);border:1px solid var(--border);border-radius:12px">⏳ Cargando tendencias...</div>';
+  if (!client || !el || !categoryId) return;
+  el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:30px;text-align:center;background:var(--surface);border:1px solid var(--border);border-radius:12px">⏳ Cargando más vendidos...</div>';
   try {
-    const data = await apiCall('GET', `/api/competencia/tendencias?client_id=${client.id}`);
+    const data = await apiCall('GET', `/api/competencia/tendencias?client_id=${client.id}&category_id=${categoryId}`);
     renderTendencias(data);
   } catch(e) {
     el.innerHTML = `<div style="color:#ef4444;font-size:13px;padding:20px;background:var(--surface);border:1px solid var(--border);border-radius:12px">Error: ${e.message}</div>`;
@@ -10023,19 +10024,28 @@ async function loadTendencias() {
 
 function renderTendencias(data) {
   const el = document.getElementById('destaqueTendenciasEl');
-  const { trends } = data;
-  if (!trends?.length) {
-    const raw = data._raw ? JSON.stringify(data._raw).slice(0, 200) : '(array vacío)';
-    el.innerHTML = `<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px;color:var(--muted);font-size:12px">Sin tendencias disponibles<br><span style="font-size:11px;opacity:.7">Respuesta ML: ${raw}</span></div>`;
+  const { items } = data;
+  if (!items?.length) {
+    const raw = data._raw ? JSON.stringify(data._raw).slice(0, 200) : '(vacío)';
+    el.innerHTML = `<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px;color:var(--muted);font-size:12px">Sin datos<br><span style="font-size:11px;opacity:.7">Respuesta ML: ${raw}</span></div>`;
     return;
   }
+  const fmtP = p => '$' + Math.round(p).toLocaleString('es-AR');
   let html = `<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden">
-    <div style="padding:13px 16px;border-bottom:1px solid var(--border);font-size:13px;font-weight:700;color:var(--text)">🔥 Tendencias de Búsqueda — Argentina</div>
+    <div style="padding:13px 16px;border-bottom:1px solid var(--border);font-size:13px;font-weight:700;color:var(--text)">📈 Más Vendidos en la Categoría</div>
     <div style="overflow-y:auto;max-height:520px">`;
-  trends.forEach((t, i) => {
-    html += `<div style="display:flex;align-items:center;gap:10px;padding:9px 16px;border-bottom:1px solid var(--border)">
-      <span style="font-size:12px;font-weight:700;color:var(--muted);min-width:24px">#${i + 1}</span>
-      <a href="${t.url}" target="_blank" style="flex:1;font-size:13px;color:var(--accent);text-decoration:none;font-weight:500">${t.keyword}</a>
+  items.forEach(item => {
+    html += `<div style="display:flex;gap:10px;padding:10px 14px;border-bottom:1px solid var(--border);align-items:center">
+      <div style="font-size:11px;color:var(--muted);min-width:22px;text-align:center;font-weight:700">#${item.position}</div>
+      <img src="${item.thumbnail}" style="width:48px;height:48px;object-fit:contain;border-radius:6px;background:#fff;flex-shrink:0" loading="lazy" onerror="this.style.display='none'">
+      <div style="flex:1;min-width:0">
+        <a href="${item.permalink}" target="_blank" style="color:var(--text);text-decoration:none;font-size:12px;font-weight:500;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${item.title}">${item.title}</a>
+        <div style="display:flex;gap:8px;align-items:center;margin-top:3px;flex-wrap:wrap">
+          <span style="font-size:13px;font-weight:700;color:var(--accent)">${fmtP(item.price)}</span>
+          ${item.sold_quantity ? `<span style="font-size:11px;color:var(--muted)">${item.sold_quantity.toLocaleString('es-AR')} vendidos</span>` : ''}
+          ${item.free_shipping ? '<span style="font-size:10px;color:#22c55e;font-weight:600">✔ Gratis</span>' : ''}
+        </div>
+      </div>
     </div>`;
   });
   html += '</div></div>';

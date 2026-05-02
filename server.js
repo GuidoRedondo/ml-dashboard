@@ -4769,52 +4769,33 @@ app.get('/api/competencia/highlights', requireAuth, async (req, res) => {
     if (!category_id) return res.status(400).json({ error: 'Falta category_id' });
 
     const appToken = await getAppToken(parseInt(client_id));
-    if (!appToken) return res.status(403).json({ error: 'Sin app token disponible' });
-    const headers = { 'Authorization': `Bearer ${appToken}` };
+    const token    = await getClientToken(parseInt(client_id));
+    if (!token && !appToken) return res.status(403).json({ error: 'Sin token' });
+    const headers = { 'Authorization': `Bearer ${appToken || token}` };
 
-    const hlRes = await fetch(
-      `${ML_API}/highlights/MLA/category/${category_id}`,
+    // Top del mercado: búsqueda por relevancia (orden por defecto de ML = lo que ML promueve)
+    const searchRes = await fetch(
+      `${ML_API}/sites/MLA/search?category=${category_id}&limit=20`,
       { headers }
     ).then(r => r.json()).catch(() => ({}));
 
-    console.log(`[HIGHLIGHTS] cat=${category_id} keys=${Object.keys(hlRes||{}).join(',')} error=${hlRes.error||''} count=${(hlRes.content||[]).length} raw=${JSON.stringify(hlRes).slice(0,300)}`);
+    const results = searchRes.results || [];
+    const items = results.map((it, i) => ({
+      position:       i + 1,
+      id:             it.id,
+      title:          it.title,
+      price:          it.price,
+      original_price: it.original_price,
+      thumbnail:      it.thumbnail,
+      permalink:      it.permalink,
+      sold_quantity:  it.sold_quantity,
+      free_shipping:  it.shipping?.free_shipping,
+      listing_type:   it.listing_type_id,
+      condition:      it.condition,
+      seller_id:      it.seller?.id,
+    }));
 
-    const content = hlRes.content || [];
-    if (!content.length) return res.json({ items: [], category_id, _raw: hlRes });
-
-    // Fetch each item individually to avoid multiget issues with app token
-    const ids = content.slice(0, 20).map(c => c.id);
-    const userToken = await getClientToken(parseInt(client_id));
-    const itemHeaders = userToken ? { 'Authorization': `Bearer ${userToken}` } : headers;
-
-    const itemResults = await Promise.all(ids.map(id =>
-      fetch(`${ML_API}/items/${id}?attributes=id,title,price,original_price,thumbnail,permalink,sold_quantity,shipping,listing_type_id,condition`, { headers: itemHeaders })
-        .then(r => r.json()).catch(() => null)
-    ));
-
-    console.log(`[HIGHLIGHTS] items fetched=${itemResults.length} first=${JSON.stringify(itemResults[0])?.slice(0,150)}`);
-
-    const items = itemResults
-      .filter(it => it && it.id && !it.error)
-      .map((it, i) => {
-        const hlEntry = content.find(c => c.id === it.id) || content[i] || {};
-        return {
-          position: hlEntry.position || i + 1,
-          id: it.id,
-          title: it.title,
-          price: it.price,
-          original_price: it.original_price,
-          thumbnail: it.thumbnail,
-          permalink: it.permalink,
-          sold_quantity: it.sold_quantity,
-          free_shipping: it.shipping?.free_shipping,
-          listing_type: it.listing_type_id,
-          condition: it.condition,
-        };
-      })
-      .sort((a, b) => a.position - b.position);
-
-    res.json({ items, category_id, _raw: items.length ? null : { content_count: content.length, first_id: ids[0], first_item: itemResults[0] } });
+    res.json({ items, category_id, _raw: items.length ? null : searchRes });
   } catch(e) {
     console.error('[HIGHLIGHTS]', e.message);
     res.status(500).json({ error: e.message });
@@ -4823,34 +4804,35 @@ app.get('/api/competencia/highlights', requireAuth, async (req, res) => {
 
 app.get('/api/competencia/tendencias', requireAuth, async (req, res) => {
   try {
-    const { client_id } = req.query;
+    const { client_id, category_id } = req.query;
+    if (!category_id) return res.status(400).json({ error: 'Falta category_id' });
 
-    const token = await getClientToken(parseInt(client_id));
-    if (!token) return res.status(403).json({ error: 'Sin token' });
-    const headers = { 'Authorization': `Bearer ${token}` };
+    const appToken = await getAppToken(parseInt(client_id));
+    const token    = await getClientToken(parseInt(client_id));
+    if (!token && !appToken) return res.status(403).json({ error: 'Sin token' });
+    const headers = { 'Authorization': `Bearer ${appToken || token}` };
 
-    // Try both known trend endpoints
-    let trends = null;
-    const endpoints = [
-      `${ML_API}/sites/MLA/trends`,
-      `${ML_API}/sites/MLA/trend_searches`,
-    ];
-    for (const url of endpoints) {
-      const r = await fetch(url, { headers }).then(res => res.json()).catch(() => null);
-      console.log(`[TENDENCIAS] url=${url} type=${typeof r} isArray=${Array.isArray(r)} raw=${JSON.stringify(r)?.slice(0,200)}`);
-      if (Array.isArray(r) && r.length) { trends = r; break; }
-      if (r && !r.error) { trends = r; break; }
-    }
+    // Más vendidos en la categoría (ventas = lo que el mercado está comprando)
+    const searchRes = await fetch(
+      `${ML_API}/sites/MLA/search?category=${category_id}&sort=sold_quantity_desc&limit=20`,
+      { headers }
+    ).then(r => r.json()).catch(() => ({}));
 
-    if (!trends) {
-      // Try without auth (public endpoint)
-      const r = await fetch(`${ML_API}/sites/MLA/trends`).then(res => res.json()).catch(() => null);
-      console.log(`[TENDENCIAS no-auth] type=${typeof r} isArray=${Array.isArray(r)} raw=${JSON.stringify(r)?.slice(0,200)}`);
-      if (r && !r.error) trends = r;
-    }
+    const results = searchRes.results || [];
+    const items = results.map((it, i) => ({
+      position:      i + 1,
+      id:            it.id,
+      title:         it.title,
+      price:         it.price,
+      thumbnail:     it.thumbnail,
+      permalink:     it.permalink,
+      sold_quantity: it.sold_quantity,
+      free_shipping: it.shipping?.free_shipping,
+      listing_type:  it.listing_type_id,
+      seller_id:     it.seller?.id,
+    }));
 
-    const trendList = Array.isArray(trends) ? trends : [];
-    res.json({ trends: trendList, _raw: trendList.length ? null : trends });
+    res.json({ items, category_id, _raw: items.length ? null : searchRes });
   } catch(e) {
     console.error('[TENDENCIAS]', e.message);
     res.status(500).json({ error: e.message });
