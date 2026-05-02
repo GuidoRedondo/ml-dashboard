@@ -5247,11 +5247,16 @@ function loadPerformance() {
 
   const byMode = {}, byProvince = {}, byHour = new Array(24).fill(0);
   const top15Rev = [], top15Units = [];
+  let totVisits = 0, adsImpr = 0, adsClicks = 0, adsUnits = 0, adsSalesAmt = 0;
 
   connected.forEach(acc => {
     const perf = acc.data.performance;
+    totVisits   += acc.data?.stats?.cur?.total_visits || 0;
+    adsImpr     += acc.data?._adsData?.impressions   || 0;
+    adsClicks   += acc.data?._adsData?.clicks        || 0;
+    adsUnits    += acc.data?._adsData?.units         || 0;
+    adsSalesAmt += acc.data?._adsData?.sales         || 0;
     if (!perf) return;
-    console.log('[PERF_FILTER] filter=', window._perfModeFilter, 'has_top15_by_mode=', !!perf.top15_by_mode, 'modes=', perf.top15_by_mode ? Object.keys(perf.top15_by_mode) : 'none');
     const f = window._perfModeFilter;
 
     // Province — use filtered data if mode active
@@ -5282,7 +5287,37 @@ function loadPerformance() {
   });
 
   const fmt = n => { const sign = n < 0 ? '-' : ''; return sign + '$' + Math.round(Math.abs(n)).toLocaleString('es-AR'); };
+  const fmtK = n => n >= 1e6 ? (n/1e6).toFixed(1)+'M' : n >= 1e3 ? Math.round(n/1e3)+'K' : n.toLocaleString('es-AR');
   const totalOrders = Object.values(byMode).reduce((a,b)=>a+b,0) || 1;
+
+  // ── Tráfico orgánico vs pago ─────────────────────────────────────────────
+  const organicVisits = Math.max(0, totVisits - adsClicks);
+  const organicOrders = Math.max(0, totalOrders - adsUnits);
+  const organicConv   = organicVisits > 0 ? organicOrders / organicVisits * 100 : 0;
+  const paidCTR       = adsImpr    > 0 ? adsClicks / adsImpr    * 100 : 0;
+  const paidConv      = adsClicks  > 0 ? adsUnits  / adsClicks  * 100 : 0;
+  const hasAds        = adsImpr > 0 || adsClicks > 0;
+
+  function funnelHtml(steps, color) {
+    const maxV = steps[0]?.value || 1;
+    return steps.map((s, i) => {
+      const barPct = Math.max(4, Math.round(s.value / maxV * 100));
+      const notLast = i < steps.length - 1;
+      return `
+        <div style="margin-bottom:${notLast ? '10px' : '0'}">
+          <div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:3px">
+            <span style="color:var(--muted);font-weight:600">${s.label}</span>
+            <span style="font-weight:700;color:var(--text)">${s.valueStr}${s.note ? `<span style="font-size:10px;color:var(--muted);margin-left:5px">${s.note}</span>` : ''}</span>
+          </div>
+          <div style="background:var(--surface2);border-radius:6px;height:26px;overflow:hidden">
+            <div style="width:${barPct}%;height:100%;background:${color};border-radius:6px;opacity:${1 - i * 0.18};display:flex;align-items:center;padding-left:9px;min-width:30px">
+              ${s.pct != null ? `<span style="font-size:10px;font-weight:700;color:#fff;white-space:nowrap">${s.pct}</span>` : ''}
+            </div>
+          </div>
+          ${notLast ? `<div style="text-align:left;padding-left:${barPct/2}%;font-size:10px;color:var(--muted);margin-top:1px;line-height:1">↓</div>` : ''}
+        </div>`;
+    }).join('');
+  }
 
   function getFilteredItems(items) {
     const f = window._perfModeFilter;
@@ -5491,6 +5526,75 @@ function loadPerformance() {
       <span>🔍 Mostrando análisis filtrado por: <strong>${_perfMlaFilter}</strong></span>
       ${top15Rev.length === 0 ? '<span style="color:#ff5252;margin-left:8px">— Sin resultados</span>' : ''}
     </div>` : ''}
+
+    <!-- TRÁFICO + EMBUDOS -->
+    <div class="kpi-card" style="padding:18px;margin-bottom:12px">
+      <div class="kpi-label" style="margin-bottom:16px">🔍 Tráfico y Conversión</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px">
+
+        <!-- ORGÁNICO -->
+        <div>
+          <div style="font-size:13px;font-weight:700;color:#00e676;margin-bottom:12px">🌱 Orgánico</div>
+          <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:16px">
+            <div style="text-align:center;background:var(--surface2);border-radius:10px;padding:9px 4px">
+              <div style="font-size:9px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.04em;margin-bottom:3px">Visitas</div>
+              <div style="font-size:16px;font-weight:700">${fmtK(organicVisits)}</div>
+            </div>
+            <div style="text-align:center;background:var(--surface2);border-radius:10px;padding:9px 4px">
+              <div style="font-size:9px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.04em;margin-bottom:3px">Pedidos</div>
+              <div style="font-size:16px;font-weight:700">${organicOrders.toLocaleString('es-AR')}</div>
+            </div>
+            <div style="text-align:center;background:rgba(0,230,118,.1);border:1px solid rgba(0,230,118,.25);border-radius:10px;padding:9px 4px">
+              <div style="font-size:9px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.04em;margin-bottom:3px">Conv.</div>
+              <div style="font-size:16px;font-weight:700;color:#00e676">${organicConv.toFixed(1)}%</div>
+            </div>
+          </div>
+          ${funnelHtml([
+            { label: 'Visitas orgánicas', value: organicVisits, valueStr: fmtK(organicVisits), pct: null, note: null },
+            { label: 'Pedidos',           value: organicOrders, valueStr: organicOrders.toLocaleString('es-AR'), pct: organicConv.toFixed(1)+'%', note: 'conv.' },
+          ], '#00e676')}
+        </div>
+
+        <!-- PUBLICIDAD -->
+        <div>
+          <div style="font-size:13px;font-weight:700;color:#FFD700;margin-bottom:12px">📢 Publicidad</div>
+          ${!hasAds ? `<div style="color:var(--muted);font-size:12px;padding:20px 0">Sin datos de publicidad para este período</div>` : `
+          <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:16px">
+            <div style="text-align:center;background:var(--surface2);border-radius:10px;padding:9px 4px">
+              <div style="font-size:9px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.04em;margin-bottom:3px">Impresiones</div>
+              <div style="font-size:16px;font-weight:700">${fmtK(adsImpr)}</div>
+            </div>
+            <div style="text-align:center;background:var(--surface2);border-radius:10px;padding:9px 4px">
+              <div style="font-size:9px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.04em;margin-bottom:3px">Clicks</div>
+              <div style="font-size:16px;font-weight:700">${fmtK(adsClicks)}</div>
+            </div>
+            <div style="text-align:center;background:var(--surface2);border-radius:10px;padding:9px 4px">
+              <div style="font-size:9px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.04em;margin-bottom:3px">Pedidos ads</div>
+              <div style="font-size:16px;font-weight:700">${adsUnits.toLocaleString('es-AR')}</div>
+            </div>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:16px">
+            <div style="text-align:center;background:rgba(255,214,0,.1);border:1px solid rgba(255,214,0,.25);border-radius:10px;padding:9px 4px">
+              <div style="font-size:9px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.04em;margin-bottom:3px">CTR</div>
+              <div style="font-size:16px;font-weight:700;color:#FFD700">${paidCTR.toFixed(2)}%</div>
+              <div style="font-size:9px;color:var(--muted)">clicks / impresiones</div>
+            </div>
+            <div style="text-align:center;background:rgba(255,214,0,.1);border:1px solid rgba(255,214,0,.25);border-radius:10px;padding:9px 4px">
+              <div style="font-size:9px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.04em;margin-bottom:3px">Conv. clicks</div>
+              <div style="font-size:16px;font-weight:700;color:#FFD700">${paidConv.toFixed(1)}%</div>
+              <div style="font-size:9px;color:var(--muted)">pedidos / clicks</div>
+            </div>
+          </div>
+          ${funnelHtml([
+            { label: 'Impresiones',  value: adsImpr,   valueStr: fmtK(adsImpr),                         pct: null,                   note: null },
+            { label: 'Clicks',       value: adsClicks, valueStr: fmtK(adsClicks),                       pct: paidCTR.toFixed(2)+'%', note: 'CTR' },
+            { label: 'Pedidos ads',  value: adsUnits,  valueStr: adsUnits.toLocaleString('es-AR'),      pct: paidConv.toFixed(1)+'%', note: 'conv.' },
+          ], '#FFD700')}`}
+        </div>
+
+      </div>
+    </div>
+
     <!-- ROW 1: Forma de entrega + Provincia -->
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
       <div class="kpi-card" style="padding:18px">
