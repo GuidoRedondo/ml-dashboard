@@ -558,7 +558,7 @@ tbody td {
       <div class="nav-item" data-page="ads" onclick="showPage('ads',this)">
         <span class="nav-icon">📣</span> Publicidad
       </div>
-      <div class="nav-item" data-page="diagnostico" onclick="showPage('diagnostico',this);loadDiagnostico()">
+      <div class="nav-item" data-page="diagnostico" onclick="showPage('diagnostico',this);initDiagnosticoMensual()">
         <span class="nav-icon">🩺</span> Diagnóstico
       </div>
       <div class="nav-item" data-page="fotos" onclick="showPage('fotos',this);loadFotos()">
@@ -6417,6 +6417,29 @@ function diagGetLast3Months() {
   return months;
 }
 
+
+function initDiagnosticoMensual() {
+  const sel = document.getElementById('diagClientSel');
+  if (!sel) return;
+  const role = getSessionRole();
+  if (role === 'cliente') {
+    sel.style.display = 'none';
+    const client = getActiveClient();
+    if (client) {
+      sel.innerHTML = `<option value="${client.id}">${client.name}</option>`;
+    }
+  } else {
+    sel.innerHTML = '';
+    allClients.filter(c => c.ml_user_id && c.active).forEach(c => {
+      const o = document.createElement('option');
+      o.value = c.id;
+      o.textContent = c.name;
+      if (activeClientId && c.id === activeClientId) o.selected = true;
+      sel.appendChild(o);
+    });
+  }
+  if (sel.value) diagCargarDatos();
+}
 
 async function diagCargarDatos() {
   const clientId = document.getElementById('diagClientSel')?.value;
