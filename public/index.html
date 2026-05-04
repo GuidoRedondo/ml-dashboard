@@ -6544,34 +6544,20 @@ function diagRender(meses, clientId) {
     ${row('Conversión', d=>d.conversion, fmtP)}
     ${row('Ticket promedio', d=>d.ticket_promedio, fmtM)}
     ${row('Carritos (u/venta)', d=>d.carritos, v=>v!=null?parseFloat(v).toFixed(2):'—')}
-    ${sec('⭐ Reputación','#e0e7ff')}
-    ${row('Medalla', d=>d.rep_medalla, v=>v||'—')}
-    ${row('Ventas 60 días', d=>d.rep_ventas_60, fmtN)}
-    ${row('Concretadas', d=>d.rep_concretadas, fmtN)}
-    ${row('% Reclamos', d=>d.rep_reclamos, v=>v!=null?(parseFloat(v)*100).toFixed(2)+'%':'—', false)}
-    ${row('% Cancelaciones', d=>d.rep_cancelaciones, v=>v!=null?(parseFloat(v)*100).toFixed(2)+'%':'—', false)}
-    ${row('% Demoras', d=>d.rep_demoras, v=>v!=null?(parseFloat(v)*100).toFixed(2)+'%':'—', false)}
-    ${row('Mediaciones', d=>d.rep_mediaciones, fmtN, false)}
-    ${row('No concretadas $', d=>d.rep_no_conc_monto, fmtM, false)}
-    ${row('% No concretadas', d=>d.rep_no_conc_pct, fmtP, false)}
     ${sec('⏱ Tiempos de Respuesta','#fce7f3')}
     ${row('L-V 9 a 18hs', d=>d.manuales?.rep_resp_lv, fmtT)}
     ${row('L-V 18hs a madrugada', d=>d.manuales?.rep_resp_noche, fmtT)}
     ${row('Sáb y Dom', d=>d.manuales?.rep_resp_finde, fmtT)}
-    ${sec('📋 Publicaciones','#dcfce7')}
-    ${row('Total publicaciones', d=>d.pub_total, fmtN)}
-    ${row('Activas', d=>d.pub_activas, fmtN)}
-    ${row('% Activas', d=>d.pub_activas&&d.pub_total?(d.pub_activas/d.pub_total*100):null, fmtP)}
-    ${row('Con ventas (relevantes)', d=>d.pub_exitosas, fmtN)}
-    ${row('% Relevancia', d=>d.pub_exitosas&&d.pub_activas?(d.pub_exitosas/d.pub_activas*100):null, fmtP)}
-    ${row('Pareto (pubs→80% fact)', d=>d.pub_pareto_pct, fmtP, false)}
+    ${row('Preguntas recibidas', d=>d.manuales?.preguntas_total||null, fmtN)}
+    ${row('Preguntas respondidas', d=>d.manuales?.preguntas_respondidas||null, fmtN)}
+    ${row('Conversión preguntas', d=>d.manuales?.conversion_preguntas||null, fmtP)}
     ${sec('🚚 Logística','#fef3c7')}
-    ${row('FULL activo', d=>d.manuales?.full_activo, fmtT)}
     ${row('Fact por FULL', d=>d.manuales?.full_fact_monto||null, fmtM)}
-    ${row('% Fact por FULL', d=>d.manuales?.full_fact_pct||null, fmtP)}
-    ${row('FLEX activo', d=>d.manuales?.flex_activo, fmtT)}
+    ${row('% por FULL', d=>d.manuales?.full_fact_pct||null, fmtP)}
     ${row('Fact por FLEX', d=>d.manuales?.flex_fact_monto||null, fmtM)}
-    ${row('% Fact por FLEX', d=>d.manuales?.flex_fact_pct||null, fmtP)}
+    ${row('% por FLEX', d=>d.manuales?.flex_fact_pct||null, fmtP)}
+    ${row('Fact por ME/Correo', d=>d.manuales?.corr_fact_monto||null, fmtM)}
+    ${row('% por ME/Correo', d=>d.manuales?.corr_fact_pct||null, fmtP)}
     ${sec('📣 Central de Marketing','#fff7ed')}
     ${row('Ventas con descuento', d=>d.manuales?.mkt_ordenes_con_descuento||null, fmtN)}
     ${row('% ventas con descuento', d=>d.manuales?.mkt_pct_descuento||null, fmtP)}
@@ -6598,7 +6584,40 @@ function diagRender(meses, clientId) {
     </div>
     <button id="diagSaveManBtn" onclick="diagGuardarManuales('${clientId}','${lastCol.mes}')" style="padding:6px 16px;background:var(--accent);color:#fff;border:none;border-radius:8px;font-size:13px;cursor:pointer;white-space:nowrap">💾 Guardar</button>
   </div>`;
-  el.innerHTML = formHTML + tableHTML;
+  // Card estado actual — reputación y publicaciones (datos del mes más reciente calculado)
+  const refCol = cols.slice().reverse().find(c => c.data) || cols[cols.length-1];
+  const rd = refCol?.data;
+  const repCard = rd ? `<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:20px">
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px 18px">
+      <div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:#6366f1;margin-bottom:12px">⭐ Reputación — estado actual</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+        ${[
+          ['Medalla', rd.rep_medalla || '—'],
+          ['Ventas 60d', fmtN(rd.rep_ventas_60)],
+          ['Concretadas', fmtN(rd.rep_concretadas)],
+          ['% Reclamos', rd.rep_reclamos!=null?(parseFloat(rd.rep_reclamos)*100).toFixed(2)+'%':'—'],
+          ['% Cancelaciones', rd.rep_cancelaciones!=null?(parseFloat(rd.rep_cancelaciones)*100).toFixed(2)+'%':'—'],
+          ['% Demoras', rd.rep_demoras!=null?(parseFloat(rd.rep_demoras)*100).toFixed(2)+'%':'—'],
+          ['No conc. $', fmtM(rd.rep_no_conc_monto)],
+          ['% No conc.', fmtP(rd.rep_no_conc_pct)],
+        ].map(([l,v])=>`<div><div style="font-size:10px;color:var(--muted)">${l}</div><div style="font-size:13px;font-weight:600">${v}</div></div>`).join('')}
+      </div>
+    </div>
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px 18px">
+      <div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:#16a34a;margin-bottom:12px">📋 Publicaciones — estado actual</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+        ${[
+          ['Total', fmtN(rd.pub_total)],
+          ['Activas', fmtN(rd.pub_activas)],
+          ['% Activas', rd.pub_activas&&rd.pub_total?fmtP(rd.pub_activas/rd.pub_total*100):'—'],
+          ['Con ventas', fmtN(rd.pub_exitosas)],
+          ['% Relevantes', rd.pub_exitosas&&rd.pub_activas?fmtP(rd.pub_exitosas/rd.pub_activas*100):'—'],
+          ['Pareto 80%', fmtP(rd.pub_pareto_pct)],
+        ].map(([l,v])=>`<div><div style="font-size:10px;color:var(--muted)">${l}</div><div style="font-size:13px;font-weight:600">${v}</div></div>`).join('')}
+      </div>
+    </div>
+  </div>` : '';
+  el.innerHTML = formHTML + repCard + tableHTML;
 }
 
 // ── FOTOS ─────────────────────────────────────────────────────────────────────

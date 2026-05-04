@@ -909,6 +909,25 @@ async function fetchVisits(itemIds, days, headers) {
   } catch(e) { return {}; }
 }
 
+async function fetchVisitsRange(itemIds, dateFrom, dateTo, headers) {
+  try {
+    const results = await Promise.all(itemIds.map(id =>
+      fetch(`${ML_API}/items/${id}/visits/time_window?date_from=${dateFrom}&date_to=${dateTo}&unit=day`, { headers })
+        .then(r => r.json()).catch(() => null)
+    ));
+    const map = {};
+    results.forEach((v, i) => {
+      if (!v) return;
+      const id = itemIds[i];
+      if (typeof v.total_visits === 'number') map[id] = v.total_visits;
+      else if (Array.isArray(v)) map[id] = v.reduce((s, r) => s + (r.visits || r.total || 0), 0);
+      else if (v.results) map[id] = v.results.reduce((s, r) => s + (r.total || 0), 0);
+      else map[id] = 0;
+    });
+    return map;
+  } catch(e) { return {}; }
+}
+
 // ── CENTRO DE INTELIGENCIA — motor de alertas ─────────────────────────────────
 
 const REGLAS_DEFAULT = {
@@ -2982,11 +3001,13 @@ app.post('/api/diagnostico/calcular', requireAuth, async (req, res) => {
     const totalInactive = (itemsInactRes.paging && itemsInactRes.paging.total) || 0;
     const pubTotal = totalActive + totalInactive;
 
-    // Visitas del mes — fetch for all active items using month days
+    // Visitas del mes — usar date_from/date_to para el mes exacto (no "last N días desde hoy")
+    const dateFromStr = `${year}-${String(month+1).padStart(2,'0')}-01`;
+    const dateToStr   = `${year}-${String(month+1).padStart(2,'0')}-${String(daysInMonth).padStart(2,'0')}`;
     let visitas = 0;
     for (let i = 0; i < allActiveIdsFull.length; i += 20) {
       const batch = allActiveIdsFull.slice(i, i+20);
-      const vMap = await fetchVisits(batch, daysInMonth, headers);
+      const vMap = await fetchVisitsRange(batch, dateFromStr, dateToStr, headers);
       Object.values(vMap).forEach(v => { visitas += v; });
     }
 
@@ -3183,11 +3204,10 @@ app.post('/api/diagnostico/calcular', requireAuth, async (req, res) => {
     const mktPctDescuento = ventas>0 ? parseFloat(((mktOrdenesConDescuento/ventas)*100).toFixed(1)) : 0;
     const mktPctCupon     = ventas>0 ? parseFloat(((mktOrdenesConCupon/ventas)*100).toFixed(1))     : 0;
 
-    // ── 7. Tiempos de respuesta (desde preguntas) ─────────────────────────────
+    // ── 7. Tiempos de respuesta + conversión de preguntas ────────────────────
     let tiempos = { lv_business: null, lv_noche: null, finde: null, mediana: null };
+    let preguntasTotal = 0, preguntasRespondidas = 0, conversionPreguntas = null;
     try {
-      const dateFromStr = `${year}-${String(month+1).padStart(2,'0')}-01`;
-      const dateToStr   = `${year}-${String(month+1).padStart(2,'0')}-${new Date(year, month+1, 0).getDate()}`;
       let allQ = [], offset = 0;
       while (true) {
         const qUrl = `${ML_API}/questions/search?seller_id=${uid}&status=ANSWERED&sort_fields=date_created&sort_types=DESC&limit=50&offset=${offset}`;
@@ -3227,7 +3247,24 @@ app.post('/api/diagnostico/calcular', requireAuth, async (req, res) => {
         finde:       fmtT(avg(bySlot.fin)),
         mediana:     fmtT(med(respMins)),
       };
-      console.log(`[DIAG TIEMPOS] ${mesStr} lv=${avg(bySlot.lv_b)}min noche=${avg(bySlot.lv_n)}min finde=${avg(bySlot.fin)}min total_q=${allQ.length}`);
+      preguntasRespondidas = allQ.length;
+      // Fetch unanswered questions in the same period
+      let allQUnans = [], offsetU = 0;
+      while (true) {
+        const qUrl = `${ML_API}/questions/search?seller_id=${uid}&status=UNANSWERED&sort_fields=date_created&sort_types=DESC&limit=50&offset=${offsetU}`;
+        const qRes = await fetch(qUrl, { headers }).then(r => r.json()).catch(() => ({}));
+        const qs = qRes.questions || qRes.data || [];
+        if (!qs.length) break;
+        const inRange = qs.filter(q => { const d = new Date(q.date_created); return d >= dateFrom && d <= dateTo; });
+        allQUnans = allQUnans.concat(inRange);
+        const oldest = new Date(qs[qs.length-1].date_created);
+        if (oldest < dateFrom || qs.length < 50) break;
+        offsetU += 50;
+        if (offsetU > 300) break;
+      }
+      preguntasTotal = preguntasRespondidas + allQUnans.length;
+      conversionPreguntas = preguntasTotal > 0 ? parseFloat(((preguntasRespondidas / preguntasTotal) * 100).toFixed(1)) : null;
+      console.log(`[DIAG TIEMPOS] ${mesStr} lv=${avg(bySlot.lv_b)}min noche=${avg(bySlot.lv_n)}min finde=${avg(bySlot.fin)}min total_q=${allQ.length} unanswered=${allQUnans.length}`);
     } catch(e) { console.error('[DIAG TIEMPOS]', e.message); }
 
     // ── 8. Guardar en DB ──────────────────────────────────────────────────────
@@ -3242,6 +3279,9 @@ app.post('/api/diagnostico/calcular', requireAuth, async (req, res) => {
       rep_resp_lv:    tiempos.lv_business || manualesExistentes.rep_resp_lv,
       rep_resp_noche: tiempos.lv_noche    || manualesExistentes.rep_resp_noche,
       rep_resp_finde: tiempos.finde       || manualesExistentes.rep_resp_finde,
+      preguntas_total:        preguntasTotal,
+      preguntas_respondidas:  preguntasRespondidas,
+      conversion_preguntas:   conversionPreguntas,
       // Logística (auto)
       full_activo:    logFullActive ? 'SI' : 'NO',
       flex_activo:    logFlexActive ? 'SI' : 'NO',
@@ -3249,6 +3289,8 @@ app.post('/api/diagnostico/calcular', requireAuth, async (req, res) => {
       flex_fact_pct:  logFlexPct,
       full_fact_monto: Math.round(logFullFact),
       flex_fact_monto: Math.round(logFlexFact),
+      corr_fact_monto: Math.round(logCorreoFact),
+      corr_fact_pct:  facturacion>0 ? parseFloat(((logCorreoFact/facturacion)*100).toFixed(1)) : 0,
       // Marketing (auto)
       mkt_ordenes_con_descuento: mktOrdenesConDescuento,
       mkt_pct_descuento: mktPctDescuento,
