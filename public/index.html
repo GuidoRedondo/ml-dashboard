@@ -8040,6 +8040,7 @@ function renderPyL(pyl) {
         ${pyl.egresos_ml.publicidad ? detalleRow('Publicidad (PADS)', pyl.egresos_ml.publicidad, pyl.ingresos.facturacion) : ''}
         ${pyl.egresos_ml.impuestos ? detalleRow('Impuestos / retenciones', pyl.egresos_ml.impuestos, pyl.ingresos.facturacion) : ''}
         ${pyl.egresos_ml.reembolsos ? detalleRow('Reembolsos', pyl.egresos_ml.reembolsos, pyl.ingresos.facturacion) : ''}
+        ${pyl.egresos_ml.iva_neto ? detalleRow('IVA neto a pagar', pyl.egresos_ml.iva_neto, pyl.ingresos.facturacion) : ''}
       </div>
 
       <!-- Detalle CMV -->
