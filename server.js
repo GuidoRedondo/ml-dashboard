@@ -2186,6 +2186,29 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
     const utilidadDash    = hasCMVDash ? netoML - cmv_total_dash - adsSpend - ivaNetoDash : null;
     const margenDash      = hasCMVDash && curData.amount > 0 ? (utilidadDash / curData.amount * 100) : null;
 
+    // ── Período anterior — métricas financieras ───────────────────────────────
+    let prevSaleFeeCalc = 0, prevTaxesCalc = 0, prevFacCalc = 0;
+    const prevByItemUnits = {};
+    prevData.orders.forEach(o => {
+      (o.order_items||[]).forEach(oi => {
+        prevSaleFeeCalc += parseFloat(oi.sale_fee)||0;
+        const id = oi.item?.id; if (!id) return;
+        prevFacCalc += (parseFloat(oi.unit_price)||0)*(oi.quantity||0);
+        prevByItemUnits[id] = (prevByItemUnits[id]||0) + (oi.quantity||0);
+      });
+      prevTaxesCalc += parseFloat((o.taxes||{}).amount)||0;
+    });
+    let prevCMVCalc = 0;
+    Object.entries(prevByItemUnits).forEach(([id, units]) => {
+      const c = costsMapDash[id]; if (c != null && c > 0) prevCMVCalc += c * units;
+    });
+    // Aproximación: sin costo de envío del período anterior (requeriría calls adicionales)
+    const prevImporteRecibido = prevData.amount - prevSaleFeeCalc - prevTaxesCalc;
+    const prevPctRecibido     = prevFacCalc > 0 ? (prevImporteRecibido / prevFacCalc * 100) : 0;
+    const prevNetoML          = prevFacCalc - prevSaleFeeCalc - prevTaxesCalc;
+    const prevUtilidad        = hasCMVDash ? prevNetoML - prevCMVCalc : null;
+    const prevMargen          = prevUtilidad != null && prevFacCalc > 0 ? (prevUtilidad / prevFacCalc * 100) : null;
+
     const R_extra = {
       cancelled_count:  cancelledCount,
       inversion_ads:    adsSpend,
@@ -2293,7 +2316,11 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
         prev: {
           total_orders: prevData.orders.length, total_amount: prevData.amount,
           total_visits: prevTotalVisits, conversion_rate: prevConv,
-          total_units: prevUnits, ticket_promedio: prevTicket
+          total_units: prevUnits, ticket_promedio: prevTicket,
+          importe_recibido: prevImporteRecibido,
+          pct_recibido: parseFloat(prevPctRecibido.toFixed(1)),
+          utilidad: prevUtilidad,
+          margen_pct: prevMargen != null ? parseFloat(prevMargen.toFixed(1)) : null,
         },
         change: {
           orders: pct(curData.orders.length, prevData.orders.length),
@@ -2301,7 +2328,11 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
           visits: pct(totalVisits, prevTotalVisits),
           conversion: pct(parseFloat(curConv), parseFloat(prevConv)),
           units: pct(totalUnits, prevUnits),
-          ticket: pct(ticketPromedio, prevTicket)
+          ticket: pct(ticketPromedio, prevTicket),
+          importe_recibido: pct(importeRecibido, prevImporteRecibido),
+          pct_recibido: prevPctRecibido > 0 ? parseFloat((parseFloat(porcentajeRecibido) - prevPctRecibido).toFixed(1)) : null,
+          utilidad: utilidadDash != null && prevUtilidad != null ? pct(utilidadDash, prevUtilidad) : null,
+          margen_pct: margenDash != null && prevMargen != null ? parseFloat((margenDash - prevMargen).toFixed(1)) : null,
         },
         by_day_ventas: byDayVentas,
         by_day_fac:    byDayFac,
@@ -2486,28 +2517,51 @@ app.get('/api/ads', requireAuth, async (req, res) => {
     const advId = adv.advertiser_id;
 
     const now = new Date();
-    let fromDate, toDate;
+    let fromDate, toDate, prevFromDate, prevToDate;
     if (req.query.date_from && req.query.date_to) {
       fromDate = req.query.date_from;
       toDate   = req.query.date_to;
+      const curFrom = new Date(req.query.date_from);
+      const curTo   = new Date(req.query.date_to);
+      const durMs   = Math.round((curTo - curFrom) / (24*60*60*1000)) * 24*60*60*1000;
+      const pTo     = new Date(curFrom.getTime() - 24*60*60*1000);
+      const pFrom   = new Date(pTo.getTime() - durMs);
+      prevFromDate  = pFrom.toISOString().slice(0,10);
+      prevToDate    = pTo.toISOString().slice(0,10);
     } else {
       const from = new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
       fromDate = from.toISOString().slice(0,10);
       toDate   = now.toISOString().slice(0,10);
+      prevFromDate = new Date(from.getTime() - days * 24 * 60 * 60 * 1000).toISOString().slice(0,10);
+      prevToDate   = from.toISOString().slice(0,10);
     }
     const metrics = 'clicks,prints,cost,cpc,acos,direct_amount,indirect_amount,total_amount,direct_units_quantity,units_quantity,cvr,roas';
     console.log(`[ADS] client=${clientId} from=${fromDate} to=${toDate}`);
-    const url = `${ML_API}/advertising/${siteId}/advertisers/${advId}/product_ads/campaigns/search?limit=50&offset=0&date_from=${fromDate}&date_to=${toDate}&metrics=${metrics}&metrics_summary=true`;
-    const text = await fetch(url, { headers: h2 }).then(r => r.text());
+    const url     = `${ML_API}/advertising/${siteId}/advertisers/${advId}/product_ads/campaigns/search?limit=50&offset=0&date_from=${fromDate}&date_to=${toDate}&metrics=${metrics}&metrics_summary=true`;
+    const prevUrl = `${ML_API}/advertising/${siteId}/advertisers/${advId}/product_ads/campaigns/search?limit=50&offset=0&date_from=${prevFromDate}&date_to=${prevToDate}&metrics=${metrics}&metrics_summary=true`;
+
+    const [text, prevData] = await Promise.all([
+      fetch(url, { headers: h2 }).then(r => r.text()),
+      fetch(prevUrl, { headers: h2 }).then(r => r.json()).catch(() => ({}))
+    ]);
     console.log(`[ADS] ML response (first 200): ${text.slice(0,200)}`);
     let data;
     try { data = JSON.parse(text); } catch(e) { return res.status(500).json({ error: 'parse error' }); }
 
     const campaigns = data.results || [];
     const summary = data.metrics_summary || {};
+    const prevSummary = prevData.metrics_summary || {};
+
+    const buildSummary = s => ({
+      spend: s.cost||0, clicks: s.clicks||0, impressions: s.prints||0,
+      sales: s.total_amount||0, units: s.units_quantity||0,
+      acos: s.cost&&s.total_amount ? ((s.cost/s.total_amount)*100).toFixed(1) : null,
+      roas: s.cost&&s.total_amount ? (s.total_amount/s.cost).toFixed(2) : null,
+    });
 
     res.json({
-      summary: { spend: summary.cost||0, clicks: summary.clicks||0, impressions: summary.prints||0, sales: summary.total_amount||0, units: summary.units_quantity||0, acos: summary.cost&&summary.total_amount?((summary.cost/summary.total_amount)*100).toFixed(1):null, roas: summary.cost&&summary.total_amount?(summary.total_amount/summary.cost).toFixed(2):null },
+      summary: buildSummary(summary),
+      prev_summary: buildSummary(prevSummary),
       campaigns: campaigns.map(c => {
         const m = c.metrics || {};
         const spend = m.cost||0, sales = m.total_amount||0;

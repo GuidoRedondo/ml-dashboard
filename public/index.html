@@ -755,10 +755,10 @@ tbody td {
       <div style="font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.08em;margin-bottom:8px">📣 PUBLICIDAD</div>
       <div class="kpi-grid" style="grid-template-columns:repeat(5,1fr);margin-bottom:16px">
         <div class="kpi-card"><div class="kpi-label">📣 TACOS</div><div class="kpi-value" id="kpiTacos">—</div><div class="kpi-delta" id="kpiTacosDelta"></div><div class="kpi-sub" id="kpiTacosSub">Gasto Ads / Facturación</div></div>
-        <div class="kpi-card"><div class="kpi-label">💸 INV. ADS</div><div class="kpi-value" id="kpiAdsSpend">—</div><div class="kpi-sub">Gasto total en Ads</div></div>
-        <div class="kpi-card"><div class="kpi-label">🛒 VENTAS ADS</div><div class="kpi-value" id="kpiAdsSales">—</div><div class="kpi-sub" id="kpiAdsSalesSub">Facturación por Ads</div></div>
-        <div class="kpi-card"><div class="kpi-label">💰 % FACT. ADS</div><div class="kpi-value" id="kpiPctAds">—</div><div class="kpi-sub">Ventas Ads / Fact. total</div></div>
-        <div class="kpi-card"><div class="kpi-label">🔄 ROAS</div><div class="kpi-value" id="kpiRoas">—</div><div class="kpi-sub">Ventas Ads / Gasto Ads</div></div>
+        <div class="kpi-card"><div class="kpi-label">💸 INV. ADS</div><div class="kpi-value" id="kpiAdsSpend">—</div><div class="kpi-delta" id="kpiAdsSpendDelta"></div><div class="kpi-sub">Gasto total en Ads</div></div>
+        <div class="kpi-card"><div class="kpi-label">🛒 VENTAS ADS</div><div class="kpi-value" id="kpiAdsSales">—</div><div class="kpi-delta" id="kpiAdsSalesDelta"></div><div class="kpi-sub" id="kpiAdsSalesSub">Facturación por Ads</div></div>
+        <div class="kpi-card"><div class="kpi-label">💰 % FACT. ADS</div><div class="kpi-value" id="kpiPctAds">—</div><div class="kpi-delta" id="kpiPctAdsDelta"></div><div class="kpi-sub">Ventas Ads / Fact. total</div></div>
+        <div class="kpi-card"><div class="kpi-label">🔄 ROAS</div><div class="kpi-value" id="kpiRoas">—</div><div class="kpi-delta" id="kpiRoasDelta"></div><div class="kpi-sub">Ventas Ads / Gasto Ads</div></div>
       </div>
 
       <!-- BLOQUE 3: Financiero -->
@@ -1976,6 +1976,7 @@ async function loadDashboardData() {
       ]);
       if (data) {
         if (adsData?.summary) data._adsData = adsData.summary;
+        if (adsData?.prev_summary) data._adsPrevData = adsData.prev_summary;
         const acc = { id: client.id, name: client.name, color: clientColor(client.id), data, accessToken: null, clientId: client.id, userId: client.ml_user_id };
         const existing = state.accounts.findIndex(a => a.id === client.id);
         if (existing >= 0) state.accounts[existing] = acc;
@@ -2503,8 +2504,11 @@ function updateDashboard() {
 
   let totalFac = 0, totalVentas = 0, totalVisits = 0, totalUnits = 0;
   let totalRecibido = 0, totalAds = 0, totalAdsSales = 0, totalAdsUnits = 0;
+  let prevAdsSales = 0, prevAdsSpend = 0;
+  let prevRecibido = 0, prevFacTotal = 0;
   let convRates = [];
-  let changes = { amount: [], orders: [], visits: [], conversion: [], units: [], ticket: [] };
+  let changes = { amount: [], orders: [], visits: [], conversion: [], units: [], ticket: [],
+                  importe_recibido: [], pct_recibido: [], utilidad: [], margen_pct: [] };
 
   connected.forEach(acc => {
     if (!acc.data || !acc.data.stats) return;
@@ -2515,14 +2519,19 @@ function updateDashboard() {
     totalUnits    += s.total_units    || 0;
     totalRecibido += s.importe_recibido || 0;
     totalAds      += s.ads_spend      || 0;
-    // Datos de ads cargados automáticamente
+    prevFacTotal  += s.prev?.total_amount || 0;
+    prevRecibido  += s.prev?.importe_recibido || 0;
     if (acc.data._adsData) {
-      totalAdsSales += acc.data._adsData.sales    || 0;
-      totalAdsUnits += acc.data._adsData.units    || 0;
+      totalAdsSales += acc.data._adsData.sales || 0;
+      totalAdsUnits += acc.data._adsData.units || 0;
+    }
+    if (acc.data._adsPrevData) {
+      prevAdsSales += acc.data._adsPrevData.sales || 0;
+      prevAdsSpend += acc.data._adsPrevData.spend || 0;
     }
     if (s.conversion_rate != null) convRates.push(parseFloat(s.conversion_rate));
     if (s.change) {
-      ['amount','orders','visits','conversion','units','ticket'].forEach(k => {
+      ['amount','orders','visits','conversion','units','ticket','importe_recibido','pct_recibido','utilidad','margen_pct'].forEach(k => {
         if (s.change[k] != null) changes[k].push(parseFloat(s.change[k]));
       });
     }
@@ -2560,31 +2569,67 @@ function updateDashboard() {
   document.getElementById('kpiConvDelta').innerHTML = deltaHtml(avgCh(changes.conversion));
   document.getElementById('kpiConvSub').textContent = 'Ventas / Visitas';
 
-  // Fila 3 — publicidad
-  document.getElementById('kpiTacos').textContent = tacos === '—' ? '—' : tacos + '%';
-  document.getElementById('kpiTacosSub').textContent = totalAds > 0 ? 'Gasto Ads / Facturación' : 'Sin datos de Ads aún';
+  // Helper para deltas en puntos porcentuales (ej: margen, TACOS)
+  function deltaHtmlPts(pts) {
+    if (pts === null || pts === undefined) return '<span style="color:var(--muted);font-size:11px">vs período anterior</span>';
+    const n = parseFloat(pts);
+    const cls = n >= 0 ? 'up' : 'down';
+    const sign = n >= 0 ? '▲' : '▼';
+    return `<span class="kpi-delta ${cls}">${sign} ${Math.abs(n).toFixed(1)} pts vs período anterior</span>`;
+  }
 
-  // KPIs de ads — con datos cargados automáticamente
+  // Fila 3 — publicidad
+  const tacosActual = totalAds && totalFac ? (totalAds/totalFac*100) : null;
+  const tacosPrev   = prevAdsSpend && prevFacTotal ? (prevAdsSpend/prevFacTotal*100) : null;
+  document.getElementById('kpiTacos').textContent = tacosActual != null ? tacosActual.toFixed(1) + '%' : '—';
+  document.getElementById('kpiTacosSub').textContent = totalAds > 0 ? 'Gasto Ads / Facturación' : 'Sin datos de Ads aún';
+  document.getElementById('kpiTacosDelta').innerHTML = (tacosActual != null && tacosPrev != null)
+    ? deltaHtmlPts(tacosActual - tacosPrev) : '<span style="color:var(--muted);font-size:11px">vs período anterior</span>';
+
   const adsSpendEl = document.getElementById('kpiAdsSpend');
   if (adsSpendEl) adsSpendEl.textContent = totalAds > 0 ? formatMoney(totalAds) : '—';
+  const adsSpendDeltaEl = document.getElementById('kpiAdsSpendDelta');
+  if (adsSpendDeltaEl) adsSpendDeltaEl.innerHTML = prevAdsSpend > 0 ? deltaHtml(((totalAds - prevAdsSpend)/prevAdsSpend*100).toFixed(1)) : '<span style="color:var(--muted);font-size:11px">vs período anterior</span>';
+
+  const salesShareNum = totalAdsSales && totalFac ? (totalAdsSales / totalFac * 100) : null;
+  const prevSalesShareNum = prevAdsSales && prevFacTotal ? (prevAdsSales / prevFacTotal * 100) : null;
+  const roasNum = totalAds > 0 && totalAdsSales > 0 ? totalAdsSales / totalAds : null;
+  const prevRoasNum = prevAdsSpend > 0 && prevAdsSales > 0 ? prevAdsSales / prevAdsSpend : null;
+
   const kpiAdsSalesEl = document.getElementById('kpiAdsSales');
   if (kpiAdsSalesEl) kpiAdsSalesEl.textContent = totalAdsSales > 0 ? formatMoney(totalAdsSales) : '—';
+  const kpiAdsSalesDeltaEl = document.getElementById('kpiAdsSalesDelta');
+  if (kpiAdsSalesDeltaEl) kpiAdsSalesDeltaEl.innerHTML = prevAdsSales > 0 ? deltaHtml(((totalAdsSales - prevAdsSales)/prevAdsSales*100).toFixed(1)) : '<span style="color:var(--muted);font-size:11px">vs período anterior</span>';
   const kpiAdsSalesSubEl = document.getElementById('kpiAdsSalesSub');
   if (kpiAdsSalesSubEl) kpiAdsSalesSubEl.textContent = totalAdsUnits > 0 ? totalAdsUnits.toLocaleString('es-AR') + ' unidades' : '';
-  const salesShareNum = totalAdsSales && totalFac ? (totalAdsSales / totalFac * 100) : null;
-  const kpiPctAdsEl = document.getElementById('kpiPctAds');
-  if (kpiPctAdsEl) kpiPctAdsEl.textContent = salesShareNum ? salesShareNum.toFixed(1) + '%' : '—';
-  const roasNum = totalAds > 0 && totalAdsSales > 0 ? (totalAdsSales / totalAds).toFixed(2) + 'x' : '—';
-  const kpiRoasEl = document.getElementById('kpiRoas');
-  if (kpiRoasEl) kpiRoasEl.textContent = roasNum;
-  document.getElementById('kpiTacos').textContent = totalAds && totalFac ? (totalAds/totalFac*100).toFixed(1) + '%' : '—';
-  document.getElementById('kpiTacosSub').textContent = totalAds > 0 ? 'Gasto Ads / Facturación' : 'Sin datos de Ads aún';
 
+  const kpiPctAdsEl = document.getElementById('kpiPctAds');
+  if (kpiPctAdsEl) kpiPctAdsEl.textContent = salesShareNum != null ? salesShareNum.toFixed(1) + '%' : '—';
+  const kpiPctAdsDeltaEl = document.getElementById('kpiPctAdsDelta');
+  if (kpiPctAdsDeltaEl) kpiPctAdsDeltaEl.innerHTML = (salesShareNum != null && prevSalesShareNum != null)
+    ? deltaHtmlPts(salesShareNum - prevSalesShareNum) : '<span style="color:var(--muted);font-size:11px">vs período anterior</span>';
+
+  const kpiRoasEl = document.getElementById('kpiRoas');
+  if (kpiRoasEl) kpiRoasEl.textContent = roasNum != null ? roasNum.toFixed(2) + 'x' : '—';
+  const kpiRoasDeltaEl = document.getElementById('kpiRoasDelta');
+  if (kpiRoasDeltaEl) kpiRoasDeltaEl.innerHTML = (roasNum != null && prevRoasNum != null)
+    ? deltaHtml(((roasNum - prevRoasNum)/prevRoasNum*100).toFixed(1)) : '<span style="color:var(--muted);font-size:11px">vs período anterior</span>';
+
+  // Bloque financiero
   document.getElementById('kpiRecibido').textContent = formatMoney(totalRecibido);
   document.getElementById('kpiRecibidoSub').textContent = 'Neto tras comisiones, envío e impuestos';
+  document.getElementById('kpiRecibidoDelta').innerHTML = deltaHtml(avgCh(changes.importe_recibido));
+
+  const pctRecibidoNum = totalFac > 0 ? (totalRecibido / totalFac * 100) : null;
+  const prevPctRecibidoNum = prevFacTotal > 0 ? (prevRecibido / prevFacTotal * 100) : null;
+  document.getElementById('kpiPctRecibido').textContent = pctRecibidoNum != null ? pctRecibidoNum.toFixed(1) + '%' : (pctRecibido === '—' ? '—' : pctRecibido + '%');
+  document.getElementById('kpiPctRecibidoSub').textContent = 'Sobre facturación bruta';
+  document.getElementById('kpiPctRecibidoDelta').innerHTML = (pctRecibidoNum != null && prevPctRecibidoNum != null)
+    ? deltaHtmlPts(pctRecibidoNum - prevPctRecibidoNum) : '<span style="color:var(--muted);font-size:11px">vs período anterior</span>';
 
   // Utilidad y margen — vienen del backend con CMV calculado
   let cmvTotal = 0, hasCMV = false, utilidadTotal = 0, margenTotal = null;
+  let prevUtilidadTotal = 0, hasPrevUtilidad = false;
   let cmvCubierto = 0, cmvTotalItems = 0;
   connected.forEach(acc => {
     const s = acc.data?.stats;
@@ -2595,6 +2640,7 @@ function updateDashboard() {
       cmvCubierto  += s.cmv_cubierto || 0;
       cmvTotalItems+= s.cmv_total_items || 0;
       utilidadTotal+= s.utilidad || 0;
+      if (s.prev?.utilidad != null) { prevUtilidadTotal += s.prev.utilidad; hasPrevUtilidad = true; }
     }
   });
   if (hasCMV && totalFac > 0) {
@@ -2610,15 +2656,21 @@ function updateDashboard() {
     kpiUtilEl.textContent = hasCMV ? formatMoney(utilidadTotal) : '—';
     kpiUtilEl.style.color = hasCMV ? (utilidadTotal >= 0 ? '#00e676' : '#ff5252') : '';
     if (warnU) warnU.textContent = !hasCMV ? '⚠ sin CMV' : (cmvCubierto < cmvTotalItems ? `⚠ ${cmvTotalItems - cmvCubierto} sin CMV` : '');
+    const uDeltaEl = document.getElementById('kpiUtilidadDelta');
+    if (uDeltaEl) uDeltaEl.innerHTML = (hasCMV && hasPrevUtilidad && prevUtilidadTotal !== 0)
+      ? deltaHtml(((utilidadTotal - prevUtilidadTotal) / Math.abs(prevUtilidadTotal) * 100).toFixed(1))
+      : '<span style="color:var(--muted);font-size:11px">vs período anterior</span>';
   }
   if (kpiMargenEl) {
     kpiMargenEl.textContent = margenTotal != null ? margenTotal + '%' : '—';
     kpiMargenEl.style.color = margenTotal != null ? (parseFloat(margenTotal) >= 20 ? '#00e676' : parseFloat(margenTotal) >= 10 ? '#ff9100' : '#ff5252') : '';
     if (warnM) warnM.textContent = !hasCMV ? '⚠ sin CMV' : (cmvCubierto < cmvTotalItems ? `* parcial` : '');
+    const mDeltaEl = document.getElementById('kpiMargenDelta');
+    const prevMargenNum = hasPrevUtilidad && prevFacTotal > 0 ? (prevUtilidadTotal / prevFacTotal * 100) : null;
+    if (mDeltaEl) mDeltaEl.innerHTML = (margenTotal != null && prevMargenNum != null)
+      ? deltaHtmlPts(parseFloat(margenTotal) - prevMargenNum)
+      : '<span style="color:var(--muted);font-size:11px">vs período anterior</span>';
   }
-
-  document.getElementById('kpiPctRecibido').textContent = pctRecibido === '—' ? '—' : pctRecibido + '%';
-  document.getElementById('kpiPctRecibidoSub').textContent = 'Sobre facturación bruta';
 
   // Reputación — solo la medalla de la primera cuenta
   const firstWithRep = connected.find(acc => acc.data.reputation);
@@ -6521,21 +6573,59 @@ async function loadAds() {
   const cpcNum = totalSpend && totalClicks ? totalSpend / totalClicks : null;
   const convAdsNum = totalClicks && totalUnitsAds ? (totalUnitsAds / totalClicks) * 100 : null;
 
+  // Prev period totals desde datos ya cargados en state.accounts
+  let prevSpendTotal = 0, prevSalesTotal = 0, prevRevTotal = 0;
+  state.accounts.forEach(acc => {
+    if (acc.data?._adsPrevData) {
+      prevSpendTotal += acc.data._adsPrevData.spend || 0;
+      prevSalesTotal += acc.data._adsPrevData.sales || 0;
+    }
+    prevRevTotal += acc.data?.stats?.prev?.total_amount || 0;
+  });
+  const prevTacosNum = prevSpendTotal && prevRevTotal ? (prevSpendTotal / prevRevTotal * 100) : null;
+  const prevSalesShare = prevSalesTotal && prevRevTotal ? (prevSalesTotal / prevRevTotal * 100) : null;
+  const prevRoasNum2 = prevSpendTotal && prevSalesTotal ? (prevSalesTotal / prevSpendTotal) : null;
+
+  function _deltaHtml(val) {
+    if (val === null || val === undefined) return '<span style="color:var(--muted);font-size:11px">vs período anterior</span>';
+    const n = parseFloat(val); const cls = n >= 0 ? 'up' : 'down'; const sign = n >= 0 ? '▲' : '▼';
+    return `<span class="kpi-delta ${cls}">${sign} ${Math.abs(n)}% vs período anterior</span>`;
+  }
+  function _deltaHtmlPts(pts) {
+    if (pts === null || pts === undefined) return '<span style="color:var(--muted);font-size:11px">vs período anterior</span>';
+    const n = parseFloat(pts); const cls = n >= 0 ? 'up' : 'down'; const sign = n >= 0 ? '▲' : '▼';
+    return `<span class="kpi-delta ${cls}">${sign} ${Math.abs(n).toFixed(1)} pts vs período anterior</span>`;
+  }
+
   // Actualizar KPIs de publicidad en el dashboard
   const kpiTacosEl = document.getElementById('kpiTacos');
-  const kpiTacosDeltaEl = document.getElementById('kpiTacosSub');
   if (kpiTacosEl) kpiTacosEl.textContent = tacos;
-  if (kpiTacosDeltaEl) kpiTacosDeltaEl.textContent = 'Gasto Ads / Facturación';
+  const kpiTacosDeltaEl2 = document.getElementById('kpiTacosDelta');
+  if (kpiTacosDeltaEl2) kpiTacosDeltaEl2.innerHTML = (tacosNum != null && prevTacosNum != null) ? _deltaHtmlPts(tacosNum - prevTacosNum) : '<span style="color:var(--muted);font-size:11px">vs período anterior</span>';
+  document.getElementById('kpiTacosSub').textContent = 'Gasto Ads / Facturación';
+
   const kpiAdsSpendEl = document.getElementById('kpiAdsSpend');
   if (kpiAdsSpendEl) kpiAdsSpendEl.textContent = fmt(totalSpend);
+  const kpiAdsSpendDeltaEl2 = document.getElementById('kpiAdsSpendDelta');
+  if (kpiAdsSpendDeltaEl2) kpiAdsSpendDeltaEl2.innerHTML = prevSpendTotal > 0 ? _deltaHtml(((totalSpend - prevSpendTotal)/prevSpendTotal*100).toFixed(1)) : '<span style="color:var(--muted);font-size:11px">vs período anterior</span>';
+
   const kpiAdsSalesEl = document.getElementById('kpiAdsSales');
-  if (kpiAdsSalesEl) { kpiAdsSalesEl.textContent = fmt(totalSales); }
+  if (kpiAdsSalesEl) kpiAdsSalesEl.textContent = fmt(totalSales);
+  const kpiAdsSalesDeltaEl2 = document.getElementById('kpiAdsSalesDelta');
+  if (kpiAdsSalesDeltaEl2) kpiAdsSalesDeltaEl2.innerHTML = prevSalesTotal > 0 ? _deltaHtml(((totalSales - prevSalesTotal)/prevSalesTotal*100).toFixed(1)) : '<span style="color:var(--muted);font-size:11px">vs período anterior</span>';
   const kpiAdsSalesSubEl = document.getElementById('kpiAdsSalesSub');
   if (kpiAdsSalesSubEl) kpiAdsSalesSubEl.textContent = totalUnitsAds > 0 ? totalUnitsAds.toLocaleString('es-AR') + ' unidades' : '';
+
   const kpiPctAdsEl = document.getElementById('kpiPctAds');
   if (kpiPctAdsEl) kpiPctAdsEl.textContent = salesShareNum ? salesShareNum.toFixed(1) + '%' : '—';
+  const kpiPctAdsDeltaEl2 = document.getElementById('kpiPctAdsDelta');
+  if (kpiPctAdsDeltaEl2) kpiPctAdsDeltaEl2.innerHTML = (salesShareNum != null && prevSalesShare != null) ? _deltaHtmlPts(salesShareNum - prevSalesShare) : '<span style="color:var(--muted);font-size:11px">vs período anterior</span>';
+
   const kpiRoasEl = document.getElementById('kpiRoas');
   if (kpiRoasEl) kpiRoasEl.textContent = roas;
+  const kpiRoasDeltaEl2 = document.getElementById('kpiRoasDelta');
+  const roasNumExact = totalSpend && totalSales ? (totalSales / totalSpend) : null;
+  if (kpiRoasDeltaEl2) kpiRoasDeltaEl2.innerHTML = (roasNumExact != null && prevRoasNum2 != null) ? _deltaHtml(((roasNumExact - prevRoasNum2)/prevRoasNum2*100).toFixed(1)) : '<span style="color:var(--muted);font-size:11px">vs período anterior</span>';
 
   // Build KPI cards HTML inline
   const kpiCardsHtml = `
