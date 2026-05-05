@@ -11825,7 +11825,11 @@ async function generarBorradorInforme() {
   badge.textContent = 'Borrador';
   badge.style.display = 'inline-block';
   badge.style.background = '#f59e0b';
-  showToast('✅ Borrador generado');
+  if (data.fuente_pyl === 'sin_datos') {
+    showToast('⚠️ No hay P&L para este período — abrí Rentabilidad y calculalo primero para tener los datos financieros.');
+  } else {
+    showToast('✅ Borrador generado con datos del P&L');
+  }
 }
 
 function renderFormularioInforme(data) {

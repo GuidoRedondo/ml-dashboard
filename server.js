@@ -6188,110 +6188,147 @@ app.get('/api/informe-mensual/generar/:clienteId/:periodo', requireAuth, async (
     const periodoAnt = periodoAnterior(periodo);
     const ultimos6 = ultimos6Periodos(periodo);
 
-    // Info del cliente
     const clienteRes = await pool.query('SELECT id, name FROM clients WHERE id=$1', [clienteId]);
     if (!clienteRes.rows.length) return res.status(404).json({ error: 'Cliente no encontrado' });
     const cliente = clienteRes.rows[0];
 
-    // Buscar en diagnostico_mensual para el periodo actual y anterior
-    // La columna mes es DATE, el periodo es YYYY-MM → buscar el primer día del mes
-    const diagActual = await pool.query(
-      `SELECT * FROM diagnostico_mensual WHERE client_id=$1 AND mes = $2::date`,
-      [clienteId, periodo + '-01']
-    );
-    const diagAnterior = await pool.query(
-      `SELECT * FROM diagnostico_mensual WHERE client_id=$1 AND mes = $2::date`,
-      [clienteId, periodoAnt + '-01']
-    );
+    // P&L snapshots (guardados por /api/reporte/pyl)
+    const [repAct, repAnt] = await Promise.all([
+      pool.query(`SELECT data FROM reporte_financiero WHERE client_id=$1 AND mes=$2::date`, [clienteId, periodo + '-01']),
+      pool.query(`SELECT data FROM reporte_financiero WHERE client_id=$1 AND mes=$2::date`, [clienteId, periodoAnt + '-01']),
+    ]);
+    const pAct = repAct.rows[0]?.data || null;
+    const pAnt = repAnt.rows[0]?.data || null;
 
-    // Buscar en reporte_financiero
-    const reporteActual = await pool.query(
-      `SELECT data FROM reporte_financiero WHERE client_id=$1 AND mes = $2::date`,
-      [clienteId, periodo + '-01']
-    );
-    const reporteAnterior = await pool.query(
-      `SELECT data FROM reporte_financiero WHERE client_id=$1 AND mes = $2::date`,
-      [clienteId, periodoAnt + '-01']
-    );
+    // diagnostico_mensual (publicidad + métricas de repudiación)
+    const [diagAct, diagAnt] = await Promise.all([
+      pool.query(`SELECT * FROM diagnostico_mensual WHERE client_id=$1 AND mes=$2::date`, [clienteId, periodo + '-01']),
+      pool.query(`SELECT * FROM diagnostico_mensual WHERE client_id=$1 AND mes=$2::date`, [clienteId, periodoAnt + '-01']),
+    ]);
+    const dAct = diagAct.rows[0] || {};
+    const dAnt = diagAnt.rows[0] || {};
 
-    // Buscar gastos fijos del mes actual
-    const gfRes = await pool.query(
-      `SELECT SUM(monto) as total FROM gastos_fijos WHERE client_id=$1 AND mes=$2::date`,
-      [clienteId, periodo + '-01']
-    );
-    const gastosFijosTotal = parseFloat(gfRes.rows[0]?.total) || 0;
+    // Helper: extraer número de un campo del P&L snapshot
+    const pn = (obj, path, fallback = 0) => {
+      if (!obj) return fallback;
+      const val = path.split('.').reduce((o, k) => (o && o[k] !== undefined ? o[k] : undefined), obj);
+      return parseFloat(val) || fallback;
+    };
 
-    // Extraer datos financieros del diagnostico_mensual o reporte_financiero
-    const dAct = diagActual.rows[0] || {};
-    const dAnt = diagAnterior.rows[0] || {};
-    const rAct = reporteActual.rows[0]?.data || {};
-    const rAnt = reporteAnterior.rows[0]?.data || {};
+    // ── Campos financieros ────────────────────────────────────────────────────
+    const facAct  = pn(pAct, 'ingresos.facturacion');
+    const facAnt  = pn(pAnt, 'ingresos.facturacion');
+    const envAct  = pn(pAct, 'ingresos.envio_comprador');
+    const envAnt  = pn(pAnt, 'ingresos.envio_comprador');
+    const totAct  = pn(pAct, 'ingresos.total');
+    const totAnt  = pn(pAnt, 'ingresos.total');
+    const comAct  = pn(pAct, 'egresos_ml.comision');
+    const comAnt  = pn(pAnt, 'egresos_ml.comision');
+    const remAct  = pn(pAct, 'egresos_ml.reembolsos');
+    const remAnt  = pn(pAnt, 'egresos_ml.reembolsos');
+    const ivaAct  = pn(pAct, 'egresos_ml.iva_neto');
+    const ivaAnt  = pn(pAnt, 'egresos_ml.iva_neto');
+    const fullAct = pn(pAct, 'egresos_ml.envio_vendedor');
+    const fullAnt = pn(pAnt, 'egresos_ml.envio_vendedor');
+    const pubAct  = pn(pAct, 'egresos_ml.publicidad',  parseFloat(dAct.pads_inversion) || 0);
+    const pubAnt  = pn(pAnt, 'egresos_ml.publicidad',  parseFloat(dAnt.pads_inversion) || 0);
+    const resEnvAct = envAct - fullAct;
+    const resEnvAnt = envAnt - fullAnt;
+    const rnmlAct = pn(pAct, 'resultado_neto_ml');
+    const rnmlAnt = pn(pAnt, 'resultado_neto_ml');
+    const cmvAct  = pn(pAct, 'cmv.total');
+    const cmvAnt  = pn(pAnt, 'cmv.total');
+    const ugfAct  = pn(pAct, 'utilidad_antes_gf');
+    const ugfAnt  = pn(pAnt, 'utilidad_antes_gf');
+    const gfAct   = pn(pAct, 'gastos_fijos.total');
+    const gfAnt   = pn(pAnt, 'gastos_fijos.total');
+    const ufAct   = pn(pAct, 'utilidad_final');
+    const ufAnt   = pn(pAnt, 'utilidad_final');
+    const mfAct   = pn(pAct, 'margenes.margen');
+    const mfAnt   = pn(pAnt, 'margenes.margen');
+    const mrAct   = pn(pAct, 'margenes.pct_recibido');
+    const mrAnt   = pn(pAnt, 'margenes.pct_recibido');
 
-    // Facturación
-    const facAct = parseFloat(dAct.facturacion) || parseFloat(rAct.facturacion) || 0;
-    const facAnt = parseFloat(dAnt.facturacion) || parseFloat(rAnt.facturacion) || 0;
+    const varPct = (act, ant) => ant !== 0 ? parseFloat(((act - ant) / Math.abs(ant) * 100).toFixed(1)) : 0;
 
-    // Publicidad
-    const pubInvAct = parseFloat(dAct.pads_inversion) || 0;
-    const pubInvAnt = parseFloat(dAnt.pads_inversion) || 0;
-    const pubAcosAct = parseFloat(dAct.pads_acos) || 0;
-    const pubTacosAct = parseFloat(dAct.pads_tacos) || 0;
-    const pubRoasAct = parseFloat(dAct.pads_roas) || 0;
+    // ── Publicidad (prefiere diagnostico_mensual) ─────────────────────────────
+    const pubInvAct  = parseFloat(dAct.pads_inversion) || pubAct;
+    const pubInvAnt  = parseFloat(dAnt.pads_inversion) || pubAnt;
+    const pubAcosAct = parseFloat(dAct.pads_acos)  || 0;
+    const pubTacosAct= parseFloat(dAct.pads_tacos) || 0;
+    const pubRoasAct = parseFloat(dAct.pads_roas)  || 0;
 
-    // Evolución 6 meses
+    // ── Evolución 6m — utilidad_final desde reporte_financiero ───────────────
     const evol6Res = await pool.query(
-      `SELECT mes, facturacion FROM diagnostico_mensual WHERE client_id=$1 AND mes = ANY($2::date[]) ORDER BY mes ASC`,
+      `SELECT mes, data->>'utilidad_final' AS utilidad_final
+       FROM reporte_financiero WHERE client_id=$1 AND mes = ANY($2::date[]) ORDER BY mes ASC`,
       [clienteId, ultimos6.map(p => p + '-01')]
     );
     const evolMap = {};
     evol6Res.rows.forEach(r => {
       const m = r.mes instanceof Date ? r.mes.toISOString().slice(0,7) : String(r.mes).slice(0,7);
-      evolMap[m] = parseFloat(r.facturacion) || 0;
+      evolMap[m] = parseFloat(r.utilidad_final) || 0;
     });
     const evolucion6m = ultimos6.map(p => ({ mes: p, utilidad: evolMap[p] || 0 }));
 
-    // Estructura completa de respuesta
+    // ── Productos — clasificar desde items_detalle del P&L ───────────────────
+    const itemsDetalle = (pAct?.items_detalle || []).filter(i => i.revenue > 0);
+    const escalables = [], sosten = [], drenadores = [];
+    itemsDetalle.forEach(item => {
+      const margen = item.cmv != null && item.revenue > 0
+        ? parseFloat(((item.revenue - item.cmv) / item.revenue * 100).toFixed(1))
+        : null;
+      const entry = { sku: item.mla_id || '', titulo: item.title || '', facturacion: Math.round(item.revenue), margen_pct: margen ?? 0 };
+      if (margen === null) { sosten.push({ ...entry, margen_pct: 0 }); }
+      else if (margen < 15) { drenadores.push({ ...entry, accion_sugerida: '' }); }
+      else if (margen >= 30) { escalables.push({ ...entry, accion_sugerida: '' }); }
+      else { sosten.push(entry); }
+    });
+    // Top 5 por facturación desc en cada categoría
+    const top5 = arr => arr.sort((a,b) => b.facturacion - a.facturacion).slice(0,5);
+
     const data = {
       cliente: { id: cliente.id, nombre: cliente.name, logo: null },
       periodo,
       periodo_anterior: periodoAnt,
+      fuente_pyl: pAct ? 'reporte_financiero' : 'sin_datos',
       resumen_ejecutivo: {
         facturacion_actual: facAct,
         facturacion_anterior: facAnt,
-        facturacion_var_pct: facAnt !== 0 ? parseFloat(((facAct - facAnt) / Math.abs(facAnt) * 100).toFixed(1)) : 0,
-        utilidad_final_actual: 0,
-        utilidad_final_anterior: 0,
-        utilidad_final_var_pct: 0,
-        margen_actual_pct: 0,
-        margen_anterior_pct: 0,
-        margen_var_pts: 0,
+        facturacion_var_pct: varPct(facAct, facAnt),
+        utilidad_final_actual: ufAct,
+        utilidad_final_anterior: ufAnt,
+        utilidad_final_var_pct: varPct(ufAct, ufAnt),
+        margen_actual_pct: mfAct,
+        margen_anterior_pct: mfAnt,
+        margen_var_pts: parseFloat((mfAct - mfAnt).toFixed(1)),
         highlights: ['', '', '']
       },
       performance_financiera: {
-        ingresos_productos: { actual: facAct, anterior: facAnt },
-        ingresos_envio: { actual: 0, anterior: 0 },
-        total_ingresos: { actual: facAct, anterior: facAnt },
-        comision: { actual: 0, anterior: 0 },
-        reembolso: { actual: 0, anterior: 0 },
-        impuestos: { actual: 0, anterior: 0 },
-        full: { actual: 0, anterior: 0 },
-        publicidad: { actual: pubInvAct, anterior: pubInvAnt },
-        mi_pagina: { actual: 0, anterior: 0 },
-        resultado_envios: { actual: 0, anterior: 0 },
-        resultado_neto_ml: { actual: 0, anterior: 0 },
-        cmv: { actual: 0, anterior: 0 },
-        utilidad_antes_gf: { actual: 0, anterior: 0 },
-        gastos_fijos: { actual: gastosFijosTotal, anterior: 0 },
-        utilidad_final: { actual: 0, anterior: 0 },
-        margen_s_fact_pct: { actual: 0, anterior: 0 },
-        margen_s_resultado_ml_pct: { actual: 0, anterior: 0 },
+        ingresos_productos:     { actual: facAct,   anterior: facAnt },
+        ingresos_envio:         { actual: envAct,   anterior: envAnt },
+        total_ingresos:         { actual: totAct,   anterior: totAnt },
+        comision:               { actual: comAct,   anterior: comAnt },
+        reembolso:              { actual: remAct,   anterior: remAnt },
+        impuestos:              { actual: ivaAct,   anterior: ivaAnt },
+        full:                   { actual: fullAct,  anterior: fullAnt },
+        publicidad:             { actual: pubAct,   anterior: pubAnt },
+        mi_pagina:              { actual: 0,        anterior: 0 },
+        resultado_envios:       { actual: resEnvAct,anterior: resEnvAnt },
+        resultado_neto_ml:      { actual: rnmlAct,  anterior: rnmlAnt },
+        cmv:                    { actual: cmvAct,   anterior: cmvAnt },
+        utilidad_antes_gf:      { actual: ugfAct,   anterior: ugfAnt },
+        gastos_fijos:           { actual: gfAct,    anterior: gfAnt },
+        utilidad_final:         { actual: ufAct,    anterior: ufAnt },
+        margen_s_fact_pct:      { actual: mfAct,    anterior: mfAnt },
+        margen_s_resultado_ml_pct: { actual: mrAct, anterior: mrAnt },
         evolucion_6m: evolucion6m,
         comentario: ''
       },
       productos: {
-        escalables: [{ sku: '', titulo: '', facturacion: 0, margen_pct: 0, accion_sugerida: '' }],
-        sosten: [{ sku: '', titulo: '', facturacion: 0, margen_pct: 0 }],
-        drenadores: [{ sku: '', titulo: '', facturacion: 0, margen_pct: 0, accion_sugerida: '' }],
+        escalables: top5(escalables).length ? top5(escalables) : [{ sku: '', titulo: '', facturacion: 0, margen_pct: 0, accion_sugerida: '' }],
+        sosten:     top5(sosten).length     ? top5(sosten)     : [{ sku: '', titulo: '', facturacion: 0, margen_pct: 0 }],
+        drenadores: top5(drenadores).length ? top5(drenadores) : [{ sku: '', titulo: '', facturacion: 0, margen_pct: 0, accion_sugerida: '' }],
         comentario: ''
       },
       publicidad: {
