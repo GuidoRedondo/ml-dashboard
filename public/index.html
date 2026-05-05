@@ -6194,9 +6194,9 @@ function applyPermissions() {
     });
   }
 
-  // Centro de Inteligencia y Motor de Publicidad: solo admins y consultores
+  // Centro de Inteligencia, Motor de Publicidad e Informe Mensual: solo admins y consultores
   const soloConsultores = role === 'admin' || role === 'consultant' || role === 'colaborador';
-  ['alertas','decisiones-publi'].forEach(p => {
+  ['alertas','decisiones-publi','informe-mensual'].forEach(p => {
     const el = document.querySelector(`[data-page="${p}"]`);
     if (el) el.style.display = soloConsultores ? '' : 'none';
   });
