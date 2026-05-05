@@ -298,6 +298,20 @@ async function initDB() {
     EXCEPTION WHEN OTHERS THEN NULL; END $$;
   `);
 
+  // Tabla de informes mensuales
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS informes_mensuales (
+      id SERIAL PRIMARY KEY,
+      cliente_id INTEGER NOT NULL,
+      periodo VARCHAR(7) NOT NULL,
+      data JSONB NOT NULL,
+      estado VARCHAR(20) DEFAULT 'borrador',
+      created_at TIMESTAMP DEFAULT NOW(),
+      updated_at TIMESTAMP DEFAULT NOW(),
+      UNIQUE(cliente_id, periodo)
+    );
+  `);
+
   // Create default admin if not exists (password: admin123 - change after first login)
   const hash = crypto.createHash('sha256').update('admin123').digest('hex');
   await pool.query(`
@@ -6127,6 +6141,214 @@ app.get('/api/admin/tacos-report', requireAuth, requireAdmin, async (req, res) =
   } catch(e) {
     res.status(500).json({ error: e.message });
   }
+});
+
+// ── INFORME MENSUAL ───────────────────────────────────────────────────────────
+
+// Calcular periodo_anterior restando 1 mes
+function periodoAnterior(periodo) {
+  const [anio, mes] = periodo.split('-').map(Number);
+  const d = new Date(anio, mes - 1, 1);
+  d.setMonth(d.getMonth() - 1);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  return `${y}-${m}`;
+}
+
+// Últimos 6 periodos antes del dado (inclusive)
+function ultimos6Periodos(periodo) {
+  const periodos = [];
+  const [anio, mes] = periodo.split('-').map(Number);
+  for (let i = 5; i >= 0; i--) {
+    const d = new Date(anio, mes - 1 - i, 1);
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    periodos.push(`${y}-${m}`);
+  }
+  return periodos;
+}
+
+// GET /api/informe-mensual/listar/:clienteId — ANTES de /:id para evitar conflicto de routing
+app.get('/api/informe-mensual/listar/:clienteId', requireAuth, async (req, res) => {
+  try {
+    const clienteId = parseInt(req.params.clienteId);
+    const r = await pool.query(
+      `SELECT id, periodo, estado, updated_at FROM informes_mensuales WHERE cliente_id=$1 ORDER BY periodo DESC`,
+      [clienteId]
+    );
+    res.json(r.rows);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// GET /api/informe-mensual/generar/:clienteId/:periodo
+app.get('/api/informe-mensual/generar/:clienteId/:periodo', requireAuth, async (req, res) => {
+  try {
+    const clienteId = parseInt(req.params.clienteId);
+    const periodo = req.params.periodo; // YYYY-MM
+    const periodoAnt = periodoAnterior(periodo);
+    const ultimos6 = ultimos6Periodos(periodo);
+
+    // Info del cliente
+    const clienteRes = await pool.query('SELECT id, name FROM clients WHERE id=$1', [clienteId]);
+    if (!clienteRes.rows.length) return res.status(404).json({ error: 'Cliente no encontrado' });
+    const cliente = clienteRes.rows[0];
+
+    // Buscar en diagnostico_mensual para el periodo actual y anterior
+    // La columna mes es DATE, el periodo es YYYY-MM → buscar el primer día del mes
+    const diagActual = await pool.query(
+      `SELECT * FROM diagnostico_mensual WHERE client_id=$1 AND mes = $2::date`,
+      [clienteId, periodo + '-01']
+    );
+    const diagAnterior = await pool.query(
+      `SELECT * FROM diagnostico_mensual WHERE client_id=$1 AND mes = $2::date`,
+      [clienteId, periodoAnt + '-01']
+    );
+
+    // Buscar en reporte_financiero
+    const reporteActual = await pool.query(
+      `SELECT data FROM reporte_financiero WHERE client_id=$1 AND mes = $2::date`,
+      [clienteId, periodo + '-01']
+    );
+    const reporteAnterior = await pool.query(
+      `SELECT data FROM reporte_financiero WHERE client_id=$1 AND mes = $2::date`,
+      [clienteId, periodoAnt + '-01']
+    );
+
+    // Buscar gastos fijos del mes actual
+    const gfRes = await pool.query(
+      `SELECT SUM(monto) as total FROM gastos_fijos WHERE client_id=$1 AND mes=$2::date`,
+      [clienteId, periodo + '-01']
+    );
+    const gastosFijosTotal = parseFloat(gfRes.rows[0]?.total) || 0;
+
+    // Extraer datos financieros del diagnostico_mensual o reporte_financiero
+    const dAct = diagActual.rows[0] || {};
+    const dAnt = diagAnterior.rows[0] || {};
+    const rAct = reporteActual.rows[0]?.data || {};
+    const rAnt = reporteAnterior.rows[0]?.data || {};
+
+    // Facturación
+    const facAct = parseFloat(dAct.facturacion) || parseFloat(rAct.facturacion) || 0;
+    const facAnt = parseFloat(dAnt.facturacion) || parseFloat(rAnt.facturacion) || 0;
+
+    // Publicidad
+    const pubInvAct = parseFloat(dAct.pads_inversion) || 0;
+    const pubInvAnt = parseFloat(dAnt.pads_inversion) || 0;
+    const pubAcosAct = parseFloat(dAct.pads_acos) || 0;
+    const pubTacosAct = parseFloat(dAct.pads_tacos) || 0;
+    const pubRoasAct = parseFloat(dAct.pads_roas) || 0;
+
+    // Evolución 6 meses
+    const evol6Res = await pool.query(
+      `SELECT mes, facturacion FROM diagnostico_mensual WHERE client_id=$1 AND mes = ANY($2::date[]) ORDER BY mes ASC`,
+      [clienteId, ultimos6.map(p => p + '-01')]
+    );
+    const evolMap = {};
+    evol6Res.rows.forEach(r => {
+      const m = r.mes instanceof Date ? r.mes.toISOString().slice(0,7) : String(r.mes).slice(0,7);
+      evolMap[m] = parseFloat(r.facturacion) || 0;
+    });
+    const evolucion6m = ultimos6.map(p => ({ mes: p, utilidad: evolMap[p] || 0 }));
+
+    // Estructura completa de respuesta
+    const data = {
+      cliente: { id: cliente.id, nombre: cliente.name, logo: null },
+      periodo,
+      periodo_anterior: periodoAnt,
+      resumen_ejecutivo: {
+        facturacion_actual: facAct,
+        facturacion_anterior: facAnt,
+        facturacion_var_pct: facAnt !== 0 ? parseFloat(((facAct - facAnt) / Math.abs(facAnt) * 100).toFixed(1)) : 0,
+        utilidad_final_actual: 0,
+        utilidad_final_anterior: 0,
+        utilidad_final_var_pct: 0,
+        margen_actual_pct: 0,
+        margen_anterior_pct: 0,
+        margen_var_pts: 0,
+        highlights: ['', '', '']
+      },
+      performance_financiera: {
+        ingresos_productos: { actual: facAct, anterior: facAnt },
+        ingresos_envio: { actual: 0, anterior: 0 },
+        total_ingresos: { actual: facAct, anterior: facAnt },
+        comision: { actual: 0, anterior: 0 },
+        reembolso: { actual: 0, anterior: 0 },
+        impuestos: { actual: 0, anterior: 0 },
+        full: { actual: 0, anterior: 0 },
+        publicidad: { actual: pubInvAct, anterior: pubInvAnt },
+        mi_pagina: { actual: 0, anterior: 0 },
+        resultado_envios: { actual: 0, anterior: 0 },
+        resultado_neto_ml: { actual: 0, anterior: 0 },
+        cmv: { actual: 0, anterior: 0 },
+        utilidad_antes_gf: { actual: 0, anterior: 0 },
+        gastos_fijos: { actual: gastosFijosTotal, anterior: 0 },
+        utilidad_final: { actual: 0, anterior: 0 },
+        margen_s_fact_pct: { actual: 0, anterior: 0 },
+        margen_s_resultado_ml_pct: { actual: 0, anterior: 0 },
+        evolucion_6m: evolucion6m,
+        comentario: ''
+      },
+      productos: {
+        escalables: [{ sku: '', titulo: '', facturacion: 0, margen_pct: 0, accion_sugerida: '' }],
+        sosten: [{ sku: '', titulo: '', facturacion: 0, margen_pct: 0 }],
+        drenadores: [{ sku: '', titulo: '', facturacion: 0, margen_pct: 0, accion_sugerida: '' }],
+        comentario: ''
+      },
+      publicidad: {
+        inversion_total: pubInvAct,
+        acos_pct: pubAcosAct,
+        tacos_pct: pubTacosAct,
+        roas: pubRoasAct,
+        productos_acos_alto: [{ sku: '', titulo: '', acos_pct: 0, margen_pct: 0 }],
+        comentario: ''
+      },
+      logistica: {
+        pct_full: 0,
+        pct_flex: 0,
+        pct_colecta: 0,
+        costo_logistico_promedio: 0,
+        candidatos_entrar_full: [{ sku: '', titulo: '' }],
+        candidatos_salir_full: [{ sku: '', titulo: '' }],
+        comentario: ''
+      },
+      comentario_cierre: ''
+    };
+
+    res.json(data);
+  } catch(e) { console.error('[INFORME-GENERAR]', e.message); res.status(500).json({ error: e.message }); }
+});
+
+// POST /api/informe-mensual/guardar
+app.post('/api/informe-mensual/guardar', requireAuth, async (req, res) => {
+  try {
+    const { cliente_id, periodo, data, estado } = req.body;
+    if (!cliente_id || !periodo || !data) return res.status(400).json({ error: 'Faltan campos requeridos' });
+    const r = await pool.query(
+      `INSERT INTO informes_mensuales (cliente_id, periodo, data, estado)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (cliente_id, periodo) DO UPDATE SET data=$3, estado=$4, updated_at=NOW()
+       RETURNING *`,
+      [cliente_id, periodo, JSON.stringify(data), estado || 'borrador']
+    );
+    res.json(r.rows[0]);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// GET /api/informe-mensual/:id
+app.get('/api/informe-mensual/:id', requireAuth, async (req, res) => {
+  try {
+    const r = await pool.query('SELECT * FROM informes_mensuales WHERE id=$1', [req.params.id]);
+    if (!r.rows.length) return res.status(404).json({ error: 'Informe no encontrado' });
+    res.json(r.rows[0]);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// DELETE /api/informe-mensual/:id
+app.delete('/api/informe-mensual/:id', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    await pool.query('DELETE FROM informes_mensuales WHERE id=$1', [req.params.id]);
+    res.json({ ok: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
 initDB().then(() => {

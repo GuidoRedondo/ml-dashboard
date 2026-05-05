@@ -493,6 +493,21 @@ tbody td {
   font-family: monospace; resize: none; box-sizing: border-box; height: 80px; outline: none;
 }
 .modal-btns { display: flex; gap: 10px; margin-top: 14px; flex-wrap: wrap; }
+
+/* ── INFORME MENSUAL — PRINT ── */
+@media print {
+  body > *:not(#modal-informe-preview) { display: none !important; }
+  #modal-informe-preview {
+    position: static !important;
+    display: block !important;
+    background: white !important;
+    padding: 0 !important;
+    overflow: visible !important;
+  }
+  .modal-informe-controls { display: none !important; }
+  #informe-print-content { display: block !important; }
+  * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+}
 </style>
 </head>
 <body>
@@ -581,6 +596,9 @@ tbody td {
       </div>
       <div class="nav-item" data-page="reporte" onclick="showPage('reporte',this);initReporte()">
         <span class="nav-icon">📊</span> Reporte Financiero
+      </div>
+      <div class="nav-item" data-page="informe-mensual" onclick="showPage('informe-mensual',this);cargarSectionInformeMensual();initPFTabla()">
+        <span class="nav-icon">📄</span> Informe Mensual
       </div>
 
       <div style="height:1px;background:var(--border);margin:12px 0"></div>
@@ -1408,6 +1426,270 @@ tbody td {
 
       <div id="dp-content">
         <div style="color:var(--muted);text-align:center;padding:40px">Hacé clic en Actualizar para cargar las decisiones</div>
+      </div>
+    </div>
+
+    <!-- INFORME MENSUAL -->
+    <div class="page" id="page-informe-mensual">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px;flex-wrap:wrap">
+        <h2 style="margin:0;font-family:var(--font-b);flex:1">📄 Informe Mensual de Cliente</h2>
+        <span id="informe-estado-badge" style="display:none;background:#f59e0b;color:#fff;border-radius:10px;padding:2px 10px;font-size:12px;font-weight:700">Borrador</span>
+      </div>
+
+      <!-- Controles -->
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:20px;margin-bottom:16px;box-shadow:var(--shadow)">
+        <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center">
+          <select id="informe-cliente-select" style="min-width:200px;padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px;font-family:var(--font)">
+            <option value="">Seleccionar cliente...</option>
+          </select>
+          <select id="informe-mes-select" style="padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px;font-family:var(--font)">
+            <option value="01">Enero</option><option value="02">Febrero</option><option value="03">Marzo</option>
+            <option value="04">Abril</option><option value="05">Mayo</option><option value="06">Junio</option>
+            <option value="07">Julio</option><option value="08">Agosto</option><option value="09">Septiembre</option>
+            <option value="10">Octubre</option><option value="11">Noviembre</option><option value="12">Diciembre</option>
+          </select>
+          <select id="informe-anio-select" style="padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px;font-family:var(--font)">
+            <option value="2024">2024</option><option value="2025">2025</option><option value="2026">2026</option>
+          </select>
+          <button class="sync-btn" style="background:var(--accent);color:var(--accent-text);border:none;font-weight:700" onclick="generarBorradorInforme()">⚡ Generar borrador</button>
+          <button class="sync-btn" onclick="cargarInformeExistente()">📂 Cargar existente</button>
+        </div>
+        <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">
+          <button class="sync-btn" onclick="guardarInforme('borrador')">💾 Guardar borrador</button>
+          <button class="sync-btn" style="background:#16a34a;color:#fff;border:none;font-weight:700" onclick="guardarInforme('finalizado')">✅ Marcar como finalizado</button>
+          <button class="sync-btn" style="background:#6366f1;color:#fff;border:none" onclick="abrirVistaPreviaInforme()">👁️ Vista previa / PDF</button>
+        </div>
+      </div>
+
+      <!-- Empty state -->
+      <div id="informe-empty-state" style="text-align:center;padding:60px;color:var(--muted);background:var(--surface);border-radius:14px;border:1px solid var(--border)">
+        <div style="font-size:48px;margin-bottom:16px">📄</div>
+        <h3 style="font-family:var(--font-b);color:var(--text)">Generá o cargá un informe</h3>
+        <p style="margin-top:8px;font-size:13px">Seleccioná cliente y período, luego hacé clic en "Generar borrador"</p>
+      </div>
+
+      <!-- Formulario -->
+      <div id="informe-form-container" style="display:none">
+
+        <!-- SECCIÓN 1: Resumen Ejecutivo -->
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:20px;margin-bottom:16px;box-shadow:var(--shadow)">
+          <div style="display:flex;justify-content:space-between;align-items:center;cursor:pointer" onclick="toggleSection('informe-sec-resumen')">
+            <h3 style="margin:0;font-family:var(--font-b)">1. Resumen Ejecutivo</h3>
+            <span id="informe-sec-resumen-icon" style="font-size:16px;color:var(--muted)">▼</span>
+          </div>
+          <div id="informe-sec-resumen">
+            <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-top:16px">
+              <div style="background:var(--surface2);border:2px solid var(--border);border-radius:12px;padding:16px">
+                <div style="font-weight:700;margin-bottom:8px;font-size:13px">Facturación</div>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+                  <div><label style="font-size:10px;color:var(--muted);display:block;margin-bottom:3px">Actual</label><input type="number" id="inf-fac-actual" value="0" oninput="actualizarDeltas()" style="width:100%;padding:6px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px;font-family:var(--font)"></div>
+                  <div><label style="font-size:10px;color:var(--muted);display:block;margin-bottom:3px">Anterior</label><input type="number" id="inf-fac-anterior" value="0" oninput="actualizarDeltas()" style="width:100%;padding:6px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px;font-family:var(--font)"></div>
+                </div>
+                <div style="margin-top:8px;font-size:13px;font-weight:700;color:var(--text)">Δ: <span id="inf-fac-delta">0%</span></div>
+              </div>
+              <div style="background:var(--surface2);border:2px solid var(--border);border-radius:12px;padding:16px">
+                <div style="font-weight:700;margin-bottom:8px;font-size:13px">Utilidad Final</div>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+                  <div><label style="font-size:10px;color:var(--muted);display:block;margin-bottom:3px">Actual</label><input type="number" id="inf-util-actual" value="0" oninput="actualizarDeltas()" style="width:100%;padding:6px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px;font-family:var(--font)"></div>
+                  <div><label style="font-size:10px;color:var(--muted);display:block;margin-bottom:3px">Anterior</label><input type="number" id="inf-util-anterior" value="0" oninput="actualizarDeltas()" style="width:100%;padding:6px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px;font-family:var(--font)"></div>
+                </div>
+                <div style="margin-top:8px;font-size:13px;font-weight:700;color:var(--text)">Δ: <span id="inf-util-delta">0%</span></div>
+              </div>
+              <div style="background:var(--surface2);border:2px solid var(--border);border-radius:12px;padding:16px">
+                <div style="font-weight:700;margin-bottom:8px;font-size:13px">Margen %</div>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+                  <div><label style="font-size:10px;color:var(--muted);display:block;margin-bottom:3px">Actual %</label><input type="number" id="inf-margen-actual" value="0" step="0.1" oninput="actualizarDeltas()" style="width:100%;padding:6px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px;font-family:var(--font)"></div>
+                  <div><label style="font-size:10px;color:var(--muted);display:block;margin-bottom:3px">Anterior %</label><input type="number" id="inf-margen-anterior" value="0" step="0.1" oninput="actualizarDeltas()" style="width:100%;padding:6px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px;font-family:var(--font)"></div>
+                </div>
+                <div style="margin-top:8px;font-size:13px;font-weight:700;color:var(--text)">Δ: <span id="inf-margen-delta">0 pts</span></div>
+              </div>
+            </div>
+            <div style="margin-top:16px">
+              <label style="font-weight:700;display:block;margin-bottom:8px;font-size:13px">Highlights del mes</label>
+              <div style="display:flex;flex-direction:column;gap:8px">
+                <input type="text" id="inf-highlight-0" placeholder="Highlight 1..." style="width:100%;padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px;font-family:var(--font)">
+                <input type="text" id="inf-highlight-1" placeholder="Highlight 2..." style="width:100%;padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px;font-family:var(--font)">
+                <input type="text" id="inf-highlight-2" placeholder="Highlight 3..." style="width:100%;padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px;font-family:var(--font)">
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- SECCIÓN 2: Performance Financiera -->
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:20px;margin-bottom:16px;box-shadow:var(--shadow)">
+          <div style="display:flex;justify-content:space-between;align-items:center;cursor:pointer" onclick="toggleSection('informe-sec-financiera')">
+            <h3 style="margin:0;font-family:var(--font-b)">2. Performance Financiera</h3>
+            <span id="informe-sec-financiera-icon" style="font-size:16px;color:var(--muted)">▼</span>
+          </div>
+          <div id="informe-sec-financiera">
+            <div style="overflow-x:auto;margin-top:16px">
+              <table style="width:100%;border-collapse:collapse;font-size:13px">
+                <thead><tr style="background:#292929;color:#fff952">
+                  <th style="padding:8px;text-align:left;font-size:11px">Concepto</th>
+                  <th style="padding:8px;text-align:right;font-size:11px">Actual</th>
+                  <th style="padding:8px;text-align:right;font-size:11px">Anterior</th>
+                  <th style="padding:8px;text-align:right;font-size:11px">Δ%</th>
+                </tr></thead>
+                <tbody id="pf-tabla-body"></tbody>
+              </table>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px">
+              <div><label style="font-size:11px;color:var(--muted);display:block;margin-bottom:3px">Margen s/ Fact. Actual %</label><input type="number" id="pf-margen-fact-actual" value="0" step="0.1" style="width:100%;padding:6px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px;font-family:var(--font)"></div>
+              <div><label style="font-size:11px;color:var(--muted);display:block;margin-bottom:3px">Margen s/ Fact. Anterior %</label><input type="number" id="pf-margen-fact-anterior" value="0" step="0.1" style="width:100%;padding:6px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px;font-family:var(--font)"></div>
+              <div><label style="font-size:11px;color:var(--muted);display:block;margin-bottom:3px">Margen s/ Res. ML Actual %</label><input type="number" id="pf-margen-res-actual" value="0" step="0.1" style="width:100%;padding:6px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px;font-family:var(--font)"></div>
+              <div><label style="font-size:11px;color:var(--muted);display:block;margin-bottom:3px">Margen s/ Res. ML Anterior %</label><input type="number" id="pf-margen-res-anterior" value="0" step="0.1" style="width:100%;padding:6px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px;font-family:var(--font)"></div>
+            </div>
+            <div style="margin-top:16px">
+              <label style="font-weight:700;display:block;margin-bottom:8px;font-size:13px">Evolución Utilidad Final — últimos 6 meses</label>
+              <svg id="evol-grafico-svg" viewBox="0 0 400 120" style="width:100%;border:1px solid var(--border);background:var(--surface2);border-radius:8px;margin-bottom:8px"></svg>
+              <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:4px">
+                <div><input type="text" id="evol-mes-0" placeholder="YYYY-MM" style="width:100%;font-size:10px;padding:3px 5px;border-radius:4px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-family:var(--font)"><input type="number" id="evol-val-0" value="0" oninput="actualizarGraficoEvolucion()" style="width:100%;font-size:11px;padding:3px 5px;border-radius:4px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-family:var(--font);margin-top:3px"></div>
+                <div><input type="text" id="evol-mes-1" placeholder="YYYY-MM" style="width:100%;font-size:10px;padding:3px 5px;border-radius:4px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-family:var(--font)"><input type="number" id="evol-val-1" value="0" oninput="actualizarGraficoEvolucion()" style="width:100%;font-size:11px;padding:3px 5px;border-radius:4px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-family:var(--font);margin-top:3px"></div>
+                <div><input type="text" id="evol-mes-2" placeholder="YYYY-MM" style="width:100%;font-size:10px;padding:3px 5px;border-radius:4px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-family:var(--font)"><input type="number" id="evol-val-2" value="0" oninput="actualizarGraficoEvolucion()" style="width:100%;font-size:11px;padding:3px 5px;border-radius:4px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-family:var(--font);margin-top:3px"></div>
+                <div><input type="text" id="evol-mes-3" placeholder="YYYY-MM" style="width:100%;font-size:10px;padding:3px 5px;border-radius:4px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-family:var(--font)"><input type="number" id="evol-val-3" value="0" oninput="actualizarGraficoEvolucion()" style="width:100%;font-size:11px;padding:3px 5px;border-radius:4px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-family:var(--font);margin-top:3px"></div>
+                <div><input type="text" id="evol-mes-4" placeholder="YYYY-MM" style="width:100%;font-size:10px;padding:3px 5px;border-radius:4px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-family:var(--font)"><input type="number" id="evol-val-4" value="0" oninput="actualizarGraficoEvolucion()" style="width:100%;font-size:11px;padding:3px 5px;border-radius:4px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-family:var(--font);margin-top:3px"></div>
+                <div><input type="text" id="evol-mes-5" placeholder="YYYY-MM" style="width:100%;font-size:10px;padding:3px 5px;border-radius:4px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-family:var(--font)"><input type="number" id="evol-val-5" value="0" oninput="actualizarGraficoEvolucion()" style="width:100%;font-size:11px;padding:3px 5px;border-radius:4px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-family:var(--font);margin-top:3px"></div>
+              </div>
+            </div>
+            <div style="margin-top:12px"><label style="font-weight:700;display:block;margin-bottom:4px;font-size:13px">Comentario del consultor</label><textarea id="pf-comentario" style="width:100%;height:80px;resize:vertical;padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px;font-family:var(--font)"></textarea></div>
+          </div>
+        </div>
+
+        <!-- SECCIÓN 3: Productos -->
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:20px;margin-bottom:16px;box-shadow:var(--shadow)">
+          <div style="display:flex;justify-content:space-between;align-items:center;cursor:pointer" onclick="toggleSection('informe-sec-productos')">
+            <h3 style="margin:0;font-family:var(--font-b)">3. Análisis de Productos</h3>
+            <span id="informe-sec-productos-icon" style="font-size:16px;color:var(--muted)">▼</span>
+          </div>
+          <div id="informe-sec-productos">
+            <!-- Escalables -->
+            <div style="margin-top:16px;border-top:3px solid #1a7a1a;padding-top:8px">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+                <h4 style="margin:0;color:#1a7a1a">Escalables</h4>
+                <button class="sync-btn" onclick="agregarFilaProducto('escalables',null)" style="padding:4px 10px;font-size:11px">+ Agregar fila</button>
+              </div>
+              <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px">
+                <thead><tr style="background:var(--surface2)"><th style="padding:6px 8px;text-align:left;font-size:11px;color:var(--muted);border-bottom:2px solid var(--border)">SKU</th><th style="padding:6px 8px;text-align:left;font-size:11px;color:var(--muted);border-bottom:2px solid var(--border)">Título</th><th style="padding:6px 8px;font-size:11px;color:var(--muted);border-bottom:2px solid var(--border)">Facturación</th><th style="padding:6px 8px;font-size:11px;color:var(--muted);border-bottom:2px solid var(--border)">Margen %</th><th style="padding:6px 8px;font-size:11px;color:var(--muted);border-bottom:2px solid var(--border)">Acción sugerida</th><th style="padding:6px 8px;border-bottom:2px solid var(--border)"></th></tr></thead>
+                <tbody id="productos-escalables-tbody"></tbody>
+              </table></div>
+            </div>
+            <!-- Sostén -->
+            <div style="margin-top:16px;border-top:3px solid #888;padding-top:8px">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+                <h4 style="margin:0;color:#555">Sostén</h4>
+                <button class="sync-btn" onclick="agregarFilaProducto('sosten',null)" style="padding:4px 10px;font-size:11px">+ Agregar fila</button>
+              </div>
+              <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px">
+                <thead><tr style="background:var(--surface2)"><th style="padding:6px 8px;text-align:left;font-size:11px;color:var(--muted);border-bottom:2px solid var(--border)">SKU</th><th style="padding:6px 8px;text-align:left;font-size:11px;color:var(--muted);border-bottom:2px solid var(--border)">Título</th><th style="padding:6px 8px;font-size:11px;color:var(--muted);border-bottom:2px solid var(--border)">Facturación</th><th style="padding:6px 8px;font-size:11px;color:var(--muted);border-bottom:2px solid var(--border)">Margen %</th><th style="padding:6px 8px;border-bottom:2px solid var(--border)"></th></tr></thead>
+                <tbody id="productos-sosten-tbody"></tbody>
+              </table></div>
+            </div>
+            <!-- Drenadores -->
+            <div style="margin-top:16px;border-top:3px solid #cc2200;padding-top:8px">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+                <h4 style="margin:0;color:#cc2200">Drenadores</h4>
+                <button class="sync-btn" onclick="agregarFilaProducto('drenadores',null)" style="padding:4px 10px;font-size:11px">+ Agregar fila</button>
+              </div>
+              <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px">
+                <thead><tr style="background:var(--surface2)"><th style="padding:6px 8px;text-align:left;font-size:11px;color:var(--muted);border-bottom:2px solid var(--border)">SKU</th><th style="padding:6px 8px;text-align:left;font-size:11px;color:var(--muted);border-bottom:2px solid var(--border)">Título</th><th style="padding:6px 8px;font-size:11px;color:var(--muted);border-bottom:2px solid var(--border)">Facturación</th><th style="padding:6px 8px;font-size:11px;color:var(--muted);border-bottom:2px solid var(--border)">Margen %</th><th style="padding:6px 8px;font-size:11px;color:var(--muted);border-bottom:2px solid var(--border)">Acción sugerida</th><th style="padding:6px 8px;border-bottom:2px solid var(--border)"></th></tr></thead>
+                <tbody id="productos-drenadores-tbody"></tbody>
+              </table></div>
+            </div>
+            <div style="margin-top:12px"><label style="font-weight:700;display:block;margin-bottom:4px;font-size:13px">Comentario</label><textarea id="productos-comentario" style="width:100%;height:80px;resize:vertical;padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px;font-family:var(--font)"></textarea></div>
+          </div>
+        </div>
+
+        <!-- SECCIÓN 4: Publicidad -->
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:20px;margin-bottom:16px;box-shadow:var(--shadow)">
+          <div style="display:flex;justify-content:space-between;align-items:center;cursor:pointer" onclick="toggleSection('informe-sec-publicidad')">
+            <h3 style="margin:0;font-family:var(--font-b)">4. Publicidad</h3>
+            <span id="informe-sec-publicidad-icon" style="font-size:16px;color:var(--muted)">▼</span>
+          </div>
+          <div id="informe-sec-publicidad">
+            <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-top:16px">
+              <div><label style="font-weight:700;display:block;margin-bottom:4px;font-size:12px">Inversión Total $</label><input type="number" id="pub-inversion" value="0" style="width:100%;padding:6px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px;font-family:var(--font)"></div>
+              <div><label style="font-weight:700;display:block;margin-bottom:4px;font-size:12px">ACOS %</label><input type="number" id="pub-acos" value="0" step="0.1" style="width:100%;padding:6px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px;font-family:var(--font)"></div>
+              <div><label style="font-weight:700;display:block;margin-bottom:4px;font-size:12px">TACOS %</label><input type="number" id="pub-tacos" value="0" step="0.1" style="width:100%;padding:6px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px;font-family:var(--font)"></div>
+              <div><label style="font-weight:700;display:block;margin-bottom:4px;font-size:12px">ROAS</label><input type="number" id="pub-roas" value="0" step="0.01" style="width:100%;padding:6px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px;font-family:var(--font)"></div>
+            </div>
+            <div style="margin-top:16px">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+                <h4 style="margin:0;font-size:13px">Productos ACOS alto</h4>
+                <button class="sync-btn" style="padding:4px 10px;font-size:11px" onclick="document.getElementById('pub-acos-alto-tbody').insertAdjacentHTML('beforeend','<tr><td style=padding:4px><input type=text placeholder=SKU style=width:70px;padding:4px;border-radius:4px;border:1px_solid_var(--border);background:var(--surface2);color:var(--text);font-family:var(--font)></td><td style=padding:4px><input type=text placeholder=Título style=width:100%;padding:4px;border-radius:4px;border:1px_solid_var(--border);background:var(--surface2);color:var(--text);font-family:var(--font)></td><td style=padding:4px><input type=number value=0 step=0.1 style=width:70px;padding:4px;border-radius:4px;border:1px_solid_var(--border);background:var(--surface2);color:var(--text);font-family:var(--font)></td><td style=padding:4px><input type=number value=0 step=0.1 style=width:70px;padding:4px;border-radius:4px;border:1px_solid_var(--border);background:var(--surface2);color:var(--text);font-family:var(--font)></td><td style=padding:4px><button onclick=this.closest(&#39;tr&#39;).remove() style=background:var(--red);color:#fff;border:none;border-radius:4px;padding:2px_6px;cursor:pointer>×</button></td></tr>')">+ Agregar</button>
+              </div>
+              <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px">
+                <thead><tr style="background:var(--surface2)"><th style="padding:6px 8px;font-size:11px;color:var(--muted);border-bottom:2px solid var(--border);text-align:left">SKU</th><th style="padding:6px 8px;font-size:11px;color:var(--muted);border-bottom:2px solid var(--border);text-align:left">Título</th><th style="padding:6px 8px;font-size:11px;color:var(--muted);border-bottom:2px solid var(--border)">ACOS%</th><th style="padding:6px 8px;font-size:11px;color:var(--muted);border-bottom:2px solid var(--border)">Margen%</th><th style="padding:6px 8px;border-bottom:2px solid var(--border)"></th></tr></thead>
+                <tbody id="pub-acos-alto-tbody"></tbody>
+              </table></div>
+            </div>
+            <div style="margin-top:12px"><label style="font-weight:700;display:block;margin-bottom:4px;font-size:13px">Comentario</label><textarea id="pub-comentario" style="width:100%;height:80px;resize:vertical;padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px;font-family:var(--font)"></textarea></div>
+          </div>
+        </div>
+
+        <!-- SECCIÓN 5: Logística -->
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:20px;margin-bottom:16px;box-shadow:var(--shadow)">
+          <div style="display:flex;justify-content:space-between;align-items:center;cursor:pointer" onclick="toggleSection('informe-sec-logistica')">
+            <h3 style="margin:0;font-family:var(--font-b)">5. Logística & FULL</h3>
+            <span id="informe-sec-logistica-icon" style="font-size:16px;color:var(--muted)">▼</span>
+          </div>
+          <div id="informe-sec-logistica">
+            <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-top:16px">
+              <div><label style="font-weight:700;display:block;margin-bottom:4px;font-size:12px">% FULL</label><input type="number" id="log-pct-full" value="0" step="0.1" style="width:100%;padding:6px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px;font-family:var(--font)"></div>
+              <div><label style="font-weight:700;display:block;margin-bottom:4px;font-size:12px">% Flex</label><input type="number" id="log-pct-flex" value="0" step="0.1" style="width:100%;padding:6px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px;font-family:var(--font)"></div>
+              <div><label style="font-weight:700;display:block;margin-bottom:4px;font-size:12px">% Colecta</label><input type="number" id="log-pct-colecta" value="0" step="0.1" style="width:100%;padding:6px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px;font-family:var(--font)"></div>
+              <div><label style="font-weight:700;display:block;margin-bottom:4px;font-size:12px">Costo prom. $</label><input type="number" id="log-costo-prom" value="0" style="width:100%;padding:6px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px;font-family:var(--font)"></div>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:16px">
+              <div>
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+                  <h4 style="margin:0;font-size:13px">Candidatos a entrar a FULL</h4>
+                  <button class="sync-btn" style="padding:4px 10px;font-size:11px" onclick="document.getElementById('log-candidatos-entrar-full-tbody').insertAdjacentHTML('beforeend','<tr><td style=padding:4px><input type=text placeholder=SKU style=width:70px;padding:4px;border-radius:4px;border:1px_solid_var(--border);background:var(--surface2);color:var(--text);font-family:var(--font)></td><td style=padding:4px><input type=text placeholder=Título style=width:100%;padding:4px;border-radius:4px;border:1px_solid_var(--border);background:var(--surface2);color:var(--text);font-family:var(--font)></td><td style=padding:4px><button onclick=this.closest(&#39;tr&#39;).remove() style=background:var(--red);color:#fff;border:none;border-radius:4px;padding:2px_6px;cursor:pointer>×</button></td></tr>')">+</button>
+                </div>
+                <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px">
+                  <thead><tr style="background:var(--surface2)"><th style="padding:6px 8px;font-size:11px;color:var(--muted);border-bottom:2px solid var(--border);text-align:left">SKU</th><th style="padding:6px 8px;font-size:11px;color:var(--muted);border-bottom:2px solid var(--border);text-align:left">Título</th><th style="padding:6px 8px;border-bottom:2px solid var(--border)"></th></tr></thead>
+                  <tbody id="log-candidatos-entrar-full-tbody"></tbody>
+                </table></div>
+              </div>
+              <div>
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+                  <h4 style="margin:0;font-size:13px">Candidatos a salir de FULL</h4>
+                  <button class="sync-btn" style="padding:4px 10px;font-size:11px" onclick="document.getElementById('log-candidatos-salir-full-tbody').insertAdjacentHTML('beforeend','<tr><td style=padding:4px><input type=text placeholder=SKU style=width:70px;padding:4px;border-radius:4px;border:1px_solid_var(--border);background:var(--surface2);color:var(--text);font-family:var(--font)></td><td style=padding:4px><input type=text placeholder=Título style=width:100%;padding:4px;border-radius:4px;border:1px_solid_var(--border);background:var(--surface2);color:var(--text);font-family:var(--font)></td><td style=padding:4px><button onclick=this.closest(&#39;tr&#39;).remove() style=background:var(--red);color:#fff;border:none;border-radius:4px;padding:2px_6px;cursor:pointer>×</button></td></tr>')">+</button>
+                </div>
+                <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px">
+                  <thead><tr style="background:var(--surface2)"><th style="padding:6px 8px;font-size:11px;color:var(--muted);border-bottom:2px solid var(--border);text-align:left">SKU</th><th style="padding:6px 8px;font-size:11px;color:var(--muted);border-bottom:2px solid var(--border);text-align:left">Título</th><th style="padding:6px 8px;border-bottom:2px solid var(--border)"></th></tr></thead>
+                  <tbody id="log-candidatos-salir-full-tbody"></tbody>
+                </table></div>
+              </div>
+            </div>
+            <div style="margin-top:12px"><label style="font-weight:700;display:block;margin-bottom:4px;font-size:13px">Comentario</label><textarea id="log-comentario" style="width:100%;height:80px;resize:vertical;padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px;font-family:var(--font)"></textarea></div>
+          </div>
+        </div>
+
+        <!-- SECCIÓN 6: Cierre -->
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:20px;margin-bottom:16px;box-shadow:var(--shadow)">
+          <div style="display:flex;justify-content:space-between;align-items:center;cursor:pointer" onclick="toggleSection('informe-sec-cierre')">
+            <h3 style="margin:0;font-family:var(--font-b)">6. Comentario de Cierre</h3>
+            <span id="informe-sec-cierre-icon" style="font-size:16px;color:var(--muted)">▼</span>
+          </div>
+          <div id="informe-sec-cierre">
+            <textarea id="informe-comentario-cierre" style="width:100%;height:120px;resize:vertical;margin-top:12px;padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px;font-family:var(--font)" placeholder="Comentario general del consultor para cerrar el informe..."></textarea>
+          </div>
+        </div>
+
+      </div><!-- fin informe-form-container -->
+    </div><!-- fin page-informe-mensual -->
+
+    <!-- MODAL VISTA PREVIA INFORME -->
+    <div id="modal-informe-preview" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:9999;justify-content:center;align-items:flex-start;padding:20px;overflow-y:auto">
+      <div style="background:white;max-width:900px;width:100%;border:3px solid #292929;box-shadow:8px 8px 0 #292929;position:relative">
+        <div class="modal-informe-controls" style="display:flex;justify-content:space-between;align-items:center;padding:16px;border-bottom:2px solid #292929;background:#f5f5f5">
+          <div style="display:flex;gap:8px;align-items:center">
+            <button onclick="window.print()" style="background:#292929;color:#fff952;border:none;padding:8px 16px;border-radius:6px;font-weight:700;cursor:pointer;font-family:var(--font)">🖨️ Imprimir / Guardar como PDF</button>
+            <span style="font-size:12px;color:#666">Tip: en el diálogo elegí "Guardar como PDF"</span>
+          </div>
+          <button onclick="cerrarVistaPreviaInforme()" style="background:#f5f5f5;border:2px solid #292929;padding:6px 14px;border-radius:6px;font-weight:700;cursor:pointer;font-family:var(--font)">✕ Cerrar</button>
+        </div>
+        <div id="informe-print-content" style="padding:0"></div>
       </div>
     </div>
 
@@ -11509,6 +11791,621 @@ async function ejecutarAnalyzerPubli() {
     loadDecisionesPubli();
   }, 15000);
 }
+
+// ===== INFORME MENSUAL =====
+
+let informeActual = null; // estado del informe en edición
+
+async function cargarSectionInformeMensual() {
+  // poblar selector de clientes
+  const clientes = await apiCall('GET', '/api/clients');
+  const sel = document.getElementById('informe-cliente-select');
+  sel.innerHTML = '<option value="">Seleccionar cliente...</option>';
+  (clientes || []).forEach(c => sel.innerHTML += `<option value="${c.id}">${c.name || c.nombre}</option>`);
+
+  // default: mes anterior
+  const hoy = new Date();
+  const mesAnterior = new Date(hoy.getFullYear(), hoy.getMonth() - 1, 1);
+  document.getElementById('informe-mes-select').value = String(mesAnterior.getMonth() + 1).padStart(2, '0');
+  document.getElementById('informe-anio-select').value = mesAnterior.getFullYear();
+}
+
+async function generarBorradorInforme() {
+  const clienteId = document.getElementById('informe-cliente-select').value;
+  const mes = document.getElementById('informe-mes-select').value;
+  const anio = document.getElementById('informe-anio-select').value;
+  if (!clienteId || !mes || !anio) return alert('Seleccioná cliente y período');
+  const periodo = `${anio}-${mes}`;
+
+  showToast('⏳ Generando borrador...');
+  const data = await apiCall('GET', `/api/informe-mensual/generar/${clienteId}/${periodo}`);
+  informeActual = { cliente_id: clienteId, periodo, data, estado: 'borrador', id: null };
+  renderFormularioInforme(data);
+  const badge = document.getElementById('informe-estado-badge');
+  badge.textContent = 'Borrador';
+  badge.style.display = 'inline-block';
+  badge.style.background = '#f59e0b';
+  showToast('✅ Borrador generado');
+}
+
+function renderFormularioInforme(data) {
+  document.getElementById('informe-form-container').style.display = 'block';
+  document.getElementById('informe-empty-state').style.display = 'none';
+
+  // resumen ejecutivo
+  document.getElementById('inf-fac-actual').value = data.resumen_ejecutivo.facturacion_actual;
+  document.getElementById('inf-fac-anterior').value = data.resumen_ejecutivo.facturacion_anterior;
+  document.getElementById('inf-util-actual').value = data.resumen_ejecutivo.utilidad_final_actual;
+  document.getElementById('inf-util-anterior').value = data.resumen_ejecutivo.utilidad_final_anterior;
+  document.getElementById('inf-margen-actual').value = data.resumen_ejecutivo.margen_actual_pct;
+  document.getElementById('inf-margen-anterior').value = data.resumen_ejecutivo.margen_anterior_pct;
+  (data.resumen_ejecutivo.highlights || []).forEach((h, i) => {
+    const el = document.getElementById(`inf-highlight-${i}`);
+    if (el) el.value = h;
+  });
+  actualizarDeltas();
+
+  // performance financiera
+  const pfCampos = ['ingresos_productos','ingresos_envio','total_ingresos','comision','reembolso','impuestos','full','publicidad','mi_pagina','resultado_envios','resultado_neto_ml','cmv','utilidad_antes_gf','gastos_fijos','utilidad_final'];
+  pfCampos.forEach(campo => {
+    const v = data.performance_financiera[campo];
+    if (v) {
+      const actEl = document.getElementById(`pf-${campo}-actual`);
+      const antEl = document.getElementById(`pf-${campo}-anterior`);
+      if (actEl) actEl.value = v.actual;
+      if (antEl) antEl.value = v.anterior;
+    }
+  });
+  if (data.performance_financiera.margen_s_fact_pct) {
+    const mfAct = document.getElementById('pf-margen-fact-actual');
+    const mfAnt = document.getElementById('pf-margen-fact-anterior');
+    if (mfAct) mfAct.value = data.performance_financiera.margen_s_fact_pct.actual;
+    if (mfAnt) mfAnt.value = data.performance_financiera.margen_s_fact_pct.anterior;
+  }
+  const pfCom = document.getElementById('pf-comentario');
+  if (pfCom) pfCom.value = data.performance_financiera.comentario || '';
+
+  // evolución 6m
+  (data.performance_financiera.evolucion_6m || []).forEach((p, i) => {
+    const mesEl = document.getElementById(`evol-mes-${i}`);
+    const valEl = document.getElementById(`evol-val-${i}`);
+    if (mesEl) mesEl.value = p.mes;
+    if (valEl) valEl.value = p.utilidad;
+  });
+  actualizarGraficoEvolucion();
+
+  // productos
+  ['escalables', 'sosten', 'drenadores'].forEach(cat => {
+    const tbody = document.getElementById(`productos-${cat}-tbody`);
+    if (!tbody) return;
+    tbody.innerHTML = '';
+    (data.productos[cat] || []).forEach(p => agregarFilaProducto(cat, p));
+    if ((data.productos[cat] || []).length === 0) agregarFilaProducto(cat, null);
+  });
+  const pCom = document.getElementById('productos-comentario');
+  if (pCom) pCom.value = data.productos.comentario || '';
+
+  // publicidad
+  document.getElementById('pub-inversion').value = data.publicidad.inversion_total;
+  document.getElementById('pub-acos').value = data.publicidad.acos_pct;
+  document.getElementById('pub-tacos').value = data.publicidad.tacos_pct;
+  document.getElementById('pub-roas').value = data.publicidad.roas;
+  const pubTbody = document.getElementById('pub-acos-alto-tbody');
+  if (pubTbody) {
+    pubTbody.innerHTML = '';
+    (data.publicidad.productos_acos_alto || []).forEach(p => {
+      pubTbody.innerHTML += `<tr>
+        <td style="padding:4px"><input type="text" value="${p.sku||''}" placeholder="SKU" style="width:70px;padding:4px;border-radius:4px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-family:var(--font)"></td>
+        <td style="padding:4px"><input type="text" value="${p.titulo||''}" placeholder="Título" style="width:100%;padding:4px;border-radius:4px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-family:var(--font)"></td>
+        <td style="padding:4px"><input type="number" value="${p.acos_pct||0}" step="0.1" style="width:70px;padding:4px;border-radius:4px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-family:var(--font)"></td>
+        <td style="padding:4px"><input type="number" value="${p.margen_pct||0}" step="0.1" style="width:70px;padding:4px;border-radius:4px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-family:var(--font)"></td>
+        <td style="padding:4px"><button onclick="this.closest('tr').remove()" style="background:var(--red);color:#fff;border:none;border-radius:4px;padding:2px 6px;cursor:pointer">×</button></td>
+      </tr>`;
+    });
+  }
+  const pubCom = document.getElementById('pub-comentario');
+  if (pubCom) pubCom.value = data.publicidad.comentario || '';
+
+  // logística
+  document.getElementById('log-pct-full').value = data.logistica.pct_full;
+  document.getElementById('log-pct-flex').value = data.logistica.pct_flex;
+  document.getElementById('log-pct-colecta').value = data.logistica.pct_colecta;
+  document.getElementById('log-costo-prom').value = data.logistica.costo_logistico_promedio;
+  ['candidatos_entrar_full','candidatos_salir_full'].forEach(tipo => {
+    const tbody = document.getElementById(`log-${tipo.replace(/_/g,'-')}-tbody`);
+    if (!tbody) return;
+    tbody.innerHTML = '';
+    (data.logistica[tipo] || []).forEach(p => {
+      tbody.innerHTML += `<tr>
+        <td style="padding:4px"><input type="text" value="${p.sku||''}" placeholder="SKU" style="width:70px;padding:4px;border-radius:4px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-family:var(--font)"></td>
+        <td style="padding:4px"><input type="text" value="${p.titulo||''}" placeholder="Título" style="width:100%;padding:4px;border-radius:4px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-family:var(--font)"></td>
+        <td style="padding:4px"><button onclick="this.closest('tr').remove()" style="background:var(--red);color:#fff;border:none;border-radius:4px;padding:2px 6px;cursor:pointer">×</button></td>
+      </tr>`;
+    });
+  });
+  const logCom = document.getElementById('log-comentario');
+  if (logCom) logCom.value = data.logistica.comentario || '';
+
+  // cierre
+  const cierreEl = document.getElementById('informe-comentario-cierre');
+  if (cierreEl) cierreEl.value = data.comentario_cierre || '';
+}
+
+function actualizarDeltas() {
+  const calcDelta = (act, ant) => ant !== 0 ? ((act - ant) / Math.abs(ant) * 100).toFixed(1) : '—';
+  const fAct = parseFloat(document.getElementById('inf-fac-actual').value) || 0;
+  const fAnt = parseFloat(document.getElementById('inf-fac-anterior').value) || 0;
+  document.getElementById('inf-fac-delta').textContent = `${calcDelta(fAct, fAnt)}%`;
+  const uAct = parseFloat(document.getElementById('inf-util-actual').value) || 0;
+  const uAnt = parseFloat(document.getElementById('inf-util-anterior').value) || 0;
+  document.getElementById('inf-util-delta').textContent = `${calcDelta(uAct, uAnt)}%`;
+  const mAct = parseFloat(document.getElementById('inf-margen-actual').value) || 0;
+  const mAnt = parseFloat(document.getElementById('inf-margen-anterior').value) || 0;
+  document.getElementById('inf-margen-delta').textContent = `${(mAct - mAnt).toFixed(1)} pts`;
+}
+
+function calcularDeltaPF(campo) {
+  const actEl = document.getElementById(`pf-${campo}-actual`);
+  const antEl = document.getElementById(`pf-${campo}-anterior`);
+  const deltaEl = document.getElementById(`pf-${campo}-delta`);
+  if (!actEl || !antEl || !deltaEl) return;
+  const act = parseFloat(actEl.value) || 0;
+  const ant = parseFloat(antEl.value) || 0;
+  deltaEl.textContent = ant !== 0 ? `${((act - ant) / Math.abs(ant) * 100).toFixed(1)}%` : '—';
+}
+
+function agregarFilaProducto(categoria, data) {
+  const tbody = document.getElementById(`productos-${categoria}-tbody`);
+  if (!tbody) return;
+  const tieneAccion = categoria !== 'sosten';
+  const inp = (v, ph, w) => `<input type="text" value="${v||''}" placeholder="${ph}" style="width:${w||'100%'};padding:4px 6px;border-radius:4px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-family:var(--font);font-size:12px">`;
+  const inpN = (v, step) => `<input type="number" value="${v||0}" step="${step||1}" style="width:80px;padding:4px 6px;border-radius:4px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-family:var(--font);font-size:12px">`;
+  const accionCell = tieneAccion ? `<td style="padding:4px">${inp(data?.accion_sugerida,'Acción sugerida')}</td>` : '';
+  tbody.insertAdjacentHTML('beforeend', `<tr>
+    <td style="padding:4px">${inp(data?.sku,'SKU','70px')}</td>
+    <td style="padding:4px">${inp(data?.titulo,'Título del producto')}</td>
+    <td style="padding:4px">${inpN(data?.facturacion,100)}</td>
+    <td style="padding:4px">${inpN(data?.margen_pct,0.1)}</td>
+    ${accionCell}
+    <td style="padding:4px"><button onclick="this.closest('tr').remove()" style="background:var(--red);color:#fff;border:none;border-radius:4px;padding:2px 6px;cursor:pointer">×</button></td>
+  </tr>`);
+}
+
+function actualizarGraficoEvolucion() {
+  const valores = [];
+  for (let i = 0; i < 6; i++) {
+    valores.push(parseFloat(document.getElementById(`evol-val-${i}`)?.value) || 0);
+  }
+  const svg = document.getElementById('evol-grafico-svg');
+  if (!svg) return;
+  const max = Math.max(...valores, 1);
+  const min = Math.min(...valores, 0);
+  const range = max - min || 1;
+  const W = 400, H = 120, pad = 20;
+  const points = valores.map((v, i) => {
+    const x = pad + (i / 5) * (W - pad * 2);
+    const y = pad + (1 - (v - min) / range) * (H - pad * 2);
+    return `${x},${y}`;
+  }).join(' ');
+  svg.innerHTML = `<polyline points="${points}" fill="none" stroke="#292929" stroke-width="2.5"/>${valores.map((v, i) => {
+    const x = pad + (i / 5) * (W - pad * 2);
+    const y = pad + (1 - (v - min) / range) * (H - pad * 2);
+    return `<circle cx="${x}" cy="${y}" r="4" fill="${v >= 0 ? '#fff952' : '#ff6b6b'}" stroke="#292929" stroke-width="2"/>`;
+  }).join('')}`;
+}
+
+function initPFTabla() {
+  const campos = [
+    { key: 'ingresos_productos', label: 'Ingresos productos' },
+    { key: 'ingresos_envio', label: 'Ingresos envío' },
+    { key: 'total_ingresos', label: 'TOTAL INGRESOS', bold: true },
+    { key: 'comision', label: 'Comisión ML' },
+    { key: 'reembolso', label: 'Reembolso' },
+    { key: 'impuestos', label: 'Impuestos' },
+    { key: 'full', label: 'FULL/Flex' },
+    { key: 'publicidad', label: 'Publicidad' },
+    { key: 'mi_pagina', label: 'Mi Página' },
+    { key: 'resultado_envios', label: 'Resultado Envíos', italic: true },
+    { key: 'resultado_neto_ml', label: 'Resultado Neto ML', italic: true },
+    { key: 'cmv', label: 'CMV' },
+    { key: 'utilidad_antes_gf', label: 'Utilidad antes GF', italic: true },
+    { key: 'gastos_fijos', label: 'Gastos Fijos' },
+    { key: 'utilidad_final', label: 'UTILIDAD FINAL', bold: true, highlight: true },
+  ];
+  const tbody = document.getElementById('pf-tabla-body');
+  if (!tbody) return;
+  tbody.innerHTML = campos.map(c => `<tr style="${c.highlight ? 'background:#fff952;font-weight:900' : c.bold ? 'font-weight:700;background:#f5f5f5' : c.italic ? 'font-style:italic' : ''}">
+    <td style="padding:5px 8px;font-size:12px">${c.label}</td>
+    <td style="padding:5px 8px"><input type="number" id="pf-${c.key}-actual" value="0" oninput="calcularDeltaPF('${c.key}')" style="width:120px;text-align:right;padding:3px 6px;border-radius:4px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-family:var(--font);font-size:12px"></td>
+    <td style="padding:5px 8px"><input type="number" id="pf-${c.key}-anterior" value="0" oninput="calcularDeltaPF('${c.key}')" style="width:120px;text-align:right;padding:3px 6px;border-radius:4px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-family:var(--font);font-size:12px"></td>
+    <td id="pf-${c.key}-delta" style="text-align:right;min-width:60px;font-weight:600;padding:5px 8px;font-size:12px">—</td>
+  </tr>`).join('');
+}
+
+function leerFormularioInforme() {
+  const leerPF = (campo) => ({
+    actual: parseFloat(document.getElementById(`pf-${campo}-actual`)?.value) || 0,
+    anterior: parseFloat(document.getElementById(`pf-${campo}-anterior`)?.value) || 0
+  });
+  const leerTablaProductos = (cat) => {
+    const filas = document.getElementById(`productos-${cat}-tbody`)?.querySelectorAll('tr') || [];
+    return Array.from(filas).map(tr => {
+      const inputs = tr.querySelectorAll('input');
+      const tieneAccion = cat !== 'sosten';
+      return tieneAccion
+        ? { sku: inputs[0]?.value||'', titulo: inputs[1]?.value||'', facturacion: parseFloat(inputs[2]?.value)||0, margen_pct: parseFloat(inputs[3]?.value)||0, accion_sugerida: inputs[4]?.value||'' }
+        : { sku: inputs[0]?.value||'', titulo: inputs[1]?.value||'', facturacion: parseFloat(inputs[2]?.value)||0, margen_pct: parseFloat(inputs[3]?.value)||0 };
+    });
+  };
+  return {
+    cliente: { id: informeActual?.cliente_id },
+    periodo: informeActual?.periodo,
+    periodo_anterior: informeActual?.data?.periodo_anterior,
+    resumen_ejecutivo: {
+      facturacion_actual: parseFloat(document.getElementById('inf-fac-actual')?.value)||0,
+      facturacion_anterior: parseFloat(document.getElementById('inf-fac-anterior')?.value)||0,
+      facturacion_var_pct: parseFloat(document.getElementById('inf-fac-delta')?.textContent)||0,
+      utilidad_final_actual: parseFloat(document.getElementById('inf-util-actual')?.value)||0,
+      utilidad_final_anterior: parseFloat(document.getElementById('inf-util-anterior')?.value)||0,
+      utilidad_final_var_pct: parseFloat(document.getElementById('inf-util-delta')?.textContent)||0,
+      margen_actual_pct: parseFloat(document.getElementById('inf-margen-actual')?.value)||0,
+      margen_anterior_pct: parseFloat(document.getElementById('inf-margen-anterior')?.value)||0,
+      margen_var_pts: parseFloat(document.getElementById('inf-margen-delta')?.textContent)||0,
+      highlights: [0,1,2].map(i => document.getElementById(`inf-highlight-${i}`)?.value||'')
+    },
+    performance_financiera: {
+      ingresos_productos: leerPF('ingresos_productos'),
+      ingresos_envio: leerPF('ingresos_envio'),
+      total_ingresos: leerPF('total_ingresos'),
+      comision: leerPF('comision'),
+      reembolso: leerPF('reembolso'),
+      impuestos: leerPF('impuestos'),
+      full: leerPF('full'),
+      publicidad: leerPF('publicidad'),
+      mi_pagina: leerPF('mi_pagina'),
+      resultado_envios: leerPF('resultado_envios'),
+      resultado_neto_ml: leerPF('resultado_neto_ml'),
+      cmv: leerPF('cmv'),
+      utilidad_antes_gf: leerPF('utilidad_antes_gf'),
+      gastos_fijos: leerPF('gastos_fijos'),
+      utilidad_final: leerPF('utilidad_final'),
+      margen_s_fact_pct: { actual: parseFloat(document.getElementById('pf-margen-fact-actual')?.value)||0, anterior: parseFloat(document.getElementById('pf-margen-fact-anterior')?.value)||0 },
+      margen_s_resultado_ml_pct: { actual: parseFloat(document.getElementById('pf-margen-res-actual')?.value)||0, anterior: parseFloat(document.getElementById('pf-margen-res-anterior')?.value)||0 },
+      evolucion_6m: Array.from({length: 6}, (_, i) => ({ mes: document.getElementById(`evol-mes-${i}`)?.value||'', utilidad: parseFloat(document.getElementById(`evol-val-${i}`)?.value)||0 })),
+      comentario: document.getElementById('pf-comentario')?.value||''
+    },
+    productos: {
+      escalables: leerTablaProductos('escalables'),
+      sosten: leerTablaProductos('sosten'),
+      drenadores: leerTablaProductos('drenadores'),
+      comentario: document.getElementById('productos-comentario')?.value||''
+    },
+    publicidad: {
+      inversion_total: parseFloat(document.getElementById('pub-inversion')?.value)||0,
+      acos_pct: parseFloat(document.getElementById('pub-acos')?.value)||0,
+      tacos_pct: parseFloat(document.getElementById('pub-tacos')?.value)||0,
+      roas: parseFloat(document.getElementById('pub-roas')?.value)||0,
+      productos_acos_alto: Array.from(document.getElementById('pub-acos-alto-tbody')?.querySelectorAll('tr')||[]).map(tr => {
+        const ins = tr.querySelectorAll('input');
+        return { sku: ins[0]?.value||'', titulo: ins[1]?.value||'', acos_pct: parseFloat(ins[2]?.value)||0, margen_pct: parseFloat(ins[3]?.value)||0 };
+      }),
+      comentario: document.getElementById('pub-comentario')?.value||''
+    },
+    logistica: {
+      pct_full: parseFloat(document.getElementById('log-pct-full')?.value)||0,
+      pct_flex: parseFloat(document.getElementById('log-pct-flex')?.value)||0,
+      pct_colecta: parseFloat(document.getElementById('log-pct-colecta')?.value)||0,
+      costo_logistico_promedio: parseFloat(document.getElementById('log-costo-prom')?.value)||0,
+      candidatos_entrar_full: Array.from(document.getElementById('log-candidatos-entrar-full-tbody')?.querySelectorAll('tr')||[]).map(tr => { const ins = tr.querySelectorAll('input'); return { sku: ins[0]?.value||'', titulo: ins[1]?.value||'' }; }),
+      candidatos_salir_full: Array.from(document.getElementById('log-candidatos-salir-full-tbody')?.querySelectorAll('tr')||[]).map(tr => { const ins = tr.querySelectorAll('input'); return { sku: ins[0]?.value||'', titulo: ins[1]?.value||'' }; }),
+      comentario: document.getElementById('log-comentario')?.value||''
+    },
+    comentario_cierre: document.getElementById('informe-comentario-cierre')?.value||''
+  };
+}
+
+async function guardarInforme(estado) {
+  if (!informeActual) return alert('No hay informe cargado');
+  const data = leerFormularioInforme();
+  const body = { cliente_id: informeActual.cliente_id, periodo: informeActual.periodo, data, estado };
+  const res = await apiCall('POST', '/api/informe-mensual/guardar', body);
+  informeActual.id = res.id;
+  informeActual.estado = estado;
+  const badge = document.getElementById('informe-estado-badge');
+  badge.textContent = estado === 'finalizado' ? 'Finalizado' : 'Borrador';
+  badge.style.background = estado === 'finalizado' ? '#16a34a' : '#f59e0b';
+  badge.style.display = 'inline-block';
+  showToast('✅ Informe guardado correctamente');
+}
+
+function abrirVistaPreviaInforme() {
+  if (!informeActual) return alert('No hay informe cargado');
+  const data = leerFormularioInforme();
+  const html = generarHTMLInforme(data);
+  document.getElementById('informe-print-content').innerHTML = html;
+  document.getElementById('modal-informe-preview').style.display = 'flex';
+}
+
+function cerrarVistaPreviaInforme() {
+  document.getElementById('modal-informe-preview').style.display = 'none';
+}
+
+function formatPeriodo(p) {
+  if (!p) return '';
+  const [anio, mes] = p.split('-');
+  const meses = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+  return `${meses[parseInt(mes)-1]} ${anio}`;
+}
+
+function fmt$(n) { return '$' + (parseFloat(n)||0).toLocaleString('es-AR', {minimumFractionDigits:0, maximumFractionDigits:0}); }
+function fmtPct(n) { return (parseFloat(n)||0).toFixed(1) + '%'; }
+function deltaClass(v) { return parseFloat(v) >= 0 ? 'delta-pos' : 'delta-neg'; }
+function deltaStr(v) { const n = parseFloat(v)||0; return (n >= 0 ? '+' : '') + n.toFixed(1) + '%'; }
+
+function generarHTMLInforme(data) {
+  const periodo = formatPeriodo(data.periodo);
+  const hoy = new Date().toLocaleDateString('es-AR');
+  const re = data.resumen_ejecutivo || {};
+  const pf = data.performance_financiera || {};
+  const prod = data.productos || {};
+  const pub = data.publicidad || {};
+  const log = data.logistica || {};
+
+  const filasPF = [
+    { label: 'Ingresos productos', key: 'ingresos_productos', tipo: 'ingreso' },
+    { label: 'Ingresos envío', key: 'ingresos_envio', tipo: 'ingreso' },
+    { label: 'TOTAL INGRESOS', key: 'total_ingresos', tipo: 'total' },
+    { label: 'Comisión ML', key: 'comision', tipo: 'egreso' },
+    { label: 'Reembolso', key: 'reembolso', tipo: 'egreso' },
+    { label: 'Impuestos', key: 'impuestos', tipo: 'egreso' },
+    { label: 'FULL/Flex', key: 'full', tipo: 'egreso' },
+    { label: 'Publicidad', key: 'publicidad', tipo: 'egreso' },
+    { label: 'Mi Página', key: 'mi_pagina', tipo: 'egreso' },
+    { label: 'Resultado Envíos', key: 'resultado_envios', tipo: 'subtotal' },
+    { label: 'Resultado Neto ML', key: 'resultado_neto_ml', tipo: 'subtotal' },
+    { label: 'CMV', key: 'cmv', tipo: 'egreso' },
+    { label: 'Utilidad antes GF', key: 'utilidad_antes_gf', tipo: 'subtotal' },
+    { label: 'Gastos Fijos', key: 'gastos_fijos', tipo: 'egreso' },
+    { label: 'UTILIDAD FINAL', key: 'utilidad_final', tipo: 'final' },
+  ];
+
+  const tablaFinanciera = filasPF.map(f => {
+    const v = pf[f.key] || { actual: 0, anterior: 0 };
+    const delta = v.anterior !== 0 ? ((v.actual - v.anterior) / Math.abs(v.anterior) * 100).toFixed(1) : '—';
+    const esEgreso = f.tipo === 'egreso';
+    const dc = delta !== '—' ? (esEgreso ? (parseFloat(delta) <= 0 ? 'color:#1a7a1a' : 'color:#cc2200') : (parseFloat(delta) >= 0 ? 'color:#1a7a1a' : 'color:#cc2200')) : '';
+    const rowStyle = f.tipo === 'final' ? 'background:#fff952;font-weight:900' : f.tipo === 'total' ? 'font-weight:700;background:#f0f0f0' : f.tipo === 'subtotal' ? 'font-style:italic' : '';
+    return `<tr style="${rowStyle}">
+      <td style="padding:5px 10px;border-bottom:1px solid #e0e0e0">${f.label}</td>
+      <td style="padding:5px 10px;border-bottom:1px solid #e0e0e0;text-align:right">${fmt$(v.actual)}</td>
+      <td style="padding:5px 10px;border-bottom:1px solid #e0e0e0;text-align:right">${fmt$(v.anterior)}</td>
+      <td style="padding:5px 10px;border-bottom:1px solid #e0e0e0;text-align:right;font-weight:600;${dc}">${delta !== '—' ? deltaStr(delta) : '—'}</td>
+    </tr>`;
+  }).join('');
+
+  // SVG evolución
+  const evol = pf.evolucion_6m || [];
+  const evolVals = evol.map(e => e.utilidad);
+  const evolMax = Math.max(...evolVals, 1);
+  const evolMin = Math.min(...evolVals, 0);
+  const evolRange = evolMax - evolMin || 1;
+  const W = 400, H = 100, pad = 15;
+  const evolPoints = evolVals.map((v, i) => {
+    const x = pad + (i / Math.max(evolVals.length - 1, 1)) * (W - pad * 2);
+    const y = pad + (1 - (v - evolMin) / evolRange) * (H - pad * 2);
+    return `${x},${y}`;
+  }).join(' ');
+  const meses12 = ['','Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
+  const evolLabels = evol.map((e, i) => {
+    const x = pad + (i / Math.max(evol.length - 1, 1)) * (W - pad * 2);
+    const [, m] = (e.mes || '').split('-');
+    return `<text x="${x}" y="${H-2}" text-anchor="middle" font-size="10" fill="#666">${meses12[parseInt(m)]||''}</text>`;
+  }).join('');
+  const graficoSVG = `<svg viewBox="0 0 ${W} ${H}" width="100%" height="100">
+    <polyline points="${evolPoints}" fill="none" stroke="#292929" stroke-width="2"/>
+    ${evolVals.map((v, i) => {
+      const x = pad + (i / Math.max(evolVals.length - 1, 1)) * (W - pad * 2);
+      const y = pad + (1 - (v - evolMin) / evolRange) * (H - pad * 2);
+      return `<circle cx="${x}" cy="${y}" r="4" fill="${v >= 0 ? '#fff952' : '#ff8080'}" stroke="#292929" stroke-width="2"/>`;
+    }).join('')}
+    ${evolLabels}
+  </svg>`;
+
+  const tablaProductos = (cat, label, color) => {
+    const items = prod[cat] || [];
+    const tieneAccion = cat !== 'sosten';
+    const filas = items.map(p => `<tr>
+      <td style="padding:4px 8px;border-bottom:1px solid #e8e8e8;font-size:12px">${p.sku||''}</td>
+      <td style="padding:4px 8px;border-bottom:1px solid #e8e8e8;font-size:12px">${p.titulo||''}</td>
+      <td style="padding:4px 8px;border-bottom:1px solid #e8e8e8;font-size:12px;text-align:right">${fmt$(p.facturacion)}</td>
+      <td style="padding:4px 8px;border-bottom:1px solid #e8e8e8;font-size:12px;text-align:right">${fmtPct(p.margen_pct)}</td>
+      ${tieneAccion ? `<td style="padding:4px 8px;border-bottom:1px solid #e8e8e8;font-size:12px">${p.accion_sugerida||''}</td>` : ''}
+    </tr>`).join('');
+    return `<div style="margin-bottom:20px;border-top:3px solid ${color};padding-top:8px">
+      <h3 style="color:${color};margin:0 0 8px;font-size:14px">${label}</h3>
+      <table style="width:100%;border-collapse:collapse"><thead><tr style="background:#f0f0f0">
+        <th style="padding:5px 8px;text-align:left;font-size:11px;border-bottom:2px solid #292929">SKU</th>
+        <th style="padding:5px 8px;text-align:left;font-size:11px;border-bottom:2px solid #292929">Título</th>
+        <th style="padding:5px 8px;text-align:right;font-size:11px;border-bottom:2px solid #292929">Facturación</th>
+        <th style="padding:5px 8px;text-align:right;font-size:11px;border-bottom:2px solid #292929">Margen</th>
+        ${tieneAccion ? '<th style="padding:5px 8px;text-align:left;font-size:11px;border-bottom:2px solid #292929">Acción</th>' : ''}
+      </tr></thead><tbody>${filas || `<tr><td colspan="${tieneAccion?5:4}" style="padding:8px;text-align:center;color:#888;font-size:12px">Sin datos</td></tr>`}</tbody></table>
+    </div>`;
+  };
+
+  return `<style>
+    .informe-doc { font-family: 'Plus Jakarta Sans', 'Poppins', sans-serif; color: #292929; max-width: 800px; margin: 0 auto; }
+    .pagina { padding: 40px; margin-bottom: 20px; }
+    .portada { background: #fff952; border: 3px solid #292929; box-shadow: 6px 6px 0 #292929; min-height: 500px; display: flex; flex-direction: column; justify-content: center; align-items: flex-start; }
+    .portada .nr-logo { font-size: 48px; font-weight: 900; background: #292929; color: #fff952; padding: 8px 18px; display: inline-block; margin-bottom: 40px; }
+    .portada h1 { font-size: 36px; font-weight: 900; margin: 0 0 16px; }
+    .portada .cliente-nombre { font-size: 24px; font-weight: 700; margin: 0 0 8px; }
+    .portada .periodo-emision { font-size: 16px; color: #444; }
+    .seccion-header { font-size: 22px; font-weight: 900; border-bottom: 3px solid #292929; padding-bottom: 8px; margin-bottom: 20px; }
+    .kpi-grid-print { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-bottom: 24px; }
+    .kpi-card-print { border: 3px solid #292929; padding: 16px; box-shadow: 4px 4px 0 #292929; background: white; }
+    .kpi-card-print .kpi-label { font-size: 11px; font-weight: 700; text-transform: uppercase; margin-bottom: 8px; color: #666; }
+    .kpi-card-print .kpi-valor { font-size: 26px; font-weight: 900; }
+    .kpi-card-print .kpi-ant { font-size: 12px; color: #666; margin-top: 4px; }
+    .kpi-card-print .kpi-delta { font-size: 14px; font-weight: 700; margin-top: 4px; }
+    .delta-pos { color: #1a7a1a; }
+    .delta-neg { color: #cc2200; }
+    .comentario-consultor { background: #f9f9f9; border-left: 4px solid #fff952; padding: 12px 16px; margin-top: 16px; font-style: italic; font-size: 13px; }
+    .page-footer { border-top: 2px solid #292929; padding-top: 8px; font-size: 11px; color: #666; display: flex; justify-content: space-between; margin-top: 30px; }
+    @media print {
+      .pagina { page-break-before: always; }
+      .pagina:first-child { page-break-before: auto; }
+    }
+  </style>
+  <div class="informe-doc">
+    <!-- PORTADA -->
+    <div class="pagina portada">
+      <div class="nr-logo">NR</div>
+      <h1>Informe Mensual<br>de Performance</h1>
+      <div class="cliente-nombre">${data.cliente?.nombre || data.cliente?.name || 'Cliente'}</div>
+      <div class="periodo-emision">${periodo} · Emitido el ${hoy}</div>
+    </div>
+
+    <!-- RESUMEN EJECUTIVO -->
+    <div class="pagina">
+      <div class="seccion-header">Resumen Ejecutivo</div>
+      <div class="kpi-grid-print">
+        <div class="kpi-card-print">
+          <div class="kpi-label">Facturación</div>
+          <div class="kpi-valor">${fmt$(re.facturacion_actual)}</div>
+          <div class="kpi-ant">Anterior: ${fmt$(re.facturacion_anterior)}</div>
+          <div class="kpi-delta ${deltaClass(re.facturacion_var_pct)}">${deltaStr(re.facturacion_var_pct)}</div>
+        </div>
+        <div class="kpi-card-print">
+          <div class="kpi-label">Utilidad Final</div>
+          <div class="kpi-valor">${fmt$(re.utilidad_final_actual)}</div>
+          <div class="kpi-ant">Anterior: ${fmt$(re.utilidad_final_anterior)}</div>
+          <div class="kpi-delta ${deltaClass(re.utilidad_final_var_pct)}">${deltaStr(re.utilidad_final_var_pct)}</div>
+        </div>
+        <div class="kpi-card-print">
+          <div class="kpi-label">Margen</div>
+          <div class="kpi-valor">${fmtPct(re.margen_actual_pct)}</div>
+          <div class="kpi-ant">Anterior: ${fmtPct(re.margen_anterior_pct)}</div>
+          <div class="kpi-delta ${deltaClass(re.margen_var_pts)}">${(parseFloat(re.margen_var_pts)||0).toFixed(1)} pts</div>
+        </div>
+      </div>
+      ${(re.highlights||[]).some(h => h) ? `<div style="border:3px solid #292929;padding:16px;box-shadow:4px 4px 0 #292929"><h4 style="font-weight:900;margin:0 0 12px">Highlights del mes</h4><ul style="margin:0;padding-left:20px">${(re.highlights||[]).filter(h=>h).map(h=>`<li style="margin-bottom:6px;font-size:13px">${h}</li>`).join('')}</ul></div>` : ''}
+      <div class="page-footer"><span>Negocio Redondo · Método Redondo™</span><span>${periodo}</span></div>
+    </div>
+
+    <!-- PERFORMANCE FINANCIERA -->
+    <div class="pagina">
+      <div class="seccion-header">Performance Financiera</div>
+      <table style="width:100%;border-collapse:collapse;font-size:13px">
+        <thead><tr style="background:#292929;color:#fff952"><th style="padding:6px 10px;text-align:left">Concepto</th><th style="padding:6px 10px;text-align:right">Actual</th><th style="padding:6px 10px;text-align:right">Anterior</th><th style="padding:6px 10px;text-align:right">Δ%</th></tr></thead>
+        <tbody>${tablaFinanciera}</tbody>
+      </table>
+      <div style="margin-top:12px;border:3px solid #292929;padding:14px;box-shadow:3px 3px 0 #292929;display:inline-block">
+        <div style="font-size:11px;font-weight:700;text-transform:uppercase;color:#666">Margen s/ Facturación</div>
+        <div style="font-size:24px;font-weight:900;margin-top:4px">${fmtPct(pf.margen_s_fact_pct?.actual)}</div>
+        <div style="font-size:12px;color:#666;margin-top:2px">Anterior: ${fmtPct(pf.margen_s_fact_pct?.anterior)}</div>
+      </div>
+      <div style="margin:16px 0;padding:12px;border:2px solid #e0e0e0;border-radius:4px">
+        <div style="font-size:12px;font-weight:700;margin-bottom:8px">Evolución Utilidad Final — últimos 6 meses</div>
+        ${graficoSVG}
+      </div>
+      ${pf.comentario ? `<div class="comentario-consultor">${pf.comentario}</div>` : ''}
+      <div class="page-footer"><span>Negocio Redondo · Método Redondo™</span><span>${periodo}</span></div>
+    </div>
+
+    <!-- PRODUCTOS -->
+    <div class="pagina">
+      <div class="seccion-header">Análisis de Productos</div>
+      ${tablaProductos('escalables', '🚀 Escalables', '#1a7a1a')}
+      ${tablaProductos('sosten', '🔵 Sostén', '#555')}
+      ${tablaProductos('drenadores', '⚠️ Drenadores', '#cc2200')}
+      ${prod.comentario ? `<div class="comentario-consultor">${prod.comentario}</div>` : ''}
+      <div class="page-footer"><span>Negocio Redondo · Método Redondo™</span><span>${periodo}</span></div>
+    </div>
+
+    <!-- PUBLICIDAD -->
+    <div class="pagina">
+      <div class="seccion-header">Publicidad</div>
+      <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:16px;margin-bottom:20px">
+        <div style="border:2px solid #292929;padding:14px;box-shadow:3px 3px 0 #292929"><div style="font-size:12px;color:#666">Inversión Total</div><div style="font-size:26px;font-weight:900;margin-top:4px">${fmt$(pub.inversion_total)}</div></div>
+        <div style="border:2px solid #292929;padding:14px;box-shadow:3px 3px 0 #292929"><div style="font-size:12px;color:#666">ACOS</div><div style="font-size:26px;font-weight:900;margin-top:4px">${fmtPct(pub.acos_pct)}</div></div>
+        <div style="border:2px solid #292929;padding:14px;box-shadow:3px 3px 0 #292929"><div style="font-size:12px;color:#666">TACOS</div><div style="font-size:26px;font-weight:900;margin-top:4px">${fmtPct(pub.tacos_pct)}</div></div>
+        <div style="border:2px solid #292929;padding:14px;box-shadow:3px 3px 0 #292929"><div style="font-size:12px;color:#666">ROAS</div><div style="font-size:26px;font-weight:900;margin-top:4px">${(parseFloat(pub.roas)||0).toFixed(2)}x</div></div>
+      </div>
+      ${(pub.productos_acos_alto||[]).length ? `<h4 style="margin:0 0 8px">Productos con ACOS > Margen</h4><table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr style="background:#f0f0f0"><th style="padding:5px 8px;text-align:left;border-bottom:2px solid #292929">SKU</th><th style="padding:5px 8px;text-align:left;border-bottom:2px solid #292929">Título</th><th style="padding:5px 8px;text-align:right;border-bottom:2px solid #292929">ACOS%</th><th style="padding:5px 8px;text-align:right;border-bottom:2px solid #292929">Margen%</th></tr></thead><tbody>${(pub.productos_acos_alto||[]).map(p=>`<tr><td style="padding:4px 8px;border-bottom:1px solid #e8e8e8">${p.sku||''}</td><td style="padding:4px 8px;border-bottom:1px solid #e8e8e8">${p.titulo||''}</td><td style="padding:4px 8px;border-bottom:1px solid #e8e8e8;text-align:right">${fmtPct(p.acos_pct)}</td><td style="padding:4px 8px;border-bottom:1px solid #e8e8e8;text-align:right">${fmtPct(p.margen_pct)}</td></tr>`).join('')}</tbody></table>` : ''}
+      ${pub.comentario ? `<div class="comentario-consultor">${pub.comentario}</div>` : ''}
+      <div class="page-footer"><span>Negocio Redondo · Método Redondo™</span><span>${periodo}</span></div>
+    </div>
+
+    <!-- LOGÍSTICA -->
+    <div class="pagina">
+      <div class="seccion-header">Logística & FULL</div>
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px">
+        <div style="border:2px solid #292929;padding:12px;text-align:center;box-shadow:3px 3px 0 #292929"><div style="font-size:24px;font-weight:900">${fmtPct(log.pct_full)}</div><div style="font-size:11px;color:#666;margin-top:4px">% FULL</div></div>
+        <div style="border:2px solid #292929;padding:12px;text-align:center;box-shadow:3px 3px 0 #292929"><div style="font-size:24px;font-weight:900">${fmtPct(log.pct_flex)}</div><div style="font-size:11px;color:#666;margin-top:4px">% Flex</div></div>
+        <div style="border:2px solid #292929;padding:12px;text-align:center;box-shadow:3px 3px 0 #292929"><div style="font-size:24px;font-weight:900">${fmtPct(log.pct_colecta)}</div><div style="font-size:11px;color:#666;margin-top:4px">% Colecta</div></div>
+        <div style="border:2px solid #292929;padding:12px;text-align:center;box-shadow:3px 3px 0 #292929"><div style="font-size:24px;font-weight:900">${fmt$(log.costo_logistico_promedio)}</div><div style="font-size:11px;color:#666;margin-top:4px">Costo prom.</div></div>
+      </div>
+      ${(log.candidatos_entrar_full||[]).length ? `<h4 style="margin:0 0 8px;font-size:13px">Candidatos a entrar a FULL</h4><table style="width:100%;border-collapse:collapse;font-size:12px;margin-bottom:12px"><thead><tr style="background:#f0f0f0"><th style="padding:5px 8px;text-align:left;border-bottom:2px solid #292929">SKU</th><th style="padding:5px 8px;text-align:left;border-bottom:2px solid #292929">Título</th></tr></thead><tbody>${(log.candidatos_entrar_full||[]).map(p=>`<tr><td style="padding:4px 8px;border-bottom:1px solid #e8e8e8">${p.sku||''}</td><td style="padding:4px 8px;border-bottom:1px solid #e8e8e8">${p.titulo||''}</td></tr>`).join('')}</tbody></table>` : ''}
+      ${(log.candidatos_salir_full||[]).length ? `<h4 style="margin:0 0 8px;font-size:13px">Candidatos a salir de FULL</h4><table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr style="background:#f0f0f0"><th style="padding:5px 8px;text-align:left;border-bottom:2px solid #292929">SKU</th><th style="padding:5px 8px;text-align:left;border-bottom:2px solid #292929">Título</th></tr></thead><tbody>${(log.candidatos_salir_full||[]).map(p=>`<tr><td style="padding:4px 8px;border-bottom:1px solid #e8e8e8">${p.sku||''}</td><td style="padding:4px 8px;border-bottom:1px solid #e8e8e8">${p.titulo||''}</td></tr>`).join('')}</tbody></table>` : ''}
+      ${log.comentario ? `<div class="comentario-consultor">${log.comentario}</div>` : ''}
+      <div class="page-footer"><span>Negocio Redondo · Método Redondo™</span><span>${periodo}</span></div>
+    </div>
+
+    ${data.comentario_cierre ? `<div class="pagina">
+      <div class="seccion-header">Comentario de Cierre</div>
+      <div style="font-size:14px;line-height:1.6;padding:16px;border:3px solid #292929;box-shadow:4px 4px 0 #292929">${data.comentario_cierre}</div>
+      <div class="page-footer"><span>Negocio Redondo · Método Redondo™</span><span>${periodo}</span></div>
+    </div>` : ''}
+  </div>`;
+}
+
+async function cargarInformeExistente() {
+  const clienteId = document.getElementById('informe-cliente-select').value;
+  const mes = document.getElementById('informe-mes-select').value;
+  const anio = document.getElementById('informe-anio-select').value;
+  if (!clienteId || !mes || !anio) return alert('Seleccioná cliente y período');
+  const periodo = `${anio}-${mes}`;
+
+  const lista = await apiCall('GET', `/api/informe-mensual/listar/${clienteId}`);
+  const existente = (lista || []).find(x => x.periodo === periodo);
+  if (!existente) return alert('No hay informe guardado para ese período');
+
+  const informe = await apiCall('GET', `/api/informe-mensual/${existente.id}`);
+  informeActual = { id: informe.id, cliente_id: clienteId, periodo, data: informe.data, estado: informe.estado };
+  renderFormularioInforme(informe.data);
+  initPFTabla();
+  // Re-poblar los campos de PF después de init
+  const pfCampos = ['ingresos_productos','ingresos_envio','total_ingresos','comision','reembolso','impuestos','full','publicidad','mi_pagina','resultado_envios','resultado_neto_ml','cmv','utilidad_antes_gf','gastos_fijos','utilidad_final'];
+  pfCampos.forEach(campo => {
+    const v = informe.data.performance_financiera?.[campo];
+    if (v) {
+      const actEl = document.getElementById(`pf-${campo}-actual`);
+      const antEl = document.getElementById(`pf-${campo}-anterior`);
+      if (actEl) { actEl.value = v.actual; }
+      if (antEl) { antEl.value = v.anterior; }
+      calcularDeltaPF(campo);
+    }
+  });
+  const badge = document.getElementById('informe-estado-badge');
+  badge.textContent = informe.estado === 'finalizado' ? 'Finalizado' : 'Borrador';
+  badge.style.background = informe.estado === 'finalizado' ? '#16a34a' : '#f59e0b';
+  badge.style.display = 'inline-block';
+  showToast('✅ Informe cargado');
+}
+
+function toggleSection(id) {
+  const el = document.getElementById(id);
+  const icon = document.getElementById(id + '-icon');
+  if (!el) return;
+  if (el.style.display === 'none') {
+    el.style.display = '';
+    if (icon) icon.textContent = '▼';
+  } else {
+    el.style.display = 'none';
+    if (icon) icon.textContent = '▶';
+  }
+}
 </script>
 </body>
-</html></html>
+</html>
