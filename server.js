@@ -3705,18 +3705,25 @@ app.get('/api/reporte/pyl', requireAuth, async (req, res) => {
       [client_id, mesStr]
     );
     const gastos = gastosRes.rows;
-    const total_gastos_fijos = gastos.reduce((s,g)=>s+parseFloat(g.monto),0);
+    // Separar Envíos Flex manual del resto de gastos fijos
+    const gastosRegulares  = gastos.filter(g => g.categoria !== 'envios_flex');
+    const gastosEnvioFlex  = gastos.filter(g => g.categoria === 'envios_flex');
+    const envios_flex_manual = gastosEnvioFlex.reduce((s,g) => s + parseFloat(g.monto), 0);
+    const total_gastos_fijos = gastosRegulares.reduce((s,g) => s + parseFloat(g.monto), 0);
+
+    // Envío vendedor total = API + carga manual Flex
+    const egreso_envio_total = egreso_envio_vendedor + envios_flex_manual;
 
     // ── P&L ───────────────────────────────────────────────────────────────────
     const total_ingresos   = facturacion + ingreso_envio_comprador;
     // IVA neto a pagar: IVA ventas − IVA compras acreditable (CMV + comisión + envío vendedor)
     const iva21 = 0.21;
     const iva_ventas   = facturacion / (1 + iva21) * iva21;
-    const iva_compras  = (egreso_comision + egreso_envio_vendedor + cmv_total) / (1 + iva21) * iva21;
+    const iva_compras  = (egreso_comision + egreso_envio_total + cmv_total) / (1 + iva21) * iva21;
     const iva_neto     = Math.max(0, iva_ventas - iva_compras);
 
     // IVA forma parte de los egresos ML → afecta el Resultado Neto ML
-    const total_egresos_ml  = egreso_comision + egreso_impuestos + egreso_envio_vendedor + egreso_publicidad + egreso_reembolsos + iva_neto;
+    const total_egresos_ml  = egreso_comision + egreso_impuestos + egreso_envio_total + egreso_publicidad + egreso_reembolsos + iva_neto;
     const resultado_neto_ml = total_ingresos - total_egresos_ml;
     const utilidad_antes_gf = resultado_neto_ml - cmv_total;
     const utilidad_final    = utilidad_antes_gf - total_gastos_fijos;
@@ -3733,6 +3740,8 @@ app.get('/api/reporte/pyl', requireAuth, async (req, res) => {
         comision: egreso_comision,
         impuestos: egreso_impuestos,
         envio_vendedor: egreso_envio_vendedor,
+        envios_flex_manual,
+        envio_total: egreso_envio_total,
         publicidad: egreso_publicidad,
         reembolsos: egreso_reembolsos,
         iva_ventas,
@@ -3743,7 +3752,7 @@ app.get('/api/reporte/pyl', requireAuth, async (req, res) => {
       resultado_neto_ml,
       cmv: { total: cmv_total, estimado: cmv_estimado, cubierto: cmv_cubierto, total_items: items_detalle.length },
       utilidad_antes_gf,
-      gastos_fijos: { items: gastos, total: total_gastos_fijos },
+      gastos_fijos: { items: gastosRegulares, total: total_gastos_fijos },
       iva: { ventas: iva_ventas, compras: iva_compras, neto: iva_neto },
       utilidad_final,
       margenes: {

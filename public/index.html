@@ -8228,7 +8228,12 @@ function renderReporteGastos(gastos, clientId, mes) {
   const el = document.getElementById('reporteGastosContent');
   const categorias = ['personal','alquiler','marketing','logistica','servicios','impuestos','otros'];
 
-  const rows = gastos.map((g, i) => `
+  // Separar Envíos Flex del resto
+  const gastosRegulares = gastos.filter(g => g.categoria !== 'envios_flex');
+  const flexRow = gastos.find(g => g.categoria === 'envios_flex');
+  const flexMonto = flexRow ? parseFloat(flexRow.monto) : 0;
+
+  const rows = gastosRegulares.map((g, i) => `
     <tr id="gasto-row-${i}">
       <td style="padding:7px 8px;border-bottom:1px solid var(--border)">
         <input value="${g.concepto}" style="width:100%;padding:4px 7px;border-radius:6px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px" class="gasto-concepto">
@@ -8254,6 +8259,20 @@ function renderReporteGastos(gastos, clientId, mes) {
         <button onclick="guardarGastos('${clientId}','${mes}')" style="padding:6px 16px;background:var(--accent);color:#fff;border:none;border-radius:8px;font-size:13px;cursor:pointer">💾 Guardar gastos</button>
       </div>
     </div>
+
+    <!-- Campo dedicado Envíos Flex -->
+    <div style="background:var(--surface2);border:1px solid var(--border);border-left:4px solid #3b82f6;border-radius:10px;padding:14px 16px;margin-bottom:16px;display:flex;align-items:center;gap:16px;flex-wrap:wrap">
+      <div style="flex:1;min-width:200px">
+        <div style="font-size:12px;font-weight:700;color:#3b82f6;margin-bottom:4px">🚚 ENVÍOS FLEX / FULL (costo vendedor)</div>
+        <div style="font-size:11px;color:var(--muted)">Se suma a los costos de envío en el P&L — aparece en negativo junto con los demás envíos</div>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px">
+        <span style="font-size:13px;color:var(--muted)">$</span>
+        <input type="number" id="gastoEnvioFlex" value="${flexMonto || ''}" placeholder="0"
+          style="width:150px;padding:7px 10px;border-radius:8px;border:1px solid #3b82f6;background:var(--surface);color:var(--text);font-size:14px;text-align:right;font-weight:700">
+      </div>
+    </div>
+
     <div style="overflow-x:auto">
     <table style="width:100%;border-collapse:collapse" id="gastosTable">
       <thead><tr style="background:var(--surface2)">
@@ -8298,6 +8317,9 @@ async function guardarGastos(clientId, mes) {
     const categoria = tr.querySelector('.gasto-cat')?.value || 'otros';
     if (concepto && monto > 0) gastos.push({ concepto, monto, categoria });
   });
+  // Incluir Envíos Flex como categoría especial
+  const flexMonto = parseFloat(document.getElementById('gastoEnvioFlex')?.value) || 0;
+  if (flexMonto > 0) gastos.push({ concepto: 'Envíos Flex/Full', monto: flexMonto, categoria: 'envios_flex' });
   const r = await apiCall('POST', '/api/reporte/gastos', { client_id: clientId, mes, gastos });
   if (r?.ok) showToast('✅ Gastos guardados');
 }
@@ -8427,7 +8449,8 @@ function renderPyL(pyl) {
           <div style="font-size:11px;color:#dc2626;opacity:.7">${pyl.ingresos.facturacion>0?fmtP(pyl.egresos_ml.total/pyl.ingresos.facturacion*100):''} de la facturación</div>
         </div>
         ${detalleRow('Comisión ML', pyl.egresos_ml.comision, pyl.ingresos.facturacion)}
-        ${pyl.egresos_ml.envio_vendedor ? detalleRow('Envío vendedor', pyl.egresos_ml.envio_vendedor, pyl.ingresos.facturacion) : ''}
+        ${pyl.egresos_ml.envio_total ? detalleRow('Envío vendedor (total)', pyl.egresos_ml.envio_total, pyl.ingresos.facturacion) : pyl.egresos_ml.envio_vendedor ? detalleRow('Envío vendedor', pyl.egresos_ml.envio_vendedor, pyl.ingresos.facturacion) : ''}
+        ${pyl.egresos_ml.envios_flex_manual > 0 ? `<div style="padding:4px 12px 4px 28px;font-size:11px;color:var(--muted)">└ API ML: $${Math.round(pyl.egresos_ml.envio_vendedor).toLocaleString('es-AR')} &nbsp;+&nbsp; Manual Flex: $${Math.round(pyl.egresos_ml.envios_flex_manual).toLocaleString('es-AR')}</div>` : ''}
         ${pyl.egresos_ml.publicidad ? detalleRow('Publicidad (PADS)', pyl.egresos_ml.publicidad, pyl.ingresos.facturacion) : ''}
         ${pyl.egresos_ml.impuestos ? detalleRow('Impuestos / retenciones', pyl.egresos_ml.impuestos, pyl.ingresos.facturacion) : ''}
         ${pyl.egresos_ml.reembolsos ? detalleRow('Reembolsos', pyl.egresos_ml.reembolsos, pyl.ingresos.facturacion) : ''}
@@ -8506,7 +8529,8 @@ async function exportarReporteExcel() {
     ['EGRESOS MERCADO LIBRE', ''],
     ['Comisión ML', -pyl.egresos_ml.comision],
     ['Impuestos (retenciones)', -pyl.egresos_ml.impuestos],
-    ['Costo envío vendedor', -pyl.egresos_ml.envio_vendedor],
+    ['Costo envío vendedor (API ML)', -pyl.egresos_ml.envio_vendedor],
+    ...(pyl.egresos_ml.envios_flex_manual > 0 ? [['Envíos Flex/Full (manual)', -pyl.egresos_ml.envios_flex_manual]] : []),
     ['Publicidad (PADS)', -pyl.egresos_ml.publicidad],
     ...(pyl.egresos_ml.reembolsos ? [['Reembolsos', -pyl.egresos_ml.reembolsos]] : []),
     ['IVA ventas (débito fiscal)', -(pyl.iva?.ventas ?? 0)],
