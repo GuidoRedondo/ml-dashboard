@@ -6361,6 +6361,7 @@ function exportAdsAnunciosExcel() {
     'ROAS':           i.roas > 0 ? parseFloat(i.roas.toFixed(2)) : '',
     'Inversión':      Math.round(i.inversion),
     'Ingresos Ads':   Math.round(i.ingresos),
+    '% Ventas Ads':   i.facturacion_total > 0 ? parseFloat((i.ingresos / i.facturacion_total * 100).toFixed(1)) : '',
     'Ventas':         i.ventas,
     'CTR (%)':        i.ctr > 0 ? parseFloat(i.ctr.toFixed(3)) : '',
     'Conversión (%)': i.cvr > 0 ? parseFloat(i.cvr.toFixed(2)) : '',
@@ -6452,6 +6453,7 @@ function renderAdsAnuncios(data) {
       <td style="padding:7px 10px;text-align:right;font-size:12px;font-weight:700;color:${roasColor(i.roas)}">${fmtX(i.roas)}</td>
       <td style="padding:7px 10px;text-align:right;font-size:12px;color:#ff9100">${fmt(i.inversion)}</td>
       <td style="padding:7px 10px;text-align:right;font-size:12px;color:#00e676">${fmt(i.ingresos)}</td>
+      ${(() => { const sw = i.facturacion_total > 0 ? (i.ingresos / i.facturacion_total * 100) : null; const swColor = !sw ? 'var(--muted)' : sw >= 50 ? '#ff5252' : sw >= 30 ? '#ff9100' : '#00e676'; return `<td style="padding:7px 10px;text-align:right;font-size:12px;font-weight:700;color:${swColor}">${sw != null ? sw.toFixed(1)+'%' : '—'}</td>`; })()}
       <td style="padding:7px 10px;text-align:right;font-size:12px">${fmtN(i.ventas)}</td>
       <td style="padding:7px 10px;text-align:right;font-size:12px;font-weight:700;color:${ctrColor(i.ctr)}">${fmtP(i.ctr)}</td>
       <td style="padding:7px 10px;text-align:right;font-size:12px">${fmtP(i.cvr)}</td>
@@ -6487,9 +6489,10 @@ function renderAdsAnuncios(data) {
           ${th('status',     'Estado Ads',  'center')}
           ${th('tacos',      'TACOS')}
           ${th('roas',       'ROAS')}
-          ${th('inversion',  'Inversión')}
-          ${th('ingresos',   'Ingresos')}
-          ${th('ventas',     'Ventas')}
+          ${th('inversion',        'Inversión')}
+          ${th('ingresos',         'Ingresos')}
+          ${th('facturacion_total','% Ventas Ads')}
+          ${th('ventas',           'Ventas')}
           ${th('ctr',        'CTR')}
           ${th('cvr',        'Conversión')}
           ${th('impresiones','Impresiones')}
