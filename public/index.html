@@ -6194,12 +6194,15 @@ function applyPermissions() {
     });
   }
 
-  // Centro de Inteligencia, Motor de Publicidad e Informe Mensual: solo admins y consultores
+  // Motor de Publicidad e Informe Mensual: solo admins y consultores
   const soloConsultores = role === 'admin' || role === 'consultant' || role === 'colaborador';
-  ['alertas','decisiones-publi','informe-mensual'].forEach(p => {
+  ['decisiones-publi','informe-mensual'].forEach(p => {
     const el = document.querySelector(`[data-page="${p}"]`);
     if (el) el.style.display = soloConsultores ? '' : 'none';
   });
+  // Centro de Inteligencia: admins/consultores siempre; clientes solo si tienen el permiso habilitado
+  const alertasNavEl = document.querySelector('[data-page="alertas"]');
+  if (alertasNavEl) alertasNavEl.style.display = (soloConsultores || canSeeSection('alertas')) ? '' : 'none';
 }
 
 function initApp() {
@@ -10889,6 +10892,7 @@ const SECCIONES = [
   { id: 'escalabilidad',label: '🚀 Escalabilidad' },
   { id: 'competencia',  label: '🏆 Competencia' },
   { id: 'reporte',      label: '📊 Reporte Financiero' },
+  { id: 'alertas',      label: '🔔 Centro de Inteligencia' },
 ];
 
 let _editingUserId = null;
