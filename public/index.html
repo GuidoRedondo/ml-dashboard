@@ -1057,6 +1057,10 @@ tbody td {
           style="padding:8px 18px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-2px;font-family:var(--font-b)">
           🔥 Destaque & Tendencias
         </button>
+        <button id="tab-comp-competidores" onclick="switchCompTab('competidores')"
+          style="padding:8px 18px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-2px;font-family:var(--font-b)">
+          🕵️ Competidores
+        </button>
       </div>
       <!-- Tab: Mis Categorías -->
       <div id="comp-tab-categorias">
@@ -1119,6 +1123,29 @@ tbody td {
             <div style="color:var(--muted);font-size:13px;padding:30px;text-align:center;background:var(--surface);border:1px solid var(--border);border-radius:12px">⏳ Cargando tendencias...</div>
           </div>
         </div>
+      </div>
+      <!-- Tab: Competidores -->
+      <div id="comp-tab-competidores" style="display:none">
+        <div style="display:flex;gap:8px;align-items:center;margin-bottom:16px;flex-wrap:wrap">
+          <select id="competSite" style="padding:8px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px">
+            <option value="MLA">🇦🇷 Argentina</option>
+            <option value="MLB">🇧🇷 Brasil</option>
+            <option value="MLC">🇨🇱 Chile</option>
+            <option value="MLM">🇲🇽 México</option>
+            <option value="MCO">🇨🇴 Colombia</option>
+            <option value="MPE">🇵🇪 Perú</option>
+            <option value="MLU">🇺🇾 Uruguay</option>
+          </select>
+          <input id="competInput" type="text" placeholder="Apodo del competidor o URL de una publicación suya…"
+            style="flex:1;min-width:260px;padding:8px 14px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px;outline:none"
+            onkeydown="if(event.key==='Enter')buscarCompetidor()">
+          <button id="competBtnBuscar" onclick="buscarCompetidor()"
+            style="padding:8px 20px;background:var(--accent);color:#fff;border:none;border-radius:8px;font-weight:600;font-size:13px;cursor:pointer">Analizar</button>
+        </div>
+        <div id="competError" style="display:none;color:#ff5252;background:rgba(255,82,82,.1);padding:10px 14px;border-radius:8px;margin-bottom:12px"></div>
+        <div id="competLoader" style="display:none;color:var(--muted);padding:40px;text-align:center">⏳ Analizando competidor…</div>
+        <div id="competEmpty" style="color:var(--muted);padding:40px;text-align:center">Ingresá un apodo o URL para analizar a un competidor.</div>
+        <div id="competResults" style="display:none"></div>
       </div>
     </div>
 
@@ -1699,6 +1726,7 @@ tbody td {
 <div id="toast" class="toast"></div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js" defer></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js" defer></script>
 <script>
 // ─── SESSION & LOGIN ──────────────────────────────────────────────────────────
 const SERVER_URL = window.location.origin;
@@ -10396,7 +10424,7 @@ async function loadMercadoML() {
 
 function switchCompTab(tab) {
   _compActiveTab = tab;
-  ['categorias','mercado','diagnostico','destaque'].forEach(t => {
+  ['categorias','mercado','diagnostico','destaque','competidores'].forEach(t => {
     const el  = document.getElementById(`comp-tab-${t}`);
     const btn = document.getElementById(`tab-comp-${t}`);
     if (el)  el.style.display  = t === tab ? '' : 'none';
@@ -10409,6 +10437,142 @@ function switchCompTab(tab) {
   if (tab === 'mercado')     { loadCompetencia(); initMercadoMLCats(); }
   if (tab === 'diagnostico') loadDiagnostico();
   if (tab === 'destaque')    initDestaqueTab();
+}
+
+// ── ANÁLISIS DE COMPETIDORES ──────────────────────────────────────────────────
+
+let _competChartLogistica = null, _competChartListing = null;
+
+async function buscarCompetidor() {
+  const input = document.getElementById('competInput').value.trim();
+  const site  = document.getElementById('competSite').value;
+  if (!input) return;
+  const ac = getActiveClient();
+  if (!ac) { document.getElementById('competError').textContent = '⚠️ Seleccioná un cliente primero'; document.getElementById('competError').style.display=''; return; }
+
+  document.getElementById('competEmpty').style.display   = 'none';
+  document.getElementById('competResults').style.display = 'none';
+  document.getElementById('competError').style.display   = 'none';
+  document.getElementById('competLoader').style.display  = '';
+  document.getElementById('competBtnBuscar').disabled    = true;
+
+  try {
+    const seller = await apiCall('GET', `/api/competidor/buscar?input=${encodeURIComponent(input)}&site=${site}&client_id=${ac.id}`);
+    if (seller.error) throw new Error(seller.error);
+    const pubs = await apiCall('GET', `/api/competidor/publicaciones?seller_id=${seller.seller_id}&site=${site}&max=200&client_id=${ac.id}`);
+    if (pubs.error) throw new Error(pubs.error);
+    renderCompetidor(seller, pubs);
+  } catch(e) {
+    document.getElementById('competError').textContent = '⚠️ ' + (e.message || 'Error al analizar competidor');
+    document.getElementById('competError').style.display = '';
+  } finally {
+    document.getElementById('competLoader').style.display = 'none';
+    document.getElementById('competBtnBuscar').disabled   = false;
+  }
+}
+
+function renderCompetidor(seller, pubs) {
+  const el = document.getElementById('competResults');
+  el.style.display = '';
+
+  const repMap = {
+    '5_green':'🟢 MercadoLíder Platinum','4_light_green':'🟢 MercadoLíder Gold',
+    '3_yellow':'🟡 MercadoLíder','2_orange':'🟠 Reputación regular','1_red':'🔴 Reputación mala'
+  };
+  const fmt = n => '$' + Math.round(n||0).toLocaleString('es-AR');
+  const totalLog = Object.values(pubs.logistica).reduce((a,b)=>a+b,0)||1;
+  const fullPct    = ((pubs.logistica.fulfillment||0)/totalLog*100).toFixed(0);
+  const premiumPct = (pubs.distribucion_listing.premium/(pubs.total_analizadas||1)*100).toFixed(0);
+
+  el.innerHTML = `
+    <div style="display:grid;grid-template-columns:2fr 1fr 1fr 1fr 1fr;gap:12px;margin-bottom:16px">
+      <div class="kpi-card">
+        <div class="kpi-label">Vendedor</div>
+        <div class="kpi-value" style="font-size:18px">${_escHtml(seller.nickname)}${seller.tienda_oficial?' <span style="font-size:11px;color:var(--accent)">(Tienda Oficial)</span>':''}</div>
+        <div class="kpi-sub">${repMap[seller.reputation.level_id]||'— Sin reputación'}</div>
+        <div class="kpi-sub">${_escHtml(seller.location.city)}${seller.location.city&&seller.location.state?', ':''}${_escHtml(seller.location.state)}</div>
+      </div>
+      <div class="kpi-card"><div class="kpi-label">Publicaciones</div><div class="kpi-value">${seller.total_publicaciones.toLocaleString('es-AR')}</div><div class="kpi-sub">${pubs.total_analizadas} analizadas</div></div>
+      <div class="kpi-card"><div class="kpi-label">% Premium</div><div class="kpi-value">${premiumPct}%</div><div class="kpi-sub">${pubs.distribucion_listing.premium} de ${pubs.total_analizadas}</div></div>
+      <div class="kpi-card"><div class="kpi-label">% Full</div><div class="kpi-value">${fullPct}%</div><div class="kpi-sub">${pubs.logistica.fulfillment||0} en Full</div></div>
+      <div class="kpi-card"><div class="kpi-label">Con descuento</div><div class="kpi-value">${pubs.promociones_count}</div><div class="kpi-sub">${(pubs.promociones_count/(pubs.total_analizadas||1)*100).toFixed(0)}% del catálogo</div></div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px">
+      <div class="kpi-card"><div class="kpi-label" style="margin-bottom:10px">Distribución de envío</div><canvas id="competChartLogistica" height="180"></canvas></div>
+      <div class="kpi-card"><div class="kpi-label" style="margin-bottom:10px">Tipo de publicación</div><canvas id="competChartListing" height="180"></canvas></div>
+    </div>
+    <div class="kpi-card" style="margin-bottom:16px;padding:0;overflow:hidden">
+      <div style="padding:14px 16px;font-weight:700;font-size:13px">⭐ Top 20 publicaciones (por unidades vendidas)</div>
+      <div style="overflow-x:auto">${_renderTablaPubs(pubs.top_publicaciones)}</div>
+    </div>
+    ${pubs.promociones.length ? `<div class="kpi-card" style="padding:0;overflow:hidden">
+      <div style="padding:14px 16px;font-weight:700;font-size:13px">🔥 En promoción (con descuento activo)</div>
+      <div style="overflow-x:auto">${_renderTablaPromos(pubs.promociones)}</div>
+    </div>` : ''}`;
+
+  setTimeout(() => {
+    if (_competChartLogistica) _competChartLogistica.destroy();
+    if (_competChartListing)   _competChartListing.destroy();
+    const logLabels = { fulfillment:'Full', self_service:'Flex', cross_docking:'Cross Docking', drop_off:'Drop Off', xd_drop_off:'X Drop Off', not_specified:'A acordar' };
+    const logEntries = Object.entries(pubs.logistica);
+    const ctx1 = document.getElementById('competChartLogistica');
+    if (ctx1 && window.Chart) _competChartLogistica = new Chart(ctx1, { type:'doughnut',
+      data:{ labels:logEntries.map(e=>logLabels[e[0]]||e[0]), datasets:[{ data:logEntries.map(e=>e[1]), backgroundColor:['#22c55e','#3b82f6','#a855f7','#f59e0b','#ef4444','#94a3b8'] }] },
+      options:{ plugins:{ legend:{ position:'right', labels:{ color:'#aaa', font:{ size:11 } } } } }
+    });
+    const ctx2 = document.getElementById('competChartListing');
+    if (ctx2 && window.Chart) _competChartListing = new Chart(ctx2, { type:'doughnut',
+      data:{ labels:['Premium','Clásica'], datasets:[{ data:[pubs.distribucion_listing.premium, pubs.distribucion_listing.clasico], backgroundColor:['#f59e0b','#94a3b8'] }] },
+      options:{ plugins:{ legend:{ position:'right', labels:{ color:'#aaa', font:{ size:11 } } } } }
+    });
+  }, 80);
+}
+
+function _renderTablaPubs(pubs) {
+  if (!pubs?.length) return '<div style="color:var(--muted);padding:20px">Sin datos.</div>';
+  const pills = p =>
+    (['gold_pro','gold_premium'].includes(p.listing_type_id) ? '<span style="background:#fef3c7;color:#92400e;border-radius:4px;padding:1px 6px;font-size:10px;font-weight:700">Premium</span> ' : '') +
+    (p.logistic_type==='fulfillment' ? '<span style="background:#dcfce7;color:#166534;border-radius:4px;padding:1px 6px;font-size:10px;font-weight:700">Full</span> ' : '') +
+    (p.logistic_type==='self_service' ? '<span style="background:#dbeafe;color:#1e40af;border-radius:4px;padding:1px 6px;font-size:10px;font-weight:700">Flex</span> ' : '') +
+    (p.catalog_listing ? '<span style="background:#ede9fe;color:#5b21b6;border-radius:4px;padding:1px 6px;font-size:10px;font-weight:700">Catálogo</span> ' : '') +
+    (p.descuento_pct>0 ? `<span style="background:#fee2e2;color:#991b1b;border-radius:4px;padding:1px 6px;font-size:10px;font-weight:700">-${p.descuento_pct}%</span>` : '');
+  const rows = pubs.map(p => `<tr style="border-bottom:1px solid var(--border)">
+    <td style="padding:7px 10px"><img src="${p.thumbnail}" style="width:34px;height:34px;object-fit:cover;border-radius:4px" onerror="this.style.display='none'"></td>
+    <td style="padding:7px 10px;max-width:260px"><a href="${p.permalink}" target="_blank" style="color:var(--accent);text-decoration:none;font-weight:600">${_escHtml(p.title.slice(0,60))}${p.title.length>60?'…':''}</a><div style="margin-top:3px">${pills(p)}</div></td>
+    <td style="padding:7px 10px;text-align:right;font-weight:700">$${(p.price||0).toLocaleString('es-AR')}${p.original_price?`<div style="text-decoration:line-through;color:var(--muted);font-size:11px;font-weight:400">$${p.original_price.toLocaleString('es-AR')}</div>`:''}
+    <td style="padding:7px 10px;text-align:right">${(p.sold_quantity||0).toLocaleString('es-AR')}</td>
+    <td style="padding:7px 10px;text-align:right">${p.available_quantity??'—'}</td>
+    <td style="padding:7px 10px;text-align:center">${p.free_shipping?'✅':'—'}</td>
+    <td style="padding:7px 10px;text-align:center">${p.installments_no_interest?'✅':'—'}</td>
+  </tr>`).join('');
+  return `<table style="width:100%;border-collapse:collapse;font-size:12px">
+    <thead><tr style="background:var(--surface2)">
+      <th style="padding:7px 10px;text-align:left;font-size:11px;color:var(--muted)"></th>
+      <th style="padding:7px 10px;text-align:left;font-size:11px;color:var(--muted)">Título</th>
+      <th style="padding:7px 10px;text-align:right;font-size:11px;color:var(--muted)">Precio</th>
+      <th style="padding:7px 10px;text-align:right;font-size:11px;color:var(--muted)">Vendidos</th>
+      <th style="padding:7px 10px;text-align:right;font-size:11px;color:var(--muted)">Stock</th>
+      <th style="padding:7px 10px;text-align:center;font-size:11px;color:var(--muted)">Envío gratis</th>
+      <th style="padding:7px 10px;text-align:center;font-size:11px;color:var(--muted)">Cuotas s/i</th>
+    </tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+function _renderTablaPromos(promos) {
+  const rows = promos.map(p => `<tr style="border-bottom:1px solid var(--border)">
+    <td style="padding:7px 10px"><img src="${p.thumbnail}" style="width:34px;height:34px;object-fit:cover;border-radius:4px" onerror="this.style.display='none'"></td>
+    <td style="padding:7px 10px;max-width:280px"><a href="${p.permalink}" target="_blank" style="color:var(--accent);text-decoration:none">${_escHtml(p.title.slice(0,70))}${p.title.length>70?'…':''}</a></td>
+    <td style="padding:7px 10px;text-align:right"><span style="text-decoration:line-through;color:var(--muted);font-size:11px">$${(p.original_price||0).toLocaleString('es-AR')}</span> <strong style="color:#ff5252">$${(p.price||0).toLocaleString('es-AR')}</strong></td>
+    <td style="padding:7px 10px;text-align:center"><span style="background:#fee2e2;color:#991b1b;border-radius:4px;padding:2px 7px;font-size:11px;font-weight:700">-${p.descuento_pct}%</span></td>
+    <td style="padding:7px 10px;text-align:right">${(p.sold_quantity||0).toLocaleString('es-AR')}</td>
+  </tr>`).join('');
+  return `<table style="width:100%;border-collapse:collapse;font-size:12px">
+    <thead><tr style="background:var(--surface2)">
+      <th style="padding:7px 10px"></th>
+      <th style="padding:7px 10px;text-align:left;font-size:11px;color:var(--muted)">Título</th>
+      <th style="padding:7px 10px;text-align:right;font-size:11px;color:var(--muted)">Precio</th>
+      <th style="padding:7px 10px;text-align:center;font-size:11px;color:var(--muted)">Descuento</th>
+      <th style="padding:7px 10px;text-align:right;font-size:11px;color:var(--muted)">Vendidos</th>
+    </tr></thead><tbody>${rows}</tbody></table>`;
 }
 
 async function initDestaqueTab() {

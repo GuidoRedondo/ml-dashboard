@@ -5069,6 +5069,153 @@ app.get('/api/promociones', requireAuth, async (req, res) => {
   } catch(e) { console.error('[PROMOS]', e.message); res.status(500).json({ error: e.message }); }
 });
 
+// ── COMPETIDORES ──────────────────────────────────────────────────────────────
+
+async function mlGet(path, token) {
+  const url = path.startsWith('http') ? path : `${ML_API}${path}`;
+  const r = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+  if (!r.ok) { const t = await r.text(); throw new Error(`ML ${r.status}: ${t.slice(0,200)}`); }
+  return r.json();
+}
+
+app.get('/api/competidor/buscar', requireAuth, async (req, res) => {
+  try {
+    const token = await getClientToken(parseInt(req.query.client_id));
+    if (!token) return res.status(403).json({ error: 'Sin token' });
+    const { input, site = 'MLA' } = req.query;
+    if (!input) return res.status(400).json({ error: 'Falta input' });
+
+    let sellerId = null;
+    const mlaMatch = String(input).match(/(?:MLA|MLB|MLC|MLM|MCO|MPE|MLU|MLV|MBO)-?(\d{6,})/i);
+    if (mlaMatch) {
+      const itemId = mlaMatch[0].replace('-','');
+      const item = await mlGet(`/items/${itemId}?attributes=seller_id`, token);
+      sellerId = item.seller_id;
+    } else {
+      const search = await mlGet(`/sites/${site}/search?nickname=${encodeURIComponent(input)}&limit=1`, token);
+      if (search.results?.[0]) sellerId = search.results[0].seller.id;
+    }
+    if (!sellerId) return res.status(404).json({ error: 'No se encontró el vendedor' });
+
+    const [user, totalSearch] = await Promise.all([
+      mlGet(`/users/${sellerId}`, token),
+      mlGet(`/sites/${site}/search?seller_id=${sellerId}&limit=1`, token)
+    ]);
+    res.json({
+      seller_id: sellerId,
+      nickname: user.nickname,
+      user_type: user.user_type,
+      tienda_oficial: !!(user.eshop || user.brand),
+      brand_name: user.brand?.name || null,
+      reputation: {
+        level_id: user.seller_reputation?.level_id || null,
+        power_seller_status: user.seller_reputation?.power_seller_status || null,
+        transactions_total: user.seller_reputation?.transactions?.total || 0,
+        transactions_completed: user.seller_reputation?.transactions?.completed || 0,
+        transactions_canceled: user.seller_reputation?.transactions?.canceled || 0
+      },
+      location: { city: user.address?.city || '', state: user.address?.state || '', country: user.country_id || '' },
+      total_publicaciones: totalSearch.paging?.total || 0,
+      registration_date: user.registration_date
+    });
+  } catch(e) { console.error('[COMPETIDOR_BUSCAR]', e.message); res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/competidor/publicaciones', requireAuth, async (req, res) => {
+  try {
+    const token = await getClientToken(parseInt(req.query.client_id));
+    if (!token) return res.status(403).json({ error: 'Sin token' });
+    const { seller_id, site = 'MLA', max = 200 } = req.query;
+    if (!seller_id) return res.status(400).json({ error: 'Falta seller_id' });
+
+    const pageSize = 50, maxNum = Math.min(parseInt(max), 1000);
+    const all = [];
+    for (let offset = 0; offset < maxNum; offset += pageSize) {
+      const r = await mlGet(`/sites/${site}/search?seller_id=${seller_id}&limit=${pageSize}&offset=${offset}`, token);
+      if (!r.results?.length) break;
+      all.push(...r.results);
+      if (all.length >= (r.paging?.total || 0)) break;
+    }
+
+    const total = all.length, now = Date.now();
+    let r1=0,r2=0,r3=0,premium=0,clasico=0,conDescuento=0,envioGratis=0,cuotasSinInteres=0,catalogo=0;
+    let dias0a5=0,dias5a15=0,dias15plus=0,saludSum=0;
+    const logisticCount={}, dominios={};
+
+    for (const it of all) {
+      if (it.price < 15000) r1++; else if (it.price < 30000) r2++; else r3++;
+      if (['gold_pro','gold_premium'].includes(it.listing_type_id)) premium++; else clasico++;
+      const lt = it.shipping?.logistic_type || 'not_specified';
+      logisticCount[lt] = (logisticCount[lt]||0)+1;
+      if (it.original_price && it.original_price > it.price) conDescuento++;
+      if (it.shipping?.free_shipping) envioGratis++;
+      if (it.installments?.rate === 0) cuotasSinInteres++;
+      if (it.catalog_listing) catalogo++;
+      const dom = it.domain_id || 'OTROS';
+      dominios[dom] = (dominios[dom]||0)+1;
+      if (it.last_updated) {
+        const days = Math.floor((now - new Date(it.last_updated).getTime())/86400000);
+        if (days<=5) dias0a5++; else if (days<=15) dias5a15++; else dias15plus++;
+      }
+      let salud=0;
+      if (it.shipping?.free_shipping) salud+=20;
+      if (it.shipping?.mode && it.shipping.mode!=='not_specified') salud+=20;
+      if (['gold_pro','gold_premium'].includes(it.listing_type_id)) salud+=20;
+      if (it.installments?.rate===0) salud+=20;
+      if (it.accepts_mercadopago!==false) salud+=20;
+      saludSum+=salud;
+    }
+
+    const topDominios = Object.entries(dominios).sort((a,b)=>b[1]-a[1]).slice(0,10)
+      .map(([id,count])=>({ domain_id:id, count, pct:+(count/total*100).toFixed(1) }));
+
+    const topPubs = [...all].sort((a,b)=>(b.sold_quantity||0)-(a.sold_quantity||0)).slice(0,20)
+      .map(it=>({
+        id:it.id, title:it.title, thumbnail:it.thumbnail, permalink:it.permalink,
+        price:it.price, original_price:it.original_price,
+        descuento_pct: it.original_price ? +((it.original_price-it.price)/it.original_price*100).toFixed(0) : 0,
+        sold_quantity:it.sold_quantity||0, available_quantity:it.available_quantity,
+        listing_type_id:it.listing_type_id, catalog_listing:it.catalog_listing,
+        free_shipping:it.shipping?.free_shipping||false,
+        logistic_type:it.shipping?.logistic_type||'not_specified',
+        installments_no_interest:it.installments?.rate===0,
+        domain_id:it.domain_id, last_updated:it.last_updated
+      }));
+
+    res.json({
+      total_analizadas: total,
+      rango_precios: { hasta_15k:r1, de_15k_a_30k:r2, mas_30k:r3 },
+      distribucion_listing: { premium, clasico },
+      logistica: logisticCount,
+      promociones_count: conDescuento,
+      envio_gratis_count: envioGratis,
+      cuotas_sin_interes_count: cuotasSinInteres,
+      catalogo_count: catalogo,
+      dias_sin_actualizar: { de_0_a_5:dias0a5, de_5_a_15:dias5a15, mas_15:dias15plus },
+      salud_promedio: total ? +(saludSum/total).toFixed(1) : 0,
+      top_dominios: topDominios,
+      top_publicaciones: topPubs,
+      promociones: topPubs.filter(p=>p.descuento_pct>0).slice(0,20)
+    });
+  } catch(e) { console.error('[COMPETIDOR_PUBS]', e.message); res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/competidor/item/:id', requireAuth, async (req, res) => {
+  try {
+    const token = await getClientToken(parseInt(req.query.client_id));
+    if (!token) return res.status(403).json({ error: 'Sin token' });
+    const item = await mlGet(`/items/${req.params.id}`, token);
+    res.json({
+      id: item.id, title: item.title, price: item.price, original_price: item.original_price,
+      sold_quantity: item.sold_quantity, health: item.health, tags: item.tags,
+      attributes_completos: item.attributes?.filter(a=>a.value_name).length||0,
+      attributes_total: item.attributes?.length||0,
+      gtin: item.attributes?.find(a=>a.id==='GTIN')?.value_name||null,
+      pictures_count: item.pictures?.length||0, warranty: item.warranty
+    });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
 // ── DEVOLUCIONES ──────────────────────────────────────────────────────────────
 // ── PREGUNTAS ─────────────────────────────────────────────────────────────────
 app.get('/api/preguntas', requireAuth, async (req, res) => {
