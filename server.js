@@ -5086,16 +5086,22 @@ app.get('/api/competidor/buscar', requireAuth, async (req, res) => {
     if (!input) return res.status(400).json({ error: 'Falta input' });
 
     let sellerId = null;
-    const mlaMatch = String(input).match(/(?:MLA|MLB|MLC|MLM|MCO|MPE|MLU|MLV|MBO)-?(\d{6,})/i);
+    const mlaMatch = String(input).match(/(?:MLA|MLB|MLC|MLM|MCO|MPE|MLU|MLV|MBO)-?(\d{7,})/i);
     if (mlaMatch) {
-      const itemId = mlaMatch[0].replace('-','');
-      const item = await mlGet(`/items/${itemId}?attributes=seller_id`, token);
-      sellerId = item.seller_id;
-    } else {
-      const search = await mlGet(`/sites/${site}/search?nickname=${encodeURIComponent(input)}&limit=1`, token);
-      if (search.results?.[0]) sellerId = search.results[0].seller.id;
+      // Es una URL o ID de publicación — buscar el seller_id del ítem
+      try {
+        const itemId = mlaMatch[0].replace(/-/g,'');
+        const item = await mlGet(`/items/${itemId}?attributes=seller_id`, token);
+        sellerId = item.seller_id;
+      } catch(e) { console.warn('[COMPETIDOR] item lookup falló, probando como nickname:', e.message); }
     }
-    if (!sellerId) return res.status(404).json({ error: 'No se encontró el vendedor' });
+    if (!sellerId) {
+      // Buscar por nickname usando el endpoint correcto de usuarios
+      const nick = input.replace(/https?:\/\/[^\s]+/g,'').trim() || input.trim();
+      const userSearch = await mlGet(`/users/search?nickname=${encodeURIComponent(nick)}&site_id=${site}`, token);
+      if (userSearch.results?.[0]) sellerId = userSearch.results[0].id;
+    }
+    if (!sellerId) return res.status(404).json({ error: 'No se encontró el vendedor. Revisá el apodo o la URL.' });
 
     const [user, totalSearch] = await Promise.all([
       mlGet(`/users/${sellerId}`, token),
