@@ -6666,10 +6666,12 @@ async function loadAds() {
     const stratLabel = c.strategy === 'PROFITABILITY' ? '💰 Rentabilidad' : c.strategy === 'VISIBILITY' ? '👁 Visibilidad' : (c.strategy || '—');
     const salesShareC = totalRevenue && c.sales ? (c.sales / totalRevenue * 100) : null;
     const salesShareColor = !salesShareC ? 'var(--muted)' : salesShareC >= 50 ? '#ff4d4d' : salesShareC >= 30 ? '#ff9100' : '#00e676';
-    const dailyBudget = c.budget?.amount ?? null;
-    const budgetPct = dailyBudget && c.spend > 0 ? (c.spend / dailyBudget * 100) : null;
+    const dailyBudget = c.budget != null ? c.budget : null;
+    const periodDays = Math.max(1, Math.round((new Date(range.date_to) - new Date(range.date_from)) / (1000*60*60*24))) + 1;
+    const avgDailySpend = c.spend / periodDays;
+    const budgetPct = dailyBudget && c.spend > 0 ? (avgDailySpend / dailyBudget * 100) : null;
     const budgetPctColor = !budgetPct ? 'var(--muted)' : budgetPct >= 90 ? '#ff5252' : budgetPct >= 70 ? '#ff9100' : '#00e676';
-    const targetRoas = c.target_roas != null ? parseFloat(c.target_roas).toFixed(2) + 'x' : '—';
+    const targetRoas = c.roas_target != null ? parseFloat(c.roas_target).toFixed(2) + 'x' : '—';
     return '<tr>'
       + '<td style="font-weight:600">' + c.name + '</td>'
       + '<td style="color:' + c.color + ';font-size:11px">' + c.cuenta + '</td>'
