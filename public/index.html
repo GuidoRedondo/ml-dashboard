@@ -6666,6 +6666,10 @@ async function loadAds() {
     const stratLabel = c.strategy === 'PROFITABILITY' ? '💰 Rentabilidad' : c.strategy === 'VISIBILITY' ? '👁 Visibilidad' : (c.strategy || '—');
     const salesShareC = totalRevenue && c.sales ? (c.sales / totalRevenue * 100) : null;
     const salesShareColor = !salesShareC ? 'var(--muted)' : salesShareC >= 50 ? '#ff4d4d' : salesShareC >= 30 ? '#ff9100' : '#00e676';
+    const dailyBudget = c.budget?.amount ?? null;
+    const budgetPct = dailyBudget && c.spend > 0 ? (c.spend / dailyBudget * 100) : null;
+    const budgetPctColor = !budgetPct ? 'var(--muted)' : budgetPct >= 90 ? '#ff5252' : budgetPct >= 70 ? '#ff9100' : '#00e676';
+    const targetRoas = c.target_roas != null ? parseFloat(c.target_roas).toFixed(2) + 'x' : '—';
     return '<tr>'
       + '<td style="font-weight:600">' + c.name + '</td>'
       + '<td style="color:' + c.color + ';font-size:11px">' + c.cuenta + '</td>'
@@ -6676,6 +6680,9 @@ async function loadAds() {
       + '<td style="text-align:right;font-weight:700;color:' + salesShareColor + '">' + (salesShareC != null ? salesShareC.toFixed(1) + '%' : '—') + '</td>'
       + '<td style="text-align:right;font-weight:600;color:' + acosColor + '">' + (acosVal ? acosVal + '%' : '—') + '</td>'
       + '<td style="text-align:right;font-weight:600">' + (c.roas ? parseFloat(c.roas).toFixed(2) + 'x' : '—') + '</td>'
+      + '<td style="text-align:right">' + (dailyBudget != null ? fmt(dailyBudget) : '—') + '</td>'
+      + '<td style="text-align:right;font-weight:700;color:' + budgetPctColor + '">' + (budgetPct != null ? budgetPct.toFixed(0) + '%' : '—') + '</td>'
+      + '<td style="text-align:right;font-size:11px;color:var(--muted)">' + targetRoas + '</td>'
       + '<td style="text-align:right">' + c.clicks.toLocaleString('es-AR') + '</td>'
       + '<td style="text-align:right">' + (c.impressions >= 1000000 ? Math.round(c.impressions/1000000)+'M' : c.impressions >= 1000 ? Math.round(c.impressions/1000)+'K' : c.impressions.toLocaleString('es-AR')) + '</td>'
       + '</tr>';
@@ -6688,6 +6695,7 @@ async function loadAds() {
     + '<th style="text-align:right">Gasto</th><th style="text-align:right">Ventas Ads</th>'
     + '<th style="text-align:right">% Ventas</th>'
     + '<th style="text-align:right">ACOS</th><th style="text-align:right">ROAS</th>'
+    + '<th style="text-align:right">Presup. diario</th><th style="text-align:right">% Consumido</th><th style="text-align:right">ROAS objetivo</th>'
     + '<th style="text-align:right">Clicks</th><th style="text-align:right">Impresiones</th>'
     + '</tr></thead><tbody>' + rows + '</tbody></table></div>';
 
