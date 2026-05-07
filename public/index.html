@@ -6445,9 +6445,11 @@ function renderAdsAnuncios(data) {
     return `
     <tr data-search="${(i.item_id + ' ' + i.title).toLowerCase()}" data-campaign="${(i.campaign||'').toLowerCase()}" style="border-bottom:1px solid var(--border);${idx%2===0?'background:rgba(255,255,255,.02)':''}">
       <td style="padding:7px 10px;font-size:12px;white-space:nowrap">
-        <a href="https://articulo.mercadolibre.com.ar/${i.item_id}" target="_blank" style="color:var(--accent);text-decoration:none;font-weight:600">${i.item_id}</a>
+        <span onclick="navigator.clipboard.writeText('${i.item_id}');showToast('📋 ${i.item_id} copiado')" style="color:var(--accent);font-weight:600;cursor:pointer" title="Copiar MLA">${i.item_id}</span>
       </td>
-      <td style="padding:7px 10px;font-size:12px;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${i.title}">${i.title}</td>
+      <td style="padding:7px 10px;font-size:12px;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${i.title}">
+        <a href="https://articulo.mercadolibre.com.ar/${i.item_id.replace('MLA','MLA-')}" target="_blank" style="color:var(--text);text-decoration:none">${i.title}</a>
+      </td>
       <td style="padding:7px 10px;text-align:center;white-space:nowrap">${statusBadge(i.status)}<div style="font-size:10px;color:var(--muted);margin-top:2px;max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${i.campaign}">${i.campaign}</div></td>
       <td style="padding:7px 10px;text-align:right;font-size:12px;font-weight:700;color:${acosColor(i.tacos)}">${i.tacos != null ? fmtP(i.tacos) : '—'}</td>
       <td style="padding:7px 10px;text-align:right;font-size:12px;font-weight:700;color:${roasColor(i.roas)}">${fmtX(i.roas)}</td>
