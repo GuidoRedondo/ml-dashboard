@@ -2565,6 +2565,7 @@ app.get('/api/ads', requireAuth, async (req, res) => {
       campaigns: campaigns.map(c => {
         const m = c.metrics || {};
         const spend = m.cost||0, sales = m.total_amount||0;
+        if (campaigns.indexOf(c) === 0) console.log('[ADS_CAMP_RAW]', JSON.stringify(c));
         return { id: c.id, name: c.name, status: c.status, budget: c.budget, strategy: c.strategy, target_roas: c.target_roas ?? null, spend, clicks: m.clicks||0, impressions: m.prints||0, sales, acos: spend&&sales?((spend/sales)*100).toFixed(1):null, roas: spend&&sales?(sales/spend).toFixed(2):null };
       })
     });
