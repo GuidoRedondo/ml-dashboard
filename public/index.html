@@ -8080,11 +8080,10 @@ function descargarComparacionPDF(mes_a, mes_b) {
   </head><body>
     <h1>Comparación P&L — ${fmtMes(mes_a)} vs ${fmtMes(mes_b)}</h1>
     ${content}
-    <script>
-      // Remover botón PDF de la ventana de impresión
+    <scr` + `ipt>
       document.querySelector('button[onclick*="descargarComparacionPDF"]')?.remove();
       window.onload = () => { window.print(); };
-    </script>
+    </scr` + `ipt>
   </body></html>`);
   win.document.close();
 }
