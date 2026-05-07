@@ -8043,7 +8043,50 @@ function renderComparacion(data, mes_a, mes_b) {
       </div>
     </div>`;
 
-  el.innerHTML = kpis + tabla;
+  el.innerHTML = kpis + tabla +
+    `<div style="text-align:right;margin-top:14px">
+      <button onclick="descargarComparacionPDF('${mes_a}','${mes_b}')" style="padding:7px 18px;border:none;border-radius:8px;background:#6366f1;color:#fff;font-size:13px;font-weight:600;cursor:pointer">📄 Descargar PDF</button>
+    </div>`;
+}
+
+function descargarComparacionPDF(mes_a, mes_b) {
+  const content = document.getElementById('cmpResultados')?.innerHTML;
+  if (!content) return;
+  const fmtMes = m => {
+    if (m === 'actual') return 'Mes en curso';
+    const [y, mo] = m.split('-');
+    const nombres = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
+    return `${nombres[parseInt(mo)-1]} ${y}`;
+  };
+  const win = window.open('', '_blank');
+  win.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8">
+    <title>Comparación ${fmtMes(mes_a)} vs ${fmtMes(mes_b)}</title>
+    <style>
+      * { box-sizing: border-box; margin: 0; padding: 0; }
+      body { font-family: Arial, sans-serif; font-size: 12px; color: #111; background: #fff; padding: 24px; }
+      h1 { font-size: 16px; margin-bottom: 16px; color: #111; }
+      table { width: 100%; border-collapse: collapse; font-size: 11px; }
+      th, td { padding: 6px 10px; border-bottom: 1px solid #e0e0e0; }
+      th { background: #f5f5f5; font-weight: 600; text-align: right; }
+      th:first-child, td:first-child { text-align: left; }
+      .kpi-grid, [style*="grid-template-columns"] { display: grid; grid-template-columns: repeat(3,1fr); gap: 10px; margin-bottom: 16px; }
+      .kpi-card, [class*="kpi-card"] { border: 1px solid #e0e0e0; border-radius: 6px; padding: 12px; background: #fff; }
+      @media print {
+        body { padding: 10px; }
+        button { display: none !important; }
+        @page { margin: 12mm; size: A4; }
+      }
+    </style>
+  </head><body>
+    <h1>Comparación P&L — ${fmtMes(mes_a)} vs ${fmtMes(mes_b)}</h1>
+    ${content}
+    <script>
+      // Remover botón PDF de la ventana de impresión
+      document.querySelector('button[onclick*="descargarComparacionPDF"]')?.remove();
+      window.onload = () => { window.print(); };
+    </script>
+  </body></html>`);
+  win.document.close();
 }
 
 function setReporteTab(tab, el) {
