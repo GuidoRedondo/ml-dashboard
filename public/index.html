@@ -12223,7 +12223,8 @@ async function loadPromociones() {
 
     const promos = data.promos || [];
     if (!promos.length) {
-      list.innerHTML = '<div style="color:var(--muted);padding:20px;font-size:13px">No se encontraron promociones activas para este cliente.</div>';
+      const dbg = data.debug ? `<pre style="font-size:10px;color:var(--muted);margin-top:12px;white-space:pre-wrap;word-break:break-all">sp: ${data.debug.sp}\n\nup: ${data.debug.up}</pre>` : '';
+      list.innerHTML = `<div style="color:var(--muted);padding:20px;font-size:13px">No se encontraron promociones activas para este cliente.${dbg}</div>`;
       return;
     }
 

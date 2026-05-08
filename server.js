@@ -5066,6 +5066,7 @@ app.get('/api/promociones', requireAuth, async (req, res) => {
     results.promos = [...parsePromos(sp), ...parsePromos(up)]
       .filter((p, i, arr) => arr.findIndex(x => x.id === p.id) === i);
 
+    results.debug = { sp: JSON.stringify(sp)?.slice(0,500), up: JSON.stringify(up)?.slice(0,500) };
     res.json(results);
   } catch(e) { console.error('[PROMOS]', e.message); res.status(500).json({ error: e.message }); }
 });
