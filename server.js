@@ -5136,10 +5136,15 @@ app.get('/api/competidor/buscar', requireAuth, async (req, res) => {
       hint: 'Ingresá el ID numérico del vendedor directamente (ej: 123456789). Podés encontrarlo filtrando por ese vendedor en ML y mirando la URL, o desde la API con /users/me de su cuenta.'
     });
 
-    const [user, totalSearch] = await Promise.all([
-      mlGet(`/users/${sellerId}`, token),
-      mlGet(`/sites/${site}/search?seller_id=${sellerId}&limit=1`, token)
-    ]);
+    let user, totalSearch;
+    try {
+      user = await mlGet(`/users/${sellerId}`, token);
+      console.log('[COMPETIDOR] /users OK, nickname:', user.nickname);
+    } catch(e) { console.error('[COMPETIDOR] /users falló:', e.message); throw e; }
+    try {
+      totalSearch = await mlGet(`/sites/${site}/search?seller_id=${sellerId}&limit=1`, token);
+      console.log('[COMPETIDOR] /search OK, total:', totalSearch.paging?.total);
+    } catch(e) { console.error('[COMPETIDOR] /search falló:', e.message); throw e; }
     res.json({
       seller_id: sellerId,
       nickname: user.nickname,
