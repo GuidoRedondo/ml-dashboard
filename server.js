@@ -5103,29 +5103,38 @@ app.get('/api/competidor/buscar', requireAuth, async (req, res) => {
     if (!input) return res.status(400).json({ error: 'Falta input' });
 
     let sellerId = null;
-    const mlaMatch = String(input).match(/(?:MLA|MLB|MLC|MLM|MCO|MPE|MLU|MLV|MBO)-?(\d{7,})/i);
-    if (!mlaMatch) {
-      return res.status(400).json({ error: 'Pegá la URL de una publicación del competidor (ej: https://articulo.mercadolibre.com.ar/MLA-...). La búsqueda por apodo no está disponible para apps no certificadas.' });
+
+    // ¿Es un seller_id numérico directo?
+    if (/^\d{6,12}$/.test(input.trim())) {
+      sellerId = parseInt(input.trim());
     }
-    const itemId = mlaMatch[0].replace(/-/g,'');
 
-    // 1) Intentar con multi-get (reglas de acceso distintas a /items/{id})
-    try {
-      const multi = await mlGet(`/items?ids=${itemId}&attributes=id,seller_id`, token);
-      const row = Array.isArray(multi) ? multi[0] : null;
-      if (row?.code === 200 && row.body?.seller_id) sellerId = row.body.seller_id;
-    } catch(e) { console.warn('[COMPETIDOR] multi-get falló:', e.message); }
-
-    // 2) Fallback: extraer seller_id desde resultados de búsqueda del sitio
+    // ¿Es una URL/ID de publicación?
     if (!sellerId) {
-      try {
-        const sr = await mlGet(`/sites/${site}/search?q=${itemId}&limit=10`, token);
-        const match = (sr.results || []).find(r => r.id === itemId);
-        if (match?.seller?.id) sellerId = match.seller.id;
-      } catch(e) { console.warn('[COMPETIDOR] search fallback falló:', e.message); }
+      const mlaMatch = String(input).match(/(?:MLA|MLB|MLC|MLM|MCO|MPE|MLU|MLV|MBO)-?(\d{7,})/i);
+      if (mlaMatch) {
+        const itemId = mlaMatch[0].replace(/-/g,'');
+        // Multi-get — reglas de acceso distintas a /items/{id}
+        try {
+          const multi = await mlGet(`/items?ids=${itemId}&attributes=id,seller_id`, token);
+          const row = Array.isArray(multi) ? multi[0] : null;
+          if (row?.code === 200 && row.body?.seller_id) sellerId = row.body.seller_id;
+        } catch(e) { console.warn('[COMPETIDOR] multi-get falló:', e.message); }
+        // Fallback búsqueda por texto
+        if (!sellerId) {
+          try {
+            const sr = await mlGet(`/sites/${site}/search?q=${itemId}&limit=10`, token);
+            const match = (sr.results || []).find(r => r.id === itemId);
+            if (match?.seller?.id) sellerId = match.seller.id;
+          } catch(e) { console.warn('[COMPETIDOR] search falló:', e.message); }
+        }
+      }
     }
 
-    if (!sellerId) return res.status(404).json({ error: 'No se pudo identificar al vendedor. Probá con la URL completa de una de sus publicaciones activas.' });
+    if (!sellerId) return res.status(404).json({
+      error: 'No se pudo identificar al vendedor automáticamente.',
+      hint: 'Ingresá el ID numérico del vendedor directamente (ej: 123456789). Podés encontrarlo filtrando por ese vendedor en ML y mirando la URL, o desde la API con /users/me de su cuenta.'
+    });
 
     const appToken = await getAppToken(parseInt(req.query.client_id));
     const [user, totalSearch] = await Promise.all([
