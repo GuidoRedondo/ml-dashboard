@@ -5091,10 +5091,7 @@ app.get('/api/competidor/buscar', requireAuth, async (req, res) => {
       return res.status(400).json({ error: 'Pegá la URL de una publicación del competidor (ej: https://articulo.mercadolibre.com.ar/MLA-...). La búsqueda por apodo no está disponible para apps no certificadas.' });
     }
     const itemId = mlaMatch[0].replace(/-/g,'');
-    // Item details son públicos en ML — no requieren token
-    const itemRes = await fetch(`${ML_API}/items/${itemId}?attributes=seller_id`);
-    const item = await itemRes.json();
-    if (!itemRes.ok) return res.status(502).json({ error: `ML no pudo obtener el ítem: ${item.message || itemRes.status}` });
+    const item = await mlGet(`/items/${itemId}`, token);
     sellerId = item.seller_id;
     if (!sellerId) return res.status(404).json({ error: 'No se pudo obtener el vendedor de esa publicación.' });
 
