@@ -5069,6 +5069,58 @@ app.get('/api/promociones', requireAuth, async (req, res) => {
   } catch(e) { console.error('[PROMOS]', e.message); res.status(500).json({ error: e.message }); }
 });
 
+app.get('/api/promociones-items', requireAuth, async (req, res) => {
+  try {
+    const token = await getClientToken(parseInt(req.query.client_id));
+    if (!token) return res.status(403).json({ error: 'Sin token' });
+    const { promo_id } = req.query;
+    if (!promo_id) return res.status(400).json({ error: 'Falta promo_id' });
+    const headers = { Authorization: `Bearer ${token}` };
+
+    // Intentar obtener ítems de la promoción
+    let items = [];
+    const triedUrls = [];
+
+    // Endpoint principal de seller-promotions
+    try {
+      const url = `${ML_API}/seller-promotions/promotions/${promo_id}/items?app_version=v2`;
+      triedUrls.push(url);
+      const r = await fetch(url, { headers }).then(r => r.json());
+      const arr = r.results || r.items || (Array.isArray(r) ? r : []);
+      items = arr.map(it => ({
+        item_id: it.item_id || it.id,
+        title: it.title || it.name || null,
+        original_price: it.original_price || it.regular_price || null,
+        sale_price: it.sale_price || it.price || null,
+        discount_pct: it.discount_percentage ?? (it.action?.value) ?? null,
+        status: it.status || null,
+        thumbnail: it.thumbnail || null,
+      }));
+    } catch(e) { console.warn('[PROMO_ITEMS] items endpoint:', e.message); }
+
+    // Si no trajo ítems, intentar el detalle de la promoción
+    if (!items.length) {
+      try {
+        const url = `${ML_API}/seller-promotions/promotions/${promo_id}?app_version=v2`;
+        triedUrls.push(url);
+        const r = await fetch(url, { headers }).then(r => r.json());
+        const arr = r.items || r.results || [];
+        items = arr.map(it => ({
+          item_id: it.item_id || it.id,
+          title: it.title || null,
+          original_price: it.original_price || null,
+          sale_price: it.sale_price || it.price || null,
+          discount_pct: it.discount_percentage ?? (it.action?.value) ?? null,
+          status: it.status || null,
+          thumbnail: it.thumbnail || null,
+        }));
+      } catch(e) { console.warn('[PROMO_ITEMS] detail endpoint:', e.message); }
+    }
+
+    res.json({ items, total: items.length });
+  } catch(e) { console.error('[PROMO_ITEMS]', e.message); res.status(500).json({ error: e.message }); }
+});
+
 // ── COMPETIDORES ──────────────────────────────────────────────────────────────
 
 async function mlGet(path, token) {

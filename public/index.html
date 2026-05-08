@@ -600,6 +600,9 @@ tbody td {
       <div class="nav-item" data-page="informe-mensual" onclick="showPage('informe-mensual',this);cargarSectionInformeMensual();initPFTabla()">
         <span class="nav-icon">📄</span> Informe Mensual
       </div>
+      <div class="nav-item" data-page="promociones" onclick="showPage('promociones',this);loadPromociones()">
+        <span class="nav-icon">🏷️</span> Promociones
+      </div>
 
       <div style="height:1px;background:var(--border);margin:12px 0"></div>
 
@@ -1706,6 +1709,17 @@ tbody td {
 
       </div><!-- fin informe-form-container -->
     </div><!-- fin page-informe-mensual -->
+
+    <!-- PROMOCIONES -->
+    <div class="page" id="page-promociones">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px;flex-wrap:wrap">
+        <h2 style="margin:0;font-family:var(--font-b);flex:1">🏷️ Promociones</h2>
+        <button onclick="loadPromociones()" style="padding:7px 16px;background:var(--accent);color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer">↺ Actualizar</button>
+      </div>
+      <div id="promos-loader" style="display:none;color:var(--muted);padding:40px;text-align:center">⏳ Cargando promociones…</div>
+      <div id="promos-error" style="display:none;color:#ff5252;background:rgba(255,82,82,.1);padding:12px 14px;border-radius:8px;margin-bottom:12px;font-size:13px"></div>
+      <div id="promos-list"></div>
+    </div>
 
     <!-- MODAL VISTA PREVIA INFORME -->
     <div id="modal-informe-preview" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:9999;justify-content:center;align-items:flex-start;padding:20px;overflow-y:auto">
@@ -6223,9 +6237,9 @@ function applyPermissions() {
     });
   }
 
-  // Motor de Publicidad e Informe Mensual: solo admins y consultores
+  // Motor de Publicidad, Informe Mensual y Promociones: solo admins y consultores
   const soloConsultores = role === 'admin' || role === 'consultant' || role === 'colaborador';
-  ['decisiones-publi','informe-mensual'].forEach(p => {
+  ['decisiones-publi','informe-mensual','promociones'].forEach(p => {
     const el = document.querySelector(`[data-page="${p}"]`);
     if (el) el.style.display = soloConsultores ? '' : 'none';
   });
@@ -12188,6 +12202,121 @@ async function ejecutarAnalyzerPubli() {
 }
 
 // ===== INFORME MENSUAL =====
+
+// ── PROMOCIONES ───────────────────────────────────────────────────────────────
+
+async function loadPromociones() {
+  const ac = getActiveClient();
+  if (!ac) { document.getElementById('promos-list').innerHTML = '<div style="color:var(--muted);padding:20px">Seleccioná un cliente primero.</div>'; return; }
+
+  const loader = document.getElementById('promos-loader');
+  const errEl  = document.getElementById('promos-error');
+  const list   = document.getElementById('promos-list');
+  loader.style.display = '';
+  errEl.style.display  = 'none';
+  list.innerHTML       = '';
+
+  try {
+    const uid = ac.ml_user_id || ac.user_id || '';
+    const data = await apiCall('GET', `/api/promociones?client_id=${ac.id}&uid=${uid}`);
+    if (data.error) throw new Error(data.error);
+
+    const promos = data.promos || [];
+    if (!promos.length) {
+      list.innerHTML = '<div style="color:var(--muted);padding:20px;font-size:13px">No se encontraron promociones activas para este cliente.</div>';
+      return;
+    }
+
+    list.innerHTML = promos.map(p => {
+      const desde = p.date_from ? new Date(p.date_from).toLocaleDateString('es-AR') : '—';
+      const hasta = p.date_to   ? new Date(p.date_to).toLocaleDateString('es-AR')   : '—';
+      const badge = p.status === 'started' || p.status === 'active'
+        ? '<span style="background:#00e67622;color:#00e676;padding:2px 8px;border-radius:12px;font-size:11px;font-weight:600">ACTIVA</span>'
+        : p.status === 'finished' || p.status === 'ended'
+        ? '<span style="background:#ff525222;color:#ff5252;padding:2px 8px;border-radius:12px;font-size:11px;font-weight:600">FINALIZADA</span>'
+        : `<span style="background:var(--surface2);color:var(--muted);padding:2px 8px;border-radius:12px;font-size:11px">${p.status}</span>`;
+      const descPct = p.discount_pct != null ? `<span style="color:var(--accent);font-weight:600">${p.discount_pct}% off</span>` : '';
+      return `
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;margin-bottom:12px;overflow:hidden">
+          <div style="padding:14px 18px;display:flex;align-items:center;gap:12px;cursor:pointer"
+               onclick="togglePromoItems(this,'${p.id}',${ac.id})">
+            <div style="flex:1">
+              <div style="font-weight:700;font-size:14px;margin-bottom:4px">${_escHtml(p.name)} ${badge}</div>
+              <div style="font-size:12px;color:var(--muted)">
+                Tipo: ${p.type} &nbsp;·&nbsp; ${desde} → ${hasta}
+                ${descPct ? ' &nbsp;·&nbsp; ' + descPct : ''}
+                ${p.item_count ? ' &nbsp;·&nbsp; ' + p.item_count + ' productos' : ''}
+              </div>
+            </div>
+            <span class="promo-chevron" style="font-size:18px;color:var(--muted);transition:transform .2s">▸</span>
+          </div>
+          <div class="promo-items-panel" style="display:none;border-top:1px solid var(--border);padding:14px 18px">
+            <div class="promo-items-inner" style="color:var(--muted);font-size:13px">Cargando…</div>
+          </div>
+        </div>`;
+    }).join('');
+  } catch(e) {
+    errEl.textContent = e.message;
+    errEl.style.display = '';
+  } finally {
+    loader.style.display = 'none';
+  }
+}
+
+async function togglePromoItems(headerEl, promoId, clientId) {
+  const card   = headerEl.parentElement;
+  const panel  = card.querySelector('.promo-items-panel');
+  const chevron = headerEl.querySelector('.promo-chevron');
+  const inner  = panel.querySelector('.promo-items-inner');
+
+  const open = panel.style.display !== 'none';
+  panel.style.display  = open ? 'none' : '';
+  chevron.style.transform = open ? '' : 'rotate(90deg)';
+  if (open || inner.dataset.loaded) return;
+
+  try {
+    const data = await apiCall('GET', `/api/promociones-items?promo_id=${promoId}&client_id=${clientId}`);
+    if (data.error) throw new Error(data.error);
+    const items = data.items || [];
+    if (!items.length) { inner.textContent = 'No se encontraron productos en esta promoción.'; inner.dataset.loaded = '1'; return; }
+
+    inner.innerHTML = `
+      <table style="width:100%;border-collapse:collapse;font-size:13px">
+        <thead>
+          <tr style="color:var(--muted);font-size:11px;text-transform:uppercase;border-bottom:1px solid var(--border)">
+            <th style="padding:6px 8px;text-align:left">Producto</th>
+            <th style="padding:6px 8px;text-align:right">Precio original</th>
+            <th style="padding:6px 8px;text-align:right">Precio promo</th>
+            <th style="padding:6px 8px;text-align:right">% Descuento</th>
+            <th style="padding:6px 8px;text-align:left">Estado</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${items.map(it => {
+            const descPct = it.discount_pct != null
+              ? `<span style="color:#00e676;font-weight:700">${it.discount_pct}%</span>`
+              : it.original_price && it.sale_price
+                ? `<span style="color:#00e676;font-weight:700">${Math.round((it.original_price - it.sale_price) / it.original_price * 100)}%</span>`
+                : '—';
+            const thumb = it.thumbnail ? `<img src="${it.thumbnail}" style="width:36px;height:36px;object-fit:contain;border-radius:6px;margin-right:8px;vertical-align:middle">` : '';
+            return `<tr style="border-bottom:1px solid var(--border)">
+              <td style="padding:8px">${thumb}<span style="font-size:12px">${_escHtml(it.title || it.item_id || '—')}</span></td>
+              <td style="padding:8px;text-align:right;color:var(--muted);text-decoration:line-through">${it.original_price ? '$' + it.original_price.toLocaleString('es-AR') : '—'}</td>
+              <td style="padding:8px;text-align:right;font-weight:600">${it.sale_price ? '$' + it.sale_price.toLocaleString('es-AR') : '—'}</td>
+              <td style="padding:8px;text-align:right">${descPct}</td>
+              <td style="padding:8px;font-size:11px;color:var(--muted)">${it.status || '—'}</td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table>`;
+    inner.dataset.loaded = '1';
+  } catch(e) {
+    inner.textContent = 'Error: ' + e.message;
+    inner.dataset.loaded = '1';
+  }
+}
+
+// ── FIN PROMOCIONES ────────────────────────────────────────────────────────────
 
 let informeActual = null; // estado del informe en edición
 
