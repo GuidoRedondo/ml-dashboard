@@ -5016,36 +5016,41 @@ app.get('/api/promociones', requireAuth, async (req, res) => {
     const token = await getClientToken(parseInt(req.query.client_id));
     if (!token) return res.status(403).json({ error: 'Sin token' });
     const headers = { 'Authorization': `Bearer ${token}` };
-    const uid = req.query.uid;
 
-    // Try multiple promotion endpoints — ML has different ones depending on app level
-    const results = { raw: {}, promos: [], items_in_promo: {} };
+    // Obtener uid desde DB si no viene como param
+    const clientRow = await pool.query('SELECT ml_user_id FROM clients WHERE id = $1', [parseInt(req.query.client_id)]);
+    const uid = clientRow.rows[0]?.ml_user_id || req.query.uid;
+    if (!uid) return res.json({ promos: [] });
+
+    const mlFetch = (url) => {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 8000);
+      return fetch(url, { headers, signal: ctrl.signal })
+        .then(r => r.json())
+        .finally(() => clearTimeout(t));
+    };
+
+    const results = { promos: [] };
 
     // ── 1. Seller promotions ──────────────────────────────────────────────────
+    let sp = null;
     try {
-      const r = await fetch(`${ML_API}/seller-promotions/promotions?seller_id=${uid}&app_version=v2`, { headers }).then(r => r.json());
-      results.raw.seller_promotions = r;
-      console.log('[PROMOS] seller-promotions:', JSON.stringify(r).slice(0,300));
-    } catch(e) { results.raw.seller_promotions_err = e.message; }
+      sp = await mlFetch(`${ML_API}/seller-promotions/promotions?seller_id=${uid}&app_version=v2`);
+      console.log('[PROMOS] seller-promotions:', JSON.stringify(sp).slice(0, 300));
+    } catch(e) { console.warn('[PROMOS] seller-promotions err:', e.message); }
 
-    // ── 2. Deals / campaigns ──────────────────────────────────────────────────
+    // ── 2. User promotions ────────────────────────────────────────────────────
+    let up = null;
     try {
-      const r = await fetch(`${ML_API}/seller-promotions/users/${uid}/promotions`, { headers }).then(r => r.json());
-      results.raw.user_promotions = r;
-      console.log('[PROMOS] user-promotions:', JSON.stringify(r).slice(0,300));
-    } catch(e) { results.raw.user_promotions_err = e.message; }
-
-    // ── 3. Discount campaigns ─────────────────────────────────────────────────
-    try {
-      const r = await fetch(`${ML_API}/campaigns?seller_id=${uid}`, { headers }).then(r => r.json());
-      results.raw.campaigns = r;
-      console.log('[PROMOS] campaigns:', JSON.stringify(r).slice(0,300));
-    } catch(e) { results.raw.campaigns_err = e.message; }
+      up = await mlFetch(`${ML_API}/seller-promotions/users/${uid}/promotions`);
+      console.log('[PROMOS] user-promotions:', JSON.stringify(up).slice(0, 300));
+    } catch(e) { console.warn('[PROMOS] user-promotions err:', e.message); }
 
     // ── Parse whichever endpoint worked ──────────────────────────────────────
     const parsePromos = (data) => {
       if (!data) return [];
       const arr = data.results || data.promotions || data.data || (Array.isArray(data) ? data : []);
+      if (!Array.isArray(arr)) return [];
       return arr.map(p => ({
         id: p.id,
         name: p.name || p.promotion_name || p.title || '—',
@@ -5058,12 +5063,8 @@ app.get('/api/promociones', requireAuth, async (req, res) => {
       }));
     };
 
-    const sp = results.raw.seller_promotions;
-    const up = results.raw.user_promotions;
-    results.promos = [
-      ...parsePromos(sp),
-      ...parsePromos(up),
-    ].filter((p, i, arr) => arr.findIndex(x => x.id === p.id) === i); // dedupe
+    results.promos = [...parsePromos(sp), ...parsePromos(up)]
+      .filter((p, i, arr) => arr.findIndex(x => x.id === p.id) === i);
 
     res.json(results);
   } catch(e) { console.error('[PROMOS]', e.message); res.status(500).json({ error: e.message }); }

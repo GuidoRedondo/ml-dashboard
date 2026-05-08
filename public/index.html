@@ -12217,8 +12217,8 @@ async function loadPromociones() {
   list.innerHTML       = '';
 
   try {
-    const uid = ac.ml_user_id || ac.user_id || '';
-    const data = await apiCall('GET', `/api/promociones?client_id=${ac.id}&uid=${uid}`);
+    const data = await apiCall('GET', `/api/promociones?client_id=${ac.id}`);
+    if (!data) throw new Error('Sin acceso — verificá el token del cliente');
     if (data.error) throw new Error(data.error);
 
     const promos = data.promos || [];
