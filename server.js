@@ -5078,6 +5078,13 @@ async function mlGet(path, token) {
   return r.json();
 }
 
+async function mlGetPublic(path) {
+  const url = path.startsWith('http') ? path : `${ML_API}${path}`;
+  const r = await fetch(url);
+  if (!r.ok) { const t = await r.text(); throw new Error(`ML ${r.status}: ${t.slice(0,200)}`); }
+  return r.json();
+}
+
 let _appToken = null, _appTokenExp = 0;
 async function getAppToken(clientId) {
   if (_appToken && Date.now() < _appTokenExp) return _appToken;
@@ -5102,9 +5109,9 @@ app.get('/api/competidor/buscar', requireAuth, async (req, res) => {
     const { input, site = 'MLA' } = req.query;
     if (!input) return res.status(400).json({ error: 'Falta input' });
 
-    // Buscar vendedores por término — devuelve lista para que el usuario elija
+    // Buscar vendedores por término — endpoint público, no necesita token válido
     if (req.query.mode === 'search') {
-      const sr = await mlGet(`/sites/${site}/search?q=${encodeURIComponent(input)}&limit=50`, token);
+      const sr = await mlGetPublic(`/sites/${site}/search?q=${encodeURIComponent(input)}&limit=50`);
       const sellerMap = {};
       for (const it of (sr.results || [])) {
         const s = it.seller;
@@ -5121,8 +5128,8 @@ app.get('/api/competidor/buscar', requireAuth, async (req, res) => {
     if (!sellerId || isNaN(sellerId)) return res.status(400).json({ error: 'Falta el seller_id numérico.' });
 
     const [userRes, totalRes] = await Promise.allSettled([
-      mlGet(`/users/${sellerId}`, token),
-      mlGet(`/sites/${site}/search?seller_id=${sellerId}&limit=1`, token)
+      mlGetPublic(`/users/${sellerId}`),
+      mlGetPublic(`/sites/${site}/search?seller_id=${sellerId}&limit=1`)
     ]);
     const user  = userRes.status  === 'fulfilled' ? userRes.value  : {};
     const total = totalRes.status === 'fulfilled' ? totalRes.value : {};
@@ -5156,19 +5163,19 @@ app.get('/api/competidor/publicaciones', requireAuth, async (req, res) => {
 
     const pageSize = 50, all = [];
     if (term) {
-      // Buscar por término y filtrar por seller — evita el 403 de ML al usar seller_id como filtro directo
+      // Buscar por término (público) y filtrar por seller_id del lado servidor
       const pages = Math.min(Math.ceil(parseInt(max) / pageSize), 10);
       for (let p = 0; p < pages; p++) {
-        const r = await mlGet(`/sites/${site}/search?q=${encodeURIComponent(term)}&limit=${pageSize}&offset=${p*pageSize}`, token);
+        const r = await mlGetPublic(`/sites/${site}/search?q=${encodeURIComponent(term)}&limit=${pageSize}&offset=${p*pageSize}`);
         const hits = (r.results || []).filter(it => String(it.seller?.id) === String(seller_id));
         all.push(...hits);
         if ((r.results || []).length < pageSize) break;
       }
     } else {
-      // Fallback: filtro directo por seller_id (puede dar 403 en apps no certificadas)
+      // Sin término: usar seller_id directo (puede 403 en apps no certificadas)
       const maxNum = Math.min(parseInt(max), 1000);
       for (let offset = 0; offset < maxNum; offset += pageSize) {
-        const r = await mlGet(`/sites/${site}/search?seller_id=${seller_id}&limit=${pageSize}&offset=${offset}`, token);
+        const r = await mlGetPublic(`/sites/${site}/search?seller_id=${seller_id}&limit=${pageSize}&offset=${offset}`);
         if (!r.results?.length) break;
         all.push(...r.results);
         if (all.length >= (r.paging?.total || 0)) break;
