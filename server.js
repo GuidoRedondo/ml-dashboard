@@ -5087,21 +5087,13 @@ app.get('/api/competidor/buscar', requireAuth, async (req, res) => {
 
     let sellerId = null;
     const mlaMatch = String(input).match(/(?:MLA|MLB|MLC|MLM|MCO|MPE|MLU|MLV|MBO)-?(\d{7,})/i);
-    if (mlaMatch) {
-      // Es una URL o ID de publicación — buscar el seller_id del ítem
-      try {
-        const itemId = mlaMatch[0].replace(/-/g,'');
-        const item = await mlGet(`/items/${itemId}?attributes=seller_id`, token);
-        sellerId = item.seller_id;
-      } catch(e) { console.warn('[COMPETIDOR] item lookup falló, probando como nickname:', e.message); }
+    if (!mlaMatch) {
+      return res.status(400).json({ error: 'Pegá la URL de una publicación del competidor (ej: https://articulo.mercadolibre.com.ar/MLA-...). La búsqueda por apodo no está disponible para apps no certificadas.' });
     }
-    if (!sellerId) {
-      // Buscar ítems del vendedor por nickname y extraer seller_id del primer resultado
-      const nick = input.trim();
-      const search = await mlGet(`/sites/${site}/search?nickname=${encodeURIComponent(nick)}&limit=1`, token);
-      if (search.results?.[0]) sellerId = search.results[0].seller.id;
-    }
-    if (!sellerId) return res.status(404).json({ error: 'No se encontró el vendedor. Revisá el apodo o la URL.' });
+    const itemId = mlaMatch[0].replace(/-/g,'');
+    const item = await mlGet(`/items/${itemId}?attributes=seller_id,title`, token);
+    sellerId = item.seller_id;
+    if (!sellerId) return res.status(404).json({ error: 'No se pudo obtener el vendedor de esa publicación.' });
 
     const [user, totalSearch] = await Promise.all([
       mlGet(`/users/${sellerId}`, token),
