@@ -5108,11 +5108,26 @@ app.get('/api/competidor/buscar', requireAuth, async (req, res) => {
       return res.status(400).json({ error: 'Pegá la URL de una publicación del competidor (ej: https://articulo.mercadolibre.com.ar/MLA-...). La búsqueda por apodo no está disponible para apps no certificadas.' });
     }
     const itemId = mlaMatch[0].replace(/-/g,'');
-    const appToken = await getAppToken(parseInt(req.query.client_id));
-    const item = await mlGet(`/items/${itemId}?attributes=seller_id`, appToken);
-    sellerId = item.seller_id;
-    if (!sellerId) return res.status(404).json({ error: 'No se pudo obtener el vendedor de esa publicación.' });
 
+    // 1) Intentar con multi-get (reglas de acceso distintas a /items/{id})
+    try {
+      const multi = await mlGet(`/items?ids=${itemId}&attributes=id,seller_id`, token);
+      const row = Array.isArray(multi) ? multi[0] : null;
+      if (row?.code === 200 && row.body?.seller_id) sellerId = row.body.seller_id;
+    } catch(e) { console.warn('[COMPETIDOR] multi-get falló:', e.message); }
+
+    // 2) Fallback: extraer seller_id desde resultados de búsqueda del sitio
+    if (!sellerId) {
+      try {
+        const sr = await mlGet(`/sites/${site}/search?q=${itemId}&limit=10`, token);
+        const match = (sr.results || []).find(r => r.id === itemId);
+        if (match?.seller?.id) sellerId = match.seller.id;
+      } catch(e) { console.warn('[COMPETIDOR] search fallback falló:', e.message); }
+    }
+
+    if (!sellerId) return res.status(404).json({ error: 'No se pudo identificar al vendedor. Probá con la URL completa de una de sus publicaciones activas.' });
+
+    const appToken = await getAppToken(parseInt(req.query.client_id));
     const [user, totalSearch] = await Promise.all([
       mlGet(`/users/${sellerId}`, appToken),
       mlGet(`/sites/${site}/search?seller_id=${sellerId}&limit=1`, appToken)
