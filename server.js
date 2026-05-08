@@ -5078,6 +5078,23 @@ async function mlGet(path, token) {
   return r.json();
 }
 
+let _appToken = null, _appTokenExp = 0;
+async function getAppToken(clientId) {
+  if (_appToken && Date.now() < _appTokenExp) return _appToken;
+  const creds = getMLCredentials(clientId ? { id: clientId } : null);
+  if (!creds.app_id || !creds.client_secret) throw new Error('Sin credenciales de app ML');
+  const r = await fetch(`${ML_API}/oauth/token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ grant_type: 'client_credentials', client_id: creds.app_id, client_secret: creds.client_secret })
+  });
+  const data = await r.json();
+  if (!r.ok) throw new Error(`App token error: ${data.message || r.status}`);
+  _appToken = data.access_token;
+  _appTokenExp = Date.now() + (data.expires_in - 300) * 1000;
+  return _appToken;
+}
+
 app.get('/api/competidor/buscar', requireAuth, async (req, res) => {
   try {
     const token = await getClientToken(parseInt(req.query.client_id));
@@ -5091,13 +5108,14 @@ app.get('/api/competidor/buscar', requireAuth, async (req, res) => {
       return res.status(400).json({ error: 'Pegá la URL de una publicación del competidor (ej: https://articulo.mercadolibre.com.ar/MLA-...). La búsqueda por apodo no está disponible para apps no certificadas.' });
     }
     const itemId = mlaMatch[0].replace(/-/g,'');
-    const item = await mlGet(`/items/${itemId}`, token);
+    const appToken = await getAppToken(parseInt(req.query.client_id));
+    const item = await mlGet(`/items/${itemId}?attributes=seller_id`, appToken);
     sellerId = item.seller_id;
     if (!sellerId) return res.status(404).json({ error: 'No se pudo obtener el vendedor de esa publicación.' });
 
     const [user, totalSearch] = await Promise.all([
-      mlGet(`/users/${sellerId}`, token),
-      mlGet(`/sites/${site}/search?seller_id=${sellerId}&limit=1`, token)
+      mlGet(`/users/${sellerId}`, appToken),
+      mlGet(`/sites/${site}/search?seller_id=${sellerId}&limit=1`, appToken)
     ]);
     res.json({
       seller_id: sellerId,
@@ -5121,15 +5139,14 @@ app.get('/api/competidor/buscar', requireAuth, async (req, res) => {
 
 app.get('/api/competidor/publicaciones', requireAuth, async (req, res) => {
   try {
-    const token = await getClientToken(parseInt(req.query.client_id));
-    if (!token) return res.status(403).json({ error: 'Sin token' });
     const { seller_id, site = 'MLA', max = 200 } = req.query;
     if (!seller_id) return res.status(400).json({ error: 'Falta seller_id' });
+    const appToken = await getAppToken(parseInt(req.query.client_id));
 
     const pageSize = 50, maxNum = Math.min(parseInt(max), 1000);
     const all = [];
     for (let offset = 0; offset < maxNum; offset += pageSize) {
-      const r = await mlGet(`/sites/${site}/search?seller_id=${seller_id}&limit=${pageSize}&offset=${offset}`, token);
+      const r = await mlGet(`/sites/${site}/search?seller_id=${seller_id}&limit=${pageSize}&offset=${offset}`, appToken);
       if (!r.results?.length) break;
       all.push(...r.results);
       if (all.length >= (r.paging?.total || 0)) break;
