@@ -10450,12 +10450,16 @@ function _competShowError(msg) {
   el.style.display = '';
 }
 
+let _competLastTerm = '';
+
 async function buscarVendedores() {
   const input = document.getElementById('competInput').value.trim();
   const site  = document.getElementById('competSite').value;
   if (!input) return;
   const ac = getActiveClient();
   if (!ac) { _competShowError('Seleccioná un cliente primero'); return; }
+
+  _competLastTerm = input;
 
   document.getElementById('competEmpty').style.display   = 'none';
   document.getElementById('competResults').style.display = 'none';
@@ -10500,10 +10504,13 @@ async function analizarCompetidor(sellerId, site, clientId) {
   document.getElementById('competLoader').style.display  = '';
 
   try {
-    const seller = await apiCall('GET', `/api/competidor/buscar?input=${sellerId}&site=${site}&client_id=${clientId}`);
+    const termParam = _competLastTerm ? `&term=${encodeURIComponent(_competLastTerm)}` : '';
+    const [seller, pubs] = await Promise.all([
+      apiCall('GET', `/api/competidor/buscar?input=${sellerId}&site=${site}&client_id=${clientId}`),
+      apiCall('GET', `/api/competidor/publicaciones?seller_id=${sellerId}&site=${site}&max=300&client_id=${clientId}${termParam}`)
+    ]);
     if (seller.error) throw new Error(seller.error);
-    const pubs = await apiCall('GET', `/api/competidor/publicaciones?seller_id=${sellerId}&site=${site}&max=200&client_id=${clientId}`);
-    if (pubs.error) throw new Error(pubs.error);
+    if (pubs.error)   throw new Error(pubs.error);
     renderCompetidor(seller, pubs);
   } catch(e) {
     _competShowError(e.message || 'Error al analizar competidor');
@@ -10533,7 +10540,7 @@ function renderCompetidor(seller, pubs) {
         <div class="kpi-sub">${repMap[seller.reputation.level_id]||'— Sin reputación'}</div>
         <div class="kpi-sub">${_escHtml(seller.location.city)}${seller.location.city&&seller.location.state?', ':''}${_escHtml(seller.location.state)}</div>
       </div>
-      <div class="kpi-card"><div class="kpi-label">Publicaciones</div><div class="kpi-value">${seller.total_publicaciones.toLocaleString('es-AR')}</div><div class="kpi-sub">${pubs.total_analizadas} analizadas</div></div>
+      <div class="kpi-card"><div class="kpi-label">En búsqueda</div><div class="kpi-value">${pubs.total_analizadas}</div><div class="kpi-sub">publicaciones encontradas</div></div>
       <div class="kpi-card"><div class="kpi-label">% Premium</div><div class="kpi-value">${premiumPct}%</div><div class="kpi-sub">${pubs.distribucion_listing.premium} de ${pubs.total_analizadas}</div></div>
       <div class="kpi-card"><div class="kpi-label">% Full</div><div class="kpi-value">${fullPct}%</div><div class="kpi-sub">${pubs.logistica.fulfillment||0} en Full</div></div>
       <div class="kpi-card"><div class="kpi-label">Con descuento</div><div class="kpi-value">${pubs.promociones_count}</div><div class="kpi-sub">${(pubs.promociones_count/(pubs.total_analizadas||1)*100).toFixed(0)}% del catálogo</div></div>

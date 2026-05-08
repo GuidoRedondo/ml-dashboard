@@ -5151,16 +5151,28 @@ app.get('/api/competidor/publicaciones', requireAuth, async (req, res) => {
   try {
     const token = await getClientToken(parseInt(req.query.client_id));
     if (!token) return res.status(403).json({ error: 'Sin token' });
-    const { seller_id, site = 'MLA', max = 200 } = req.query;
+    const { seller_id, term, site = 'MLA', max = 300 } = req.query;
     if (!seller_id) return res.status(400).json({ error: 'Falta seller_id' });
 
-    const pageSize = 50, maxNum = Math.min(parseInt(max), 1000);
-    const all = [];
-    for (let offset = 0; offset < maxNum; offset += pageSize) {
-      const r = await mlGet(`/sites/${site}/search?seller_id=${seller_id}&limit=${pageSize}&offset=${offset}`, token);
-      if (!r.results?.length) break;
-      all.push(...r.results);
-      if (all.length >= (r.paging?.total || 0)) break;
+    const pageSize = 50, all = [];
+    if (term) {
+      // Buscar por término y filtrar por seller — evita el 403 de ML al usar seller_id como filtro directo
+      const pages = Math.min(Math.ceil(parseInt(max) / pageSize), 10);
+      for (let p = 0; p < pages; p++) {
+        const r = await mlGet(`/sites/${site}/search?q=${encodeURIComponent(term)}&limit=${pageSize}&offset=${p*pageSize}`, token);
+        const hits = (r.results || []).filter(it => String(it.seller?.id) === String(seller_id));
+        all.push(...hits);
+        if ((r.results || []).length < pageSize) break;
+      }
+    } else {
+      // Fallback: filtro directo por seller_id (puede dar 403 en apps no certificadas)
+      const maxNum = Math.min(parseInt(max), 1000);
+      for (let offset = 0; offset < maxNum; offset += pageSize) {
+        const r = await mlGet(`/sites/${site}/search?seller_id=${seller_id}&limit=${pageSize}&offset=${offset}`, token);
+        if (!r.results?.length) break;
+        all.push(...r.results);
+        if (all.length >= (r.paging?.total || 0)) break;
+      }
     }
 
     const total = all.length, now = Date.now();
