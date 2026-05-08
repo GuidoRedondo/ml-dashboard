@@ -5096,10 +5096,10 @@ app.get('/api/competidor/buscar', requireAuth, async (req, res) => {
       } catch(e) { console.warn('[COMPETIDOR] item lookup falló, probando como nickname:', e.message); }
     }
     if (!sellerId) {
-      // Buscar por nickname usando el endpoint correcto de usuarios
-      const nick = input.replace(/https?:\/\/[^\s]+/g,'').trim() || input.trim();
-      const userSearch = await mlGet(`/users/search?nickname=${encodeURIComponent(nick)}&site_id=${site}`, token);
-      if (userSearch.results?.[0]) sellerId = userSearch.results[0].id;
+      // Buscar ítems del vendedor por nickname y extraer seller_id del primer resultado
+      const nick = input.trim();
+      const search = await mlGet(`/sites/${site}/search?nickname=${encodeURIComponent(nick)}&limit=1`, token);
+      if (search.results?.[0]) sellerId = search.results[0].seller.id;
     }
     if (!sellerId) return res.status(404).json({ error: 'No se encontró el vendedor. Revisá el apodo o la URL.' });
 
