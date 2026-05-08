@@ -1126,7 +1126,7 @@ tbody td {
       </div>
       <!-- Tab: Competidores -->
       <div id="comp-tab-competidores" style="display:none">
-        <div style="display:flex;gap:8px;align-items:center;margin-bottom:16px;flex-wrap:wrap">
+        <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap">
           <select id="competSite" style="padding:8px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px">
             <option value="MLA">🇦🇷 Argentina</option>
             <option value="MLB">🇧🇷 Brasil</option>
@@ -1136,18 +1136,16 @@ tbody td {
             <option value="MPE">🇵🇪 Perú</option>
             <option value="MLU">🇺🇾 Uruguay</option>
           </select>
-          <input id="competInput" type="text" placeholder="ID numérico del vendedor (ej: 123456789) o URL de una de sus publicaciones"
+          <input id="competInput" type="text" placeholder="Nombre del producto o rubro a buscar (ej: zapatillas running)"
             style="flex:1;min-width:260px;padding:8px 14px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px;outline:none"
-            onkeydown="if(event.key==='Enter')buscarCompetidor()">
-          <button id="competBtnBuscar" onclick="buscarCompetidor()"
-            style="padding:8px 20px;background:var(--accent);color:#fff;border:none;border-radius:8px;font-weight:600;font-size:13px;cursor:pointer">Analizar</button>
+            onkeydown="if(event.key==='Enter')buscarVendedores()">
+          <button id="competBtnBuscar" onclick="buscarVendedores()"
+            style="padding:8px 20px;background:var(--accent);color:#fff;border:none;border-radius:8px;font-weight:600;font-size:13px;cursor:pointer">🔍 Buscar vendedores</button>
         </div>
         <div id="competError" style="display:none;color:#ff5252;background:rgba(255,82,82,.1);padding:12px 14px;border-radius:8px;margin-bottom:12px;font-size:13px"></div>
-        <div id="competLoader" style="display:none;color:var(--muted);padding:40px;text-align:center">⏳ Analizando competidor…</div>
-        <div id="competEmpty" style="color:var(--muted);padding:24px 0;font-size:13px">
-          <p style="margin-bottom:8px">Ingresá el <strong>ID numérico del vendedor</strong> o la <strong>URL de una de sus publicaciones</strong>.</p>
-          <p style="font-size:12px;color:var(--muted)">💡 <strong>¿Cómo encontrar el ID?</strong> Buscá productos del vendedor en ML, filtrá por su nombre y mirá la URL: <code style="background:var(--surface2);padding:1px 5px;border-radius:3px">mercadolibre.com.ar/_CustId_<strong>XXXXXXXXX</strong></code> — ese número es el seller_id.</p>
-        </div>
+        <div id="competLoader" style="display:none;color:var(--muted);padding:40px;text-align:center">⏳ Buscando…</div>
+        <div id="competSellers" style="display:none;margin-bottom:16px"></div>
+        <div id="competEmpty" style="color:var(--muted);padding:16px 0;font-size:13px">Buscá por producto o rubro para encontrar vendedores a analizar.</div>
         <div id="competResults" style="display:none"></div>
       </div>
     </div>
@@ -10446,36 +10444,71 @@ function switchCompTab(tab) {
 
 let _competChartLogistica = null, _competChartListing = null;
 
-async function buscarCompetidor() {
+function _competShowError(msg) {
+  const el = document.getElementById('competError');
+  el.textContent = '⚠️ ' + msg;
+  el.style.display = '';
+}
+
+async function buscarVendedores() {
   const input = document.getElementById('competInput').value.trim();
   const site  = document.getElementById('competSite').value;
   if (!input) return;
   const ac = getActiveClient();
-  if (!ac) { document.getElementById('competError').textContent = '⚠️ Seleccioná un cliente primero'; document.getElementById('competError').style.display=''; return; }
+  if (!ac) { _competShowError('Seleccioná un cliente primero'); return; }
 
   document.getElementById('competEmpty').style.display   = 'none';
   document.getElementById('competResults').style.display = 'none';
+  document.getElementById('competSellers').style.display = 'none';
   document.getElementById('competError').style.display   = 'none';
   document.getElementById('competLoader').style.display  = '';
   document.getElementById('competBtnBuscar').disabled    = true;
 
   try {
-    const seller = await apiCall('GET', `/api/competidor/buscar?input=${encodeURIComponent(input)}&site=${site}&client_id=${ac.id}`);
-    if (seller.error) {
-      const hint = seller.hint ? `<br><span style="font-size:11px;opacity:.85">${seller.hint}</span>` : '';
-      document.getElementById('competError').innerHTML = '⚠️ ' + seller.error + hint;
-      document.getElementById('competError').style.display = '';
-      return;
-    }
-    const pubs = await apiCall('GET', `/api/competidor/publicaciones?seller_id=${seller.seller_id}&site=${site}&max=200&client_id=${ac.id}`);
-    if (pubs.error) throw new Error(pubs.error);
-    renderCompetidor(seller, pubs);
+    const res = await apiCall('GET', `/api/competidor/buscar?mode=search&input=${encodeURIComponent(input)}&site=${site}&client_id=${ac.id}`);
+    if (res.error) throw new Error(res.error);
+    const sellers = res.sellers || [];
+    if (!sellers.length) { document.getElementById('competEmpty').textContent = 'No se encontraron vendedores para ese término.'; document.getElementById('competEmpty').style.display = ''; return; }
+    renderSellersLista(sellers, site, ac.id);
   } catch(e) {
-    document.getElementById('competError').textContent = '⚠️ ' + (e.message || 'Error al analizar competidor');
-    document.getElementById('competError').style.display = '';
+    _competShowError(e.message || 'Error al buscar vendedores');
   } finally {
     document.getElementById('competLoader').style.display = 'none';
     document.getElementById('competBtnBuscar').disabled   = false;
+  }
+}
+
+function renderSellersLista(sellers, site, clientId) {
+  const el = document.getElementById('competSellers');
+  el.style.display = '';
+  el.innerHTML = `<div style="font-size:13px;font-weight:600;margin-bottom:10px;color:var(--text)">Vendedores encontrados — elegí uno para analizar</div>
+    <div style="display:flex;flex-wrap:wrap;gap:8px">
+      ${sellers.map(s => `
+        <div onclick="analizarCompetidor(${s.seller_id},'${site}',${clientId})"
+          style="padding:10px 16px;background:var(--surface);border:1px solid var(--border);border-radius:8px;cursor:pointer;transition:border-color .15s;min-width:180px"
+          onmouseover="this.style.borderColor='var(--accent)'" onmouseout="this.style.borderColor='var(--border)'">
+          <div style="font-weight:700;font-size:13px">${_escHtml(s.nickname)}</div>
+          <div style="font-size:11px;color:var(--muted);margin-top:2px">${s.items} publicación${s.items!==1?'es':''} encontrada${s.items!==1?'s':''}</div>
+        </div>`).join('')}
+    </div>`;
+}
+
+async function analizarCompetidor(sellerId, site, clientId) {
+  document.getElementById('competSellers').style.display = 'none';
+  document.getElementById('competResults').style.display = 'none';
+  document.getElementById('competError').style.display   = 'none';
+  document.getElementById('competLoader').style.display  = '';
+
+  try {
+    const seller = await apiCall('GET', `/api/competidor/buscar?input=${sellerId}&site=${site}&client_id=${clientId}`);
+    if (seller.error) throw new Error(seller.error);
+    const pubs = await apiCall('GET', `/api/competidor/publicaciones?seller_id=${sellerId}&site=${site}&max=200&client_id=${clientId}`);
+    if (pubs.error) throw new Error(pubs.error);
+    renderCompetidor(seller, pubs);
+  } catch(e) {
+    _competShowError(e.message || 'Error al analizar competidor');
+  } finally {
+    document.getElementById('competLoader').style.display = 'none';
   }
 }
 

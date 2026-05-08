@@ -5102,53 +5102,35 @@ app.get('/api/competidor/buscar', requireAuth, async (req, res) => {
     const { input, site = 'MLA' } = req.query;
     if (!input) return res.status(400).json({ error: 'Falta input' });
 
-    let sellerId = null;
-
-    // ¿Es un seller_id numérico directo?
-    if (/^\d{6,12}$/.test(input.trim())) {
-      sellerId = parseInt(input.trim());
-    }
-
-    // ¿Es una URL/ID de publicación?
-    if (!sellerId) {
-      const mlaMatch = String(input).match(/(?:MLA|MLB|MLC|MLM|MCO|MPE|MLU|MLV|MBO)-?(\d{7,})/i);
-      if (mlaMatch) {
-        const itemId = mlaMatch[0].replace(/-/g,'');
-        // Multi-get — reglas de acceso distintas a /items/{id}
-        try {
-          const multi = await mlGet(`/items?ids=${itemId}&attributes=id,seller_id`, token);
-          const row = Array.isArray(multi) ? multi[0] : null;
-          if (row?.code === 200 && row.body?.seller_id) sellerId = row.body.seller_id;
-        } catch(e) { console.warn('[COMPETIDOR] multi-get falló:', e.message); }
-        // Fallback búsqueda por texto
-        if (!sellerId) {
-          try {
-            const sr = await mlGet(`/sites/${site}/search?q=${itemId}&limit=10`, token);
-            const match = (sr.results || []).find(r => r.id === itemId);
-            if (match?.seller?.id) sellerId = match.seller.id;
-          } catch(e) { console.warn('[COMPETIDOR] search falló:', e.message); }
-        }
+    // Buscar vendedores por término — devuelve lista para que el usuario elija
+    if (req.query.mode === 'search') {
+      const sr = await mlGet(`/sites/${site}/search?q=${encodeURIComponent(input)}&limit=50`, token);
+      const sellerMap = {};
+      for (const it of (sr.results || [])) {
+        const s = it.seller;
+        if (!s?.id) continue;
+        if (!sellerMap[s.id]) sellerMap[s.id] = { seller_id: s.id, nickname: s.nickname || s.id, items: 0, permalink: it.permalink };
+        sellerMap[s.id].items++;
       }
+      const sellers = Object.values(sellerMap).sort((a,b) => b.items - a.items).slice(0, 15);
+      return res.json({ sellers });
     }
 
-    if (!sellerId) return res.status(404).json({
-      error: 'No se pudo identificar al vendedor automáticamente.',
-      hint: 'Ingresá el ID numérico del vendedor directamente (ej: 123456789). Podés encontrarlo filtrando por ese vendedor en ML y mirando la URL, o desde la API con /users/me de su cuenta.'
-    });
+    // Modo análisis — recibe seller_id ya conocido
+    const sellerId = parseInt(input);
+    if (!sellerId || isNaN(sellerId)) return res.status(400).json({ error: 'Falta el seller_id numérico.' });
 
-    let user, totalSearch;
-    try {
-      user = await mlGet(`/users/${sellerId}`, token);
-      console.log('[COMPETIDOR] /users OK, nickname:', user.nickname);
-    } catch(e) { console.error('[COMPETIDOR] /users falló:', e.message); throw e; }
-    try {
-      totalSearch = await mlGet(`/sites/${site}/search?seller_id=${sellerId}&limit=1`, token);
-      console.log('[COMPETIDOR] /search OK, total:', totalSearch.paging?.total);
-    } catch(e) { console.error('[COMPETIDOR] /search falló:', e.message); throw e; }
+    const [userRes, totalRes] = await Promise.allSettled([
+      mlGet(`/users/${sellerId}`, token),
+      mlGet(`/sites/${site}/search?seller_id=${sellerId}&limit=1`, token)
+    ]);
+    const user  = userRes.status  === 'fulfilled' ? userRes.value  : {};
+    const total = totalRes.status === 'fulfilled' ? totalRes.value : {};
+    if (userRes.status === 'rejected') console.warn('[COMPETIDOR] /users falló:', userRes.reason?.message);
     res.json({
       seller_id: sellerId,
-      nickname: user.nickname,
-      user_type: user.user_type,
+      nickname: user.nickname || `Vendedor ${sellerId}`,
+      user_type: user.user_type || null,
       tienda_oficial: !!(user.eshop || user.brand),
       brand_name: user.brand?.name || null,
       reputation: {
@@ -5159,8 +5141,8 @@ app.get('/api/competidor/buscar', requireAuth, async (req, res) => {
         transactions_canceled: user.seller_reputation?.transactions?.canceled || 0
       },
       location: { city: user.address?.city || '', state: user.address?.state || '', country: user.country_id || '' },
-      total_publicaciones: totalSearch.paging?.total || 0,
-      registration_date: user.registration_date
+      total_publicaciones: total.paging?.total || 0,
+      registration_date: user.registration_date || null
     });
   } catch(e) { console.error('[COMPETIDOR_BUSCAR]', e.message); res.status(500).json({ error: e.message }); }
 });
