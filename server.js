@@ -5136,10 +5136,9 @@ app.get('/api/competidor/buscar', requireAuth, async (req, res) => {
       hint: 'Ingresá el ID numérico del vendedor directamente (ej: 123456789). Podés encontrarlo filtrando por ese vendedor en ML y mirando la URL, o desde la API con /users/me de su cuenta.'
     });
 
-    const appToken = await getAppToken(parseInt(req.query.client_id));
     const [user, totalSearch] = await Promise.all([
-      mlGet(`/users/${sellerId}`, appToken),
-      mlGet(`/sites/${site}/search?seller_id=${sellerId}&limit=1`, appToken)
+      mlGet(`/users/${sellerId}`, token),
+      mlGet(`/sites/${site}/search?seller_id=${sellerId}&limit=1`, token)
     ]);
     res.json({
       seller_id: sellerId,
@@ -5163,14 +5162,15 @@ app.get('/api/competidor/buscar', requireAuth, async (req, res) => {
 
 app.get('/api/competidor/publicaciones', requireAuth, async (req, res) => {
   try {
+    const token = await getClientToken(parseInt(req.query.client_id));
+    if (!token) return res.status(403).json({ error: 'Sin token' });
     const { seller_id, site = 'MLA', max = 200 } = req.query;
     if (!seller_id) return res.status(400).json({ error: 'Falta seller_id' });
-    const appToken = await getAppToken(parseInt(req.query.client_id));
 
     const pageSize = 50, maxNum = Math.min(parseInt(max), 1000);
     const all = [];
     for (let offset = 0; offset < maxNum; offset += pageSize) {
-      const r = await mlGet(`/sites/${site}/search?seller_id=${seller_id}&limit=${pageSize}&offset=${offset}`, appToken);
+      const r = await mlGet(`/sites/${site}/search?seller_id=${seller_id}&limit=${pageSize}&offset=${offset}`, token);
       if (!r.results?.length) break;
       all.push(...r.results);
       if (all.length >= (r.paging?.total || 0)) break;
