@@ -893,11 +893,13 @@ tbody td {
           <button id="rentTabAnalisis" onclick="switchRentTab('analisis')" class="sync-btn" style="background:var(--accent)">📊 Análisis</button>
           <button id="rentTabSimulador" onclick="switchRentTab('simulador')" class="sync-btn">🧮 Simulador</button>
           <button id="rentTabDescuentos" onclick="switchRentTab('descuentos')" class="sync-btn">🏷️ Descuentos</button>
+          <button id="rentTabFees" onclick="switchRentTab('fees')" class="sync-btn">🔍 Verificador</button>
         </div>
       </div>
       <div id="rentabilidadContent"><div style="color:var(--muted);font-size:13px;padding:20px;text-align:center">Sincronizá primero para ver los datos</div></div>
       <div id="simuladorContent" style="display:none"></div>
       <div id="descuentosContent" style="display:none"></div>
+      <div id="feesContent" style="display:none"></div>
     </div>
 
     <!-- ADS -->
@@ -3928,11 +3930,139 @@ function switchRentTab(tab) {
   document.getElementById('rentabilidadContent').style.display = tab === 'analisis'   ? '' : 'none';
   document.getElementById('simuladorContent').style.display    = tab === 'simulador'  ? '' : 'none';
   document.getElementById('descuentosContent').style.display   = tab === 'descuentos' ? '' : 'none';
+  document.getElementById('feesContent').style.display         = tab === 'fees'       ? '' : 'none';
   document.getElementById('rentTabAnalisis').style.background   = tab === 'analisis'   ? 'var(--accent)' : 'var(--surface2)';
   document.getElementById('rentTabSimulador').style.background  = tab === 'simulador'  ? 'var(--accent)' : 'var(--surface2)';
   document.getElementById('rentTabDescuentos').style.background = tab === 'descuentos' ? 'var(--accent)' : 'var(--surface2)';
+  document.getElementById('rentTabFees').style.background       = tab === 'fees'       ? 'var(--accent)' : 'var(--surface2)';
   if (tab === 'simulador')  loadSimulador();
   if (tab === 'descuentos') loadDescuentos();
+  if (tab === 'fees')       initVerificadorFees();
+}
+
+// ── VERIFICADOR DE FEES ML ──────────────────────────────────────────────────
+let _feesInited = false;
+
+function initVerificadorFees() {
+  const el = document.getElementById('feesContent');
+  if (_feesInited) return;
+  _feesInited = true;
+  el.innerHTML = `
+    <div style="max-width:680px">
+      <p style="color:var(--muted);font-size:13px;margin-bottom:16px">
+        Consultá los fees que cobra MercadoLibre por una publicación: comisión y envío.
+        Podés probar con el precio real o simular un precio diferente.
+      </p>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px">
+        <div style="flex:1;min-width:200px">
+          <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">ID de publicación (MLA…)</label>
+          <input id="feesItemId" type="text" placeholder="MLA123456789"
+            style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px;box-sizing:border-box">
+        </div>
+        <div style="flex:0 0 160px">
+          <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">Precio a simular (opcional)</label>
+          <input id="feesPrice" type="number" placeholder="Precio real del ítem"
+            style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px;box-sizing:border-box">
+        </div>
+        <div style="flex:0 0 140px;display:flex;align-items:flex-end">
+          <button onclick="runVerificadorFees()" class="sync-btn" style="background:var(--accent);width:100%;padding:8px 0">
+            Consultar
+          </button>
+        </div>
+      </div>
+      <div id="feesResult"></div>
+    </div>`;
+}
+
+async function runVerificadorFees() {
+  const itemId = document.getElementById('feesItemId').value.trim().toUpperCase();
+  const price  = document.getElementById('feesPrice').value.trim();
+  const client = getActiveClient();
+  const el     = document.getElementById('feesResult');
+  if (!itemId) { el.innerHTML = '<p style="color:#e55;font-size:13px">Ingresá un ID de publicación.</p>'; return; }
+  if (!client) { el.innerHTML = '<p style="color:#e55;font-size:13px">Seleccioná un cliente.</p>'; return; }
+  el.innerHTML = '<p style="color:var(--muted);font-size:13px">Consultando…</p>';
+  try {
+    let url = `/api/item-fees?item_id=${encodeURIComponent(itemId)}&client_id=${client.id}`;
+    if (price) url += `&price=${encodeURIComponent(price)}`;
+    const data = await apiCall('GET', url);
+    if (data.error) { el.innerHTML = `<p style="color:#e55;font-size:13px">Error ML: ${data.error}</p>`; return; }
+    el.innerHTML = renderFeesResult(data, itemId, price);
+  } catch(e) {
+    el.innerHTML = `<p style="color:#e55;font-size:13px">Error: ${e.message}</p>`;
+  }
+}
+
+function renderFeesResult(data, itemId, simulatedPrice) {
+  const precioUsado = simulatedPrice ? parseFloat(simulatedPrice) : (data.price || null);
+
+  // Extraer fees del array sale_fee_details
+  const details = data.sale_fee_details || [];
+  let comisionMonto = 0, envioMonto = 0, otrosMonto = 0;
+  const rows = details.map(fee => {
+    const tipo  = fee.type || fee.fee_id || '—';
+    const monto = parseFloat(fee.amount || fee.fee || 0);
+    if (/ml_fee|commission|venta/i.test(tipo))  comisionMonto += monto;
+    else if (/shipping|envio|envío/i.test(tipo)) envioMonto    += monto;
+    else                                          otrosMonto    += monto;
+    return `<tr>
+      <td style="padding:6px 10px;border-bottom:1px solid var(--border)">${tipo}</td>
+      <td style="padding:6px 10px;border-bottom:1px solid var(--border);color:var(--muted);font-size:12px">${fee.detail || fee.description || ''}</td>
+      <td style="padding:6px 10px;border-bottom:1px solid var(--border);text-align:right;font-family:monospace">$${monto.toFixed(2)}</td>
+      <td style="padding:6px 10px;border-bottom:1px solid var(--border);text-align:right;color:var(--muted);font-size:12px">${precioUsado ? (monto/precioUsado*100).toFixed(1)+'%' : '—'}</td>
+    </tr>`;
+  }).join('');
+
+  // Fallback: si no hay sale_fee_details buscar en sale_fee_amount
+  const totalFees = data.sale_fee_amount ?? (comisionMonto + envioMonto + otrosMonto);
+  const neto      = precioUsado ? precioUsado - totalFees : null;
+
+  const pct = v => precioUsado && v ? (v/precioUsado*100).toFixed(1)+'%' : '—';
+
+  const kpis = `
+    <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:20px">
+      ${[
+        ['Precio consultado', precioUsado ? '$'+precioUsado.toFixed(2) : '—', ''],
+        ['Comisión ML', comisionMonto ? '$'+comisionMonto.toFixed(2) : (data.sale_fee_amount ? '$'+parseFloat(data.sale_fee_amount).toFixed(2) : '—'), comisionMonto ? pct(comisionMonto) : ''],
+        ['Envío', envioMonto ? '$'+envioMonto.toFixed(2) : '—', envioMonto ? pct(envioMonto) : ''],
+        ['Otros fees', otrosMonto ? '$'+otrosMonto.toFixed(2) : '—', otrosMonto ? pct(otrosMonto) : ''],
+        ['Total fees', '$'+parseFloat(totalFees||0).toFixed(2), pct(totalFees)],
+        ['Neto estimado', neto !== null ? '$'+neto.toFixed(2) : '—', neto ? pct(neto) : ''],
+      ].map(([label,val,sub]) => `
+        <div style="background:var(--surface2);border-radius:10px;padding:12px 16px;min-width:130px">
+          <div style="font-size:11px;color:var(--muted);margin-bottom:4px">${label}</div>
+          <div style="font-size:18px;font-family:var(--font-b);color:var(--text)">${val}</div>
+          ${sub ? `<div style="font-size:11px;color:var(--muted)">${sub} del precio</div>` : ''}
+        </div>`).join('')}
+    </div>`;
+
+  const table = details.length ? `
+    <h4 style="font-family:var(--font-b);margin:0 0 8px">Detalle de fees</h4>
+    <div style="overflow-x:auto;margin-bottom:20px">
+      <table style="width:100%;border-collapse:collapse;font-size:13px">
+        <thead><tr style="text-align:left;color:var(--muted);font-size:11px">
+          <th style="padding:6px 10px;border-bottom:2px solid var(--border)">Tipo</th>
+          <th style="padding:6px 10px;border-bottom:2px solid var(--border)">Descripción</th>
+          <th style="padding:6px 10px;border-bottom:2px solid var(--border);text-align:right">Monto</th>
+          <th style="padding:6px 10px;border-bottom:2px solid var(--border);text-align:right">% precio</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>` : '';
+
+  const rawJson = `
+    <details style="margin-top:8px">
+      <summary style="cursor:pointer;font-size:12px;color:var(--muted);user-select:none">Ver respuesta completa de la API</summary>
+      <pre style="margin-top:8px;padding:12px;background:var(--surface2);border-radius:8px;font-size:11px;overflow-x:auto;white-space:pre-wrap;color:var(--text)">${JSON.stringify(data, null, 2)}</pre>
+    </details>`;
+
+  return `<div>
+    <p style="font-size:13px;color:var(--muted);margin-bottom:12px">
+      Publicación: <strong style="color:var(--text)">${itemId}</strong>
+      ${simulatedPrice ? ' · Precio simulado: <strong>$'+parseFloat(simulatedPrice).toFixed(2)+'</strong>' : ''}
+    </p>
+    ${kpis}${table}${rawJson}
+  </div>`;
 }
 
 // ── DESCUENTOS (Hotsale / Campañas) ────────────────────────────────────────
@@ -6233,6 +6363,8 @@ function applyPermissions() {
     const el = document.querySelector(`[data-page="${p}"]`);
     if (el) el.style.display = soloConsultores ? '' : 'none';
   });
+  const rentTabFeesEl = document.getElementById('rentTabFees');
+  if (rentTabFeesEl) rentTabFeesEl.style.display = soloConsultores ? '' : 'none';
   // Centro de Inteligencia: admins/consultores siempre; clientes solo si tienen el permiso habilitado
   const alertasNavEl = document.querySelector('[data-page="alertas"]');
   if (alertasNavEl) alertasNavEl.style.display = (soloConsultores || canSeeSection('alertas')) ? '' : 'none';
