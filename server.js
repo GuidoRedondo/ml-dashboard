@@ -5012,24 +5012,26 @@ app.get('/api/competencia', requireAuth, async (req, res) => {
 
 // ── PROMOCIONES ───────────────────────────────────────────────────────────────
 app.get('/api/promociones', requireAuth, async (req, res) => {
+  // Hard timeout: si algo cuelga, responder igual a los 9 segundos
+  const hardTimeout = setTimeout(() => {
+    if (!res.headersSent) res.json({ promos: [], debug: 'hard-timeout' });
+  }, 9000);
+
   try {
-    const token = await getClientToken(parseInt(req.query.client_id));
-    if (!token) return res.status(403).json({ error: 'Sin token' });
-    const headers = { 'Authorization': `Bearer ${token}` };
+    const clientId = parseInt(req.query.client_id);
+    const token = await getClientToken(clientId);
+    if (!token) { clearTimeout(hardTimeout); return res.status(403).json({ error: 'Sin token' }); }
 
-    // Obtener uid desde DB si no viene como param
-    const clientRow = await pool.query('SELECT ml_user_id FROM clients WHERE id = $1', [parseInt(req.query.client_id)]);
-    const uid = clientRow.rows[0]?.ml_user_id || req.query.uid;
-    if (!uid) return res.json({ promos: [] });
+    const client = await pool.query('SELECT ml_user_id FROM clients WHERE id=$1', [clientId]);
+    const uid = client.rows[0]?.ml_user_id;
+    if (!uid) { clearTimeout(hardTimeout); return res.json({ promos: [], debug: 'sin uid' }); }
 
+    const headers = { Authorization: `Bearer ${token}` };
     const mlFetch = (url) => Promise.race([
       fetch(url, { headers }).then(r => r.json()),
-      new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 7000))
+      new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 6000))
     ]);
 
-    const results = { promos: [] };
-
-    // Ambas llamadas en paralelo — máximo 7 s de espera total
     const [spRes, upRes] = await Promise.allSettled([
       mlFetch(`${ML_API}/seller-promotions/promotions?seller_id=${uid}&app_version=v2`),
       mlFetch(`${ML_API}/seller-promotions/users/${uid}/promotions`)
@@ -5039,7 +5041,6 @@ app.get('/api/promociones', requireAuth, async (req, res) => {
     console.log('[PROMOS] sp:', spRes.status, JSON.stringify(sp)?.slice(0,200));
     console.log('[PROMOS] up:', upRes.status, JSON.stringify(up)?.slice(0,200));
 
-    // ── Parse whichever endpoint worked ──────────────────────────────────────
     const parsePromos = (data) => {
       if (!data) return [];
       const arr = data.results || data.promotions || data.data || (Array.isArray(data) ? data : []);
@@ -5056,12 +5057,16 @@ app.get('/api/promociones', requireAuth, async (req, res) => {
       }));
     };
 
-    results.promos = [...parsePromos(sp), ...parsePromos(up)]
+    const promos = [...parsePromos(sp), ...parsePromos(up)]
       .filter((p, i, arr) => arr.findIndex(x => x.id === p.id) === i);
 
-    results.debug = { sp: JSON.stringify(sp)?.slice(0,500), up: JSON.stringify(up)?.slice(0,500) };
-    res.json(results);
-  } catch(e) { console.error('[PROMOS]', e.message); res.status(500).json({ error: e.message }); }
+    clearTimeout(hardTimeout);
+    if (!res.headersSent) res.json({ promos, debug: { sp: JSON.stringify(sp)?.slice(0,400), up: JSON.stringify(up)?.slice(0,400) } });
+  } catch(e) {
+    console.error('[PROMOS]', e.message);
+    clearTimeout(hardTimeout);
+    if (!res.headersSent) res.status(500).json({ error: e.message });
+  }
 });
 
 app.get('/api/promociones-items', requireAuth, async (req, res) => {
