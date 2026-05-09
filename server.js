@@ -5012,9 +5012,6 @@ app.get('/api/competencia', requireAuth, async (req, res) => {
 
 // ── PROMOCIONES ───────────────────────────────────────────────────────────────
 app.get('/api/promociones', requireAuth, async (req, res) => {
-  // TEST: respuesta inmediata para diagnóstico
-  return res.json({ promos: [], debug: 'stub-ok' });
-
   // Hard timeout: si algo cuelga, responder igual a los 9 segundos
   const hardTimeout = setTimeout(() => {
     if (!res.headersSent) res.json({ promos: [], debug: 'hard-timeout' });
