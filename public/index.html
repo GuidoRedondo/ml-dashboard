@@ -4115,17 +4115,22 @@ function renderFeesResult(data) {
           <th style="padding:5px 8px;border-bottom:2px solid var(--border)">Orden</th>
           <th style="padding:5px 8px;border-bottom:2px solid var(--border)">Fecha</th>
           <th style="padding:5px 8px;border-bottom:2px solid var(--border);text-align:right">Precio unit.</th>
+          <th style="padding:5px 8px;border-bottom:2px solid var(--border);text-align:right">Fee ML (orden)</th>
+          <th style="padding:5px 8px;border-bottom:2px solid var(--border);text-align:right">% fee</th>
           <th style="padding:5px 8px;border-bottom:2px solid var(--border);text-align:right">Total orden</th>
-          <th style="padding:5px 8px;border-bottom:2px solid var(--border)">Envío ID</th>
         </tr></thead>
         <tbody>
-          ${samples.map(s => `<tr>
-            <td style="padding:5px 8px;border-bottom:1px solid var(--border);color:var(--muted);font-size:11px">${s.order_id}</td>
-            <td style="padding:5px 8px;border-bottom:1px solid var(--border)">${s.date ? s.date.slice(0,10) : '—'}</td>
-            <td style="padding:5px 8px;border-bottom:1px solid var(--border);text-align:right">${fmt(s.sale_price)}</td>
-            <td style="padding:5px 8px;border-bottom:1px solid var(--border);text-align:right">${fmt(s.total_amount)}</td>
-            <td style="padding:5px 8px;border-bottom:1px solid var(--border);font-size:11px;color:var(--muted)">${s.shipment_id || '—'}</td>
-          </tr>`).join('')}
+          ${samples.map(s => {
+            const feePct = (s.sale_fee && s.sale_price) ? (s.sale_fee / s.sale_price * 100).toFixed(1) + '%' : '—';
+            return `<tr>
+              <td style="padding:5px 8px;border-bottom:1px solid var(--border);color:var(--muted);font-size:11px">${s.order_id}</td>
+              <td style="padding:5px 8px;border-bottom:1px solid var(--border)">${s.date ? s.date.slice(0,10) : '—'}</td>
+              <td style="padding:5px 8px;border-bottom:1px solid var(--border);text-align:right">${fmt(s.sale_price)}</td>
+              <td style="padding:5px 8px;border-bottom:1px solid var(--border);text-align:right;color:${s.sale_fee ? '#c62828' : 'var(--muted)'}">${fmt(s.sale_fee)}</td>
+              <td style="padding:5px 8px;border-bottom:1px solid var(--border);text-align:right">${feePct}</td>
+              <td style="padding:5px 8px;border-bottom:1px solid var(--border);text-align:right">${fmt(s.total_amount)}</td>
+            </tr>`;
+          }).join('')}
         </tbody>
       </table>
     </div>` : '';

@@ -3921,39 +3921,49 @@ app.get('/api/item-fees', requireAuth, async (req, res) => {
 
         const orders = ordRes.results || [];
 
-        // Intentar obtener costo de envío del primer envío que tenga shipment id
+        // Costo de envío desde /shipments/{id}/costs (mismo endpoint que el P&L)
         for (const o of orders) {
           const shipId = o.shipping?.id;
           if (shipId && shippingCostSample === null) {
             try {
-              const shipData = await fetch(`${ML_API}/shipments/${shipId}`, { headers: authHeaders }).then(r => r.json());
-              // El costo que paga el vendedor puede estar en cost.gross o list_cost o cost_components
-              const cost = shipData.cost?.gross ?? shipData.cost?.net ?? shipData.list_cost ?? null;
-              if (cost != null) shippingCostSample = { shipment_id: shipId, cost, raw: { cost: shipData.cost, list_cost: shipData.list_cost, logistic_type: shipData.logistic_type } };
+              const costsData = await fetch(`${ML_API}/shipments/${shipId}/costs`, { headers: authHeaders }).then(r => r.json());
+              // senders[0].cost = lo que paga el vendedor
+              const cost = costsData.senders?.[0]?.cost ?? costsData.sender?.cost ?? null;
+              if (cost != null) shippingCostSample = { shipment_id: shipId, cost, raw: costsData };
             } catch(_) {}
           }
 
-          // Datos de la orden
           const oi = (o.order_items || []).find(x => x.item?.id === item_id) || o.order_items?.[0];
           const payment = (o.payments || [])[0];
           orderSamples.push({
             order_id: o.id,
             date: o.date_closed || o.date_created,
             sale_price: oi?.unit_price ?? null,
+            sale_fee: oi?.sale_fee ?? null,       // comisión ML por esa línea
             quantity: oi?.quantity ?? null,
             total_amount: o.total_amount ?? payment?.transaction_amount ?? null,
-            shipment_id: o.shipping?.id ?? null,
+            shipment_id: shipId ?? null,
           });
         }
       } catch(_) {}
     }
+
+    // Precio de promoción activa desde /items/{id}/promotions
+    let activePricePromo = promoPrice;
+    try {
+      const promoList = await fetch(`${ML_API}/items/${item_id}/promotions`, { headers: authHeaders }).then(r => r.json());
+      if (Array.isArray(promoList)) {
+        const active = promoList.find(p => p.status === 'started' || p.type === 'deal' || p.price != null);
+        if (active?.price != null) activePricePromo = parseFloat(active.price);
+      }
+    } catch(_) {}
 
     res.json({
       ok: true,
       item: {
         id: itemData.id, title: itemData.title, price: itemData.price,
         original_price: itemData.original_price,
-        promo_price: promoPrice,
+        promo_price: activePricePromo,
         promotions: itemData.promotions || [],
         listing_type_id: listingType, category_id: categoryId,
         shipping_mode: itemData.shipping?.mode,
