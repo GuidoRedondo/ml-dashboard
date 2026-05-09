@@ -3874,14 +3874,18 @@ app.get('/api/item-fees', requireAuth, async (req, res) => {
 
     // 1. Datos del ítem + ml_user_id del cliente
     const [itemData, clientRow] = await Promise.all([
-      fetch(`${ML_API}/items/${item_id}?attributes=id,title,price,original_price,listing_type_id,category_id,shipping`, { headers: authHeaders }).then(r => r.json()),
+      fetch(`${ML_API}/items/${item_id}?attributes=id,title,price,original_price,listing_type_id,category_id,shipping,promotions`, { headers: authHeaders }).then(r => r.json()),
       pool.query('SELECT ml_user_id FROM clients WHERE id=$1', [parseInt(client_id)])
     ]);
     if (itemData.error || (itemData.status && itemData.status >= 400)) {
       return res.json({ ok: false, step: 'item_fetch', raw: itemData });
     }
 
-    const uid            = clientRow.rows[0]?.ml_user_id;
+    const uid = clientRow.rows[0]?.ml_user_id;
+    // Precio: si el usuario pasó uno lo usamos; si no, buscamos precio promocional
+    // itemData.price ya refleja el descuento si está en original_price > price
+    // Para campañas ML, el precio puede estar en promotions[0].price
+    const promoPrice = itemData.promotions?.[0]?.price ?? null;
     const effectivePrice = parseFloat(price || itemData.price) || 0;
     const listingType    = itemData.listing_type_id;
     const categoryId     = itemData.category_id;
@@ -3949,6 +3953,8 @@ app.get('/api/item-fees', requireAuth, async (req, res) => {
       item: {
         id: itemData.id, title: itemData.title, price: itemData.price,
         original_price: itemData.original_price,
+        promo_price: promoPrice,
+        promotions: itemData.promotions || [],
         listing_type_id: listingType, category_id: categoryId,
         shipping_mode: itemData.shipping?.mode,
         free_shipping: itemData.shipping?.free_shipping,

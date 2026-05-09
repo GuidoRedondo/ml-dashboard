@@ -4007,30 +4007,48 @@ async function runVerificadorFees() {
 
 function renderFeesResult(data) {
   const item       = data.item || {};
-  const precio     = data.effective_price || item.price || 0;
   const samples    = data.order_samples   || [];
   const shipSample = data.shipping_cost_sample;
   const lp         = data.listing_prices  || {};
 
+  // Precio con descuento: promoPrice > original_price > price
+  const promoPrice = item.promo_price;
+  const discountedPrice = (item.original_price && item.original_price > item.price) ? item.price : null;
+  const defaultPrice = promoPrice ?? discountedPrice ?? data.effective_price ?? item.price ?? 0;
+
   const fmt  = v => (v != null && !isNaN(v)) ? '$' + parseFloat(v).toFixed(2) : '—';
 
-  // Extraer comisión y envío desde listing_prices (ahora con parámetros correctos)
+  // ── Extraer comisión desde listing_prices ────────────────────────────────
   let lpComisionPct = null, lpEnvioMonto = null;
-  if (lp.sale_fee_amount != null && !lp.error && !lp.message) {
+  const lpOk = lp && !lp.error && !lp.message && !lp._error;
+  if (lpOk && lp.sale_fee_amount != null) {
     const v = parseFloat(lp.sale_fee_amount);
-    lpComisionPct = v <= 100 ? v : (precio ? v/precio*100 : null);
+    // ML devuelve porcentaje (≤100) o monto absoluto (>100)
+    lpComisionPct = v <= 100 ? v : (defaultPrice ? v / defaultPrice * 100 : null);
   }
-  if (Array.isArray(lp.sale_fee_details)) {
-    const feeTotal = lp.sale_fee_details.reduce((s,f) => s + parseFloat(f.amount||0), 0);
-    if (feeTotal > 0) lpComisionPct = precio ? feeTotal/precio*100 : null;
+  if (lpOk && Array.isArray(lp.sale_fee_details) && lp.sale_fee_details.length) {
+    const feeTotal = lp.sale_fee_details.reduce((s,f) => s + parseFloat(f.amount || f.value || 0), 0);
+    if (feeTotal > 0 && lpComisionPct == null)
+      lpComisionPct = defaultPrice ? feeTotal / defaultPrice * 100 : null;
   }
-  // Envío desde listing_prices
-  if (lp.free_shipping?.amount != null) {
-    lpEnvioMonto = parseFloat(lp.free_shipping.amount) || 0;
+
+  // ── Extraer envío desde listing_prices (probar múltiples campos) ─────────
+  if (lpOk) {
+    const candidates = [
+      lp.shipping_fee,
+      lp.free_shipping?.amount,
+      lp.shipping?.amount,
+      lp.shipping_cost,
+      // Buscar dentro de sale_fee_details línea de tipo envío
+      ...(Array.isArray(lp.sale_fee_details)
+        ? lp.sale_fee_details.filter(f => /ship|envio|envío|flete/i.test(f.type || f.id || '')).map(f => f.amount)
+        : [])
+    ];
+    for (const c of candidates) {
+      if (c != null && parseFloat(c) > 0) { lpEnvioMonto = parseFloat(c); break; }
+    }
   }
-  if (lp.shipping_fee != null) {
-    lpEnvioMonto = parseFloat(lp.shipping_fee) || 0;
-  }
+  const envioDetectado = shipSample?.cost ?? lpEnvioMonto ?? null;
 
   const logisticLabel = {
     'fulfillment':   'FULL',
@@ -4041,21 +4059,22 @@ function renderFeesResult(data) {
     'default':       'Estándar',
   }[item.logistic_type] || item.logistic_type || '—';
 
-  // Costo de envío detectado desde shipment API
-  const envioDetectado = shipSample?.cost ?? null;
-
   // ── Info del ítem ─────────────────────────────────────────────────────────
+  const precioDisplay = promoPrice ?? item.price;
   const infoItem = `
     <div style="background:var(--surface2);border-radius:10px;padding:12px 16px;margin-bottom:20px;font-size:13px">
       <div style="font-weight:600;margin-bottom:6px">${item.title || item.id}</div>
       <div style="display:flex;gap:16px;flex-wrap:wrap;color:var(--muted);font-size:12px">
         <span>ID: <b style="color:var(--text)">${item.id}</b></span>
-        <span>Precio real: <b style="color:var(--text)">${fmt(item.price)}</b></span>
-        ${item.original_price && item.original_price !== item.price ? `<span>Original: <b style="color:var(--text)">${fmt(item.original_price)}</b></span>` : ''}
+        ${item.original_price && item.original_price > item.price
+          ? `<span>Precio regular: <b style="text-decoration:line-through;color:var(--muted)">${fmt(item.original_price)}</b></span>
+             <span>Precio con descuento: <b style="color:#2e7d32">${fmt(item.price)}</b></span>`
+          : `<span>Precio: <b style="color:var(--text)">${fmt(item.price)}</b></span>`}
+        ${promoPrice ? `<span>Precio campaña ML: <b style="color:#1565c0">${fmt(promoPrice)}</b></span>` : ''}
         <span>Tipo: <b style="color:var(--text)">${item.listing_type_id}</b></span>
         <span>Logística: <b style="color:var(--text)">${logisticLabel}</b></span>
         <span>Envío gratis: <b style="color:var(--text)">${item.free_shipping ? 'Sí' : 'No'}</b></span>
-        ${envioDetectado != null ? `<span style="color:#2e7d32">✓ Costo envío detectado: <b>$${parseFloat(envioDetectado).toFixed(2)}</b></span>` : ''}
+        ${envioDetectado != null ? `<span style="color:#2e7d32">✓ Costo envío: <b>${fmt(envioDetectado)}</b></span>` : ''}
       </div>
     </div>`;
 
@@ -4066,7 +4085,7 @@ function renderFeesResult(data) {
       <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:14px">
         <div>
           <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:3px">Precio de venta ($)</label>
-          <input id="fcPrecio" type="number" value="${precio}" oninput="recalcFees()"
+          <input id="fcPrecio" type="number" value="${defaultPrice}" oninput="recalcFees()"
             style="width:120px;padding:7px 10px;border-radius:8px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:13px">
         </div>
         <div>
@@ -4091,10 +4110,12 @@ function renderFeesResult(data) {
         </div>
       </div>
       <div id="fcResultados" style="display:flex;gap:10px;flex-wrap:wrap"></div>
-      <p style="font-size:11px;color:var(--muted);margin:10px 0 0">
-        💡 La comisión ML varía por categoría y tipo de publicación. Consultá tu porcentaje exacto en tu cuenta ML → Tarifas.
-        Gold Special (Clásica) suele ser ~13.5% para la mayoría de categorías en Argentina.
-      </p>
+      <div style="margin-top:12px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <button onclick="reconsultarFees('${item.id}', '${item.listing_type_id}', '${item.category_id}', '${item.logistic_type}', '${item.shipping_mode}')" class="sync-btn" style="font-size:12px;padding:6px 14px">
+          🔄 Recalcular fees con este precio
+        </button>
+        <span style="font-size:11px;color:var(--muted)">Cambiá el precio arriba y hacé clic para actualizar comisión y envío desde ML</span>
+      </div>
     </div>`;
 
   // ── Tabla de órdenes reales ───────────────────────────────────────────────
@@ -4134,6 +4155,55 @@ function renderFeesResult(data) {
     </details>` : ''}`;
 
   return `<div>${infoItem}${calc}${ordersSection}${rawJson}</div>`;
+}
+
+async function reconsultarFees(itemId, listingType, categoryId, logisticType, shippingMode) {
+  const precio  = parseFloat(document.getElementById('fcPrecio')?.value) || 0;
+  const client  = getActiveClient();
+  if (!precio || !client) return;
+  const btn = event?.target;
+  if (btn) { btn.disabled = true; btn.textContent = 'Consultando…'; }
+  try {
+    const url = `/api/item-fees?item_id=${encodeURIComponent(itemId)}&client_id=${client.id}&price=${precio}`;
+    const data = await apiCall('GET', url);
+    if (!data.ok) return;
+    const lp = data.listing_prices || {};
+    const lpOk = lp && !lp.error && !lp.message && !lp._error;
+
+    // Actualizar comisión
+    let comPct = null;
+    if (lpOk && lp.sale_fee_amount != null) {
+      const v = parseFloat(lp.sale_fee_amount);
+      comPct = v <= 100 ? v : (precio ? v / precio * 100 : null);
+    }
+    if (comPct != null) {
+      const el = document.getElementById('fcComision');
+      if (el) { el.value = comPct.toFixed(2); el.style.borderColor = '#2e7d32'; }
+    }
+
+    // Actualizar envío
+    let envio = null;
+    if (lpOk) {
+      const candidates = [lp.shipping_fee, lp.free_shipping?.amount, lp.shipping?.amount, lp.shipping_cost,
+        ...(Array.isArray(lp.sale_fee_details) ? lp.sale_fee_details.filter(f => /ship|envio|envío|flete/i.test(f.type||f.id||'')).map(f=>f.amount) : [])];
+      for (const c of candidates) { if (c != null && parseFloat(c) > 0) { envio = parseFloat(c); break; } }
+    }
+    if (envio != null) {
+      const el = document.getElementById('fcEnvio');
+      if (el) { el.value = envio.toFixed(2); el.style.borderColor = '#2e7d32'; }
+    }
+
+    // Actualizar JSON de listing_prices en el details
+    const pre = document.querySelector('#feesResult details pre');
+    if (pre) pre.textContent = JSON.stringify(lp, null, 2);
+
+    recalcFees();
+    showToast('Fees actualizados desde ML');
+  } catch(e) {
+    showToast('Error al reconsultar: ' + e.message);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '🔄 Recalcular fees con este precio'; }
+  }
 }
 
 function recalcFees() {
