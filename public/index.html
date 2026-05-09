@@ -4006,12 +4006,31 @@ async function runVerificadorFees() {
 }
 
 function renderFeesResult(data) {
-  const item    = data.item || {};
-  const precio  = data.effective_price || item.price || 0;
-  const samples = data.order_samples   || [];
+  const item       = data.item || {};
+  const precio     = data.effective_price || item.price || 0;
+  const samples    = data.order_samples   || [];
   const shipSample = data.shipping_cost_sample;
+  const lp         = data.listing_prices  || {};
 
   const fmt  = v => (v != null && !isNaN(v)) ? '$' + parseFloat(v).toFixed(2) : '—';
+
+  // Extraer comisión y envío desde listing_prices (ahora con parámetros correctos)
+  let lpComisionPct = null, lpEnvioMonto = null;
+  if (lp.sale_fee_amount != null && !lp.error && !lp.message) {
+    const v = parseFloat(lp.sale_fee_amount);
+    lpComisionPct = v <= 100 ? v : (precio ? v/precio*100 : null);
+  }
+  if (Array.isArray(lp.sale_fee_details)) {
+    const feeTotal = lp.sale_fee_details.reduce((s,f) => s + parseFloat(f.amount||0), 0);
+    if (feeTotal > 0) lpComisionPct = precio ? feeTotal/precio*100 : null;
+  }
+  // Envío desde listing_prices
+  if (lp.free_shipping?.amount != null) {
+    lpEnvioMonto = parseFloat(lp.free_shipping.amount) || 0;
+  }
+  if (lp.shipping_fee != null) {
+    lpEnvioMonto = parseFloat(lp.shipping_fee) || 0;
+  }
 
   const logisticLabel = {
     'fulfillment':   'FULL',
@@ -4056,14 +4075,14 @@ function renderFeesResult(data) {
             style="width:120px;padding:7px 10px;border-radius:8px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:13px">
         </div>
         <div>
-          <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:3px">Comisión ML (%)</label>
-          <input id="fcComision" type="number" value="13.5" step="0.5" oninput="recalcFees()"
-            style="width:100px;padding:7px 10px;border-radius:8px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:13px">
+          <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:3px">Comisión ML (%)${lpComisionPct != null ? ' <span style="color:#2e7d32">✓ desde API</span>' : ''}</label>
+          <input id="fcComision" type="number" value="${lpComisionPct != null ? lpComisionPct.toFixed(2) : '13.5'}" step="0.1" oninput="recalcFees()"
+            style="width:100px;padding:7px 10px;border-radius:8px;border:1px solid ${lpComisionPct != null ? '#2e7d32' : 'var(--border)'};background:var(--bg);color:var(--text);font-size:13px">
         </div>
         <div>
-          <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:3px">Costo envío ($)</label>
-          <input id="fcEnvio" type="number" value="${envioDetectado ?? 0}" oninput="recalcFees()"
-            style="width:120px;padding:7px 10px;border-radius:8px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:13px">
+          <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:3px">Costo envío ($)${(envioDetectado ?? lpEnvioMonto) != null ? ' <span style="color:#2e7d32">✓ desde API</span>' : ''}</label>
+          <input id="fcEnvio" type="number" value="${envioDetectado ?? lpEnvioMonto ?? 0}" oninput="recalcFees()"
+            style="width:120px;padding:7px 10px;border-radius:8px;border:1px solid ${(envioDetectado ?? lpEnvioMonto) != null ? '#2e7d32' : 'var(--border)'};background:var(--bg);color:var(--text);font-size:13px">
         </div>
         <div>
           <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:3px">IIBB (%)</label>
@@ -4102,12 +4121,17 @@ function renderFeesResult(data) {
       </table>
     </div>` : '';
 
-  // ── JSON de envío detectado ───────────────────────────────────────────────
-  const rawJson = shipSample ? `
+  // ── JSON para debug ───────────────────────────────────────────────────────
+  const rawJson = `
     <details style="margin-bottom:12px">
+      <summary style="cursor:pointer;font-size:12px;color:var(--muted)">Respuesta listing_prices API</summary>
+      <p style="font-size:11px;color:var(--muted);margin:6px 0">${data.listing_prices_url || ''}</p>
+      <pre style="padding:12px;background:var(--surface2);border-radius:8px;font-size:11px;overflow-x:auto;white-space:pre-wrap">${JSON.stringify(lp, null, 2)}</pre>
+    </details>
+    ${shipSample ? `<details style="margin-bottom:12px">
       <summary style="cursor:pointer;font-size:12px;color:var(--muted)">Datos del envío desde API de shipments</summary>
-      <pre style="margin-top:8px;padding:12px;background:var(--surface2);border-radius:8px;font-size:11px;overflow-x:auto;white-space:pre-wrap">${JSON.stringify(shipSample, null, 2)}</pre>
-    </details>` : '';
+      <pre style="padding:12px;background:var(--surface2);border-radius:8px;font-size:11px;overflow-x:auto;white-space:pre-wrap">${JSON.stringify(shipSample, null, 2)}</pre>
+    </details>` : ''}`;
 
   return `<div>${infoItem}${calc}${ordersSection}${rawJson}</div>`;
 }

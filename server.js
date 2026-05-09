@@ -3881,12 +3881,30 @@ app.get('/api/item-fees', requireAuth, async (req, res) => {
       return res.json({ ok: false, step: 'item_fetch', raw: itemData });
     }
 
-    const uid           = clientRow.rows[0]?.ml_user_id;
+    const uid            = clientRow.rows[0]?.ml_user_id;
     const effectivePrice = parseFloat(price || itemData.price) || 0;
-    const listingType   = itemData.listing_type_id;
-    const categoryId    = itemData.category_id;
+    const listingType    = itemData.listing_type_id;
+    const categoryId     = itemData.category_id;
+    const logisticType   = itemData.shipping?.logistic_type || 'cross_docking';
+    const shippingMode   = itemData.shipping?.mode || 'me2';
+    // Peso facturable en gramos (obligatorio para MLA) — viene de shipping.dimensions o default 500g
+    const dimensions     = itemData.shipping?.dimensions;
+    const billableWeight = dimensions?.weight || 500;
 
-    // 2. Órdenes recientes del ítem + costo de envío desde shipments
+    // 2. listing_prices con los parámetros correctos para MLA
+    const lpParams = new URLSearchParams({
+      category_id:    categoryId,
+      price:          effectivePrice,
+      currency_id:    'ARS',
+      listing_type_id: listingType,
+      logistic_type:  logisticType,
+      shipping_modes: shippingMode,
+      billable_weight: billableWeight
+    });
+    const lpUrl = `${ML_API}/sites/MLA/listing_prices?${lpParams}`;
+    const lpData = await fetch(lpUrl).then(r => r.json()).catch(e => ({ _error: e.message }));
+
+    // 3. Órdenes recientes del ítem + costo de envío desde shipments
     let orderSamples = [];
     let shippingCostSample = null;
     if (uid) {
@@ -3937,6 +3955,8 @@ app.get('/api/item-fees', requireAuth, async (req, res) => {
         logistic_type: itemData.shipping?.logistic_type
       },
       effective_price: effectivePrice,
+      listing_prices: lpData,
+      listing_prices_url: lpUrl,
       order_samples: orderSamples,
       shipping_cost_sample: shippingCostSample
     });
