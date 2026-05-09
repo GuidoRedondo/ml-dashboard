@@ -5027,22 +5027,25 @@ app.get('/api/promociones', requireAuth, async (req, res) => {
     if (!uid) { clearTimeout(hardTimeout); return res.json({ promos: [], debug: 'sin uid' }); }
 
     const headers = { Authorization: `Bearer ${token}` };
-    const mlFetch = (url) => Promise.race([
+    const mlFetch = (url, ms = 12000) => Promise.race([
       fetch(url, { headers }).then(r => r.json()),
-      new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 6000))
+      new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), ms))
     ]);
 
-    const [r1, r2, r3] = await Promise.allSettled([
-      mlFetch(`${ML_API}/seller-promotions/promotions?seller_id=${uid}`),
-      mlFetch(`${ML_API}/campaigns?seller_id=${uid}`),
-      mlFetch(`${ML_API}/promotions?seller_id=${uid}`)
+    const [r1, r2, r3, r4] = await Promise.allSettled([
+      mlFetch(`${ML_API}/seller-promotions/promotions?seller_id=${uid}&app_version=v2&limit=50`),
+      mlFetch(`${ML_API}/seller-promotions/promotions?seller_id=${uid}&app_version=v2&status=started`),
+      mlFetch(`${ML_API}/seller-promotions/promotions?seller_id=${uid}&app_version=v2&status=active`),
+      mlFetch(`${ML_API}/users/${uid}/deals`, 8000)
     ]);
     const sp  = r1.status === 'fulfilled' ? r1.value : null;
     const up  = r2.status === 'fulfilled' ? r2.value : null;
     const sp3 = r3.status === 'fulfilled' ? r3.value : null;
-    console.log('[PROMOS] seller-promotions:', r1.status, JSON.stringify(sp)?.slice(0,200));
-    console.log('[PROMOS] campaigns:', r2.status, JSON.stringify(up)?.slice(0,200));
-    console.log('[PROMOS] /promotions:', r3.status, JSON.stringify(sp3)?.slice(0,200));
+    const sp4 = r4.status === 'fulfilled' ? r4.value : null;
+    console.log('[PROMOS] v2+limit:', r1.status, JSON.stringify(sp)?.slice(0,200));
+    console.log('[PROMOS] v2+started:', r2.status, JSON.stringify(up)?.slice(0,200));
+    console.log('[PROMOS] v2+active:', r3.status, JSON.stringify(sp3)?.slice(0,200));
+    console.log('[PROMOS] /deals:', r4.status, JSON.stringify(sp4)?.slice(0,200));
 
     const parsePromos = (data) => {
       if (!data) return [];
@@ -5060,14 +5063,15 @@ app.get('/api/promociones', requireAuth, async (req, res) => {
       }));
     };
 
-    const promos = [...parsePromos(sp), ...parsePromos(up), ...parsePromos(sp3)]
+    const promos = [...parsePromos(sp), ...parsePromos(up), ...parsePromos(sp3), ...parsePromos(sp4)]
       .filter((p, i, arr) => arr.findIndex(x => x.id === p.id) === i);
 
     clearTimeout(hardTimeout);
     if (!res.headersSent) res.json({ promos, debug: {
-      'seller-promotions': JSON.stringify(sp)?.slice(0,300),
-      campaigns: JSON.stringify(up)?.slice(0,300),
-      promotions: JSON.stringify(sp3)?.slice(0,300)
+      'v2+limit': JSON.stringify(sp)?.slice(0,300),
+      'v2+started': JSON.stringify(up)?.slice(0,300),
+      'v2+active': JSON.stringify(sp3)?.slice(0,300),
+      'deals': JSON.stringify(sp4)?.slice(0,300)
     }});
   } catch(e) {
     console.error('[PROMOS]', e.message);
