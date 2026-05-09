@@ -3921,15 +3921,16 @@ app.get('/api/item-fees', requireAuth, async (req, res) => {
 
         const orders = ordRes.results || [];
 
-        // Costo de envío desde /shipments/{id}/costs (mismo endpoint que el P&L)
-        for (const o of orders) {
+        // Costo de envío desde /shipments/{id}/costs — buscar en TODOS y promediar
+        const shipCosts = [];
+        await Promise.all(orders.map(async o => {
           const shipId = o.shipping?.id;
-          if (shipId && shippingCostSample === null) {
+          let shippingCost = null;
+          if (shipId) {
             try {
               const costsData = await fetch(`${ML_API}/shipments/${shipId}/costs`, { headers: authHeaders }).then(r => r.json());
-              // senders[0].cost = lo que paga el vendedor
-              const cost = costsData.senders?.[0]?.cost ?? costsData.sender?.cost ?? null;
-              if (cost != null) shippingCostSample = { shipment_id: shipId, cost, raw: costsData };
+              shippingCost = costsData.senders?.[0]?.cost ?? costsData.sender?.cost ?? null;
+              if (shippingCost != null) shipCosts.push(parseFloat(shippingCost));
             } catch(_) {}
           }
 
@@ -3939,11 +3940,17 @@ app.get('/api/item-fees', requireAuth, async (req, res) => {
             order_id: o.id,
             date: o.date_closed || o.date_created,
             sale_price: oi?.unit_price ?? null,
-            sale_fee: oi?.sale_fee ?? null,       // comisión ML por esa línea
+            sale_fee: oi?.sale_fee ?? null,
             quantity: oi?.quantity ?? null,
             total_amount: o.total_amount ?? payment?.transaction_amount ?? null,
             shipment_id: shipId ?? null,
+            shipping_cost: shippingCost != null ? parseFloat(shippingCost) : null,
           });
+        }));
+
+        if (shipCosts.length > 0) {
+          const avg = shipCosts.reduce((s,c) => s+c, 0) / shipCosts.length;
+          shippingCostSample = { avg_cost: Math.round(avg), samples: shipCosts, n: shipCosts.length };
         }
       } catch(_) {}
     }

@@ -4034,9 +4034,8 @@ function renderFeesResult(data) {
       lpComisionPct = lpComisionMonto / defaultPrice * 100;
   }
 
-  // Envío: listing_prices NO incluye costo de envío para Flex/FULL (depende de destino y peso)
-  // Usamos shipSample si viene de la API de shipments
-  const envioDetectado = shipSample?.cost ?? null;
+  // Envío: promedio de las últimas órdenes desde /shipments/{id}/costs
+  const envioDetectado = shipSample?.avg_cost ?? null;
 
   const logisticLabel = {
     'fulfillment':   'FULL',
@@ -4062,7 +4061,7 @@ function renderFeesResult(data) {
         <span>Tipo: <b style="color:var(--text)">${item.listing_type_id}</b></span>
         <span>Logística: <b style="color:var(--text)">${logisticLabel}</b></span>
         <span>Envío gratis: <b style="color:var(--text)">${item.free_shipping ? 'Sí' : 'No'}</b></span>
-        ${envioDetectado != null ? `<span style="color:#2e7d32">✓ Costo envío: <b>${fmt(envioDetectado)}</b></span>` : ''}
+        ${envioDetectado != null ? `<span style="color:#2e7d32">✓ Envío promedio ${shipSample.n} órdenes: <b>${fmt(envioDetectado)}</b></span>` : ''}
       </div>
     </div>`;
 
@@ -4087,7 +4086,7 @@ function renderFeesResult(data) {
             style="width:100px;padding:7px 10px;border-radius:8px;border:1px solid ${lpComisionPct != null ? '#2e7d32' : 'var(--border)'};background:var(--bg);color:var(--text);font-size:13px">
         </div>
         <div>
-          <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:3px">Costo envío ($)${envioDetectado != null ? ' <span style="color:#2e7d32">✓ desde API</span>' : ' <span style="color:#e65100">ingresar manual</span>'}</label>
+          <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:3px">Costo envío ($)${envioDetectado != null ? ` <span style="color:#2e7d32">✓ prom. ${shipSample.n} ord.</span>` : ' <span style="color:#e65100">ingresar manual</span>'}</label>
           <input id="fcEnvio" type="number" value="${envioDetectado ?? 0}" oninput="recalcFees()"
             style="width:120px;padding:7px 10px;border-radius:8px;border:1px solid ${envioDetectado != null ? '#2e7d32' : '#e65100'};background:var(--bg);color:var(--text);font-size:13px">
         </div>
@@ -4108,7 +4107,7 @@ function renderFeesResult(data) {
 
   // ── Tabla de órdenes reales ───────────────────────────────────────────────
   const ordersSection = samples.length ? `
-    <h4 style="font-family:var(--font-b);margin:0 0 8px;font-size:13px">Últimas ventas (últimos 90 días)</h4>
+    <h4 style="font-family:var(--font-b);margin:0 0 8px;font-size:13px">Últimas ventas (últimos 90 días)${envioDetectado != null ? ` — envío promedio: <span style="color:#2e7d32">${fmt(envioDetectado)}</span> (${shipSample.n} muestras)` : ''}</h4>
     <div style="overflow-x:auto;margin-bottom:16px">
       <table style="width:100%;border-collapse:collapse;font-size:12px">
         <thead><tr style="color:var(--muted);font-size:11px;text-align:left">
@@ -4117,6 +4116,7 @@ function renderFeesResult(data) {
           <th style="padding:5px 8px;border-bottom:2px solid var(--border);text-align:right">Precio unit.</th>
           <th style="padding:5px 8px;border-bottom:2px solid var(--border);text-align:right">Fee ML (orden)</th>
           <th style="padding:5px 8px;border-bottom:2px solid var(--border);text-align:right">% fee</th>
+          <th style="padding:5px 8px;border-bottom:2px solid var(--border);text-align:right">Envío</th>
           <th style="padding:5px 8px;border-bottom:2px solid var(--border);text-align:right">Total orden</th>
         </tr></thead>
         <tbody>
@@ -4128,6 +4128,7 @@ function renderFeesResult(data) {
               <td style="padding:5px 8px;border-bottom:1px solid var(--border);text-align:right">${fmt(s.sale_price)}</td>
               <td style="padding:5px 8px;border-bottom:1px solid var(--border);text-align:right;color:${s.sale_fee ? '#c62828' : 'var(--muted)'}">${fmt(s.sale_fee)}</td>
               <td style="padding:5px 8px;border-bottom:1px solid var(--border);text-align:right">${feePct}</td>
+              <td style="padding:5px 8px;border-bottom:1px solid var(--border);text-align:right;color:#1565c0">${fmt(s.shipping_cost)}</td>
               <td style="padding:5px 8px;border-bottom:1px solid var(--border);text-align:right">${fmt(s.total_amount)}</td>
             </tr>`;
           }).join('')}
