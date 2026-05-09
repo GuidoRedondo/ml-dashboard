@@ -5031,13 +5031,16 @@ app.get('/api/promociones', requireAuth, async (req, res) => {
     const searchRes = await mlGet(`/users/${uid}/items/search?status=active&limit=100`, token);
     const ids = searchRes.results || [];
 
-    // Fetch en batches de 20 con atributos de precio y descuento
-    const attrs = 'id,title,price,original_price,thumbnail,permalink,listing_type_id,promotions,sale_price';
+    // Fetch en batches de 20 — /items?ids= devuelve [{code, body}, ...]
+    const attrs = 'id,title,price,original_price,thumbnail,permalink,listing_type_id,sale_price';
     const batchResults = await Promise.all(
       Array.from({ length: Math.ceil(ids.length / 20) }, (_, i) => ids.slice(i*20, i*20+20))
         .map(batch => mlGet(`/items?ids=${batch.join(',')}&attributes=${attrs}`, token).catch(() => []))
     );
-    const allItems = batchResults.flat().filter(it => it && !it.error);
+    const allItems = batchResults.flat()
+      .filter(it => it && it.code === 200 && it.body)
+      .map(it => it.body);
+    console.log('[PROMOS] total items:', allItems.length, 'sample original_price:', allItems[0]?.original_price, 'price:', allItems[0]?.price);
 
     // Filtrar ítems con descuento activo (original_price > price)
     const itemsConDescuento = allItems
