@@ -11077,103 +11077,57 @@ async function loadPromociones() {
     const data = await apiCall('GET', `/api/promociones?client_id=${client.id}`);
     if (!data) { el.innerHTML = '<div style="color:var(--muted);padding:40px">Sin acceso — verificá el token del cliente</div>'; return; }
     if (data.error) { el.innerHTML = `<div style="color:#ff5252;padding:40px">${data.error}</div>`; return; }
-    renderPromociones(data, client.id);
+    renderPromociones(data);
   } catch(e) {
     el.innerHTML = `<div style="color:var(--muted);font-size:13px;padding:40px">Error: ${e.message}</div>`;
   }
 }
 
-function renderPromociones(data, clientId) {
+function renderPromociones(data) {
   const el = document.getElementById('promoContent');
-  const promos = data.promos || [];
+  const items = data.items || [];
 
-  const statusBadge = s => {
-    const map = { active:'<span style="background:#00e67622;color:#00e676;padding:2px 8px;border-radius:12px;font-size:11px;font-weight:600">ACTIVA</span>',
-                  started:'<span style="background:#00e67622;color:#00e676;padding:2px 8px;border-radius:12px;font-size:11px;font-weight:600">ACTIVA</span>',
-                  paused:'<span style="background:#ff910022;color:#ff9100;padding:2px 8px;border-radius:12px;font-size:11px;font-weight:600">PAUSADA</span>',
-                  finished:'<span style="background:var(--surface2);color:var(--muted);padding:2px 8px;border-radius:12px;font-size:11px">FINALIZADA</span>',
-                  expired:'<span style="background:var(--surface2);color:var(--muted);padding:2px 8px;border-radius:12px;font-size:11px">EXPIRADA</span>' };
-    return map[s] || `<span style="background:var(--surface2);color:var(--muted);padding:2px 8px;border-radius:12px;font-size:11px">${s||'—'}</span>`;
-  };
-  const fmtDate = d => d ? new Date(d).toLocaleDateString('es-AR') : '—';
-
-  if (!promos.length) {
-    el.innerHTML = `
-      <div style="background:#fef3c7;border:1px solid #fcd34d;border-radius:10px;padding:16px">
-        <div style="font-size:13px;font-weight:600;margin-bottom:4px">⚠ No se encontraron promociones</div>
-        <div style="font-size:12px;color:#92400e">Puede que esta cuenta no tenga promociones activas, o que la app no tenga permisos suficientes.</div>
-        ${data.debug ? `<pre style="font-size:10px;margin-top:8px;white-space:pre-wrap;word-break:break-all;color:#92400e">${JSON.stringify(data.debug,null,2).slice(0,800)}</pre>` : ''}
-      </div>`;
+  if (!items.length) {
+    el.innerHTML = `<div style="color:var(--muted);padding:20px;font-size:13px">
+      No se encontraron publicaciones con descuento activo en el catálogo (${data.total||0} ítems revisados).</div>`;
     return;
   }
 
-  const active = promos.filter(p => p.status === 'active' || p.status === 'started').length;
+  const fmt = n => '$' + Math.round(n).toLocaleString('es-AR');
   el.innerHTML = `
     <div style="display:flex;gap:12px;margin-bottom:20px;flex-wrap:wrap">
-      ${[['Total', promos.length,''],['Activas', active,'#22c55e'],['Inactivas', promos.length-active,'#6b7280']]
+      ${[['Ítems revisados', data.total||0,''],['Con descuento', items.length,'#22c55e'],
+         ['Descuento promedio', Math.round(items.reduce((s,i)=>s+i.discount_pct,0)/items.length)+'%','var(--accent)']]
         .map(([l,v,c])=>`<div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px 18px">
-          <div style="font-size:11px;color:var(--muted);text-transform:uppercase">${l}</div>
-          <div style="font-size:22px;font-weight:700;font-family:var(--font-b);margin-top:4px;color:${c||'var(--text)'}">${v}</div></div>`).join('')}
+          <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em">${l}</div>
+          <div style="font-size:22px;font-weight:700;font-family:var(--font-b);margin-top:4px;color:${c||'var(--text)'}">${v}</div>
+        </div>`).join('')}
     </div>
-    ${promos.map(p => `
-      <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;margin-bottom:10px;overflow:hidden">
-        <div style="padding:14px 18px;display:flex;align-items:center;gap:12px;cursor:pointer" onclick="togglePromoItems(this,'${p.id}',${clientId})">
-          <div style="flex:1">
-            <div style="font-weight:700;font-size:14px;margin-bottom:4px">${_escHtml(p.name)} ${statusBadge(p.status)}</div>
-            <div style="font-size:12px;color:var(--muted)">
-              ${p.type} &nbsp;·&nbsp; ${fmtDate(p.date_from)} → ${fmtDate(p.date_to)}
-              ${p.discount_pct!=null?' &nbsp;·&nbsp; <span style="color:var(--accent);font-weight:600">'+p.discount_pct+'% off</span>':''}
-              ${p.item_count?' &nbsp;·&nbsp; '+p.item_count+' productos':''}
-            </div>
-          </div>
-          <span style="font-size:18px;color:var(--muted);transition:transform .2s" class="promo-chevron">▸</span>
-        </div>
-        <div class="promo-items-panel" style="display:none;border-top:1px solid var(--border);padding:14px 18px">
-          <div class="promo-items-inner" style="color:var(--muted);font-size:13px">Cargando…</div>
-        </div>
-      </div>`).join('')}`;
+    <div style="overflow-x:auto">
+    <table style="width:100%;border-collapse:collapse">
+      <thead><tr style="background:var(--surface2)">
+        <th style="padding:8px 12px;text-align:left;font-size:11px;color:var(--muted);border-bottom:1px solid var(--border)">Publicación</th>
+        <th style="padding:8px 12px;text-align:right;font-size:11px;color:var(--muted);border-bottom:1px solid var(--border)">Precio original</th>
+        <th style="padding:8px 12px;text-align:right;font-size:11px;color:var(--muted);border-bottom:1px solid var(--border)">Precio con desc.</th>
+        <th style="padding:8px 12px;text-align:center;font-size:11px;color:var(--muted);border-bottom:1px solid var(--border)">% Descuento</th>
+      </tr></thead>
+      <tbody>
+        ${items.map(it => `
+          <tr style="border-bottom:1px solid var(--border)">
+            <td style="padding:10px 12px;display:flex;align-items:center;gap:10px">
+              ${it.thumbnail ? `<img src="${it.thumbnail}" style="width:40px;height:40px;object-fit:contain;border-radius:6px;background:#fff;flex-shrink:0">` : ''}
+              <a href="${it.permalink}" target="_blank" style="font-size:12px;color:var(--text);text-decoration:none;line-height:1.4">${_escHtml(it.title)}</a>
+            </td>
+            <td style="padding:10px 12px;text-align:right;font-size:13px;color:var(--muted);text-decoration:line-through;white-space:nowrap">${fmt(it.original_price)}</td>
+            <td style="padding:10px 12px;text-align:right;font-size:13px;font-weight:700;white-space:nowrap">${fmt(it.price)}</td>
+            <td style="padding:10px 12px;text-align:center">
+              <span style="background:#00e67622;color:#00e676;padding:3px 10px;border-radius:12px;font-size:13px;font-weight:700">-${it.discount_pct}%</span>
+            </td>
+          </tr>`).join('')}
+      </tbody>
+    </table></div>`;
 }
 
-async function togglePromoItems(headerEl, promoId, clientId) {
-  const card    = headerEl.parentElement;
-  const panel   = card.querySelector('.promo-items-panel');
-  const chevron = headerEl.querySelector('.promo-chevron');
-  const inner   = panel.querySelector('.promo-items-inner');
-  const open    = panel.style.display !== 'none';
-  panel.style.display     = open ? 'none' : '';
-  chevron.style.transform = open ? '' : 'rotate(90deg)';
-  if (open || inner.dataset.loaded) return;
-
-  try {
-    const data = await apiCall('GET', `/api/promociones-items?promo_id=${promoId}&client_id=${clientId}`);
-    if (!data || data.error) { inner.textContent = data?.error || 'Error al cargar'; inner.dataset.loaded='1'; return; }
-    const items = data.items || [];
-    if (!items.length) { inner.textContent = 'No se encontraron publicaciones en esta promoción.'; inner.dataset.loaded='1'; return; }
-    inner.innerHTML = `
-      <table style="width:100%;border-collapse:collapse;font-size:13px">
-        <thead><tr style="color:var(--muted);font-size:11px;text-transform:uppercase;border-bottom:1px solid var(--border)">
-          <th style="padding:6px 8px;text-align:left">Publicación</th>
-          <th style="padding:6px 8px;text-align:right">Precio original</th>
-          <th style="padding:6px 8px;text-align:right">Precio promo</th>
-          <th style="padding:6px 8px;text-align:right">% Descuento</th>
-          <th style="padding:6px 8px;text-align:left">Estado</th>
-        </tr></thead>
-        <tbody>${items.map(it => {
-          const pct = it.discount_pct!=null ? it.discount_pct
-            : (it.original_price&&it.sale_price ? Math.round((it.original_price-it.sale_price)/it.original_price*100) : null);
-          const thumb = it.thumbnail ? `<img src="${it.thumbnail}" style="width:34px;height:34px;object-fit:contain;border-radius:4px;margin-right:6px;vertical-align:middle">` : '';
-          return `<tr style="border-bottom:1px solid var(--border)">
-            <td style="padding:8px">${thumb}<span style="font-size:12px">${_escHtml(it.title||it.item_id||'—')}</span></td>
-            <td style="padding:8px;text-align:right;color:var(--muted);text-decoration:line-through">${it.original_price?'$'+it.original_price.toLocaleString('es-AR'):'—'}</td>
-            <td style="padding:8px;text-align:right;font-weight:600">${it.sale_price?'$'+it.sale_price.toLocaleString('es-AR'):'—'}</td>
-            <td style="padding:8px;text-align:right;color:#00e676;font-weight:700">${pct!=null?pct+'%':'—'}</td>
-            <td style="padding:8px;font-size:11px;color:var(--muted)">${it.status||'—'}</td>
-          </tr>`;
-        }).join('')}</tbody>
-      </table>`;
-    inner.dataset.loaded = '1';
-  } catch(e) { inner.textContent = 'Error: '+e.message; inner.dataset.loaded='1'; }
-}
 
 // ── TOKEN STATUS ──────────────────────────────────────────────────────────────
 let _tokenStatusInterval = null;

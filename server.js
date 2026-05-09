@@ -5027,52 +5027,36 @@ app.get('/api/promociones', requireAuth, async (req, res) => {
     if (!uid) { clearTimeout(hardTimeout); return res.json({ promos: [], debug: 'sin uid' }); }
 
     const headers = { Authorization: `Bearer ${token}` };
-    const mlFetch = (url, ms = 12000) => Promise.race([
-      fetch(url, { headers }).then(r => r.json()),
-      new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), ms))
-    ]);
+    // Obtener IDs de ítems activos del vendedor
+    const searchRes = await mlGet(`/users/${uid}/items/search?status=active&limit=100`, token);
+    const ids = searchRes.results || [];
 
-    const [r1, r2, r3, r4] = await Promise.allSettled([
-      mlFetch(`${ML_API}/seller-promotions/promotions?seller_id=${uid}&app_version=v2&limit=50`),
-      mlFetch(`${ML_API}/seller-promotions/promotions?seller_id=${uid}&app_version=v2&status=started`),
-      mlFetch(`${ML_API}/seller-promotions/promotions?seller_id=${uid}&app_version=v2&status=active`),
-      mlFetch(`${ML_API}/users/${uid}/deals`, 8000)
-    ]);
-    const sp  = r1.status === 'fulfilled' ? r1.value : null;
-    const up  = r2.status === 'fulfilled' ? r2.value : null;
-    const sp3 = r3.status === 'fulfilled' ? r3.value : null;
-    const sp4 = r4.status === 'fulfilled' ? r4.value : null;
-    console.log('[PROMOS] v2+limit:', r1.status, JSON.stringify(sp)?.slice(0,200));
-    console.log('[PROMOS] v2+started:', r2.status, JSON.stringify(up)?.slice(0,200));
-    console.log('[PROMOS] v2+active:', r3.status, JSON.stringify(sp3)?.slice(0,200));
-    console.log('[PROMOS] /deals:', r4.status, JSON.stringify(sp4)?.slice(0,200));
+    // Fetch en batches de 20 con atributos de precio y descuento
+    const attrs = 'id,title,price,original_price,thumbnail,permalink,listing_type_id,promotions,sale_price';
+    const batchResults = await Promise.all(
+      Array.from({ length: Math.ceil(ids.length / 20) }, (_, i) => ids.slice(i*20, i*20+20))
+        .map(batch => mlGet(`/items?ids=${batch.join(',')}&attributes=${attrs}`, token).catch(() => []))
+    );
+    const allItems = batchResults.flat().filter(it => it && !it.error);
 
-    const parsePromos = (data) => {
-      if (!data) return [];
-      const arr = data.results || data.promotions || data.data || (Array.isArray(data) ? data : []);
-      if (!Array.isArray(arr)) return [];
-      return arr.map(p => ({
-        id: p.id,
-        name: p.name || p.promotion_name || p.title || '—',
-        type: p.type || p.promotion_type || '—',
-        status: p.status || '—',
-        date_from: p.start_time || p.date_from || p.start_date || null,
-        date_to: p.finish_time || p.date_to || p.end_date || null,
-        discount_pct: p.action?.value || p.discount_percentage || null,
-        item_count: p.items_count || (p.items && p.items.length) || 0,
-      }));
-    };
-
-    const promos = [...parsePromos(sp), ...parsePromos(up), ...parsePromos(sp3), ...parsePromos(sp4)]
-      .filter((p, i, arr) => arr.findIndex(x => x.id === p.id) === i);
+    // Filtrar ítems con descuento activo (original_price > price)
+    const itemsConDescuento = allItems
+      .filter(it => it.original_price && it.original_price > it.price)
+      .map(it => ({
+        item_id: it.id,
+        title: it.title,
+        thumbnail: it.thumbnail,
+        permalink: it.permalink,
+        price: it.price,
+        original_price: it.original_price,
+        discount_pct: Math.round((it.original_price - it.price) / it.original_price * 100),
+        listing_type: it.listing_type_id,
+        sale_price: it.sale_price || null,
+      }))
+      .sort((a, b) => b.discount_pct - a.discount_pct);
 
     clearTimeout(hardTimeout);
-    if (!res.headersSent) res.json({ promos, debug: {
-      'v2+limit': JSON.stringify(sp)?.slice(0,300),
-      'v2+started': JSON.stringify(up)?.slice(0,300),
-      'v2+active': JSON.stringify(sp3)?.slice(0,300),
-      'deals': JSON.stringify(sp4)?.slice(0,300)
-    }});
+    if (!res.headersSent) res.json({ items: itemsConDescuento, total: ids.length, con_descuento: itemsConDescuento.length });
   } catch(e) {
     console.error('[PROMOS]', e.message);
     clearTimeout(hardTimeout);
