@@ -4019,36 +4019,24 @@ function renderFeesResult(data) {
   const fmt  = v => (v != null && !isNaN(v)) ? '$' + parseFloat(v).toFixed(2) : '—';
 
   // ── Extraer comisión desde listing_prices ────────────────────────────────
-  let lpComisionPct = null, lpEnvioMonto = null;
-  const lpOk = lp && !lp.error && !lp.message && !lp._error;
-  if (lpOk && lp.sale_fee_amount != null) {
-    const v = parseFloat(lp.sale_fee_amount);
-    // ML devuelve porcentaje (≤100) o monto absoluto (>100)
-    lpComisionPct = v <= 100 ? v : (defaultPrice ? v / defaultPrice * 100 : null);
-  }
-  if (lpOk && Array.isArray(lp.sale_fee_details) && lp.sale_fee_details.length) {
-    const feeTotal = lp.sale_fee_details.reduce((s,f) => s + parseFloat(f.amount || f.value || 0), 0);
-    if (feeTotal > 0 && lpComisionPct == null)
-      lpComisionPct = defaultPrice ? feeTotal / defaultPrice * 100 : null;
+  // sale_fee_details es un OBJETO: { meli_percentage_fee, percentage_fee, gross_amount, fixed_fee, ... }
+  let lpComisionPct = null, lpComisionMonto = null;
+  const lpOk = lp && !lp.error && !lp.message && !lp._error && lp.sale_fee_amount != null;
+  if (lpOk) {
+    const sfd = lp.sale_fee_details || {};
+    // Primero buscar el % directo (más preciso)
+    if (sfd.meli_percentage_fee != null) lpComisionPct = parseFloat(sfd.meli_percentage_fee);
+    else if (sfd.percentage_fee != null) lpComisionPct = parseFloat(sfd.percentage_fee);
+    // El monto absoluto
+    lpComisionMonto = parseFloat(sfd.gross_amount ?? lp.sale_fee_amount ?? 0);
+    // Si no tenemos %, calcularlo del monto
+    if (lpComisionPct == null && lpComisionMonto > 0 && defaultPrice > 0)
+      lpComisionPct = lpComisionMonto / defaultPrice * 100;
   }
 
-  // ── Extraer envío desde listing_prices (probar múltiples campos) ─────────
-  if (lpOk) {
-    const candidates = [
-      lp.shipping_fee,
-      lp.free_shipping?.amount,
-      lp.shipping?.amount,
-      lp.shipping_cost,
-      // Buscar dentro de sale_fee_details línea de tipo envío
-      ...(Array.isArray(lp.sale_fee_details)
-        ? lp.sale_fee_details.filter(f => /ship|envio|envío|flete/i.test(f.type || f.id || '')).map(f => f.amount)
-        : [])
-    ];
-    for (const c of candidates) {
-      if (c != null && parseFloat(c) > 0) { lpEnvioMonto = parseFloat(c); break; }
-    }
-  }
-  const envioDetectado = shipSample?.cost ?? lpEnvioMonto ?? null;
+  // Envío: listing_prices NO incluye costo de envío para Flex/FULL (depende de destino y peso)
+  // Usamos shipSample si viene de la API de shipments
+  const envioDetectado = shipSample?.cost ?? null;
 
   const logisticLabel = {
     'fulfillment':   'FULL',
@@ -4095,13 +4083,13 @@ function renderFeesResult(data) {
         </div>
         <div>
           <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:3px">Comisión ML (%)${lpComisionPct != null ? ' <span style="color:#2e7d32">✓ desde API</span>' : ''}</label>
-          <input id="fcComision" type="number" value="${lpComisionPct != null ? lpComisionPct.toFixed(2) : '13.5'}" step="0.1" oninput="recalcFees()"
+          <input id="fcComision" type="number" value="${lpComisionPct != null ? lpComisionPct.toFixed(2) : '16'}" step="0.1" oninput="recalcFees()"
             style="width:100px;padding:7px 10px;border-radius:8px;border:1px solid ${lpComisionPct != null ? '#2e7d32' : 'var(--border)'};background:var(--bg);color:var(--text);font-size:13px">
         </div>
         <div>
-          <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:3px">Costo envío ($)${(envioDetectado ?? lpEnvioMonto) != null ? ' <span style="color:#2e7d32">✓ desde API</span>' : ''}</label>
-          <input id="fcEnvio" type="number" value="${envioDetectado ?? lpEnvioMonto ?? 0}" oninput="recalcFees()"
-            style="width:120px;padding:7px 10px;border-radius:8px;border:1px solid ${(envioDetectado ?? lpEnvioMonto) != null ? '#2e7d32' : 'var(--border)'};background:var(--bg);color:var(--text);font-size:13px">
+          <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:3px">Costo envío ($)${envioDetectado != null ? ' <span style="color:#2e7d32">✓ desde API</span>' : ' <span style="color:#e65100">ingresar manual</span>'}</label>
+          <input id="fcEnvio" type="number" value="${envioDetectado ?? 0}" oninput="recalcFees()"
+            style="width:120px;padding:7px 10px;border-radius:8px;border:1px solid ${envioDetectado != null ? '#2e7d32' : '#e65100'};background:var(--bg);color:var(--text);font-size:13px">
         </div>
         <div>
           <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:3px">IIBB (%)</label>
@@ -4114,7 +4102,7 @@ function renderFeesResult(data) {
         <button onclick="reconsultarFees('${item.id}', '${item.listing_type_id}', '${item.category_id}', '${item.logistic_type}', '${item.shipping_mode}')" class="sync-btn" style="font-size:12px;padding:6px 14px">
           🔄 Recalcular fees con este precio
         </button>
-        <span style="font-size:11px;color:var(--muted)">Cambiá el precio arriba y hacé clic para actualizar comisión y envío desde ML</span>
+        <span style="font-size:11px;color:var(--muted)">Si el ítem tiene precio de campaña, ingresalo en "Precio de venta" y hacé clic aquí</span>
       </div>
     </div>`;
 
@@ -4170,11 +4158,16 @@ async function reconsultarFees(itemId, listingType, categoryId, logisticType, sh
     const lp = data.listing_prices || {};
     const lpOk = lp && !lp.error && !lp.message && !lp._error;
 
-    // Actualizar comisión
+    // Actualizar comisión — sale_fee_details es objeto, no array
     let comPct = null;
-    if (lpOk && lp.sale_fee_amount != null) {
-      const v = parseFloat(lp.sale_fee_amount);
-      comPct = v <= 100 ? v : (precio ? v / precio * 100 : null);
+    if (lpOk) {
+      const sfd = lp.sale_fee_details || {};
+      if (sfd.meli_percentage_fee != null) comPct = parseFloat(sfd.meli_percentage_fee);
+      else if (sfd.percentage_fee != null) comPct = parseFloat(sfd.percentage_fee);
+      else if (lp.sale_fee_amount != null) {
+        const v = parseFloat(lp.sale_fee_amount);
+        comPct = v <= 100 ? v : (precio ? v / precio * 100 : null);
+      }
     }
     if (comPct != null) {
       const el = document.getElementById('fcComision');
