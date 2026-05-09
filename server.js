@@ -3873,13 +3873,18 @@ app.get('/api/item-fees', requireAuth, async (req, res) => {
     const authHeaders = { 'Authorization': `Bearer ${token}` };
 
     // 1. Datos del ítem + ml_user_id del cliente
-    const [itemData, clientRow] = await Promise.all([
-      fetch(`${ML_API}/items/${item_id}?attributes=id,title,price,original_price,listing_type_id,category_id,shipping,promotions`, { headers: authHeaders }).then(r => r.json()),
+    // Usamos multi-get (/items?ids=) igual que Promociones — devuelve original_price correctamente
+    const attrs = 'id,title,price,original_price,listing_type_id,category_id,shipping,promotions';
+    const [multiRes, clientRow] = await Promise.all([
+      fetch(`${ML_API}/items?ids=${item_id}&attributes=${attrs}`, { headers: authHeaders }).then(r => r.json()),
       pool.query('SELECT ml_user_id FROM clients WHERE id=$1', [parseInt(client_id)])
     ]);
-    if (itemData.error || (itemData.status && itemData.status >= 400)) {
-      return res.json({ ok: false, step: 'item_fetch', raw: itemData });
+    // Multi-get devuelve [{code, body}]
+    const itemEntry = Array.isArray(multiRes) ? multiRes[0] : null;
+    if (!itemEntry || itemEntry.code !== 200 || !itemEntry.body) {
+      return res.json({ ok: false, step: 'item_fetch', raw: multiRes });
     }
+    const itemData = itemEntry.body;
 
     const uid = clientRow.rows[0]?.ml_user_id;
     // Precio: si el usuario pasó uno lo usamos; si no, buscamos precio promocional
@@ -3921,21 +3926,26 @@ app.get('/api/item-fees', requireAuth, async (req, res) => {
 
         const orders = ordRes.results || [];
 
-        // Costo de envío desde /shipments/{id}/costs — buscar en TODOS y promediar
-        const shipCosts = [];
-        await Promise.all(orders.map(async o => {
-          const shipId = o.shipping?.id;
+        // Costo de envío: tomar el primer envío único que tenga costo real
+        const seenShipments = new Set();
+        for (const o of orders) {
+          const oi = (o.order_items || []).find(x => x.item?.id === item_id) || o.order_items?.[0];
+          const payment = (o.payments || [])[0];
+          const shipId = o.shipping?.id ?? null;
           let shippingCost = null;
-          if (shipId) {
+
+          if (shipId && !seenShipments.has(shipId) && shippingCostSample === null) {
+            seenShipments.add(shipId);
             try {
               const costsData = await fetch(`${ML_API}/shipments/${shipId}/costs`, { headers: authHeaders }).then(r => r.json());
-              shippingCost = costsData.senders?.[0]?.cost ?? costsData.sender?.cost ?? null;
-              if (shippingCost != null) shipCosts.push(parseFloat(shippingCost));
+              const cost = costsData.senders?.[0]?.cost ?? costsData.sender?.cost ?? null;
+              if (cost != null) {
+                shippingCost = parseFloat(cost);
+                shippingCostSample = { shipment_id: shipId, cost: shippingCost, raw: costsData };
+              }
             } catch(_) {}
           }
 
-          const oi = (o.order_items || []).find(x => x.item?.id === item_id) || o.order_items?.[0];
-          const payment = (o.payments || [])[0];
           orderSamples.push({
             order_id: o.id,
             date: o.date_closed || o.date_created,
@@ -3943,14 +3953,9 @@ app.get('/api/item-fees', requireAuth, async (req, res) => {
             sale_fee: oi?.sale_fee ?? null,
             quantity: oi?.quantity ?? null,
             total_amount: o.total_amount ?? payment?.transaction_amount ?? null,
-            shipment_id: shipId ?? null,
-            shipping_cost: shippingCost != null ? parseFloat(shippingCost) : null,
+            shipment_id: shipId,
+            shipping_cost: shippingCost,
           });
-        }));
-
-        if (shipCosts.length > 0) {
-          const avg = shipCosts.reduce((s,c) => s+c, 0) / shipCosts.length;
-          shippingCostSample = { avg_cost: Math.round(avg), samples: shipCosts, n: shipCosts.length };
         }
       } catch(_) {}
     }
