@@ -3986,7 +3986,20 @@ async function runVerificadorFees() {
     let url = `/api/item-fees?item_id=${encodeURIComponent(itemId)}&client_id=${client.id}`;
     if (price) url += `&price=${encodeURIComponent(price)}`;
     const data = await apiCall('GET', url);
-    if (data.error) { el.innerHTML = `<p style="color:#e55;font-size:13px">Error ML: ${data.error}</p>`; return; }
+    // Si hay error de ML, mostrar detalles completos + JSON para debug
+    if (data.error || data.message === 'resource not found' || data.status >= 400) {
+      el.innerHTML = `
+        <div style="background:#fff0f0;border:1px solid #ffcdd2;border-radius:10px;padding:14px 16px;margin-bottom:12px">
+          <p style="color:#c62828;font-size:13px;margin:0 0 6px"><strong>Error de ML API</strong></p>
+          <p style="color:#c62828;font-size:12px;margin:0">${data.message || data.error || 'Error desconocido'} ${data.status ? '(status '+data.status+')' : ''}</p>
+          ${(data.cause||[]).length ? `<p style="color:#c62828;font-size:12px;margin:4px 0 0">Causa: ${JSON.stringify(data.cause)}</p>` : ''}
+        </div>
+        <details open>
+          <summary style="cursor:pointer;font-size:12px;color:var(--muted);user-select:none">Respuesta completa de la API</summary>
+          <pre style="margin-top:8px;padding:12px;background:var(--surface2);border-radius:8px;font-size:11px;overflow-x:auto;white-space:pre-wrap;color:var(--text)">${JSON.stringify(data, null, 2)}</pre>
+        </details>`;
+      return;
+    }
     el.innerHTML = renderFeesResult(data, itemId, price);
   } catch(e) {
     el.innerHTML = `<p style="color:#e55;font-size:13px">Error: ${e.message}</p>`;

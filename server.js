@@ -3871,11 +3871,25 @@ app.get('/api/item-fees', requireAuth, async (req, res) => {
     const token = await getClientToken(parseInt(client_id));
     if (!token) return res.status(403).json({ error: 'Sin token' });
     const headers = { 'Authorization': `Bearer ${token}` };
-    const url = price 
-      ? `${ML_API}/items/${item_id}/fees?price=${price}`
-      : `${ML_API}/items/${item_id}/fees`;
-    const data = await fetch(url, { headers }).then(r => r.json());
-    res.json(data);
+
+    // Verificar que el ítem existe y obtener su info básica
+    const itemData = await fetch(`${ML_API}/items/${item_id}?attributes=id,title,price,listing_type_id,category_id`, { headers }).then(r => r.json());
+    if (itemData.error || itemData.status >= 400) {
+      return res.json({ ...itemData, _debug_url: `${ML_API}/items/${item_id}/fees`, _step: 'item_fetch' });
+    }
+
+    // Usar el precio del ítem si no se especifica uno
+    const effectivePrice = price || itemData.price;
+
+    // Intentar /items/{id}/fees con precio
+    const feesUrl = `${ML_API}/items/${item_id}/fees?price=${effectivePrice}`;
+    const feesData = await fetch(feesUrl, { headers }).then(r => r.json());
+
+    res.json({
+      ...feesData,
+      _item: { id: itemData.id, title: itemData.title, price: itemData.price, listing_type_id: itemData.listing_type_id, category_id: itemData.category_id },
+      _debug_url: feesUrl
+    });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
