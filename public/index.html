@@ -4137,15 +4137,17 @@ function renderFeesResult(data) {
     </div>` : '';
 
   // ── JSON para debug ───────────────────────────────────────────────────────
+  const dbg = data._debug || {};
   const rawJson = `
+    ${dbg.item_original_price != null ? `<p style="font-size:11px;color:#2e7d32;margin:0 0 8px">Debug: original_price del ítem = ${dbg.item_original_price} | price = ${dbg.item_price}</p>` : `<p style="font-size:11px;color:#e65100;margin:0 0 8px">Debug: original_price = null (el ítem no tiene precio tachado en ML)</p>`}
     <details style="margin-bottom:12px">
       <summary style="cursor:pointer;font-size:12px;color:var(--muted)">Respuesta listing_prices API</summary>
       <p style="font-size:11px;color:var(--muted);margin:6px 0">${data.listing_prices_url || ''}</p>
       <pre style="padding:12px;background:var(--surface2);border-radius:8px;font-size:11px;overflow-x:auto;white-space:pre-wrap">${JSON.stringify(lp, null, 2)}</pre>
     </details>
     ${shipSample ? `<details style="margin-bottom:12px">
-      <summary style="cursor:pointer;font-size:12px;color:var(--muted)">Datos del envío desde API de shipments</summary>
-      <pre style="padding:12px;background:var(--surface2);border-radius:8px;font-size:11px;overflow-x:auto;white-space:pre-wrap">${JSON.stringify(shipSample, null, 2)}</pre>
+      <summary style="cursor:pointer;font-size:12px;color:var(--muted)">Datos del envío desde API de shipments (list_cost / cost)</summary>
+      <pre style="padding:12px;background:var(--surface2);border-radius:8px;font-size:11px;overflow-x:auto;white-space:pre-wrap">${JSON.stringify(shipSample.raw?.senders || shipSample, null, 2)}</pre>
     </details>` : ''}`;
 
   return `<div>${infoItem}${calc}${ordersSection}${rawJson}</div>`;

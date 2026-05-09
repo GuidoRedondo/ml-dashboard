@@ -3873,18 +3873,15 @@ app.get('/api/item-fees', requireAuth, async (req, res) => {
     const authHeaders = { 'Authorization': `Bearer ${token}` };
 
     // 1. Datos del ítem + ml_user_id del cliente
-    // Usamos multi-get (/items?ids=) igual que Promociones — devuelve original_price correctamente
-    const attrs = 'id,title,price,original_price,listing_type_id,category_id,shipping,promotions';
-    const [multiRes, clientRow] = await Promise.all([
-      fetch(`${ML_API}/items?ids=${item_id}&attributes=${attrs}`, { headers: authHeaders }).then(r => r.json()),
+    // Sin filtro de atributos para garantizar que original_price viene completo (un solo ítem, OK en bandwidth)
+    const [itemRes, clientRow] = await Promise.all([
+      fetch(`${ML_API}/items/${item_id}`, { headers: authHeaders }).then(r => r.json()),
       pool.query('SELECT ml_user_id FROM clients WHERE id=$1', [parseInt(client_id)])
     ]);
-    // Multi-get devuelve [{code, body}]
-    const itemEntry = Array.isArray(multiRes) ? multiRes[0] : null;
-    if (!itemEntry || itemEntry.code !== 200 || !itemEntry.body) {
-      return res.json({ ok: false, step: 'item_fetch', raw: multiRes });
+    if (itemRes.error || !itemRes.id) {
+      return res.json({ ok: false, step: 'item_fetch', raw: itemRes });
     }
-    const itemData = itemEntry.body;
+    const itemData = itemRes;
 
     const uid = clientRow.rows[0]?.ml_user_id;
     // Precio: si el usuario pasó uno lo usamos; si no, buscamos precio promocional
@@ -3938,9 +3935,10 @@ app.get('/api/item-fees', requireAuth, async (req, res) => {
             seenShipments.add(shipId);
             try {
               const costsData = await fetch(`${ML_API}/shipments/${shipId}/costs`, { headers: authHeaders }).then(r => r.json());
-              const cost = costsData.senders?.[0]?.cost ?? costsData.sender?.cost ?? null;
-              if (cost != null) {
-                shippingCost = parseFloat(cost);
+              // list_cost = tarifa sin subsidio; cost = lo que paga el vendedor (puede ser 0 si ML subsidia)
+              const rawCost = costsData.senders?.[0]?.list_cost ?? costsData.senders?.[0]?.cost ?? costsData.sender?.cost ?? null;
+              if (rawCost != null) {
+                shippingCost = parseFloat(rawCost);
                 shippingCostSample = { shipment_id: shipId, cost: shippingCost, raw: costsData };
               }
             } catch(_) {}
@@ -3986,7 +3984,8 @@ app.get('/api/item-fees', requireAuth, async (req, res) => {
       listing_prices: lpData,
       listing_prices_url: lpUrl,
       order_samples: orderSamples,
-      shipping_cost_sample: shippingCostSample
+      shipping_cost_sample: shippingCostSample,
+      _debug: { item_price: itemData.price, item_original_price: itemData.original_price, item_promotions_count: (itemData.promotions||[]).length }
     });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
