@@ -11093,12 +11093,19 @@ function renderPromociones(data) {
     return;
   }
 
-  const fmt = n => '$' + Math.round(n).toLocaleString('es-AR');
+  const fmt  = n => '$' + Math.round(n).toLocaleString('es-AR');
+  const avgDesc = Math.round(items.reduce((s,i) => s + i.discount_pct, 0) / items.length);
+  const rentOk  = items.filter(i => i.rentabilidad_pct !== null);
+  const avgRent = rentOk.length ? (rentOk.reduce((s,i) => s + i.rentabilidad_pct, 0) / rentOk.length).toFixed(1) : null;
+
   el.innerHTML = `
     <div style="display:flex;gap:12px;margin-bottom:20px;flex-wrap:wrap">
-      ${[['Ítems revisados', data.total||0,''],['Con descuento', items.length,'#22c55e'],
-         ['Descuento promedio', Math.round(items.reduce((s,i)=>s+i.discount_pct,0)/items.length)+'%','var(--accent)']]
-        .map(([l,v,c])=>`<div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px 18px">
+      ${[['Ítems revisados', data.total||0, ''],
+         ['Con descuento',   items.length,  '#22c55e'],
+         ['Desc. promedio',  avgDesc+'%',   'var(--accent)'],
+         avgRent !== null ? ['Rent. promedio', avgRent+'%', avgRent >= 20 ? '#22c55e' : avgRent >= 10 ? '#ff9100' : '#ff5252'] : null
+        ].filter(Boolean)
+        .map(([l,v,c]) => `<div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px 18px">
           <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em">${l}</div>
           <div style="font-size:22px;font-weight:700;font-family:var(--font-b);margin-top:4px;color:${c||'var(--text)'}">${v}</div>
         </div>`).join('')}
@@ -11107,23 +11114,42 @@ function renderPromociones(data) {
     <table style="width:100%;border-collapse:collapse">
       <thead><tr style="background:var(--surface2)">
         <th style="padding:8px 12px;text-align:left;font-size:11px;color:var(--muted);border-bottom:1px solid var(--border)">Publicación</th>
-        <th style="padding:8px 12px;text-align:right;font-size:11px;color:var(--muted);border-bottom:1px solid var(--border)">Precio original</th>
-        <th style="padding:8px 12px;text-align:right;font-size:11px;color:var(--muted);border-bottom:1px solid var(--border)">Precio con desc.</th>
-        <th style="padding:8px 12px;text-align:center;font-size:11px;color:var(--muted);border-bottom:1px solid var(--border)">% Descuento</th>
+        <th style="padding:8px 12px;text-align:left;font-size:11px;color:var(--muted);border-bottom:1px solid var(--border)">Campaña</th>
+        <th style="padding:8px 12px;text-align:right;font-size:11px;color:var(--muted);border-bottom:1px solid var(--border)">Precio orig.</th>
+        <th style="padding:8px 12px;text-align:right;font-size:11px;color:var(--muted);border-bottom:1px solid var(--border)">Con desc.</th>
+        <th style="padding:8px 12px;text-align:center;font-size:11px;color:var(--muted);border-bottom:1px solid var(--border)">% Desc.</th>
+        <th style="padding:8px 12px;text-align:center;font-size:11px;color:var(--muted);border-bottom:1px solid var(--border)">Rentabilidad</th>
+        <th style="padding:8px 12px;text-align:center;font-size:11px;color:var(--muted);border-bottom:1px solid var(--border)">Stock</th>
+        <th style="padding:8px 12px;text-align:center;font-size:11px;color:var(--muted);border-bottom:1px solid var(--border)">Cobertura</th>
       </tr></thead>
       <tbody>
-        ${items.map(it => `
-          <tr style="border-bottom:1px solid var(--border)">
-            <td style="padding:10px 12px;display:flex;align-items:center;gap:10px">
-              ${it.thumbnail ? `<img src="${it.thumbnail}" style="width:40px;height:40px;object-fit:contain;border-radius:6px;background:#fff;flex-shrink:0">` : ''}
-              <a href="${it.permalink}" target="_blank" style="font-size:12px;color:var(--text);text-decoration:none;line-height:1.4">${_escHtml(it.title)}</a>
+        ${items.map(it => {
+          const rentColor = it.rentabilidad_pct === null ? 'var(--muted)'
+            : it.rentabilidad_pct >= 20 ? '#22c55e' : it.rentabilidad_pct >= 10 ? '#ff9100' : '#ff5252';
+          const covColor = it.cobertura_dias === null ? 'var(--muted)'
+            : it.cobertura_dias >= 30 ? '#22c55e' : it.cobertura_dias >= 15 ? '#ff9100' : '#ff5252';
+          return `<tr style="border-bottom:1px solid var(--border)">
+            <td style="padding:10px 12px">
+              <div style="display:flex;align-items:center;gap:8px">
+                ${it.thumbnail ? `<img src="${it.thumbnail}" style="width:36px;height:36px;object-fit:contain;border-radius:4px;background:#fff;flex-shrink:0">` : ''}
+                <a href="${it.permalink}" target="_blank" style="font-size:12px;color:var(--text);text-decoration:none;line-height:1.4">${_escHtml(it.title)}</a>
+              </div>
             </td>
-            <td style="padding:10px 12px;text-align:right;font-size:13px;color:var(--muted);text-decoration:line-through;white-space:nowrap">${fmt(it.original_price)}</td>
+            <td style="padding:10px 12px;font-size:11px;color:var(--muted)">${it.campana ? _escHtml(it.campana) : '—'}</td>
+            <td style="padding:10px 12px;text-align:right;font-size:12px;color:var(--muted);text-decoration:line-through;white-space:nowrap">${fmt(it.original_price)}</td>
             <td style="padding:10px 12px;text-align:right;font-size:13px;font-weight:700;white-space:nowrap">${fmt(it.price)}</td>
             <td style="padding:10px 12px;text-align:center">
-              <span style="background:#00e67622;color:#00e676;padding:3px 10px;border-radius:12px;font-size:13px;font-weight:700">-${it.discount_pct}%</span>
+              <span style="background:#00e67622;color:#00e676;padding:2px 8px;border-radius:10px;font-size:12px;font-weight:700">-${it.discount_pct}%</span>
             </td>
-          </tr>`).join('')}
+            <td style="padding:10px 12px;text-align:center;font-size:13px;font-weight:700;color:${rentColor}">
+              ${it.rentabilidad_pct !== null ? it.rentabilidad_pct + '%' : '<span style="color:var(--muted);font-size:11px">Sin costo</span>'}
+            </td>
+            <td style="padding:10px 12px;text-align:center;font-size:13px;font-weight:600">${it.stock}</td>
+            <td style="padding:10px 12px;text-align:center;font-size:13px;font-weight:700;color:${covColor}">
+              ${it.cobertura_dias !== null ? it.cobertura_dias + ' días' : '<span style="color:var(--muted);font-size:11px">Sin ventas</span>'}
+            </td>
+          </tr>`;
+        }).join('')}
       </tbody>
     </table></div>`;
 }

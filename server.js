@@ -5014,8 +5014,8 @@ app.get('/api/competencia', requireAuth, async (req, res) => {
 app.get('/api/promociones', requireAuth, async (req, res) => {
   // Hard timeout: si algo cuelga, responder igual a los 9 segundos
   const hardTimeout = setTimeout(() => {
-    if (!res.headersSent) res.json({ promos: [], debug: 'hard-timeout' });
-  }, 9000);
+    if (!res.headersSent) res.json({ items: [], total: 0, con_descuento: 0, debug: 'hard-timeout' });
+  }, 25000);
 
   try {
     const clientId = parseInt(req.query.client_id);
@@ -5027,12 +5027,13 @@ app.get('/api/promociones', requireAuth, async (req, res) => {
     if (!uid) { clearTimeout(hardTimeout); return res.json({ promos: [], debug: 'sin uid' }); }
 
     const headers = { Authorization: `Bearer ${token}` };
-    // Obtener IDs de ítems activos del vendedor
+
+    // 1. IDs de ítems activos
     const searchRes = await mlGet(`/users/${uid}/items/search?status=active&limit=100`, token);
     const ids = searchRes.results || [];
 
-    // Fetch en batches de 20 — /items?ids= devuelve [{code, body}, ...]
-    const attrs = 'id,title,price,original_price,thumbnail,permalink,listing_type_id,sale_price';
+    // 2. Detalles de ítems en batches de 20
+    const attrs = 'id,title,price,original_price,available_quantity,thumbnail,permalink,listing_type_id,promotions';
     const batchResults = await Promise.all(
       Array.from({ length: Math.ceil(ids.length / 20) }, (_, i) => ids.slice(i*20, i*20+20))
         .map(batch => mlGet(`/items?ids=${batch.join(',')}&attributes=${attrs}`, token).catch(() => []))
@@ -5040,22 +5041,51 @@ app.get('/api/promociones', requireAuth, async (req, res) => {
     const allItems = batchResults.flat()
       .filter(it => it && it.code === 200 && it.body)
       .map(it => it.body);
-    console.log('[PROMOS] total items:', allItems.length, 'sample original_price:', allItems[0]?.original_price, 'price:', allItems[0]?.price);
 
-    // Filtrar ítems con descuento activo (original_price > price)
+    // 3. Costos desde product_costs
+    const costsRes = await pool.query('SELECT mla_id, costo_unit FROM product_costs WHERE client_id=$1', [clientId]);
+    const costMap = {};
+    costsRes.rows.forEach(r => { costMap[r.mla_id] = parseFloat(r.costo_unit) || 0; });
+
+    // 4. Ventas últimos 30 días para cobertura
+    const now = new Date();
+    const from30 = new Date(now.getTime() - 30 * 86400000);
+    const fmt = d => d.toISOString().slice(0,19) + '.000-00:00';
+    const { orders: recentOrders } = await fetchAllOrders(uid, headers, fmt(from30), fmt(now)).catch(() => ({ orders: [] }));
+    const unitsSold30 = {};
+    recentOrders.forEach(o => (o.order_items||[]).forEach(oi => {
+      const id = oi.item?.id; if (!id) return;
+      unitsSold30[id] = (unitsSold30[id] || 0) + (oi.quantity || 0);
+    }));
+
+    // 5. Filtrar con descuento y enriquecer
     const itemsConDescuento = allItems
       .filter(it => it.original_price && it.original_price > it.price)
-      .map(it => ({
-        item_id: it.id,
-        title: it.title,
-        thumbnail: it.thumbnail,
-        permalink: it.permalink,
-        price: it.price,
-        original_price: it.original_price,
-        discount_pct: Math.round((it.original_price - it.price) / it.original_price * 100),
-        listing_type: it.listing_type_id,
-        sale_price: it.sale_price || null,
-      }))
+      .map(it => {
+        const costo   = costMap[it.id] || 0;
+        const precio  = it.price;
+        const rentPct = costo > 0 ? +((precio - costo) / precio * 100).toFixed(1) : null;
+        const stock   = it.available_quantity || 0;
+        const sold30  = unitsSold30[it.id] || 0;
+        const dailyRate = sold30 / 30;
+        const coverage  = dailyRate > 0 ? Math.round(stock / dailyRate) : null;
+        const campana = it.promotions?.[0]?.name || it.promotions?.[0]?.type || null;
+        return {
+          item_id: it.id,
+          title: it.title,
+          thumbnail: it.thumbnail,
+          permalink: it.permalink,
+          price: precio,
+          original_price: it.original_price,
+          discount_pct: Math.round((it.original_price - precio) / it.original_price * 100),
+          costo,
+          rentabilidad_pct: rentPct,
+          stock,
+          ventas_30d: sold30,
+          cobertura_dias: coverage,
+          campana,
+        };
+      })
       .sort((a, b) => b.discount_pct - a.discount_pct);
 
     clearTimeout(hardTimeout);
