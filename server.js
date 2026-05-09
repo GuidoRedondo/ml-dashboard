@@ -3891,18 +3891,18 @@ app.get('/api/item-fees', requireAuth, async (req, res) => {
     const dimensions     = itemData.shipping?.dimensions;
     const billableWeight = dimensions?.weight || 500;
 
-    // 2. listing_prices con los parámetros correctos para MLA
+    // 2. listing_prices — con Authorization header (obligatorio según docs ML)
     const lpParams = new URLSearchParams({
-      category_id:    categoryId,
-      price:          effectivePrice,
-      currency_id:    'ARS',
+      category_id:     categoryId,
+      price:           effectivePrice,
+      currency_id:     'ARS',
       listing_type_id: listingType,
-      logistic_type:  logisticType,
-      shipping_modes: shippingMode,
+      logistic_type:   logisticType,
+      shipping_modes:  shippingMode,
       billable_weight: billableWeight
     });
     const lpUrl = `${ML_API}/sites/MLA/listing_prices?${lpParams}`;
-    const lpData = await fetch(lpUrl).then(r => r.json()).catch(e => ({ _error: e.message }));
+    const lpData = await fetch(lpUrl, { headers: authHeaders }).then(r => r.json()).catch(e => ({ _error: e.message }));
 
     // 3. Órdenes recientes del ítem + costo de envío desde shipments
     let orderSamples = [];
