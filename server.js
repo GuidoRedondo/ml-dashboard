@@ -5032,14 +5032,17 @@ app.get('/api/promociones', requireAuth, async (req, res) => {
       new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 6000))
     ]);
 
-    const [spRes, upRes] = await Promise.allSettled([
-      mlFetch(`${ML_API}/seller-promotions/promotions?seller_id=${uid}&app_version=v2`),
-      mlFetch(`${ML_API}/seller-promotions/users/${uid}/promotions`)
+    const [r1, r2, r3] = await Promise.allSettled([
+      mlFetch(`${ML_API}/seller-promotions/promotions?seller_id=${uid}`),
+      mlFetch(`${ML_API}/campaigns?seller_id=${uid}`),
+      mlFetch(`${ML_API}/promotions?seller_id=${uid}`)
     ]);
-    const sp = spRes.status === 'fulfilled' ? spRes.value : null;
-    const up = upRes.status === 'fulfilled' ? upRes.value : null;
-    console.log('[PROMOS] sp:', spRes.status, JSON.stringify(sp)?.slice(0,200));
-    console.log('[PROMOS] up:', upRes.status, JSON.stringify(up)?.slice(0,200));
+    const sp  = r1.status === 'fulfilled' ? r1.value : null;
+    const up  = r2.status === 'fulfilled' ? r2.value : null;
+    const sp3 = r3.status === 'fulfilled' ? r3.value : null;
+    console.log('[PROMOS] seller-promotions:', r1.status, JSON.stringify(sp)?.slice(0,200));
+    console.log('[PROMOS] campaigns:', r2.status, JSON.stringify(up)?.slice(0,200));
+    console.log('[PROMOS] /promotions:', r3.status, JSON.stringify(sp3)?.slice(0,200));
 
     const parsePromos = (data) => {
       if (!data) return [];
@@ -5057,11 +5060,15 @@ app.get('/api/promociones', requireAuth, async (req, res) => {
       }));
     };
 
-    const promos = [...parsePromos(sp), ...parsePromos(up)]
+    const promos = [...parsePromos(sp), ...parsePromos(up), ...parsePromos(sp3)]
       .filter((p, i, arr) => arr.findIndex(x => x.id === p.id) === i);
 
     clearTimeout(hardTimeout);
-    if (!res.headersSent) res.json({ promos, debug: { sp: JSON.stringify(sp)?.slice(0,400), up: JSON.stringify(up)?.slice(0,400) } });
+    if (!res.headersSent) res.json({ promos, debug: {
+      'seller-promotions': JSON.stringify(sp)?.slice(0,300),
+      campaigns: JSON.stringify(up)?.slice(0,300),
+      promotions: JSON.stringify(sp3)?.slice(0,300)
+    }});
   } catch(e) {
     console.error('[PROMOS]', e.message);
     clearTimeout(hardTimeout);
