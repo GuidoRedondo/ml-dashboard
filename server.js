@@ -3872,42 +3872,65 @@ app.get('/api/item-fees', requireAuth, async (req, res) => {
     if (!token) return res.status(403).json({ error: 'Sin token' });
     const authHeaders = { 'Authorization': `Bearer ${token}` };
 
-    // 1. Obtener datos del ítem
-    const itemData = await fetch(
-      `${ML_API}/items/${item_id}?attributes=id,title,price,listing_type_id,category_id,shipping`,
-      { headers: authHeaders }
-    ).then(r => r.json());
+    // 1. Datos del ítem + ml_user_id del cliente
+    const [itemData, clientRow] = await Promise.all([
+      fetch(`${ML_API}/items/${item_id}?attributes=id,title,price,original_price,listing_type_id,category_id,shipping`, { headers: authHeaders }).then(r => r.json()),
+      pool.query('SELECT ml_user_id FROM clients WHERE id=$1', [parseInt(client_id)])
+    ]);
     if (itemData.error || (itemData.status && itemData.status >= 400)) {
       return res.json({ ok: false, step: 'item_fetch', raw: itemData });
     }
 
+    const uid           = clientRow.rows[0]?.ml_user_id;
     const effectivePrice = parseFloat(price || itemData.price) || 0;
     const listingType   = itemData.listing_type_id;
     const categoryId    = itemData.category_id;
 
-    // 2. Listing prices — devuelve comisión y envío sin necesitar certificación
+    // 2. listing_prices (endpoint público)
     const lpUrl = `${ML_API}/sites/MLA/listing_prices/${listingType}?price=${effectivePrice}&category_id=${categoryId}`;
-    const lpData = await fetch(lpUrl).then(r => r.json());
+    const lpData = await fetch(lpUrl).then(r => r.json()).catch(e => ({ _error: e.message }));
 
-    // 3. Listing type info (comisión %)
-    const ltUrl = `${ML_API}/sites/MLA/listing_types/${listingType}`;
-    const ltData = await fetch(ltUrl).then(r => r.json()).catch(() => null);
+    // 3. Órdenes recientes de este ítem para extraer comisión real
+    let orderSamples = [];
+    if (uid) {
+      try {
+        const from = new Date(Date.now() - 90 * 86400000).toISOString().slice(0,10) + 'T00:00:00.000-00:00';
+        const ordRes = await fetch(
+          `${ML_API}/orders/search?seller=${uid}&item.id=${item_id}&order.date_created.from=${encodeURIComponent(from)}&sort=date_desc&limit=5`,
+          { headers: authHeaders }
+        ).then(r => r.json());
+        (ordRes.results || []).forEach(o => {
+          const payment = (o.payments || [])[0];
+          if (!payment) return;
+          const itemQty = (o.order_items || []).find(oi => oi.item?.id === item_id)?.quantity || 1;
+          const salePrice = (o.order_items || []).find(oi => oi.item?.id === item_id)?.unit_price || null;
+          orderSamples.push({
+            order_id: o.id,
+            date: o.date_closed || o.date_created,
+            sale_price: salePrice,
+            quantity: itemQty,
+            total_amount: payment.total_amount,
+            fee_amount: payment.fee_amount,       // comisión ML
+            shipping_cost: o.shipping?.cost ?? null,
+            fee_pct: (salePrice && payment.fee_amount) ? +(payment.fee_amount / (salePrice * itemQty) * 100).toFixed(2) : null
+          });
+        });
+      } catch(_) {}
+    }
 
     res.json({
       ok: true,
       item: {
-        id: itemData.id,
-        title: itemData.title,
-        price: itemData.price,
-        listing_type_id: listingType,
-        category_id: categoryId,
+        id: itemData.id, title: itemData.title, price: itemData.price,
+        original_price: itemData.original_price,
+        listing_type_id: listingType, category_id: categoryId,
         shipping_mode: itemData.shipping?.mode,
         free_shipping: itemData.shipping?.free_shipping,
         logistic_type: itemData.shipping?.logistic_type
       },
       effective_price: effectivePrice,
       listing_prices: lpData,
-      listing_type_info: ltData
+      order_samples: orderSamples
     });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
