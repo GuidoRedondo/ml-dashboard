@@ -3986,96 +3986,112 @@ async function runVerificadorFees() {
     let url = `/api/item-fees?item_id=${encodeURIComponent(itemId)}&client_id=${client.id}`;
     if (price) url += `&price=${encodeURIComponent(price)}`;
     const data = await apiCall('GET', url);
-    // Si hay error de ML, mostrar detalles completos + JSON para debug
-    if (data.error || data.message === 'resource not found' || data.status >= 400) {
+    if (!data.ok) {
+      const raw = data.raw || data;
       el.innerHTML = `
         <div style="background:#fff0f0;border:1px solid #ffcdd2;border-radius:10px;padding:14px 16px;margin-bottom:12px">
-          <p style="color:#c62828;font-size:13px;margin:0 0 6px"><strong>Error de ML API</strong></p>
-          <p style="color:#c62828;font-size:12px;margin:0">${data.message || data.error || 'Error desconocido'} ${data.status ? '(status '+data.status+')' : ''}</p>
-          ${(data.cause||[]).length ? `<p style="color:#c62828;font-size:12px;margin:4px 0 0">Causa: ${JSON.stringify(data.cause)}</p>` : ''}
+          <p style="color:#c62828;font-size:13px;margin:0 0 4px"><strong>Error al obtener el ítem</strong></p>
+          <p style="color:#c62828;font-size:12px;margin:0">${raw.message || raw.error || 'Error desconocido'}</p>
         </div>
         <details open>
-          <summary style="cursor:pointer;font-size:12px;color:var(--muted);user-select:none">Respuesta completa de la API</summary>
-          <pre style="margin-top:8px;padding:12px;background:var(--surface2);border-radius:8px;font-size:11px;overflow-x:auto;white-space:pre-wrap;color:var(--text)">${JSON.stringify(data, null, 2)}</pre>
+          <summary style="cursor:pointer;font-size:12px;color:var(--muted)">Respuesta completa</summary>
+          <pre style="margin-top:8px;padding:12px;background:var(--surface2);border-radius:8px;font-size:11px;overflow-x:auto;white-space:pre-wrap">${JSON.stringify(data, null, 2)}</pre>
         </details>`;
       return;
     }
-    el.innerHTML = renderFeesResult(data, itemId, price);
+    el.innerHTML = renderFeesResult(data, itemId);
   } catch(e) {
     el.innerHTML = `<p style="color:#e55;font-size:13px">Error: ${e.message}</p>`;
   }
 }
 
-function renderFeesResult(data, itemId, simulatedPrice) {
-  const precioUsado = simulatedPrice ? parseFloat(simulatedPrice) : (data.price || null);
+function renderFeesResult(data) {
+  const item   = data.item || {};
+  const precio = data.effective_price || item.price || 0;
+  const lp     = data.listing_prices  || {};
+  const lt     = data.listing_type_info || {};
 
-  // Extraer fees del array sale_fee_details
-  const details = data.sale_fee_details || [];
-  let comisionMonto = 0, envioMonto = 0, otrosMonto = 0;
-  const rows = details.map(fee => {
-    const tipo  = fee.type || fee.fee_id || '—';
-    const monto = parseFloat(fee.amount || fee.fee || 0);
-    if (/ml_fee|commission|venta/i.test(tipo))  comisionMonto += monto;
-    else if (/shipping|envio|envío/i.test(tipo)) envioMonto    += monto;
-    else                                          otrosMonto    += monto;
-    return `<tr>
-      <td style="padding:6px 10px;border-bottom:1px solid var(--border)">${tipo}</td>
-      <td style="padding:6px 10px;border-bottom:1px solid var(--border);color:var(--muted);font-size:12px">${fee.detail || fee.description || ''}</td>
-      <td style="padding:6px 10px;border-bottom:1px solid var(--border);text-align:right;font-family:monospace">$${monto.toFixed(2)}</td>
-      <td style="padding:6px 10px;border-bottom:1px solid var(--border);text-align:right;color:var(--muted);font-size:12px">${precioUsado ? (monto/precioUsado*100).toFixed(1)+'%' : '—'}</td>
-    </tr>`;
-  }).join('');
+  // La API listing_prices devuelve sale_fee_amount como PORCENTAJE (ej. 13.5)
+  // pero a veces devuelve el monto absoluto — detectamos cuál es
+  const saleFeePct = lp.sale_fee_amount;
+  let comisionPct   = null;
+  let comisionMonto = null;
+  if (saleFeePct != null) {
+    if (saleFeePct <= 100) {
+      comisionPct   = saleFeePct;
+      comisionMonto = precio * saleFeePct / 100;
+    } else {
+      comisionMonto = saleFeePct;
+      comisionPct   = precio ? saleFeePct / precio * 100 : null;
+    }
+  }
 
-  // Fallback: si no hay sale_fee_details buscar en sale_fee_amount
-  const totalFees = data.sale_fee_amount ?? (comisionMonto + envioMonto + otrosMonto);
-  const neto      = precioUsado ? precioUsado - totalFees : null;
+  // Envío
+  const freeShippingData = lp.free_shipping || {};
+  const envioMonto = parseFloat(freeShippingData.amount || 0);
+  const envioTipo  = freeShippingData.type || null;
 
-  const pct = v => precioUsado && v ? (v/precioUsado*100).toFixed(1)+'%' : '—';
+  const totalFees = (comisionMonto || 0) + envioMonto;
+  const neto      = precio - totalFees;
+
+  const fmt  = v => v != null ? '$' + parseFloat(v).toFixed(2) : '—';
+  const fmtp = v => v != null ? parseFloat(v).toFixed(1) + '%' : '—';
+
+  const tipoEnvioLabel = {
+    'optional': 'Envío gratis opcional (MercadoEnvíos)',
+    'required': 'Envío gratis obligatorio',
+    'none': 'Sin envío gratis',
+  }[envioTipo] || envioTipo || '—';
+
+  const logisticLabel = {
+    'fulfillment': 'FULL (Fulfillment ML)',
+    'cross_docking': 'Flex',
+    'drop_off': 'Drop Off',
+    'xd_drop_off': 'Flex Drop Off',
+    'not_specified': 'No especificado',
+    'default': 'Estándar',
+  }[item.logistic_type] || item.logistic_type || '—';
+
+  const infoItem = `
+    <div style="background:var(--surface2);border-radius:10px;padding:12px 16px;margin-bottom:16px;font-size:13px">
+      <div style="font-weight:600;margin-bottom:6px">${item.title || item.id}</div>
+      <div style="display:flex;gap:16px;flex-wrap:wrap;color:var(--muted);font-size:12px">
+        <span>ID: <strong style="color:var(--text)">${item.id}</strong></span>
+        <span>Precio real: <strong style="color:var(--text)">${fmt(item.price)}</strong></span>
+        <span>Tipo: <strong style="color:var(--text)">${item.listing_type_id}</strong></span>
+        <span>Categoría: <strong style="color:var(--text)">${item.category_id}</strong></span>
+        <span>Logística: <strong style="color:var(--text)">${logisticLabel}</strong></span>
+        <span>Envío gratis: <strong style="color:var(--text)">${item.free_shipping ? 'Sí' : 'No'}</strong></span>
+      </div>
+    </div>`;
 
   const kpis = `
     <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:20px">
       ${[
-        ['Precio consultado', precioUsado ? '$'+precioUsado.toFixed(2) : '—', ''],
-        ['Comisión ML', comisionMonto ? '$'+comisionMonto.toFixed(2) : (data.sale_fee_amount ? '$'+parseFloat(data.sale_fee_amount).toFixed(2) : '—'), comisionMonto ? pct(comisionMonto) : ''],
-        ['Envío', envioMonto ? '$'+envioMonto.toFixed(2) : '—', envioMonto ? pct(envioMonto) : ''],
-        ['Otros fees', otrosMonto ? '$'+otrosMonto.toFixed(2) : '—', otrosMonto ? pct(otrosMonto) : ''],
-        ['Total fees', '$'+parseFloat(totalFees||0).toFixed(2), pct(totalFees)],
-        ['Neto estimado', neto !== null ? '$'+neto.toFixed(2) : '—', neto ? pct(neto) : ''],
+        ['Precio consultado', fmt(precio), ''],
+        ['Comisión ML', fmt(comisionMonto), fmtp(comisionPct)],
+        ['Envío (cargo seller)', fmt(envioMonto || null), envioMonto ? fmtp(envioMonto/precio*100) : ''],
+        ['Total fees', fmt(totalFees), fmtp(totalFees/precio*100)],
+        ['Neto estimado', fmt(neto), fmtp(neto/precio*100)],
       ].map(([label,val,sub]) => `
         <div style="background:var(--surface2);border-radius:10px;padding:12px 16px;min-width:130px">
           <div style="font-size:11px;color:var(--muted);margin-bottom:4px">${label}</div>
-          <div style="font-size:18px;font-family:var(--font-b);color:var(--text)">${val}</div>
+          <div style="font-size:18px;font-family:var(--font-b)">${val}</div>
           ${sub ? `<div style="font-size:11px;color:var(--muted)">${sub} del precio</div>` : ''}
         </div>`).join('')}
     </div>`;
 
-  const table = details.length ? `
-    <h4 style="font-family:var(--font-b);margin:0 0 8px">Detalle de fees</h4>
-    <div style="overflow-x:auto;margin-bottom:20px">
-      <table style="width:100%;border-collapse:collapse;font-size:13px">
-        <thead><tr style="text-align:left;color:var(--muted);font-size:11px">
-          <th style="padding:6px 10px;border-bottom:2px solid var(--border)">Tipo</th>
-          <th style="padding:6px 10px;border-bottom:2px solid var(--border)">Descripción</th>
-          <th style="padding:6px 10px;border-bottom:2px solid var(--border);text-align:right">Monto</th>
-          <th style="padding:6px 10px;border-bottom:2px solid var(--border);text-align:right">% precio</th>
-        </tr></thead>
-        <tbody>${rows}</tbody>
-      </table>
-    </div>` : '';
+  const nota = envioTipo === 'optional'
+    ? `<p style="font-size:12px;color:var(--muted);margin-bottom:16px">⚠️ Envío gratis <em>opcional</em>: el vendedor elige si absorbe el costo. Si la publicación tiene envío gratis activado, ML te descuenta el costo del envío del precio de venta.</p>`
+    : '';
 
   const rawJson = `
     <details style="margin-top:8px">
       <summary style="cursor:pointer;font-size:12px;color:var(--muted);user-select:none">Ver respuesta completa de la API</summary>
-      <pre style="margin-top:8px;padding:12px;background:var(--surface2);border-radius:8px;font-size:11px;overflow-x:auto;white-space:pre-wrap;color:var(--text)">${JSON.stringify(data, null, 2)}</pre>
+      <pre style="margin-top:8px;padding:12px;background:var(--surface2);border-radius:8px;font-size:11px;overflow-x:auto;white-space:pre-wrap">${JSON.stringify(data, null, 2)}</pre>
     </details>`;
 
-  return `<div>
-    <p style="font-size:13px;color:var(--muted);margin-bottom:12px">
-      Publicación: <strong style="color:var(--text)">${itemId}</strong>
-      ${simulatedPrice ? ' · Precio simulado: <strong>$'+parseFloat(simulatedPrice).toFixed(2)+'</strong>' : ''}
-    </p>
-    ${kpis}${table}${rawJson}
-  </div>`;
+  return `<div>${infoItem}${kpis}${nota}${rawJson}</div>`;
 }
 
 // ── DESCUENTOS (Hotsale / Campañas) ────────────────────────────────────────

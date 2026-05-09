@@ -3870,25 +3870,44 @@ app.get('/api/item-fees', requireAuth, async (req, res) => {
     const { item_id, client_id, price } = req.query;
     const token = await getClientToken(parseInt(client_id));
     if (!token) return res.status(403).json({ error: 'Sin token' });
-    const headers = { 'Authorization': `Bearer ${token}` };
+    const authHeaders = { 'Authorization': `Bearer ${token}` };
 
-    // Verificar que el ítem existe y obtener su info básica
-    const itemData = await fetch(`${ML_API}/items/${item_id}?attributes=id,title,price,listing_type_id,category_id`, { headers }).then(r => r.json());
-    if (itemData.error || itemData.status >= 400) {
-      return res.json({ ...itemData, _debug_url: `${ML_API}/items/${item_id}/fees`, _step: 'item_fetch' });
+    // 1. Obtener datos del ítem
+    const itemData = await fetch(
+      `${ML_API}/items/${item_id}?attributes=id,title,price,listing_type_id,category_id,shipping`,
+      { headers: authHeaders }
+    ).then(r => r.json());
+    if (itemData.error || (itemData.status && itemData.status >= 400)) {
+      return res.json({ ok: false, step: 'item_fetch', raw: itemData });
     }
 
-    // Usar el precio del ítem si no se especifica uno
-    const effectivePrice = price || itemData.price;
+    const effectivePrice = parseFloat(price || itemData.price) || 0;
+    const listingType   = itemData.listing_type_id;
+    const categoryId    = itemData.category_id;
 
-    // Intentar /items/{id}/fees con precio
-    const feesUrl = `${ML_API}/items/${item_id}/fees?price=${effectivePrice}`;
-    const feesData = await fetch(feesUrl, { headers }).then(r => r.json());
+    // 2. Listing prices — devuelve comisión y envío sin necesitar certificación
+    const lpUrl = `${ML_API}/sites/MLA/listing_prices/${listingType}?price=${effectivePrice}&category_id=${categoryId}`;
+    const lpData = await fetch(lpUrl).then(r => r.json());
+
+    // 3. Listing type info (comisión %)
+    const ltUrl = `${ML_API}/sites/MLA/listing_types/${listingType}`;
+    const ltData = await fetch(ltUrl).then(r => r.json()).catch(() => null);
 
     res.json({
-      ...feesData,
-      _item: { id: itemData.id, title: itemData.title, price: itemData.price, listing_type_id: itemData.listing_type_id, category_id: itemData.category_id },
-      _debug_url: feesUrl
+      ok: true,
+      item: {
+        id: itemData.id,
+        title: itemData.title,
+        price: itemData.price,
+        listing_type_id: listingType,
+        category_id: categoryId,
+        shipping_mode: itemData.shipping?.mode,
+        free_shipping: itemData.shipping?.free_shipping,
+        logistic_type: itemData.shipping?.logistic_type
+      },
+      effective_price: effectivePrice,
+      listing_prices: lpData,
+      listing_type_info: ltData
     });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
