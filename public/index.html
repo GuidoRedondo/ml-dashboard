@@ -3948,12 +3948,11 @@ function initVerificadorFees() {
   if (_feesInited) return;
   _feesInited = true;
   el.innerHTML = `
-    <div style="max-width:680px">
+    <div style="max-width:760px">
       <p style="color:var(--muted);font-size:13px;margin-bottom:16px">
-        Consultá los fees que cobra MercadoLibre por una publicación: comisión y envío.
-        Podés probar con el precio real o simular un precio diferente.
+        Ingresá el ID del ítem para obtener sus datos desde ML. Luego ajustá comisión y envío para calcular la rentabilidad neta.
       </p>
-      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px">
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px;align-items:flex-end">
         <div style="flex:1;min-width:200px">
           <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">ID de publicación (MLA…)</label>
           <input id="feesItemId" type="text" placeholder="MLA123456789"
@@ -3961,11 +3960,11 @@ function initVerificadorFees() {
         </div>
         <div style="flex:0 0 160px">
           <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">Precio a simular (opcional)</label>
-          <input id="feesPrice" type="number" placeholder="Precio real del ítem"
+          <input id="feesPrice" type="number" placeholder="Usa precio real del ítem"
             style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px;box-sizing:border-box">
         </div>
-        <div style="flex:0 0 140px;display:flex;align-items:flex-end">
-          <button onclick="runVerificadorFees()" class="sync-btn" style="background:var(--accent);width:100%;padding:8px 0">
+        <div style="flex:0 0 120px">
+          <button onclick="runVerificadorFees()" class="sync-btn" style="background:var(--accent);width:100%;padding:9px 0">
             Consultar
           </button>
         </div>
@@ -4000,6 +3999,7 @@ async function runVerificadorFees() {
       return;
     }
     el.innerHTML = renderFeesResult(data, itemId);
+    recalcFees();
   } catch(e) {
     el.innerHTML = `<p style="color:#e55;font-size:13px">Error: ${e.message}</p>`;
   }
@@ -4008,119 +4008,144 @@ async function runVerificadorFees() {
 function renderFeesResult(data) {
   const item    = data.item || {};
   const precio  = data.effective_price || item.price || 0;
-  const lp      = data.listing_prices  || {};
   const samples = data.order_samples   || [];
+  const shipSample = data.shipping_cost_sample;
 
   const fmt  = v => (v != null && !isNaN(v)) ? '$' + parseFloat(v).toFixed(2) : '—';
-  const fmtp = v => (v != null && !isNaN(v)) ? parseFloat(v).toFixed(2) + '%' : '—';
 
   const logisticLabel = {
-    'fulfillment':   'FULL (Fulfillment ML)',
+    'fulfillment':   'FULL',
     'cross_docking': 'Flex',
     'drop_off':      'Drop Off',
     'xd_drop_off':   'Flex Drop Off',
-    'not_specified': 'No especificado',
+    'not_specified': 'Estándar',
     'default':       'Estándar',
   }[item.logistic_type] || item.logistic_type || '—';
 
-  // ── Comisión desde órdenes reales ──────────────────────────────────────────
-  const validSamples = samples.filter(s => s.fee_amount != null && s.sale_price);
-  const avgFeePct = validSamples.length
-    ? validSamples.reduce((s,o) => s + o.fee_pct, 0) / validSamples.length
-    : null;
-  const avgFeeAmt = avgFeePct != null ? precio * avgFeePct / 100 : null;
-  const avgShipping = validSamples.length && validSamples[0].shipping_cost != null
-    ? validSamples.reduce((s,o) => s + (o.shipping_cost || 0), 0) / validSamples.length
-    : null;
-
-  // ── Comisión desde listing_prices (fallback) ────────────────────────────────
-  // Buscar en sale_fee_amount o sale_fee_details
-  let lpComisionPct = null, lpComisionMonto = null;
-  if (lp.sale_fee_amount != null) {
-    const v = parseFloat(lp.sale_fee_amount);
-    if (v <= 100) { lpComisionPct = v; lpComisionMonto = precio * v / 100; }
-    else          { lpComisionMonto = v; lpComisionPct = precio ? v/precio*100 : null; }
-  } else if (Array.isArray(lp.sale_fee_details) && lp.sale_fee_details.length) {
-    lpComisionMonto = lp.sale_fee_details.reduce((s,f) => s + parseFloat(f.amount || 0), 0);
-    lpComisionPct = precio ? lpComisionMonto / precio * 100 : null;
-  }
-
-  const comisionPct   = avgFeePct  ?? lpComisionPct;
-  const comisionMonto = avgFeeAmt  ?? lpComisionMonto;
-  const envioMonto    = avgShipping ?? (parseFloat(lp.free_shipping?.amount || 0) || null);
-  const totalFees     = (comisionMonto || 0) + (envioMonto || 0);
-  const neto          = precio - totalFees;
-  const fuenteComision = validSamples.length ? `desde ${validSamples.length} orden${validSamples.length>1?'es':''} real${validSamples.length>1?'es':''}` : 'desde listing_prices API';
+  // Costo de envío detectado desde shipment API
+  const envioDetectado = shipSample?.cost ?? null;
 
   // ── Info del ítem ─────────────────────────────────────────────────────────
   const infoItem = `
-    <div style="background:var(--surface2);border-radius:10px;padding:12px 16px;margin-bottom:16px;font-size:13px">
+    <div style="background:var(--surface2);border-radius:10px;padding:12px 16px;margin-bottom:20px;font-size:13px">
       <div style="font-weight:600;margin-bottom:6px">${item.title || item.id}</div>
       <div style="display:flex;gap:16px;flex-wrap:wrap;color:var(--muted);font-size:12px">
-        <span>ID: <strong style="color:var(--text)">${item.id}</strong></span>
-        <span>Precio real: <strong style="color:var(--text)">${fmt(item.price)}</strong></span>
-        ${item.original_price ? `<span>Precio original: <strong style="color:var(--text)">${fmt(item.original_price)}</strong></span>` : ''}
-        <span>Tipo: <strong style="color:var(--text)">${item.listing_type_id}</strong></span>
-        <span>Categoría: <strong style="color:var(--text)">${item.category_id}</strong></span>
-        <span>Logística: <strong style="color:var(--text)">${logisticLabel}</strong></span>
-        <span>Envío gratis: <strong style="color:var(--text)">${item.free_shipping ? 'Sí' : 'No'}</strong></span>
+        <span>ID: <b style="color:var(--text)">${item.id}</b></span>
+        <span>Precio real: <b style="color:var(--text)">${fmt(item.price)}</b></span>
+        ${item.original_price && item.original_price !== item.price ? `<span>Original: <b style="color:var(--text)">${fmt(item.original_price)}</b></span>` : ''}
+        <span>Tipo: <b style="color:var(--text)">${item.listing_type_id}</b></span>
+        <span>Logística: <b style="color:var(--text)">${logisticLabel}</b></span>
+        <span>Envío gratis: <b style="color:var(--text)">${item.free_shipping ? 'Sí' : 'No'}</b></span>
+        ${envioDetectado != null ? `<span style="color:#2e7d32">✓ Costo envío detectado: <b>$${parseFloat(envioDetectado).toFixed(2)}</b></span>` : ''}
       </div>
     </div>`;
 
-  // ── KPIs ──────────────────────────────────────────────────────────────────
-  const kpis = `
-    <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:8px">
-      ${[
-        ['Precio consultado', fmt(precio), ''],
-        ['Comisión ML', fmt(comisionMonto), fmtp(comisionPct)],
-        ['Envío (cargo seller)', fmt(envioMonto), envioMonto ? fmtp(envioMonto/precio*100) : ''],
-        ['Total fees', fmt(totalFees), fmtp(totalFees/precio*100)],
-        ['Neto estimado', fmt(neto), fmtp(neto/precio*100)],
-      ].map(([label,val,sub]) => `
-        <div style="background:var(--surface2);border-radius:10px;padding:12px 16px;min-width:130px">
-          <div style="font-size:11px;color:var(--muted);margin-bottom:4px">${label}</div>
-          <div style="font-size:18px;font-family:var(--font-b)">${val}</div>
-          ${sub ? `<div style="font-size:11px;color:var(--muted)">${sub} del precio</div>` : ''}
-        </div>`).join('')}
-    </div>
-    <p style="font-size:11px;color:var(--muted);margin-bottom:20px">Comisión calculada ${fuenteComision}</p>`;
+  // ── Calculadora interactiva ───────────────────────────────────────────────
+  const calc = `
+    <div style="background:var(--surface2);border-radius:12px;padding:16px;margin-bottom:20px">
+      <h4 style="font-family:var(--font-b);margin:0 0 14px;font-size:13px">Calculadora de rentabilidad</h4>
+      <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:14px">
+        <div>
+          <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:3px">Precio de venta ($)</label>
+          <input id="fcPrecio" type="number" value="${precio}" oninput="recalcFees()"
+            style="width:120px;padding:7px 10px;border-radius:8px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:13px">
+        </div>
+        <div>
+          <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:3px">Costo del producto ($)</label>
+          <input id="fcCosto" type="number" value="0" oninput="recalcFees()"
+            style="width:120px;padding:7px 10px;border-radius:8px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:13px">
+        </div>
+        <div>
+          <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:3px">Comisión ML (%)</label>
+          <input id="fcComision" type="number" value="13.5" step="0.5" oninput="recalcFees()"
+            style="width:100px;padding:7px 10px;border-radius:8px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:13px">
+        </div>
+        <div>
+          <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:3px">Costo envío ($)</label>
+          <input id="fcEnvio" type="number" value="${envioDetectado ?? 0}" oninput="recalcFees()"
+            style="width:120px;padding:7px 10px;border-radius:8px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:13px">
+        </div>
+        <div>
+          <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:3px">IIBB (%)</label>
+          <input id="fcIIBB" type="number" value="3" step="0.5" oninput="recalcFees()"
+            style="width:80px;padding:7px 10px;border-radius:8px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:13px">
+        </div>
+      </div>
+      <div id="fcResultados" style="display:flex;gap:10px;flex-wrap:wrap"></div>
+      <p style="font-size:11px;color:var(--muted);margin:10px 0 0">
+        💡 La comisión ML varía por categoría y tipo de publicación. Consultá tu porcentaje exacto en tu cuenta ML → Tarifas.
+        Gold Special (Clásica) suele ser ~13.5% para la mayoría de categorías en Argentina.
+      </p>
+    </div>`;
 
   // ── Tabla de órdenes reales ───────────────────────────────────────────────
   const ordersSection = samples.length ? `
-    <h4 style="font-family:var(--font-b);margin:0 0 8px;font-size:13px">Últimas ventas de este ítem (últimos 90 días)</h4>
-    <div style="overflow-x:auto;margin-bottom:20px">
+    <h4 style="font-family:var(--font-b);margin:0 0 8px;font-size:13px">Últimas ventas (últimos 90 días)</h4>
+    <div style="overflow-x:auto;margin-bottom:16px">
       <table style="width:100%;border-collapse:collapse;font-size:12px">
         <thead><tr style="color:var(--muted);font-size:11px;text-align:left">
           <th style="padding:5px 8px;border-bottom:2px solid var(--border)">Orden</th>
           <th style="padding:5px 8px;border-bottom:2px solid var(--border)">Fecha</th>
           <th style="padding:5px 8px;border-bottom:2px solid var(--border);text-align:right">Precio unit.</th>
-          <th style="padding:5px 8px;border-bottom:2px solid var(--border);text-align:right">Total pago</th>
-          <th style="padding:5px 8px;border-bottom:2px solid var(--border);text-align:right">Fee ML</th>
-          <th style="padding:5px 8px;border-bottom:2px solid var(--border);text-align:right">% comisión</th>
-          <th style="padding:5px 8px;border-bottom:2px solid var(--border);text-align:right">Envío</th>
+          <th style="padding:5px 8px;border-bottom:2px solid var(--border);text-align:right">Total orden</th>
+          <th style="padding:5px 8px;border-bottom:2px solid var(--border)">Envío ID</th>
         </tr></thead>
         <tbody>
           ${samples.map(s => `<tr>
-            <td style="padding:5px 8px;border-bottom:1px solid var(--border);color:var(--muted)">${s.order_id}</td>
+            <td style="padding:5px 8px;border-bottom:1px solid var(--border);color:var(--muted);font-size:11px">${s.order_id}</td>
             <td style="padding:5px 8px;border-bottom:1px solid var(--border)">${s.date ? s.date.slice(0,10) : '—'}</td>
             <td style="padding:5px 8px;border-bottom:1px solid var(--border);text-align:right">${fmt(s.sale_price)}</td>
             <td style="padding:5px 8px;border-bottom:1px solid var(--border);text-align:right">${fmt(s.total_amount)}</td>
-            <td style="padding:5px 8px;border-bottom:1px solid var(--border);text-align:right;color:${s.fee_amount ? '#e55' : 'var(--muted)'}">${fmt(s.fee_amount)}</td>
-            <td style="padding:5px 8px;border-bottom:1px solid var(--border);text-align:right">${fmtp(s.fee_pct)}</td>
-            <td style="padding:5px 8px;border-bottom:1px solid var(--border);text-align:right">${fmt(s.shipping_cost)}</td>
+            <td style="padding:5px 8px;border-bottom:1px solid var(--border);font-size:11px;color:var(--muted)">${s.shipment_id || '—'}</td>
           </tr>`).join('')}
         </tbody>
       </table>
-    </div>` : `<p style="font-size:12px;color:var(--muted);margin-bottom:16px">Sin ventas en los últimos 90 días para calcular comisión real.</p>`;
+    </div>` : '';
 
-  // ── JSON crudo abierto por defecto para debug ─────────────────────────────
-  const rawJson = `
-    <details open>
-      <summary style="cursor:pointer;font-size:12px;color:var(--muted);user-select:none;margin-bottom:8px">Respuesta completa de la API (listing_prices + órdenes)</summary>
-      <pre style="padding:12px;background:var(--surface2);border-radius:8px;font-size:11px;overflow-x:auto;white-space:pre-wrap">${JSON.stringify({ listing_prices: lp, order_samples: samples }, null, 2)}</pre>
-    </details>`;
+  // ── JSON de envío detectado ───────────────────────────────────────────────
+  const rawJson = shipSample ? `
+    <details style="margin-bottom:12px">
+      <summary style="cursor:pointer;font-size:12px;color:var(--muted)">Datos del envío desde API de shipments</summary>
+      <pre style="margin-top:8px;padding:12px;background:var(--surface2);border-radius:8px;font-size:11px;overflow-x:auto;white-space:pre-wrap">${JSON.stringify(shipSample, null, 2)}</pre>
+    </details>` : '';
 
-  return `<div>${infoItem}${kpis}${ordersSection}${rawJson}</div>`;
+  return `<div>${infoItem}${calc}${ordersSection}${rawJson}</div>`;
+}
+
+function recalcFees() {
+  const precio    = parseFloat(document.getElementById('fcPrecio')?.value)   || 0;
+  const costo     = parseFloat(document.getElementById('fcCosto')?.value)    || 0;
+  const comPct    = parseFloat(document.getElementById('fcComision')?.value) || 0;
+  const envio     = parseFloat(document.getElementById('fcEnvio')?.value)    || 0;
+  const iibbPct   = parseFloat(document.getElementById('fcIIBB')?.value)     || 0;
+  const el        = document.getElementById('fcResultados');
+  if (!el) return;
+
+  const comision  = precio * comPct / 100;
+  const iibb      = precio * iibbPct / 100;
+  const totalFees = comision + envio + iibb;
+  const neto      = precio - totalFees - costo;
+  const rentPct   = precio > 0 ? neto / precio * 100 : 0;
+
+  const fmt  = v => '$' + v.toFixed(2);
+  const fmtp = v => v.toFixed(1) + '%';
+  const rentColor = rentPct >= 20 ? '#2e7d32' : rentPct >= 10 ? '#f57c00' : '#c62828';
+
+  el.innerHTML = [
+    ['Comisión ML', fmt(comision), fmtp(comPct)],
+    ['IIBB', fmt(iibb), fmtp(iibbPct)],
+    ['Envío', fmt(envio), precio > 0 ? fmtp(envio/precio*100) : ''],
+    ['Total fees', fmt(totalFees), fmtp(totalFees/precio*100)],
+    ['Costo prod.', fmt(costo), precio > 0 ? fmtp(costo/precio*100) : ''],
+    ['Neto', fmt(neto), fmtp(rentPct)],
+  ].map(([label, val, sub], i) => {
+    const isNeto = i === 5;
+    return `<div style="background:var(--bg);border-radius:10px;padding:10px 14px;min-width:110px${isNeto ? ';border:2px solid '+rentColor : ''}">
+      <div style="font-size:11px;color:var(--muted);margin-bottom:2px">${label}</div>
+      <div style="font-size:16px;font-family:var(--font-b);color:${isNeto ? rentColor : 'var(--text)'}">${val}</div>
+      ${sub ? `<div style="font-size:11px;color:${isNeto ? rentColor : 'var(--muted)'}">${sub}</div>` : ''}
+    </div>`;
+  }).join('');
 }
 
 // ── DESCUENTOS (Hotsale / Campañas) ────────────────────────────────────────

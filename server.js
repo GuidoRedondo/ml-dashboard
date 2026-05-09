@@ -3886,12 +3886,9 @@ app.get('/api/item-fees', requireAuth, async (req, res) => {
     const listingType   = itemData.listing_type_id;
     const categoryId    = itemData.category_id;
 
-    // 2. listing_prices (endpoint público)
-    const lpUrl = `${ML_API}/sites/MLA/listing_prices/${listingType}?price=${effectivePrice}&category_id=${categoryId}`;
-    const lpData = await fetch(lpUrl).then(r => r.json()).catch(e => ({ _error: e.message }));
-
-    // 3. Órdenes recientes de este ítem para extraer comisión real
+    // 2. Órdenes recientes del ítem + costo de envío desde shipments
     let orderSamples = [];
+    let shippingCostSample = null;
     if (uid) {
       try {
         const from = new Date(Date.now() - 90 * 86400000).toISOString().slice(0,10) + 'T00:00:00.000-00:00';
@@ -3899,22 +3896,33 @@ app.get('/api/item-fees', requireAuth, async (req, res) => {
           `${ML_API}/orders/search?seller=${uid}&item.id=${item_id}&order.date_created.from=${encodeURIComponent(from)}&sort=date_desc&limit=5`,
           { headers: authHeaders }
         ).then(r => r.json());
-        (ordRes.results || []).forEach(o => {
+
+        const orders = ordRes.results || [];
+
+        // Intentar obtener costo de envío del primer envío que tenga shipment id
+        for (const o of orders) {
+          const shipId = o.shipping?.id;
+          if (shipId && shippingCostSample === null) {
+            try {
+              const shipData = await fetch(`${ML_API}/shipments/${shipId}`, { headers: authHeaders }).then(r => r.json());
+              // El costo que paga el vendedor puede estar en cost.gross o list_cost o cost_components
+              const cost = shipData.cost?.gross ?? shipData.cost?.net ?? shipData.list_cost ?? null;
+              if (cost != null) shippingCostSample = { shipment_id: shipId, cost, raw: { cost: shipData.cost, list_cost: shipData.list_cost, logistic_type: shipData.logistic_type } };
+            } catch(_) {}
+          }
+
+          // Datos de la orden
+          const oi = (o.order_items || []).find(x => x.item?.id === item_id) || o.order_items?.[0];
           const payment = (o.payments || [])[0];
-          if (!payment) return;
-          const itemQty = (o.order_items || []).find(oi => oi.item?.id === item_id)?.quantity || 1;
-          const salePrice = (o.order_items || []).find(oi => oi.item?.id === item_id)?.unit_price || null;
           orderSamples.push({
             order_id: o.id,
             date: o.date_closed || o.date_created,
-            sale_price: salePrice,
-            quantity: itemQty,
-            total_amount: payment.total_amount,
-            fee_amount: payment.fee_amount,       // comisión ML
-            shipping_cost: o.shipping?.cost ?? null,
-            fee_pct: (salePrice && payment.fee_amount) ? +(payment.fee_amount / (salePrice * itemQty) * 100).toFixed(2) : null
+            sale_price: oi?.unit_price ?? null,
+            quantity: oi?.quantity ?? null,
+            total_amount: o.total_amount ?? payment?.transaction_amount ?? null,
+            shipment_id: o.shipping?.id ?? null,
           });
-        });
+        }
       } catch(_) {}
     }
 
@@ -3929,8 +3937,8 @@ app.get('/api/item-fees', requireAuth, async (req, res) => {
         logistic_type: itemData.shipping?.logistic_type
       },
       effective_price: effectivePrice,
-      listing_prices: lpData,
-      order_samples: orderSamples
+      order_samples: orderSamples,
+      shipping_cost_sample: shippingCostSample
     });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
