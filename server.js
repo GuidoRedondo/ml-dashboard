@@ -5022,29 +5022,22 @@ app.get('/api/promociones', requireAuth, async (req, res) => {
     const uid = clientRow.rows[0]?.ml_user_id || req.query.uid;
     if (!uid) return res.json({ promos: [] });
 
-    const mlFetch = (url) => {
-      const ctrl = new AbortController();
-      const t = setTimeout(() => ctrl.abort(), 8000);
-      return fetch(url, { headers, signal: ctrl.signal })
-        .then(r => r.json())
-        .finally(() => clearTimeout(t));
-    };
+    const mlFetch = (url) => Promise.race([
+      fetch(url, { headers }).then(r => r.json()),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 7000))
+    ]);
 
     const results = { promos: [] };
 
-    // ── 1. Seller promotions ──────────────────────────────────────────────────
-    let sp = null;
-    try {
-      sp = await mlFetch(`${ML_API}/seller-promotions/promotions?seller_id=${uid}&app_version=v2`);
-      console.log('[PROMOS] seller-promotions:', JSON.stringify(sp).slice(0, 300));
-    } catch(e) { console.warn('[PROMOS] seller-promotions err:', e.message); }
-
-    // ── 2. User promotions ────────────────────────────────────────────────────
-    let up = null;
-    try {
-      up = await mlFetch(`${ML_API}/seller-promotions/users/${uid}/promotions`);
-      console.log('[PROMOS] user-promotions:', JSON.stringify(up).slice(0, 300));
-    } catch(e) { console.warn('[PROMOS] user-promotions err:', e.message); }
+    // Ambas llamadas en paralelo — máximo 7 s de espera total
+    const [spRes, upRes] = await Promise.allSettled([
+      mlFetch(`${ML_API}/seller-promotions/promotions?seller_id=${uid}&app_version=v2`),
+      mlFetch(`${ML_API}/seller-promotions/users/${uid}/promotions`)
+    ]);
+    const sp = spRes.status === 'fulfilled' ? spRes.value : null;
+    const up = upRes.status === 'fulfilled' ? upRes.value : null;
+    console.log('[PROMOS] sp:', spRes.status, JSON.stringify(sp)?.slice(0,200));
+    console.log('[PROMOS] up:', upRes.status, JSON.stringify(up)?.slice(0,200));
 
     // ── Parse whichever endpoint worked ──────────────────────────────────────
     const parsePromos = (data) => {
