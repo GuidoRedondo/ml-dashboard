@@ -3915,32 +3915,31 @@ app.get('/api/item-fees', requireAuth, async (req, res) => {
     let shippingCostSample = null;
     if (uid) {
       try {
-        const from = new Date(Date.now() - 90 * 86400000).toISOString().slice(0,10) + 'T00:00:00.000-00:00';
+        const from = new Date(Date.now() - 180 * 86400000).toISOString().slice(0,10) + 'T00:00:00.000-00:00';
         const ordRes = await fetch(
-          `${ML_API}/orders/search?seller=${uid}&item.id=${item_id}&order.date_created.from=${encodeURIComponent(from)}&sort=date_desc&limit=5`,
+          `${ML_API}/orders/search?seller=${uid}&item.id=${item_id}&order.date_created.from=${encodeURIComponent(from)}&sort=date_desc&limit=10`,
           { headers: authHeaders }
         ).then(r => r.json());
 
         const orders = ordRes.results || [];
 
-        // Costo de envío: tomar el primer envío único que tenga costo real
+        // Costo de envío: probar todos los shipments únicos, quedarse con el primero que sea > 0
         const seenShipments = new Set();
+        const shipCostResults = [];
         for (const o of orders) {
           const oi = (o.order_items || []).find(x => x.item?.id === item_id) || o.order_items?.[0];
           const payment = (o.payments || [])[0];
           const shipId = o.shipping?.id ?? null;
           let shippingCost = null;
 
-          if (shipId && !seenShipments.has(shipId) && shippingCostSample === null) {
+          if (shipId && !seenShipments.has(shipId)) {
             seenShipments.add(shipId);
             try {
               const costsData = await fetch(`${ML_API}/shipments/${shipId}/costs`, { headers: authHeaders }).then(r => r.json());
-              // list_cost = tarifa sin subsidio; cost = lo que paga el vendedor (puede ser 0 si ML subsidia)
-              const rawCost = costsData.senders?.[0]?.list_cost ?? costsData.senders?.[0]?.cost ?? costsData.sender?.cost ?? null;
-              if (rawCost != null) {
-                shippingCost = parseFloat(rawCost);
-                shippingCostSample = { shipment_id: shipId, cost: shippingCost, raw: costsData };
-              }
+              const rawCost = costsData.senders?.[0]?.cost ?? costsData.sender?.cost ?? null;
+              const cost = rawCost != null ? parseFloat(rawCost) : null;
+              shippingCost = cost;
+              shipCostResults.push({ shipment_id: shipId, cost, raw: costsData });
             } catch(_) {}
           }
 
@@ -3955,6 +3954,8 @@ app.get('/api/item-fees', requireAuth, async (req, res) => {
             shipping_cost: shippingCost,
           });
         }
+        // Preferir el primer shipment con costo > 0; si todos son 0, usar el primero disponible
+        shippingCostSample = shipCostResults.find(s => s.cost > 0) ?? shipCostResults[0] ?? null;
       } catch(_) {}
     }
 
@@ -3985,7 +3986,16 @@ app.get('/api/item-fees', requireAuth, async (req, res) => {
       listing_prices_url: lpUrl,
       order_samples: orderSamples,
       shipping_cost_sample: shippingCostSample,
-      _debug: { item_price: itemData.price, item_original_price: itemData.original_price, item_promotions_count: (itemData.promotions||[]).length }
+      _debug: {
+        item_price: itemData.price, item_original_price: itemData.original_price,
+        item_promotions_count: (itemData.promotions||[]).length,
+        lp_error: lpData?.error || lpData?.message || null,
+        lp_sale_fee_amount: lpData?.sale_fee_amount,
+        lp_sale_fee_details: lpData?.sale_fee_details,
+        orders_found: orderSamples.length,
+        shipments_tried: (shippingCostSample ? 1 : 0),
+        logistic_type: logisticType, shipping_mode: shippingMode, billable_weight: billableWeight
+      }
     });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });

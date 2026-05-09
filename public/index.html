@@ -4021,7 +4021,7 @@ function renderFeesResult(data) {
   // ── Extraer comisión desde listing_prices ────────────────────────────────
   // sale_fee_details es un OBJETO: { meli_percentage_fee, percentage_fee, gross_amount, fixed_fee, ... }
   let lpComisionPct = null, lpComisionMonto = null;
-  const lpOk = lp && !lp.error && !lp.message && !lp._error && lp.sale_fee_amount != null;
+  const lpOk = lp && !lp.error && !lp._error && (lp.sale_fee_amount != null || lp.sale_fee_details != null);
   if (lpOk) {
     const sfd = lp.sale_fee_details || {};
     // Primero buscar el % directo (más preciso)
@@ -4138,16 +4138,27 @@ function renderFeesResult(data) {
 
   // ── JSON para debug ───────────────────────────────────────────────────────
   const dbg = data._debug || {};
+  const debugLines = [
+    dbg.item_original_price != null
+      ? `Precio tachado: $${dbg.item_original_price} → precio actual $${dbg.item_price}`
+      : `original_price = null (sin precio tachado en ML)`,
+    dbg.lp_error ? `⚠ listing_prices error: ${dbg.lp_error}` : `listing_prices OK — fee_amount: ${dbg.lp_sale_fee_amount} | ${JSON.stringify(dbg.lp_sale_fee_details)}`,
+    `Órdenes encontradas: ${dbg.orders_found} | logística: ${dbg.logistic_type} / ${dbg.shipping_mode} / peso: ${dbg.billable_weight}g`,
+    shipSample ? `Shipment ${shipSample.shipment_id}: costo $${shipSample.cost}` : `Sin shipments con costo disponible`,
+  ].join('\n');
   const rawJson = `
-    ${dbg.item_original_price != null ? `<p style="font-size:11px;color:#2e7d32;margin:0 0 8px">Debug: original_price del ítem = ${dbg.item_original_price} | price = ${dbg.item_price}</p>` : `<p style="font-size:11px;color:#e65100;margin:0 0 8px">Debug: original_price = null (el ítem no tiene precio tachado en ML)</p>`}
+    <details style="margin-bottom:12px">
+      <summary style="cursor:pointer;font-size:12px;color:var(--muted)">Debug info</summary>
+      <pre style="padding:10px;background:var(--surface2);border-radius:8px;font-size:11px;overflow-x:auto;white-space:pre-wrap">${debugLines}</pre>
+    </details>
     <details style="margin-bottom:12px">
       <summary style="cursor:pointer;font-size:12px;color:var(--muted)">Respuesta listing_prices API</summary>
       <p style="font-size:11px;color:var(--muted);margin:6px 0">${data.listing_prices_url || ''}</p>
       <pre style="padding:12px;background:var(--surface2);border-radius:8px;font-size:11px;overflow-x:auto;white-space:pre-wrap">${JSON.stringify(lp, null, 2)}</pre>
     </details>
     ${shipSample ? `<details style="margin-bottom:12px">
-      <summary style="cursor:pointer;font-size:12px;color:var(--muted)">Datos del envío desde API de shipments (list_cost / cost)</summary>
-      <pre style="padding:12px;background:var(--surface2);border-radius:8px;font-size:11px;overflow-x:auto;white-space:pre-wrap">${JSON.stringify(shipSample.raw?.senders || shipSample, null, 2)}</pre>
+      <summary style="cursor:pointer;font-size:12px;color:var(--muted)">Datos del envío desde API (senders)</summary>
+      <pre style="padding:12px;background:var(--surface2);border-radius:8px;font-size:11px;overflow-x:auto;white-space:pre-wrap">${JSON.stringify(shipSample.raw?.senders ?? shipSample, null, 2)}</pre>
     </details>` : ''}`;
 
   return `<div>${infoItem}${calc}${ordersSection}${rawJson}</div>`;
