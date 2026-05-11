@@ -12370,7 +12370,7 @@ async function loadHotsaleReport() {
   slackE.style.display = '';
 
   try {
-    const data = await apiCall(`/api/admin/hotsale-report${qs}`);
+    const data = await apiCall('GET', `/api/admin/hotsale-report${qs}`);
     if (!data.ok) { el.innerHTML = `<div style="color:#c62828;padding:20px">${data.error || 'Error'}</div>`; return; }
 
     // Tabla resumen por cliente
@@ -12462,7 +12462,7 @@ async function sendHotsaleSlack() {
   try {
     const dateInput = document.getElementById('hotsaleDate');
     const qs = dateInput?.value ? `?date=${dateInput.value}&send_slack=true` : '?send_slack=true';
-    const data = await apiCall(`/api/admin/hotsale-report${qs}`);
+    const data = await apiCall('GET', `/api/admin/hotsale-report${qs}`);
     alert(data.slack_sent ? '✅ Reporte enviado a Slack' : '❌ Error al enviar — verificá la URL del webhook');
   } catch(e) { alert('Error: ' + e.message); }
   finally { if (btn) { btn.disabled = false; btn.textContent = '📤 Enviar a Slack'; } }
