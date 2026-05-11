@@ -1090,7 +1090,7 @@ async function sendHotsaleSlack(msg) {
 
 app.get('/api/admin/hotsale-report', requireAuth, async (req, res) => {
   try {
-    if (!['admin','consultant','colaborador'].includes(req.session?.role)) return res.status(403).json({ error: 'Sin acceso' });
+    if (!['admin','colaborador','consultant'].includes(req.user?.role)) return res.status(403).json({ error: 'Sin acceso' });
     const report = await generateHotsaleReport(req.query.date || null);
     const slackMsg = formatHotsaleSlack(report);
     let slackSent = false;

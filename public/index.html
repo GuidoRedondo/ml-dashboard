@@ -12371,7 +12371,7 @@ async function loadHotsaleReport() {
 
   try {
     const data = await apiCall('GET', `/api/admin/hotsale-report${qs}`);
-    if (!data.ok) { el.innerHTML = `<div style="color:#c62828;padding:20px">${data.error || 'Error'}</div>`; return; }
+    if (!data || !data.ok) { el.innerHTML = `<div style="color:#c62828;padding:20px">${data?.error || 'Error de acceso (verificá tu rol)'}</div>`; return; }
 
     // Tabla resumen por cliente
     const { report } = data;
