@@ -632,6 +632,9 @@ tbody td {
       <div class="nav-item" data-page="decisiones-publi" onclick="showPage('decisiones-publi',this);loadDecisionesPubli()">
         <span class="nav-icon">⚡</span> Motor de Publicidad
       </div>
+      <div class="nav-item" data-page="hotsale-report" onclick="showPage('hotsale-report',this);loadHotsaleReport()">
+        <span class="nav-icon">🔥</span> Reporte Hotsale
+      </div>
     </nav>
   </aside>
 
@@ -1338,6 +1341,36 @@ tbody td {
         <button class="sync-btn" onclick="exportStockExcel()" style="background:#16a34a;color:#fff;border:none">📥 Excel</button>
       </div>
       <div id="stockContent"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Sincronizá para ver datos</div></div>
+    </div>
+
+    <!-- REPORTE HOTSALE -->
+    <div class="page" id="page-hotsale-report">
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:24px;flex-wrap:wrap">
+        <h2 style="margin:0;font-family:var(--font-b);flex:1">🔥 Reporte Hotsale</h2>
+        <input type="date" id="hotsaleDate" style="padding:7px 10px;border-radius:8px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:13px">
+        <button class="sync-btn" onclick="loadHotsaleReport()">🔄 Generar reporte</button>
+        <button id="hotsaleSlackBtn" onclick="sendHotsaleSlack()" class="sync-btn" style="background:var(--accent);color:#fff;display:none">
+          📤 Enviar a Slack
+        </button>
+      </div>
+      <p style="font-size:13px;color:var(--muted);margin:0 0 20px">
+        Reporte diario por cliente: facturación, ventas, visitas y conversión vs el mismo día de la semana anterior.
+        Se envía automáticamente a las 23:59 hs (Argentina).
+      </p>
+      <div id="hotsaleContent"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Seleccioná una fecha y generá el reporte.</div></div>
+
+      <div style="margin-top:32px">
+        <h4 style="font-family:var(--font-b);margin:0 0 12px;font-size:13px">Preview mensaje Slack</h4>
+        <div id="hotsaleSlackPreview" style="display:none;background:#1a1d21;color:#d1d2d3;border-radius:12px;padding:20px;font-size:13px;font-family:monospace;white-space:pre-wrap;line-height:1.6;max-height:500px;overflow-y:auto"></div>
+        <div id="hotsaleSlackEmpty" style="color:var(--muted);font-size:13px">El preview aparecerá acá después de generar el reporte.</div>
+      </div>
+
+      <div style="margin-top:32px;padding:16px;background:var(--surface2);border-radius:12px;font-size:13px">
+        <b>Configuración Slack</b><br>
+        <span style="color:var(--muted)">Agregá la variable de entorno <code>SLACK_WEBHOOK_URL</code> en Railway con la URL de tu Incoming Webhook de Slack.
+        El reporte se envía automáticamente cada día a las 23:59 hs Argentina.</span>
+        <div id="hotsaleSlackStatus" style="margin-top:8px;font-weight:600"></div>
+      </div>
     </div>
 
     <!-- MOTOR DE PUBLICIDAD -->
@@ -6532,7 +6565,7 @@ function applyPermissions() {
       el.style.display = isGestion ? '' : 'none';
     }
   });
-  document.querySelectorAll('[data-page="usuarios"],[data-page="clientes"],[data-page="tokens"],[data-page="reputacion"],[data-page="panel-consultores"]').forEach(el => {
+  document.querySelectorAll('[data-page="usuarios"],[data-page="clientes"],[data-page="tokens"],[data-page="reputacion"],[data-page="panel-consultores"],[data-page="hotsale-report"]').forEach(el => {
     el.style.display = isGestion ? '' : 'none';
   });
 
@@ -6571,6 +6604,13 @@ function initApp() {
   const toEl   = document.getElementById('globalDateTo');
   if (fromEl) fromEl.value = from.toISOString().slice(0,10);
   if (toEl)   toEl.value   = now.toISOString().slice(0,10);
+
+  // Fecha por defecto en el reporte hotsale = hoy en Argentina
+  const hotsaleDateEl = document.getElementById('hotsaleDate');
+  if (hotsaleDateEl) {
+    const artToday = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Argentina/Buenos_Aires' });
+    hotsaleDateEl.value = artToday;
+  }
 
   // Mark active quick range button
   const btn = document.getElementById('qr-'+days);
@@ -12311,6 +12351,121 @@ function switchDPTab(tab) {
     btn.style.borderBottomColor = active ? '#6366f1' : 'transparent';
   });
   loadDecisionesPubli();
+}
+
+// ── REPORTE HOTSALE ───────────────────────────────────────────────────────────
+
+async function loadHotsaleReport() {
+  const el     = document.getElementById('hotsaleContent');
+  const slackP = document.getElementById('hotsaleSlackPreview');
+  const slackE = document.getElementById('hotsaleSlackEmpty');
+  const slackS = document.getElementById('hotsaleSlackStatus');
+  const slackB = document.getElementById('hotsaleSlackBtn');
+
+  const dateInput = document.getElementById('hotsaleDate');
+  const qs = dateInput?.value ? `?date=${dateInput.value}` : '';
+
+  el.innerHTML = '<div style="color:var(--muted);padding:20px;text-align:center">⏳ Generando reporte (puede tardar unos segundos)…</div>';
+  slackP.style.display = 'none';
+  slackE.style.display = '';
+
+  try {
+    const data = await apiCall(`/api/admin/hotsale-report${qs}`);
+    if (!data.ok) { el.innerHTML = `<div style="color:#c62828;padding:20px">${data.error || 'Error'}</div>`; return; }
+
+    // Tabla resumen por cliente
+    const { report } = data;
+    const MONTHS = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
+    const DAYS   = ['Dom','Lun','Mar','Mié','Jue','Vie','Sáb'];
+    const fmtDay = d => { const dt = new Date(d+'T12:00:00Z'); return `${DAYS[dt.getUTCDay()]} ${parseInt(d.split('-')[2])} ${MONTHS[dt.getUTCMonth()]}`; };
+    const money  = v => '$' + Math.round(v).toLocaleString('es-AR');
+    const pctBadge = (cur, prev) => {
+      if (!prev) return '';
+      const p = (cur - prev) / prev * 100;
+      const color = p >= 5 ? '#2e7d32' : p <= -5 ? '#c62828' : '#e65100';
+      return `<span style="font-size:11px;color:${color};font-weight:600">${p >= 0 ? '+' : ''}${p.toFixed(0)}%</span>`;
+    };
+    const convBadge = (cur, prev) => {
+      if (cur == null) return '—';
+      const diff = prev != null ? (cur - prev) : null;
+      const color = diff == null ? 'var(--text)' : diff >= 0.5 ? '#2e7d32' : diff <= -0.5 ? '#c62828' : 'var(--text)';
+      return `<span style="color:${color}">${cur.toFixed(1)}%${diff != null ? ` <small>(${diff >= 0 ? '+' : ''}${diff.toFixed(1)}pp)</small>` : ''}</span>`;
+    };
+
+    let html = `
+      <div style="margin-bottom:8px;font-size:12px;color:var(--muted)">${fmtDay(report.date)} vs ${fmtDay(report.prevDate)}</div>
+      <div style="overflow-x:auto">
+        <table style="width:100%;border-collapse:collapse;font-size:13px">
+          <thead><tr style="color:var(--muted);font-size:11px;border-bottom:2px solid var(--border)">
+            <th style="text-align:left;padding:8px">Cliente</th>
+            <th style="text-align:right;padding:8px">Facturación</th>
+            <th style="text-align:right;padding:8px">vs ant.</th>
+            <th style="text-align:right;padding:8px">Ventas</th>
+            <th style="text-align:right;padding:8px">vs ant.</th>
+            <th style="text-align:right;padding:8px">Ticket prom.</th>
+            <th style="text-align:right;padding:8px">Visitas</th>
+            <th style="text-align:right;padding:8px">Conversión</th>
+          </tr></thead>
+          <tbody>`;
+
+    let totRev = 0, totSales = 0;
+    for (const r of report.results) {
+      if (r.error) {
+        html += `<tr><td style="padding:8px;border-bottom:1px solid var(--border)">${r.name}</td>
+          <td colspan="7" style="padding:8px;border-bottom:1px solid var(--border);color:var(--muted);font-size:12px">⚠️ ${r.error}</td></tr>`;
+        continue;
+      }
+      totRev   += r.cur.revenue;
+      totSales += r.cur.sales;
+      html += `<tr>
+        <td style="padding:8px;border-bottom:1px solid var(--border);font-weight:600">${r.name}</td>
+        <td style="padding:8px;border-bottom:1px solid var(--border);text-align:right">${money(r.cur.revenue)}</td>
+        <td style="padding:8px;border-bottom:1px solid var(--border);text-align:right">${pctBadge(r.cur.revenue, r.prev.revenue)}</td>
+        <td style="padding:8px;border-bottom:1px solid var(--border);text-align:right">${r.cur.sales}</td>
+        <td style="padding:8px;border-bottom:1px solid var(--border);text-align:right">${pctBadge(r.cur.sales, r.prev.sales)}</td>
+        <td style="padding:8px;border-bottom:1px solid var(--border);text-align:right">${money(r.cur.ticket)}</td>
+        <td style="padding:8px;border-bottom:1px solid var(--border);text-align:right">${r.cur.visits > 0 ? r.cur.visits.toLocaleString('es-AR') : '—'}</td>
+        <td style="padding:8px;border-bottom:1px solid var(--border);text-align:right">${convBadge(r.cur.conv, r.prev.conv)}</td>
+      </tr>`;
+    }
+
+    if (report.results.filter(r => !r.error).length > 1) {
+      html += `<tr style="font-weight:700;background:var(--surface2)">
+        <td style="padding:8px">TOTAL</td>
+        <td style="padding:8px;text-align:right">${money(totRev)}</td>
+        <td colspan="6" style="padding:8px;text-align:right;color:var(--muted);font-size:12px">${totSales} ventas</td>
+      </tr>`;
+    }
+
+    html += `</tbody></table></div>`;
+    el.innerHTML = html;
+
+    // Preview Slack
+    slackP.textContent = data.slack_message;
+    slackP.style.display = '';
+    slackE.style.display = 'none';
+
+    // Estado Slack
+    if (slackS) slackS.innerHTML = data.slack_configured
+      ? '<span style="color:#2e7d32">✓ Slack configurado — el reporte se enviará automáticamente a las 23:59</span>'
+      : '<span style="color:#e65100">⚠ SLACK_WEBHOOK_URL no configurado — agregalo en Railway para activar el envío automático</span>';
+    if (slackB) slackB.style.display = data.slack_configured ? '' : 'none';
+
+  } catch(e) {
+    el.innerHTML = `<div style="color:#c62828;padding:20px">Error: ${e.message}</div>`;
+  }
+}
+
+async function sendHotsaleSlack() {
+  const btn = document.getElementById('hotsaleSlackBtn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Enviando…'; }
+  try {
+    const dateInput = document.getElementById('hotsaleDate');
+    const qs = dateInput?.value ? `?date=${dateInput.value}&send_slack=true` : '?send_slack=true';
+    const data = await apiCall(`/api/admin/hotsale-report${qs}`);
+    alert(data.slack_sent ? '✅ Reporte enviado a Slack' : '❌ Error al enviar — verificá la URL del webhook');
+  } catch(e) { alert('Error: ' + e.message); }
+  finally { if (btn) { btn.disabled = false; btn.textContent = '📤 Enviar a Slack'; } }
 }
 
 async function loadDecisionesPubli() {

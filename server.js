@@ -942,6 +942,165 @@ async function fetchVisitsRange(itemIds, dateFrom, dateTo, headers) {
   } catch(e) { return {}; }
 }
 
+// ── REPORTE HOTSALE ───────────────────────────────────────────────────────────
+
+async function generateHotsaleReport(dateStr) {
+  // dateStr: 'YYYY-MM-DD' en hora argentina. Si no viene, usa hoy en ART.
+  const ART = 'America/Argentina/Buenos_Aires';
+
+  const artDate = dateStr || new Date().toLocaleDateString('en-CA', { timeZone: ART });
+  const [y, m, d] = artDate.split('-').map(Number);
+  const prevDt = new Date(Date.UTC(y, m - 1, d) - 7 * 86400000);
+  const prevDate = prevDt.toISOString().slice(0, 10);
+
+  const fmtRange = (dateYMD, startH, endH) => {
+    const base = `${dateYMD}T`;
+    return [
+      new Date(base + `${startH}:00:00-03:00`).toISOString().slice(0,19) + '.000-00:00',
+      new Date(base + `${endH}:59:59-03:00`).toISOString().slice(0,19) + '.000-00:00',
+    ];
+  };
+  const [curFrom, curTo]   = fmtRange(artDate,  '00', '23');
+  const [prevFrom, prevTo] = fmtRange(prevDate, '00', '23');
+
+  const clientsRes = await pool.query('SELECT id, name, ml_user_id FROM clients ORDER BY name');
+  const results = [];
+
+  for (const client of clientsRes.rows) {
+    try {
+      const token = await getClientToken(client.id);
+      if (!token) { results.push({ name: client.name, id: client.id, error: 'Sin token' }); continue; }
+      const uid = client.ml_user_id;
+      if (!uid) { results.push({ name: client.name, id: client.id, error: 'Sin ML user ID' }); continue; }
+
+      const headers = { Authorization: `Bearer ${token}` };
+      const [curData, prevData] = await Promise.all([
+        fetchAllOrders(uid, headers, curFrom, curTo),
+        fetchAllOrders(uid, headers, prevFrom, prevTo),
+      ]);
+
+      const calcMetrics = (orders) => {
+        const revenue = orders.reduce((s, o) => s + (parseFloat(o.total_amount) || 0), 0);
+        const sales   = orders.length;
+        const units   = orders.reduce((s, o) => s + (o.order_items || []).reduce((ss, oi) => ss + (oi.quantity || 1), 0), 0);
+        const ticket  = sales > 0 ? revenue / sales : 0;
+        const soldIds = [...new Set(orders.flatMap(o => (o.order_items || []).map(oi => oi.item?.id).filter(Boolean)))];
+        return { revenue, sales, units, ticket, soldIds };
+      };
+
+      const cur  = calcMetrics(curData.orders);
+      const prev = calcMetrics(prevData.orders);
+
+      // Visitas: solo ítems que vendieron
+      let curVisits = 0, prevVisits = 0;
+      const allIds = [...new Set([...cur.soldIds, ...prev.soldIds])];
+      if (allIds.length > 0) {
+        for (let i = 0; i < allIds.length; i += 20) {
+          const batch = allIds.slice(i, i + 20);
+          const [vm, pvm] = await Promise.all([
+            fetchVisitsRange(batch, artDate,  artDate,  headers),
+            fetchVisitsRange(batch, prevDate, prevDate, headers),
+          ]);
+          curVisits  += Object.values(vm).reduce((s, v) => s + v, 0);
+          prevVisits += Object.values(pvm).reduce((s, v) => s + v, 0);
+        }
+      }
+
+      cur.visits  = curVisits;
+      prev.visits = prevVisits;
+      cur.conv    = curVisits  > 0 ? cur.sales  / curVisits  * 100 : null;
+      prev.conv   = prevVisits > 0 ? prev.sales / prevVisits * 100 : null;
+
+      results.push({ name: client.name, id: client.id, cur, prev });
+    } catch(e) {
+      results.push({ name: client.name, id: client.id, error: e.message });
+    }
+  }
+
+  return { date: artDate, prevDate, results };
+}
+
+function formatHotsaleSlack(report) {
+  const { date, prevDate, results } = report;
+
+  const MONTHS = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
+  const DAYS   = ['Dom','Lun','Mar','Mié','Jue','Vie','Sáb'];
+  const fmtDay = d => {
+    const dt = new Date(d + 'T12:00:00Z');
+    const [,, day] = d.split('-');
+    return `${DAYS[dt.getUTCDay()]} ${parseInt(day)} ${MONTHS[dt.getUTCMonth()]}`;
+  };
+  const money  = v => '$' + Math.round(v).toLocaleString('es-AR');
+  const pctOf  = (cur, prev) => prev > 0 ? (cur - prev) / prev * 100 : null;
+  const arrow  = v => v == null ? '' : v >= 5 ? ' 🟢' : v <= -5 ? ' 🔴' : ' 🟡';
+  const fmtPct = v => v == null ? '' : ` (${v >= 0 ? '+' : ''}${v.toFixed(0)}%)`;
+
+  const valid = results.filter(r => !r.error);
+  const totRev   = valid.reduce((s, r) => s + r.cur.revenue, 0);
+  const totSales = valid.reduce((s, r) => s + r.cur.sales, 0);
+
+  let msg = `📊 *Reporte Hotsale — ${fmtDay(date)}*\n`;
+  msg += `_vs ${fmtDay(prevDate)} (semana anterior)_\n`;
+  msg += `${'─'.repeat(30)}\n\n`;
+
+  for (const r of results) {
+    if (r.error) { msg += `*${r.name}* ⚠️ ${r.error}\n\n`; continue; }
+    const { cur, prev } = r;
+    const revPct   = pctOf(cur.revenue, prev.revenue);
+    const salesPct = pctOf(cur.sales,   prev.sales);
+    const convDiff = cur.conv != null && prev.conv != null ? cur.conv - prev.conv : null;
+
+    msg += `*${r.name}*\n`;
+    msg += `• 💰 Facturación: *${money(cur.revenue)}*${fmtPct(revPct)}${arrow(revPct)}\n`;
+    msg += `• 🛍️ Ventas: *${cur.sales} órdenes* / ${cur.units} uds${fmtPct(salesPct)}${arrow(salesPct)}\n`;
+    msg += `• 🎫 Ticket prom.: *${money(cur.ticket)}*\n`;
+    if (cur.visits > 0) {
+      const visPct = pctOf(cur.visits, prev.visits);
+      msg += `• 👁️ Visitas: *${cur.visits.toLocaleString('es-AR')}*${fmtPct(visPct)}${arrow(visPct)}\n`;
+    }
+    if (cur.conv != null) {
+      const convStr = convDiff != null ? ` (${convDiff >= 0 ? '+' : ''}${convDiff.toFixed(1)}pp)${convDiff >= 0.5 ? ' 🟢' : convDiff <= -0.5 ? ' 🔴' : ' 🟡'}` : '';
+      msg += `• 🔄 Conversión: *${cur.conv.toFixed(1)}%*${convStr}\n`;
+    }
+    msg += '\n';
+  }
+
+  if (valid.length > 1) {
+    msg += `${'─'.repeat(30)}\n`;
+    msg += `📦 *Total cartera: ${money(totRev)} | ${totSales} ventas*`;
+  }
+  return msg;
+}
+
+async function sendHotsaleSlack(msg) {
+  const url = process.env.SLACK_WEBHOOK_URL;
+  if (!url) return false;
+  try {
+    const r = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: msg }),
+    });
+    return r.ok;
+  } catch(e) {
+    console.error('[HOTSALE] Slack error:', e.message);
+    return false;
+  }
+}
+
+app.get('/api/admin/hotsale-report', requireAuth, async (req, res) => {
+  try {
+    if (!['admin','consultant','colaborador'].includes(req.session?.role)) return res.status(403).json({ error: 'Sin acceso' });
+    const report = await generateHotsaleReport(req.query.date || null);
+    const slackMsg = formatHotsaleSlack(report);
+    let slackSent = false;
+    if (req.query.send_slack === 'true') {
+      slackSent = await sendHotsaleSlack(slackMsg);
+    }
+    res.json({ ok: true, report, slack_message: slackMsg, slack_configured: !!process.env.SLACK_WEBHOOK_URL, slack_sent: slackSent });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
 // ── CENTRO DE INTELIGENCIA — motor de alertas ─────────────────────────────────
 
 const REGLAS_DEFAULT = {
@@ -6854,5 +7013,18 @@ initDB().then(() => {
       runAlertEngine().catch(e => console.error('[CRON] Error:', e.message));
     }, { timezone: 'UTC' });
     console.log('[CRON] Motor de alertas programado: 08:00 y 18:00 ART');
+
+    // 23:59 ART — Reporte Hotsale diario
+    nodeCron.schedule('59 23 * * *', async () => {
+      if (!process.env.SLACK_WEBHOOK_URL) return;
+      try {
+        console.log('[HOTSALE] Generando reporte...');
+        const report = await generateHotsaleReport(null);
+        const msg    = formatHotsaleSlack(report);
+        const sent   = await sendHotsaleSlack(msg);
+        console.log(`[HOTSALE] Reporte ${sent ? 'enviado' : 'falló'} — ${report.results.length} clientes`);
+      } catch(e) { console.error('[HOTSALE] Cron error:', e.message); }
+    }, { timezone: 'America/Argentina/Buenos_Aires' });
+    console.log('[CRON] Reporte Hotsale programado: 23:59 ART');
   }
 }).catch(e => { console.error('DB init error:', e); process.exit(1); });
