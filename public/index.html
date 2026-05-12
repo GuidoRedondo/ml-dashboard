@@ -12369,7 +12369,7 @@ async function loadHotsaleReport() {
   const dt = document.getElementById('hotsaleDateTo')?.value;
   const qs = (df || dt) ? `?date_from=${df || dt}&date_to=${dt || df}` : '';
 
-  el.innerHTML = '<div style="color:var(--muted);padding:20px;text-align:center">⏳ Generando reporte (puede tardar unos segundos)…</div>';
+  el.innerHTML = '<div style="color:var(--muted);padding:20px;text-align:center">⏳ Generando reporte…</div>';
   if (slackP) slackP.style.display = 'none';
   if (slackE) slackE.style.display = '';
 
@@ -12379,98 +12379,133 @@ async function loadHotsaleReport() {
 
     const { report } = data;
     const { days, prevDays, general, clients } = report;
+    const gt = general.total;
 
     const MONTHS = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
     const WDAYS  = ['Dom','Lun','Mar','Mié','Jue','Vie','Sáb'];
     const fmtDay = d => { const dt2 = new Date(d+'T12:00:00Z'); return `${WDAYS[dt2.getUTCDay()]} ${parseInt(d.split('-')[2])} ${MONTHS[dt2.getUTCMonth()]}`; };
     const money  = v => '$' + Math.round(v || 0).toLocaleString('es-AR');
-    const pct    = (c, p) => p > 0 ? (c - p) / p * 100 : null;
-    const badge  = v => { if (v == null) return ''; const c = v >= 5 ? '#2e7d32' : v <= -5 ? '#c62828' : '#e65100'; return `<span style="font-size:11px;color:${c};font-weight:600">${v >= 0 ? '+' : ''}${v.toFixed(0)}%</span>`; };
-    const ppBadge = (c, p) => { if (c == null) return '—'; const d2 = p != null ? c - p : null; const col = d2 == null ? '' : d2 >= 0.5 ? 'color:#2e7d32' : d2 <= -0.5 ? 'color:#c62828' : ''; return `<span style="${col}">${c.toFixed(1)}%${d2 != null ? ` <small>(${d2 >= 0 ? '+' : ''}${d2.toFixed(1)}pp)</small>` : ''}</span>`; };
-    const cell   = (v, align) => `<td style="padding:7px 10px;border-bottom:1px solid var(--border);white-space:nowrap;${align ? 'text-align:right' : ''}">${v}</td>`;
-
-    // Construye tabla para una sección (general o cliente)
-    const buildTable = (sectionDays, sectionPrevDays, dayData, totalData, collapsed) => {
-      // Cabecera con días + total + vs ant.
-      const hasAds = totalData?.cur?.adSpend > 0 || days.some(d => dayData[d]?.cur?.adSpend > 0);
-      const colSpan = days.length + 2; // días + Total + vs ant.
-      let th = `<tr style="color:var(--muted);font-size:11px;border-bottom:2px solid var(--border)">
-        <th style="padding:7px 10px;text-align:left;min-width:130px">Métrica</th>`;
-      sectionDays.forEach((d, i) => { th += `<th style="padding:7px 10px;text-align:right">${fmtDay(d)}<br><small style="font-weight:400">(vs ${fmtDay(sectionPrevDays[i])})</small></th>`; });
-      if (days.length > 1) th += `<th style="padding:7px 10px;text-align:right;background:var(--surface2)">Total</th><th style="padding:7px 10px;text-align:right">vs ant.</th>`;
-      th += '</tr>';
-
-      const row = (label, getDayVal, getDayPrev, getTotVal, getTotPrev, fmt, isMoney) => {
-        let r = `<tr><td style="padding:7px 10px;border-bottom:1px solid var(--border);color:var(--muted);font-size:12px">${label}</td>`;
-        sectionDays.forEach(d => {
-          const cv = getDayVal(dayData[d]?.cur);
-          const pv = getDayPrev(dayData[d]?.prev);
-          r += `<td style="padding:7px 10px;border-bottom:1px solid var(--border);text-align:right;white-space:nowrap">
-            ${fmt(cv)}${pv != null && cv != null ? '<br>' + badge(isMoney ? pct(cv,pv) : null) : ''}
-          </td>`;
-        });
-        if (days.length > 1) {
-          const tv = getTotVal(totalData?.cur);
-          const tp = getTotPrev(totalData?.prev);
-          r += `<td style="padding:7px 10px;border-bottom:1px solid var(--border);text-align:right;font-weight:600;background:var(--surface2);white-space:nowrap">${fmt(tv)}</td>`;
-          r += `<td style="padding:7px 10px;border-bottom:1px solid var(--border);text-align:right">${tp != null && tv != null ? badge(pct(tv, tp)) : '—'}</td>`;
-        }
-        return r + '</tr>';
-      };
-
-      const convRow = () => {
-        let r = `<tr><td style="padding:7px 10px;border-bottom:1px solid var(--border);color:var(--muted);font-size:12px">🔄 Conversión</td>`;
-        sectionDays.forEach(d => {
-          r += `<td style="padding:7px 10px;border-bottom:1px solid var(--border);text-align:right">${ppBadge(dayData[d]?.cur?.conv, dayData[d]?.prev?.conv)}</td>`;
-        });
-        if (days.length > 1) {
-          r += `<td style="padding:7px 10px;border-bottom:1px solid var(--border);text-align:right;font-weight:600;background:var(--surface2)">${ppBadge(totalData?.cur?.conv, null)}</td>`;
-          r += `<td style="padding:7px 10px;border-bottom:1px solid var(--border);text-align:right">${ppBadge(totalData?.cur?.conv, totalData?.prev?.conv)?.replace(/<[^>]+>/g,'') || '—'}</td>`;
-        }
-        return r + '</tr>';
-      };
-
-      let rows = '';
-      rows += row('💰 Facturación',  m => m?.revenue,  m => m?.revenue,  m => m?.revenue,  m => m?.revenue,  money, true);
-      rows += row('🛍️ Ventas (órd.)', m => m?.sales,    m => m?.sales,    m => m?.sales,    m => m?.sales,    v => v ?? '—', true);
-      rows += row('📦 Unidades',      m => m?.units,    m => m?.units,    m => m?.units,    m => m?.units,    v => v ?? '—', true);
-      rows += row('🎫 Ticket prom.',  m => m?.ticket,   m => m?.ticket,   m => m?.ticket,   m => m?.ticket,   money, false);
-      rows += row('👁️ Visitas',       m => m?.visits || 0, m => m?.visits || 0, m => m?.visits || 0, m => m?.visits || 0, v => v > 0 ? v.toLocaleString('es-AR') : '—', true);
-      rows += convRow();
-      if (hasAds) {
-        rows += row('📣 Inversión publi', m => m?.adSpend,   m => null, m => m?.adSpend,   m => null, v => v > 0 ? money(v) : '—', false);
-        rows += row('📈 Factu. publi',    m => m?.adRevenue, m => null, m => m?.adRevenue, m => null, v => v > 0 ? money(v) : '—', false);
-        rows += row('📊 % publi s/ventas',m => m?.adSalesPct,m => null, m => m?.adSalesPct,m => null, v => v != null ? v.toFixed(1)+'%' : '—', false);
-        rows += row('🎯 TACOS',           m => m?.tacos,     m => null, m => m?.tacos,     m => null, v => v != null ? v.toFixed(1)+'%' : '—', false);
-      }
-
-      return `<div style="overflow-x:auto"><table style="border-collapse:collapse;font-size:13px;width:100%"><thead>${th}</thead><tbody>${rows}</tbody></table></div>`;
+    const pctOf  = (c, p) => p > 0 ? (c - p) / p * 100 : null;
+    const pctBadge = (cur, prev) => {
+      const p = pctOf(cur, prev);
+      if (p == null) return '';
+      const c = p >= 5 ? '#2e7d32' : p <= -5 ? '#c62828' : '#e65100';
+      return `<div style="font-size:11px;color:${c};font-weight:600;margin-top:2px">${p >= 0 ? '+' : ''}${p.toFixed(0)}%</div>`;
     };
+    const ppBadge = (c, p) => {
+      if (c == null) return '—';
+      const d2 = p != null ? c - p : null;
+      const col = d2 == null ? 'var(--text)' : d2 >= 0.5 ? '#2e7d32' : d2 <= -0.5 ? '#c62828' : 'var(--text)';
+      return `<span style="color:${col}">${c.toFixed(1)}%${d2 != null ? ` <small>(${d2 >= 0 ? '+' : ''}${d2.toFixed(1)}pp)</small>` : ''}</span>`;
+    };
+    const hasAds = gt.cur?.adSpend > 0;
+    const period = days.length > 1 ? `${fmtDay(days[0])} – ${fmtDay(days[days.length-1])}` : fmtDay(days[0]);
+    const prevPeriod = days.length > 1 ? `${fmtDay(prevDays[0])} – ${fmtDay(prevDays[prevDays.length-1])}` : fmtDay(prevDays[0]);
 
-    // ── General ──
-    let html = `
-      <div style="background:var(--accent);color:#fff;border-radius:12px;padding:14px 18px;margin-bottom:20px">
-        <div style="font-family:var(--font-b);font-size:15px;margin-bottom:12px">📦 TOTAL CARTERA — ${clients.filter(c=>!c.error).length} clientes</div>
-        ${buildTable(days, prevDays, general.days, general.total, false)}
+    // ── Cards generales ──────────────────────────────────────────────────────
+    const card = (icon, label, val, badge2) => `
+      <div style="background:var(--surface2);border-radius:12px;padding:14px 18px;min-width:130px;flex:1">
+        <div style="font-size:11px;color:var(--muted);margin-bottom:4px">${icon} ${label}</div>
+        <div style="font-size:18px;font-family:var(--font-b);font-weight:700">${val}</div>
+        ${badge2 || ''}
       </div>`;
 
-    // ── Por cliente ──
-    for (const c of clients) {
-      if (c.error) {
-        html += `<div style="background:var(--surface2);border-radius:10px;padding:12px 16px;margin-bottom:12px;font-size:13px">
-          <b>${c.name}</b> <span style="color:#c62828">⚠️ ${c.error}</span></div>`;
+    let cards = `<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:24px">`;
+    cards += card('💰', 'Facturación total', money(gt.cur?.revenue), pctBadge(gt.cur?.revenue, gt.prev?.revenue) + `<div style="font-size:10px;color:var(--muted)">vs ${prevPeriod}</div>`);
+    cards += card('🛍️', 'Ventas totales', `${gt.cur?.sales} órd.`, pctBadge(gt.cur?.sales, gt.prev?.sales));
+    cards += card('🎫', 'Ticket promedio', money(gt.cur?.ticket), '');
+    if (gt.cur?.visits > 0) cards += card('👁️', 'Visitas', (gt.cur.visits||0).toLocaleString('es-AR'), pctBadge(gt.cur?.visits, gt.prev?.visits));
+    if (gt.cur?.conv != null) cards += card('🔄', 'Conversión', `${(gt.cur.conv).toFixed(1)}%`, `<div style="font-size:11px">${ppBadge(gt.cur.conv, gt.prev?.conv)}</div>`);
+    if (hasAds) {
+      cards += card('📣', 'Inversión publi', money(gt.cur?.adSpend), '');
+      if (gt.cur?.adRevenue > 0) cards += card('📈', 'Factu. publi', money(gt.cur?.adRevenue), gt.cur?.adSalesPct != null ? `<div style="font-size:11px;color:var(--muted)">${gt.cur.adSalesPct.toFixed(0)}% de ventas</div>` : '');
+      if (gt.cur?.tacos != null) cards += card('🎯', 'TACOS', `${gt.cur.tacos.toFixed(1)}%`, '');
+    }
+    cards += `</div>`;
+
+    // ── Tabla por cliente (filas=clientes, columnas=métricas) ────────────────
+    const tdS = 'padding:8px 10px;border-bottom:1px solid var(--border);';
+    const tdR = tdS + 'text-align:right;white-space:nowrap;';
+
+    let thead = `<tr style="font-size:11px;color:var(--muted);border-bottom:2px solid var(--border)">
+      <th style="${tdS}text-align:left">Cliente</th>
+      <th style="${tdR}">Facturación</th><th style="${tdR}">vs ant.</th>
+      <th style="${tdR}">Ventas</th><th style="${tdR}">vs ant.</th>
+      <th style="${tdR}">Ticket</th>
+      <th style="${tdR}">Visitas</th><th style="${tdR}">vs ant.</th>
+      <th style="${tdR}">Conversión</th>`;
+    if (hasAds) thead += `<th style="${tdR}">Inv. publi</th><th style="${tdR}">Factu publi</th><th style="${tdR}">% publi</th><th style="${tdR}">TACOS</th>`;
+    thead += '</tr>';
+
+    const inlineBadge = (cur, prev) => {
+      const p = pctOf(cur, prev);
+      if (p == null) return '—';
+      const c = p >= 5 ? '#2e7d32' : p <= -5 ? '#c62828' : '#e65100';
+      return `<span style="color:${c};font-weight:600">${p >= 0 ? '+' : ''}${p.toFixed(0)}%</span>`;
+    };
+
+    let tbody = '';
+    for (const r of clients) {
+      if (r.error) {
+        tbody += `<tr><td style="${tdS}font-weight:600">${r.name}</td><td colspan="100" style="${tdS}color:var(--muted);font-size:12px">⚠️ ${r.error}</td></tr>`;
         continue;
       }
-      html += `<details style="margin-bottom:12px" open>
-        <summary style="cursor:pointer;background:var(--surface2);border-radius:10px;padding:12px 16px;font-weight:600;font-size:13px;list-style:none;display:flex;align-items:center;gap:8px">
-          <span style="flex:1">${c.name}</span>
-          <span style="font-size:12px;color:var(--muted);font-weight:400">${money(c.total.cur.revenue)} | ${c.total.cur.sales} ventas</span>
-        </summary>
-        <div style="padding:12px 0">${buildTable(days, prevDays, c.days, c.total, true)}</div>
-      </details>`;
+      const { cur, prev } = r.total;
+      tbody += `<tr>
+        <td style="${tdS}font-weight:600">${r.name}</td>
+        <td style="${tdR}">${money(cur.revenue)}</td>
+        <td style="${tdR}">${inlineBadge(cur.revenue, prev.revenue)}</td>
+        <td style="${tdR}">${cur.sales}</td>
+        <td style="${tdR}">${inlineBadge(cur.sales, prev.sales)}</td>
+        <td style="${tdR}">${money(cur.ticket)}</td>
+        <td style="${tdR}">${cur.visits > 0 ? cur.visits.toLocaleString('es-AR') : '—'}</td>
+        <td style="${tdR}">${inlineBadge(cur.visits, prev.visits)}</td>
+        <td style="${tdR}">${ppBadge(cur.conv, prev.conv)}</td>
+        ${hasAds ? `
+        <td style="${tdR}">${cur.adSpend > 0 ? money(cur.adSpend) : '—'}</td>
+        <td style="${tdR}">${cur.adRevenue > 0 ? money(cur.adRevenue) : '—'}</td>
+        <td style="${tdR}">${cur.adSalesPct != null ? cur.adSalesPct.toFixed(0)+'%' : '—'}</td>
+        <td style="${tdR}">${cur.tacos != null ? cur.tacos.toFixed(1)+'%' : '—'}</td>` : ''}
+      </tr>`;
     }
 
-    el.innerHTML = html;
+    const mainTable = `<div style="overflow-x:auto;margin-bottom:28px">
+      <table style="border-collapse:collapse;font-size:13px;width:100%">
+        <thead>${thead}</thead><tbody>${tbody}</tbody>
+      </table></div>`;
+
+    // ── Desglose por día (si hay varios días) ────────────────────────────────
+    let dayBreakdown = '';
+    if (days.length > 1) {
+      let dHead = `<tr style="font-size:11px;color:var(--muted);border-bottom:2px solid var(--border)">
+        <th style="${tdS}text-align:left">Día</th>
+        <th style="${tdR}">Facturación</th><th style="${tdR}">vs ant.</th>
+        <th style="${tdR}">Ventas</th><th style="${tdR}">Visitas</th><th style="${tdR}">Conv.</th>
+        ${hasAds ? `<th style="${tdR}">Inv. publi</th><th style="${tdR}">TACOS</th>` : ''}
+      </tr>`;
+      let dBody = '';
+      days.forEach((day, i) => {
+        const gd = general.days[day];
+        const gc = gd?.cur || {}, gp = gd?.prev || {};
+        dBody += `<tr>
+          <td style="${tdS}">${fmtDay(day)} <small style="color:var(--muted)">vs ${fmtDay(prevDays[i])}</small></td>
+          <td style="${tdR}">${money(gc.revenue)}</td>
+          <td style="${tdR}">${inlineBadge(gc.revenue, gp.revenue)}</td>
+          <td style="${tdR}">${gc.sales ?? '—'}</td>
+          <td style="${tdR}">${gc.visits > 0 ? gc.visits.toLocaleString('es-AR') : '—'}</td>
+          <td style="${tdR}">${ppBadge(gc.conv, gp.conv)}</td>
+          ${hasAds ? `<td style="${tdR}">${gc.adSpend > 0 ? money(gc.adSpend) : '—'}</td><td style="${tdR}">${gc.tacos != null ? gc.tacos.toFixed(1)+'%' : '—'}</td>` : ''}
+        </tr>`;
+      });
+      dayBreakdown = `
+        <h4 style="font-family:var(--font-b);font-size:13px;margin:0 0 10px">Desglose por día — cartera total</h4>
+        <div style="overflow-x:auto;margin-bottom:24px">
+          <table style="border-collapse:collapse;font-size:13px;width:100%">
+            <thead>${dHead}</thead><tbody>${dBody}</tbody>
+          </table></div>`;
+    }
+
+    el.innerHTML = cards + dayBreakdown + mainTable;
 
     // Preview Slack
     if (slackP) { slackP.textContent = data.slack_message; slackP.style.display = ''; }
