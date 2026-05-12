@@ -982,7 +982,7 @@ async function generateHotsaleReport(dateFrom, dateTo) {
       results.forEach(v => {
         if (!v) return;
         const rows = v.results || (Array.isArray(v) ? v : []);
-        rows.forEach(r => { if (r.date) map[r.date] = (map[r.date] || 0) + (r.total || r.visits || 0); });
+        rows.forEach(r => { if (r.date) { const k = r.date.slice(0,10); map[k] = (map[k] || 0) + (r.total || r.visits || 0); } });
         // ML devuelve total_visits directo (sin results[]) cuando date_from === date_to
         if (rows.length === 0 && v.total_visits) map[dFrom] = (map[dFrom] || 0) + v.total_visits;
       });
