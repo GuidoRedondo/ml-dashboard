@@ -7954,8 +7954,23 @@ async function saveGlobalTargetDays() {
 
 function exportFullStockExcel() {
   if (!_fullStockData || !_fullStockData.items.length) { showToast('Sin datos para exportar'); return; }
-  const { items, period_days, global_target_days } = _fullStockData;
-  const targetDays = global_target_days || 30;
+  const { period_days, global_target_days } = _fullStockData;
+  const targetDays = parseInt(document.getElementById('fsGlobalDays')?.value) || global_target_days || 30;
+
+  // Aplicar los mismos filtros que la tabla
+  let items = _fullStockData.items;
+  if      (_fsFilter === 'full')    items = items.filter(i => i.is_full);
+  else if (_fsFilter === 'nofull')  items = items.filter(i => !i.is_full);
+  else if (_fsFilter === 'critico') items = items.filter(i => i.coverage_days != null && i.coverage_days < 7);
+  else if (_fsFilter === 'bajo')    items = items.filter(i => i.coverage_days != null && i.coverage_days >= 7 && i.coverage_days < 15);
+  else if (_fsFilter === 'ok')      items = items.filter(i => i.coverage_days == null || i.coverage_days >= 15);
+  if (_fsSearch && _fsSearch.trim()) {
+    const q = _fsSearch.trim().toLowerCase();
+    items = items.filter(i => {
+      const skuLabel = i.variation_id ? (i.title.includes(' — ') ? i.title.split(' — ').slice(1).join(' — ') : String(i.variation_id)) : '';
+      return i.id.toLowerCase().includes(q) || i.title.toLowerCase().includes(q) || skuLabel.toLowerCase().includes(q);
+    });
+  }
   const client = getActiveClient();
   const clientName = client?.name || 'Cliente';
 
