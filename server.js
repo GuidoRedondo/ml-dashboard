@@ -6333,6 +6333,25 @@ app.get('/api/debug/app-token', requireAuth, async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
+app.get('/api/debug/visits', requireAuth, async (req, res) => {
+  try {
+    const clientId = parseInt(req.query.client_id);
+    const date = req.query.date || new Date().toISOString().slice(0,10);
+    const token = await getClientToken(clientId);
+    if (!token) return res.json({ error: 'Sin token' });
+    const headers = { Authorization: `Bearer ${token}` };
+    // Traer un item activo
+    const searchRes = await fetch(`${ML_API}/users/${req.query.uid}/items/search?status=active&limit=3`, { headers }).then(r => r.json());
+    const itemIds = (searchRes.results || []).slice(0, 3);
+    // Probar visitas con ese item
+    const visitsResults = await Promise.all(itemIds.map(id =>
+      fetch(`${ML_API}/items/${id}/visits/time_window?date_from=${date}&date_to=${date}&unit=day`, { headers })
+        .then(r => r.json()).catch(e => ({ fetch_error: e.message }))
+    ));
+    res.json({ date, itemIds, visitsResults, searchRes_paging: searchRes.paging });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
 // ── MOTOR DE DECISIONES DE PUBLICIDAD — Sprint 5 ──────────────────────────────
 
 async function callClaudeForDecision(datos) {
