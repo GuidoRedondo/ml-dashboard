@@ -1347,7 +1347,10 @@ tbody td {
     <div class="page" id="page-hotsale-report">
       <div style="display:flex;align-items:center;gap:12px;margin-bottom:24px;flex-wrap:wrap">
         <h2 style="margin:0;font-family:var(--font-b);flex:1">🔥 Reporte Hotsale</h2>
-        <input type="date" id="hotsaleDate" style="padding:7px 10px;border-radius:8px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:13px">
+        <label style="font-size:12px;color:var(--muted)">Desde</label>
+        <input type="date" id="hotsaleDateFrom" style="padding:7px 10px;border-radius:8px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:13px">
+        <label style="font-size:12px;color:var(--muted)">Hasta</label>
+        <input type="date" id="hotsaleDateTo" style="padding:7px 10px;border-radius:8px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:13px">
         <button class="sync-btn" onclick="loadHotsaleReport()">🔄 Generar reporte</button>
         <button id="hotsaleSlackBtn" onclick="sendHotsaleSlack()" class="sync-btn" style="background:var(--accent);color:#fff;display:none">
           📤 Enviar a Slack
@@ -6605,12 +6608,12 @@ function initApp() {
   if (fromEl) fromEl.value = from.toISOString().slice(0,10);
   if (toEl)   toEl.value   = now.toISOString().slice(0,10);
 
-  // Fecha por defecto en el reporte hotsale = hoy en Argentina
-  const hotsaleDateEl = document.getElementById('hotsaleDate');
-  if (hotsaleDateEl) {
-    const artToday = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Argentina/Buenos_Aires' });
-    hotsaleDateEl.value = artToday;
-  }
+  // Fechas por defecto en el reporte hotsale = hoy en Argentina
+  const artToday = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Argentina/Buenos_Aires' });
+  const hsFrom = document.getElementById('hotsaleDateFrom');
+  const hsTo   = document.getElementById('hotsaleDateTo');
+  if (hsFrom) hsFrom.value = artToday;
+  if (hsTo)   hsTo.value   = artToday;
 
   // Mark active quick range button
   const btn = document.getElementById('qr-'+days);
@@ -12362,93 +12365,119 @@ async function loadHotsaleReport() {
   const slackS = document.getElementById('hotsaleSlackStatus');
   const slackB = document.getElementById('hotsaleSlackBtn');
 
-  const dateInput = document.getElementById('hotsaleDate');
-  const qs = dateInput?.value ? `?date=${dateInput.value}` : '';
+  const df = document.getElementById('hotsaleDateFrom')?.value;
+  const dt = document.getElementById('hotsaleDateTo')?.value;
+  const qs = (df || dt) ? `?date_from=${df || dt}&date_to=${dt || df}` : '';
 
   el.innerHTML = '<div style="color:var(--muted);padding:20px;text-align:center">⏳ Generando reporte (puede tardar unos segundos)…</div>';
-  slackP.style.display = 'none';
-  slackE.style.display = '';
+  if (slackP) slackP.style.display = 'none';
+  if (slackE) slackE.style.display = '';
 
   try {
     const data = await apiCall('GET', `/api/admin/hotsale-report${qs}`);
-    if (!data || !data.ok) { el.innerHTML = `<div style="color:#c62828;padding:20px">${data?.error || 'Error de acceso (verificá tu rol)'}</div>`; return; }
+    if (!data || !data.ok) { el.innerHTML = `<div style="color:#c62828;padding:20px">${data?.error || 'Error de acceso'}</div>`; return; }
 
-    // Tabla resumen por cliente
     const { report } = data;
+    const { days, prevDays, general, clients } = report;
+
     const MONTHS = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
-    const DAYS   = ['Dom','Lun','Mar','Mié','Jue','Vie','Sáb'];
-    const fmtDay = d => { const dt = new Date(d+'T12:00:00Z'); return `${DAYS[dt.getUTCDay()]} ${parseInt(d.split('-')[2])} ${MONTHS[dt.getUTCMonth()]}`; };
-    const money  = v => '$' + Math.round(v).toLocaleString('es-AR');
-    const pctBadge = (cur, prev) => {
-      if (!prev) return '';
-      const p = (cur - prev) / prev * 100;
-      const color = p >= 5 ? '#2e7d32' : p <= -5 ? '#c62828' : '#e65100';
-      return `<span style="font-size:11px;color:${color};font-weight:600">${p >= 0 ? '+' : ''}${p.toFixed(0)}%</span>`;
-    };
-    const convBadge = (cur, prev) => {
-      if (cur == null) return '—';
-      const diff = prev != null ? (cur - prev) : null;
-      const color = diff == null ? 'var(--text)' : diff >= 0.5 ? '#2e7d32' : diff <= -0.5 ? '#c62828' : 'var(--text)';
-      return `<span style="color:${color}">${cur.toFixed(1)}%${diff != null ? ` <small>(${diff >= 0 ? '+' : ''}${diff.toFixed(1)}pp)</small>` : ''}</span>`;
+    const WDAYS  = ['Dom','Lun','Mar','Mié','Jue','Vie','Sáb'];
+    const fmtDay = d => { const dt2 = new Date(d+'T12:00:00Z'); return `${WDAYS[dt2.getUTCDay()]} ${parseInt(d.split('-')[2])} ${MONTHS[dt2.getUTCMonth()]}`; };
+    const money  = v => '$' + Math.round(v || 0).toLocaleString('es-AR');
+    const pct    = (c, p) => p > 0 ? (c - p) / p * 100 : null;
+    const badge  = v => { if (v == null) return ''; const c = v >= 5 ? '#2e7d32' : v <= -5 ? '#c62828' : '#e65100'; return `<span style="font-size:11px;color:${c};font-weight:600">${v >= 0 ? '+' : ''}${v.toFixed(0)}%</span>`; };
+    const ppBadge = (c, p) => { if (c == null) return '—'; const d2 = p != null ? c - p : null; const col = d2 == null ? '' : d2 >= 0.5 ? 'color:#2e7d32' : d2 <= -0.5 ? 'color:#c62828' : ''; return `<span style="${col}">${c.toFixed(1)}%${d2 != null ? ` <small>(${d2 >= 0 ? '+' : ''}${d2.toFixed(1)}pp)</small>` : ''}</span>`; };
+    const cell   = (v, align) => `<td style="padding:7px 10px;border-bottom:1px solid var(--border);white-space:nowrap;${align ? 'text-align:right' : ''}">${v}</td>`;
+
+    // Construye tabla para una sección (general o cliente)
+    const buildTable = (sectionDays, sectionPrevDays, dayData, totalData, collapsed) => {
+      // Cabecera con días + total + vs ant.
+      const hasAds = totalData?.cur?.adSpend > 0 || days.some(d => dayData[d]?.cur?.adSpend > 0);
+      const colSpan = days.length + 2; // días + Total + vs ant.
+      let th = `<tr style="color:var(--muted);font-size:11px;border-bottom:2px solid var(--border)">
+        <th style="padding:7px 10px;text-align:left;min-width:130px">Métrica</th>`;
+      sectionDays.forEach((d, i) => { th += `<th style="padding:7px 10px;text-align:right">${fmtDay(d)}<br><small style="font-weight:400">(vs ${fmtDay(sectionPrevDays[i])})</small></th>`; });
+      if (days.length > 1) th += `<th style="padding:7px 10px;text-align:right;background:var(--surface2)">Total</th><th style="padding:7px 10px;text-align:right">vs ant.</th>`;
+      th += '</tr>';
+
+      const row = (label, getDayVal, getDayPrev, getTotVal, getTotPrev, fmt, isMoney) => {
+        let r = `<tr><td style="padding:7px 10px;border-bottom:1px solid var(--border);color:var(--muted);font-size:12px">${label}</td>`;
+        sectionDays.forEach(d => {
+          const cv = getDayVal(dayData[d]?.cur);
+          const pv = getDayPrev(dayData[d]?.prev);
+          r += `<td style="padding:7px 10px;border-bottom:1px solid var(--border);text-align:right;white-space:nowrap">
+            ${fmt(cv)}${pv != null && cv != null ? '<br>' + badge(isMoney ? pct(cv,pv) : null) : ''}
+          </td>`;
+        });
+        if (days.length > 1) {
+          const tv = getTotVal(totalData?.cur);
+          const tp = getTotPrev(totalData?.prev);
+          r += `<td style="padding:7px 10px;border-bottom:1px solid var(--border);text-align:right;font-weight:600;background:var(--surface2);white-space:nowrap">${fmt(tv)}</td>`;
+          r += `<td style="padding:7px 10px;border-bottom:1px solid var(--border);text-align:right">${tp != null && tv != null ? badge(pct(tv, tp)) : '—'}</td>`;
+        }
+        return r + '</tr>';
+      };
+
+      const convRow = () => {
+        let r = `<tr><td style="padding:7px 10px;border-bottom:1px solid var(--border);color:var(--muted);font-size:12px">🔄 Conversión</td>`;
+        sectionDays.forEach(d => {
+          r += `<td style="padding:7px 10px;border-bottom:1px solid var(--border);text-align:right">${ppBadge(dayData[d]?.cur?.conv, dayData[d]?.prev?.conv)}</td>`;
+        });
+        if (days.length > 1) {
+          r += `<td style="padding:7px 10px;border-bottom:1px solid var(--border);text-align:right;font-weight:600;background:var(--surface2)">${ppBadge(totalData?.cur?.conv, null)}</td>`;
+          r += `<td style="padding:7px 10px;border-bottom:1px solid var(--border);text-align:right">${ppBadge(totalData?.cur?.conv, totalData?.prev?.conv)?.replace(/<[^>]+>/g,'') || '—'}</td>`;
+        }
+        return r + '</tr>';
+      };
+
+      let rows = '';
+      rows += row('💰 Facturación',  m => m?.revenue,  m => m?.revenue,  m => m?.revenue,  m => m?.revenue,  money, true);
+      rows += row('🛍️ Ventas (órd.)', m => m?.sales,    m => m?.sales,    m => m?.sales,    m => m?.sales,    v => v ?? '—', true);
+      rows += row('📦 Unidades',      m => m?.units,    m => m?.units,    m => m?.units,    m => m?.units,    v => v ?? '—', true);
+      rows += row('🎫 Ticket prom.',  m => m?.ticket,   m => m?.ticket,   m => m?.ticket,   m => m?.ticket,   money, false);
+      rows += row('👁️ Visitas',       m => m?.visits || 0, m => m?.visits || 0, m => m?.visits || 0, m => m?.visits || 0, v => v > 0 ? v.toLocaleString('es-AR') : '—', true);
+      rows += convRow();
+      if (hasAds) {
+        rows += row('📣 Inversión publi', m => m?.adSpend,   m => null, m => m?.adSpend,   m => null, v => v > 0 ? money(v) : '—', false);
+        rows += row('📈 Factu. publi',    m => m?.adRevenue, m => null, m => m?.adRevenue, m => null, v => v > 0 ? money(v) : '—', false);
+        rows += row('📊 % publi s/ventas',m => m?.adSalesPct,m => null, m => m?.adSalesPct,m => null, v => v != null ? v.toFixed(1)+'%' : '—', false);
+        rows += row('🎯 TACOS',           m => m?.tacos,     m => null, m => m?.tacos,     m => null, v => v != null ? v.toFixed(1)+'%' : '—', false);
+      }
+
+      return `<div style="overflow-x:auto"><table style="border-collapse:collapse;font-size:13px;width:100%"><thead>${th}</thead><tbody>${rows}</tbody></table></div>`;
     };
 
+    // ── General ──
     let html = `
-      <div style="margin-bottom:8px;font-size:12px;color:var(--muted)">${fmtDay(report.date)} vs ${fmtDay(report.prevDate)}</div>
-      <div style="overflow-x:auto">
-        <table style="width:100%;border-collapse:collapse;font-size:13px">
-          <thead><tr style="color:var(--muted);font-size:11px;border-bottom:2px solid var(--border)">
-            <th style="text-align:left;padding:8px">Cliente</th>
-            <th style="text-align:right;padding:8px">Facturación</th>
-            <th style="text-align:right;padding:8px">vs ant.</th>
-            <th style="text-align:right;padding:8px">Ventas</th>
-            <th style="text-align:right;padding:8px">vs ant.</th>
-            <th style="text-align:right;padding:8px">Ticket prom.</th>
-            <th style="text-align:right;padding:8px">Visitas</th>
-            <th style="text-align:right;padding:8px">Conversión</th>
-          </tr></thead>
-          <tbody>`;
+      <div style="background:var(--accent);color:#fff;border-radius:12px;padding:14px 18px;margin-bottom:20px">
+        <div style="font-family:var(--font-b);font-size:15px;margin-bottom:12px">📦 TOTAL CARTERA — ${clients.filter(c=>!c.error).length} clientes</div>
+        ${buildTable(days, prevDays, general.days, general.total, false)}
+      </div>`;
 
-    let totRev = 0, totSales = 0;
-    for (const r of report.results) {
-      if (r.error) {
-        html += `<tr><td style="padding:8px;border-bottom:1px solid var(--border)">${r.name}</td>
-          <td colspan="7" style="padding:8px;border-bottom:1px solid var(--border);color:var(--muted);font-size:12px">⚠️ ${r.error}</td></tr>`;
+    // ── Por cliente ──
+    for (const c of clients) {
+      if (c.error) {
+        html += `<div style="background:var(--surface2);border-radius:10px;padding:12px 16px;margin-bottom:12px;font-size:13px">
+          <b>${c.name}</b> <span style="color:#c62828">⚠️ ${c.error}</span></div>`;
         continue;
       }
-      totRev   += r.cur.revenue;
-      totSales += r.cur.sales;
-      html += `<tr>
-        <td style="padding:8px;border-bottom:1px solid var(--border);font-weight:600">${r.name}</td>
-        <td style="padding:8px;border-bottom:1px solid var(--border);text-align:right">${money(r.cur.revenue)}</td>
-        <td style="padding:8px;border-bottom:1px solid var(--border);text-align:right">${pctBadge(r.cur.revenue, r.prev.revenue)}</td>
-        <td style="padding:8px;border-bottom:1px solid var(--border);text-align:right">${r.cur.sales}</td>
-        <td style="padding:8px;border-bottom:1px solid var(--border);text-align:right">${pctBadge(r.cur.sales, r.prev.sales)}</td>
-        <td style="padding:8px;border-bottom:1px solid var(--border);text-align:right">${money(r.cur.ticket)}</td>
-        <td style="padding:8px;border-bottom:1px solid var(--border);text-align:right">${r.cur.visits > 0 ? r.cur.visits.toLocaleString('es-AR') : '—'}</td>
-        <td style="padding:8px;border-bottom:1px solid var(--border);text-align:right">${convBadge(r.cur.conv, r.prev.conv)}</td>
-      </tr>`;
+      html += `<details style="margin-bottom:12px" open>
+        <summary style="cursor:pointer;background:var(--surface2);border-radius:10px;padding:12px 16px;font-weight:600;font-size:13px;list-style:none;display:flex;align-items:center;gap:8px">
+          <span style="flex:1">${c.name}</span>
+          <span style="font-size:12px;color:var(--muted);font-weight:400">${money(c.total.cur.revenue)} | ${c.total.cur.sales} ventas</span>
+        </summary>
+        <div style="padding:12px 0">${buildTable(days, prevDays, c.days, c.total, true)}</div>
+      </details>`;
     }
 
-    if (report.results.filter(r => !r.error).length > 1) {
-      html += `<tr style="font-weight:700;background:var(--surface2)">
-        <td style="padding:8px">TOTAL</td>
-        <td style="padding:8px;text-align:right">${money(totRev)}</td>
-        <td colspan="6" style="padding:8px;text-align:right;color:var(--muted);font-size:12px">${totSales} ventas</td>
-      </tr>`;
-    }
-
-    html += `</tbody></table></div>`;
     el.innerHTML = html;
 
     // Preview Slack
-    slackP.textContent = data.slack_message;
-    slackP.style.display = '';
-    slackE.style.display = 'none';
-
-    // Estado Slack
+    if (slackP) { slackP.textContent = data.slack_message; slackP.style.display = ''; }
+    if (slackE) slackE.style.display = 'none';
     if (slackS) slackS.innerHTML = data.slack_configured
-      ? '<span style="color:#2e7d32">✓ Slack configurado — el reporte se enviará automáticamente a las 23:59</span>'
-      : '<span style="color:#e65100">⚠ SLACK_WEBHOOK_URL no configurado — agregalo en Railway para activar el envío automático</span>';
+      ? '<span style="color:#2e7d32">✓ Slack configurado — reporte automático a las 23:59 ART</span>'
+      : '<span style="color:#e65100">⚠ SLACK_WEBHOOK_URL no configurado en Railway</span>';
     if (slackB) slackB.style.display = data.slack_configured ? '' : 'none';
 
   } catch(e) {
@@ -12460,10 +12489,11 @@ async function sendHotsaleSlack() {
   const btn = document.getElementById('hotsaleSlackBtn');
   if (btn) { btn.disabled = true; btn.textContent = 'Enviando…'; }
   try {
-    const dateInput = document.getElementById('hotsaleDate');
-    const qs = dateInput?.value ? `?date=${dateInput.value}&send_slack=true` : '?send_slack=true';
+    const df = document.getElementById('hotsaleDateFrom')?.value;
+    const dt = document.getElementById('hotsaleDateTo')?.value;
+    const qs = `?date_from=${df||dt}&date_to=${dt||df}&send_slack=true`;
     const data = await apiCall('GET', `/api/admin/hotsale-report${qs}`);
-    alert(data.slack_sent ? '✅ Reporte enviado a Slack' : '❌ Error al enviar — verificá la URL del webhook');
+    alert(data?.slack_sent ? '✅ Reporte enviado a Slack' : '❌ Error al enviar — verificá SLACK_WEBHOOK_URL');
   } catch(e) { alert('Error: ' + e.message); }
   finally { if (btn) { btn.disabled = false; btn.textContent = '📤 Enviar a Slack'; } }
 }

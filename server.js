@@ -944,130 +944,225 @@ async function fetchVisitsRange(itemIds, dateFrom, dateTo, headers) {
 
 // ── REPORTE HOTSALE ───────────────────────────────────────────────────────────
 
-async function generateHotsaleReport(dateStr) {
-  // dateStr: 'YYYY-MM-DD' en hora argentina. Si no viene, usa hoy en ART.
+async function generateHotsaleReport(dateFrom, dateTo) {
   const ART = 'America/Argentina/Buenos_Aires';
+  const artToday = new Date().toLocaleDateString('en-CA', { timeZone: ART });
+  const from = dateFrom || artToday;
+  const to   = dateTo   || artToday;
 
-  const artDate = dateStr || new Date().toLocaleDateString('en-CA', { timeZone: ART });
-  const [y, m, d] = artDate.split('-').map(Number);
-  const prevDt = new Date(Date.UTC(y, m - 1, d) - 7 * 86400000);
-  const prevDate = prevDt.toISOString().slice(0, 10);
+  // Rango de días
+  const days = [];
+  let cur = new Date(from + 'T12:00:00Z');
+  const end = new Date(to + 'T12:00:00Z');
+  while (cur <= end && days.length < 10) {
+    days.push(cur.toISOString().slice(0, 10));
+    cur = new Date(cur.getTime() + 86400000);
+  }
+  const prevDays = days.map(d =>
+    new Date(new Date(d + 'T12:00:00Z').getTime() - 7 * 86400000).toISOString().slice(0, 10)
+  );
 
-  const fmtRange = (dateYMD, startH, endH) => {
-    const base = `${dateYMD}T`;
-    return [
-      new Date(base + `${startH}:00:00-03:00`).toISOString().slice(0,19) + '.000-00:00',
-      new Date(base + `${endH}:59:59-03:00`).toISOString().slice(0,19) + '.000-00:00',
-    ];
+  const toML = (dateYMD, end) =>
+    new Date(dateYMD + (end ? 'T23:59:59-03:00' : 'T00:00:00-03:00')).toISOString().slice(0,19) + '.000-00:00';
+
+  const curFrom  = toML(days[0], false);
+  const curTo    = toML(days[days.length - 1], true);
+  const prevFrom = toML(prevDays[0], false);
+  const prevTo   = toML(prevDays[prevDays.length - 1], true);
+
+  // Visitas por día (suma de todos los ítems del batch)
+  const fetchVisitsDailyMap = async (itemIds, dFrom, dTo, headers) => {
+    const map = {}; // { YYYY-MM-DD: totalVisits }
+    for (let i = 0; i < itemIds.length; i += 20) {
+      const batch = itemIds.slice(i, i + 20);
+      const results = await Promise.all(batch.map(id =>
+        fetch(`${ML_API}/items/${id}/visits/time_window?date_from=${dFrom}&date_to=${dTo}&unit=day`, { headers })
+          .then(r => r.json()).catch(() => null)
+      ));
+      results.forEach(v => {
+        if (!v) return;
+        const rows = v.results || (Array.isArray(v) ? v : []);
+        rows.forEach(r => { if (r.date) map[r.date] = (map[r.date] || 0) + (r.total || r.visits || 0); });
+      });
+    }
+    return map;
   };
-  const [curFrom, curTo]   = fmtRange(artDate,  '00', '23');
-  const [prevFrom, prevTo] = fmtRange(prevDate, '00', '23');
 
   const clientsRes = await pool.query('SELECT id, name, ml_user_id FROM clients ORDER BY name');
-  const results = [];
+  const clientResults = [];
 
   for (const client of clientsRes.rows) {
     try {
       const token = await getClientToken(client.id);
-      if (!token) { results.push({ name: client.name, id: client.id, error: 'Sin token' }); continue; }
+      if (!token) { clientResults.push({ name: client.name, id: client.id, error: 'Sin token' }); continue; }
       const uid = client.ml_user_id;
-      if (!uid) { results.push({ name: client.name, id: client.id, error: 'Sin ML user ID' }); continue; }
+      if (!uid)  { clientResults.push({ name: client.name, id: client.id, error: 'Sin ML user ID' }); continue; }
 
       const headers = { Authorization: `Bearer ${token}` };
-      const [curData, prevData] = await Promise.all([
+
+      // Órdenes rango completo
+      const [curOrdersData, prevOrdersData] = await Promise.all([
         fetchAllOrders(uid, headers, curFrom, curTo),
         fetchAllOrders(uid, headers, prevFrom, prevTo),
       ]);
 
-      const calcMetrics = (orders) => {
+      // Agrupar por fecha Argentina
+      const byDate = (orders) => {
+        const map = {};
+        for (const o of orders) {
+          const d = new Date(o.date_closed || o.date_created)
+            .toLocaleDateString('en-CA', { timeZone: ART });
+          if (!map[d]) map[d] = [];
+          map[d].push(o);
+        }
+        return map;
+      };
+      const curByDate  = byDate(curOrdersData.orders);
+      const prevByDate = byDate(prevOrdersData.orders);
+
+      const allSoldIds = [...new Set([
+        ...curOrdersData.orders.flatMap(o => (o.order_items || []).map(oi => oi.item?.id).filter(Boolean)),
+        ...prevOrdersData.orders.flatMap(o => (o.order_items || []).map(oi => oi.item?.id).filter(Boolean)),
+      ])];
+
+      // Visitas por día (una sola tanda de llamadas por rango completo)
+      const [curVisMap, prevVisMap] = await Promise.all([
+        allSoldIds.length ? fetchVisitsDailyMap(allSoldIds, days[0], days[days.length-1], headers) : Promise.resolve({}),
+        allSoldIds.length ? fetchVisitsDailyMap(allSoldIds, prevDays[0], prevDays[prevDays.length-1], headers) : Promise.resolve({}),
+      ]);
+
+      // Ads por día
+      let adsPerDay = {};
+      try {
+        const me = await fetch(`${ML_API}/users/me`, { headers }).then(r => r.json());
+        const siteId = me.site_id || 'MLA';
+        const h1 = { ...headers, 'Content-Type': 'application/json', 'Api-Version': '1' };
+        const h2 = { ...headers, 'api-version': '2' };
+        const advRes = await fetch(`${ML_API}/advertising/advertisers?product_id=PADS`, { headers: h1 }).then(r => r.json());
+        const advId  = (advRes.advertisers || []).find(a => a.site_id === siteId)?.advertiser_id || advRes.advertisers?.[0]?.advertiser_id;
+        if (advId) {
+          const adsResults = await Promise.all(days.map(day =>
+            fetch(`${ML_API}/advertising/${siteId}/advertisers/${advId}/product_ads/campaigns/search?limit=50&offset=0&date_from=${day}&date_to=${day}&metrics=cost,total_amount&metrics_summary=true`, { headers: h2 })
+              .then(r => r.json()).catch(() => ({}))
+          ));
+          days.forEach((day, i) => {
+            const s = adsResults[i]?.metrics_summary || {};
+            adsPerDay[day] = { cost: parseFloat(s.cost) || 0, adRevenue: parseFloat(s.total_amount) || 0 };
+          });
+        }
+      } catch(_) {}
+
+      // Métricas por día
+      const calcOrders = (orders) => {
         const revenue = orders.reduce((s, o) => s + (parseFloat(o.total_amount) || 0), 0);
         const sales   = orders.length;
         const units   = orders.reduce((s, o) => s + (o.order_items || []).reduce((ss, oi) => ss + (oi.quantity || 1), 0), 0);
-        const ticket  = sales > 0 ? revenue / sales : 0;
-        const soldIds = [...new Set(orders.flatMap(o => (o.order_items || []).map(oi => oi.item?.id).filter(Boolean)))];
-        return { revenue, sales, units, ticket, soldIds };
+        return { revenue, sales, units, ticket: sales > 0 ? revenue / sales : 0 };
       };
 
-      const cur  = calcMetrics(curData.orders);
-      const prev = calcMetrics(prevData.orders);
-
-      // Visitas: solo ítems que vendieron
-      let curVisits = 0, prevVisits = 0;
-      const allIds = [...new Set([...cur.soldIds, ...prev.soldIds])];
-      if (allIds.length > 0) {
-        for (let i = 0; i < allIds.length; i += 20) {
-          const batch = allIds.slice(i, i + 20);
-          const [vm, pvm] = await Promise.all([
-            fetchVisitsRange(batch, artDate,  artDate,  headers),
-            fetchVisitsRange(batch, prevDate, prevDate, headers),
-          ]);
-          curVisits  += Object.values(vm).reduce((s, v) => s + v, 0);
-          prevVisits += Object.values(pvm).reduce((s, v) => s + v, 0);
-        }
+      const dayResults = {};
+      for (let i = 0; i < days.length; i++) {
+        const day = days[i], pDay = prevDays[i];
+        const cur  = calcOrders(curByDate[day]  || []);
+        const prev = calcOrders(prevByDate[pDay] || []);
+        cur.visits  = curVisMap[day]  || 0;
+        prev.visits = prevVisMap[pDay] || 0;
+        cur.conv    = cur.visits  > 0 ? cur.sales  / cur.visits  * 100 : null;
+        prev.conv   = prev.visits > 0 ? prev.sales / prev.visits * 100 : null;
+        const ads = adsPerDay[day] || { cost: 0, adRevenue: 0 };
+        cur.adSpend    = ads.cost;
+        cur.adRevenue  = ads.adRevenue;
+        cur.tacos      = cur.revenue > 0 && ads.cost > 0 ? ads.cost / cur.revenue * 100 : null;
+        cur.adSalesPct = cur.revenue > 0 && ads.adRevenue > 0 ? ads.adRevenue / cur.revenue * 100 : null;
+        dayResults[day] = { cur, prev, prevDate: pDay };
       }
 
-      cur.visits  = curVisits;
-      prev.visits = prevVisits;
-      cur.conv    = curVisits  > 0 ? cur.sales  / curVisits  * 100 : null;
-      prev.conv   = prevVisits > 0 ? prev.sales / prevVisits * 100 : null;
+      // Totales del cliente
+      const NUM = ['revenue','sales','units','visits','adSpend','adRevenue'];
+      const sum = (f, p) => days.reduce((s, d) => s + (dayResults[d]?.[p]?.[f] || 0), 0);
+      const total = { cur: Object.fromEntries(NUM.map(k => [k, sum(k,'cur')])), prev: Object.fromEntries(NUM.map(k => [k, sum(k,'prev')])) };
+      total.cur.ticket    = total.cur.sales  > 0 ? total.cur.revenue  / total.cur.sales  : 0;
+      total.prev.ticket   = total.prev.sales > 0 ? total.prev.revenue / total.prev.sales : 0;
+      total.cur.conv      = total.cur.visits  > 0 ? total.cur.sales  / total.cur.visits  * 100 : null;
+      total.prev.conv     = total.prev.visits > 0 ? total.prev.sales / total.prev.visits * 100 : null;
+      total.cur.tacos      = total.cur.revenue > 0 && total.cur.adSpend > 0 ? total.cur.adSpend / total.cur.revenue * 100 : null;
+      total.cur.adSalesPct = total.cur.revenue > 0 && total.cur.adRevenue > 0 ? total.cur.adRevenue / total.cur.revenue * 100 : null;
 
-      results.push({ name: client.name, id: client.id, cur, prev });
+      clientResults.push({ name: client.name, id: client.id, days: dayResults, total });
     } catch(e) {
-      results.push({ name: client.name, id: client.id, error: e.message });
+      clientResults.push({ name: client.name, id: client.id, error: e.message });
     }
   }
 
-  return { date: artDate, prevDate, results };
+  // General: suma de todos los clientes
+  const valid = clientResults.filter(r => !r.error);
+  const NUM = ['revenue','sales','units','visits','adSpend','adRevenue'];
+  const init = () => Object.fromEntries(NUM.map(k => [k, 0]));
+  const derive = (m) => {
+    m.ticket    = m.sales  > 0 ? m.revenue / m.sales  : 0;
+    m.conv      = m.visits > 0 ? m.sales   / m.visits * 100 : null;
+    m.tacos      = m.revenue > 0 && m.adSpend   > 0 ? m.adSpend   / m.revenue * 100 : null;
+    m.adSalesPct = m.revenue > 0 && m.adRevenue > 0 ? m.adRevenue / m.revenue * 100 : null;
+  };
+  const general = { days: {}, total: { cur: init(), prev: init() } };
+  for (const day of days) {
+    general.days[day] = { cur: init(), prev: init() };
+    valid.forEach(c => {
+      NUM.forEach(k => {
+        general.days[day].cur[k]  += c.days[day]?.cur[k]  || 0;
+        general.days[day].prev[k] += c.days[day]?.prev[k] || 0;
+      });
+    });
+    derive(general.days[day].cur);
+    derive(general.days[day].prev);
+  }
+  valid.forEach(c => {
+    NUM.forEach(k => { general.total.cur[k] += c.total.cur[k] || 0; general.total.prev[k] += c.total.prev[k] || 0; });
+  });
+  derive(general.total.cur);
+  derive(general.total.prev);
+
+  return { dateFrom: from, dateTo: to, days, prevDays, clients: clientResults, general };
 }
 
 function formatHotsaleSlack(report) {
-  const { date, prevDate, results } = report;
-
+  const { days, clients, general } = report;
   const MONTHS = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
   const DAYS   = ['Dom','Lun','Mar','Mié','Jue','Vie','Sáb'];
-  const fmtDay = d => {
-    const dt = new Date(d + 'T12:00:00Z');
-    const [,, day] = d.split('-');
-    return `${DAYS[dt.getUTCDay()]} ${parseInt(day)} ${MONTHS[dt.getUTCMonth()]}`;
-  };
-  const money  = v => '$' + Math.round(v).toLocaleString('es-AR');
-  const pctOf  = (cur, prev) => prev > 0 ? (cur - prev) / prev * 100 : null;
-  const arrow  = v => v == null ? '' : v >= 5 ? ' 🟢' : v <= -5 ? ' 🔴' : ' 🟡';
-  const fmtPct = v => v == null ? '' : ` (${v >= 0 ? '+' : ''}${v.toFixed(0)}%)`;
+  const fmtDay  = d => { const dt = new Date(d+'T12:00:00Z'); return `${DAYS[dt.getUTCDay()]} ${parseInt(d.split('-')[2])} ${MONTHS[dt.getUTCMonth()]}`; };
+  const money   = v => '$' + Math.round(v).toLocaleString('es-AR');
+  const pctOf   = (c, p) => p > 0 ? (c - p) / p * 100 : null;
+  const badge   = v => v == null ? '' : v >= 5 ? ' 🟢' : v <= -5 ? ' 🔴' : ' 🟡';
+  const fmtPct  = v => v == null ? '' : ` (${v >= 0 ? '+' : ''}${v.toFixed(0)}%)`;
 
-  const valid = results.filter(r => !r.error);
-  const totRev   = valid.reduce((s, r) => s + r.cur.revenue, 0);
-  const totSales = valid.reduce((s, r) => s + r.cur.sales, 0);
+  const period = days.length > 1 ? `${fmtDay(days[0])} – ${fmtDay(days[days.length-1])}` : fmtDay(days[0]);
+  let msg = `📊 *Reporte Hotsale — ${period}*\n_vs misma semana anterior_\n${'─'.repeat(32)}\n\n`;
 
-  let msg = `📊 *Reporte Hotsale — ${fmtDay(date)}*\n`;
-  msg += `_vs ${fmtDay(prevDate)} (semana anterior)_\n`;
-  msg += `${'─'.repeat(30)}\n\n`;
-
-  for (const r of results) {
-    if (r.error) { msg += `*${r.name}* ⚠️ ${r.error}\n\n`; continue; }
-    const { cur, prev } = r;
-    const revPct   = pctOf(cur.revenue, prev.revenue);
-    const salesPct = pctOf(cur.sales,   prev.sales);
-    const convDiff = cur.conv != null && prev.conv != null ? cur.conv - prev.conv : null;
-
-    msg += `*${r.name}*\n`;
-    msg += `• 💰 Facturación: *${money(cur.revenue)}*${fmtPct(revPct)}${arrow(revPct)}\n`;
-    msg += `• 🛍️ Ventas: *${cur.sales} órdenes* / ${cur.units} uds${fmtPct(salesPct)}${arrow(salesPct)}\n`;
-    msg += `• 🎫 Ticket prom.: *${money(cur.ticket)}*\n`;
-    if (cur.visits > 0) {
-      const visPct = pctOf(cur.visits, prev.visits);
-      msg += `• 👁️ Visitas: *${cur.visits.toLocaleString('es-AR')}*${fmtPct(visPct)}${arrow(visPct)}\n`;
-    }
+  const fmtBlock = (name, m) => {
+    const { cur, prev } = m;
+    const totPrev = prev || {};
+    let s = `*${name}*\n`;
+    s += `• 💰 Facturación: *${money(cur.revenue)}*${fmtPct(pctOf(cur.revenue, totPrev.revenue))}${badge(pctOf(cur.revenue, totPrev.revenue))}\n`;
+    s += `• 🛍️ Ventas: *${cur.sales} órdenes* / ${cur.units} uds${fmtPct(pctOf(cur.sales, totPrev.sales))}${badge(pctOf(cur.sales, totPrev.sales))}\n`;
+    s += `• 🎫 Ticket: *${money(cur.ticket)}*\n`;
+    if (cur.visits > 0) s += `• 👁️ Visitas: *${cur.visits.toLocaleString('es-AR')}*${fmtPct(pctOf(cur.visits, totPrev.visits))}${badge(pctOf(cur.visits, totPrev.visits))}\n`;
     if (cur.conv != null) {
-      const convStr = convDiff != null ? ` (${convDiff >= 0 ? '+' : ''}${convDiff.toFixed(1)}pp)${convDiff >= 0.5 ? ' 🟢' : convDiff <= -0.5 ? ' 🔴' : ' 🟡'}` : '';
-      msg += `• 🔄 Conversión: *${cur.conv.toFixed(1)}%*${convStr}\n`;
+      const cd = totPrev.conv != null ? cur.conv - totPrev.conv : null;
+      s += `• 🔄 Conversión: *${cur.conv.toFixed(1)}%*${cd != null ? ` (${cd >= 0 ? '+' : ''}${cd.toFixed(1)}pp)${badge(cd * 10)}` : ''}\n`;
     }
-    msg += '\n';
-  }
+    if (cur.adSpend > 0) {
+      s += `• 📣 Inversión publi: *${money(cur.adSpend)}*\n`;
+      if (cur.adRevenue > 0) s += `• 📈 Factu publi: *${money(cur.adRevenue)}*${cur.adSalesPct != null ? ` (${cur.adSalesPct.toFixed(0)}% de ventas)` : ''}\n`;
+      if (cur.tacos != null) s += `• 🎯 TACOS: *${cur.tacos.toFixed(1)}%*\n`;
+    }
+    return s + '\n';
+  };
 
-  if (valid.length > 1) {
-    msg += `${'─'.repeat(30)}\n`;
-    msg += `📦 *Total cartera: ${money(totRev)} | ${totSales} ventas*`;
+  msg += fmtBlock('📦 TOTAL CARTERA', { cur: general.total.cur, prev: general.total.prev });
+  msg += `${'─'.repeat(32)}\n\n`;
+  for (const r of clients) {
+    if (r.error) { msg += `*${r.name}* ⚠️ ${r.error}\n\n`; continue; }
+    msg += fmtBlock(r.name, { cur: r.total.cur, prev: r.total.prev });
   }
   return msg;
 }
@@ -1076,27 +1171,20 @@ async function sendHotsaleSlack(msg) {
   const url = process.env.SLACK_WEBHOOK_URL;
   if (!url) return false;
   try {
-    const r = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text: msg }),
-    });
+    const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: msg }) });
     return r.ok;
-  } catch(e) {
-    console.error('[HOTSALE] Slack error:', e.message);
-    return false;
-  }
+  } catch(e) { console.error('[HOTSALE] Slack error:', e.message); return false; }
 }
 
 app.get('/api/admin/hotsale-report', requireAuth, async (req, res) => {
   try {
     if (!['admin','colaborador','consultant'].includes(req.user?.role)) return res.status(403).json({ error: 'Sin acceso' });
-    const report = await generateHotsaleReport(req.query.date || null);
+    const dateFrom = req.query.date_from || req.query.date || null;
+    const dateTo   = req.query.date_to   || req.query.date || null;
+    const report   = await generateHotsaleReport(dateFrom, dateTo);
     const slackMsg = formatHotsaleSlack(report);
-    let slackSent = false;
-    if (req.query.send_slack === 'true') {
-      slackSent = await sendHotsaleSlack(slackMsg);
-    }
+    let slackSent  = false;
+    if (req.query.send_slack === 'true') slackSent = await sendHotsaleSlack(slackMsg);
     res.json({ ok: true, report, slack_message: slackMsg, slack_configured: !!process.env.SLACK_WEBHOOK_URL, slack_sent: slackSent });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
