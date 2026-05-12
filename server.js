@@ -971,19 +971,26 @@ async function generateHotsaleReport(dateFrom, dateTo) {
   const prevTo   = toML(prevDays[prevDays.length - 1], true);
 
   // Visitas por día (suma de todos los ítems del batch)
+  const fetchWithTimeout = (url, opts, ms = 6000) => {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), ms);
+    return fetch(url, { ...opts, signal: ctrl.signal }).finally(() => clearTimeout(t));
+  };
+
   const fetchVisitsDailyMap = async (itemIds, dFrom, dTo, headers) => {
     const map = {}; // { YYYY-MM-DD: totalVisits }
     for (let i = 0; i < itemIds.length; i += 20) {
       const batch = itemIds.slice(i, i + 20);
       const results = await Promise.all(batch.map(id =>
-        fetch(`${ML_API}/items/${id}/visits/time_window?date_from=${dFrom}&date_to=${dTo}&unit=day`, { headers })
-          .then(r => r.json()).catch(() => null)
+        fetchWithTimeout(
+          `${ML_API}/items/${id}/visits/time_window?date_from=${dFrom}&date_to=${dTo}&unit=day`,
+          { headers }
+        ).then(r => r.json()).catch(() => null)
       ));
       results.forEach(v => {
         if (!v) return;
         const rows = v.results || (Array.isArray(v) ? v : []);
         rows.forEach(r => { if (r.date) { const k = r.date.slice(0,10); map[k] = (map[k] || 0) + (r.total || r.visits || 0); } });
-        // ML devuelve total_visits directo (sin results[]) cuando date_from === date_to
         if (rows.length === 0 && v.total_visits) map[dFrom] = (map[dFrom] || 0) + v.total_visits;
       });
     }
@@ -1028,21 +1035,20 @@ async function generateHotsaleReport(dateFrom, dateTo) {
       ])];
 
       // Traer TODOS los ítems activos para visitas precisas (no solo los que vendieron)
-      const activeRes = await fetch(`${ML_API}/users/${uid}/items/search?status=active&limit=100`, { headers })
+      const activeRes = await fetchWithTimeout(`${ML_API}/users/${uid}/items/search?status=active&limit=100`, { headers })
         .then(r => r.json()).catch(() => ({ results: [] }));
       let activeIds = activeRes.results || [];
-      // Paginación si tiene más de 100 ítems activos (máx 2 páginas extra = 300 ítems)
       if ((activeRes.paging?.total || 0) > 100) {
         const extras = await Promise.all(
           [100, 200].slice(0, Math.ceil(((activeRes.paging?.total || 100) - 100) / 100)).map(offset =>
-            fetch(`${ML_API}/users/${uid}/items/search?status=active&limit=100&offset=${offset}`, { headers })
+            fetchWithTimeout(`${ML_API}/users/${uid}/items/search?status=active&limit=100&offset=${offset}`, { headers })
               .then(r => r.json()).catch(() => ({ results: [] }))
           )
         );
         extras.forEach(r => activeIds.push(...(r.results || [])));
       }
-      // Combinar activos + vendidos, limitar a 300 para no sobrecargar
-      const visitIds = [...new Set([...activeIds, ...allSoldIds])].slice(0, 300);
+      // Combinar activos + vendidos, limitar a 100 ítems para evitar timeouts
+      const visitIds = [...new Set([...activeIds, ...allSoldIds])].slice(0, 100);
 
       // Visitas por día — rango completo en una sola tanda de llamadas
       const [curVisMap, prevVisMap] = await Promise.all([
