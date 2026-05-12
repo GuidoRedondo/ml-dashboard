@@ -12417,9 +12417,13 @@ async function loadHotsaleReport() {
     if (gt.cur?.visits > 0) cards += card('👁️', 'Visitas', (gt.cur.visits||0).toLocaleString('es-AR'), pctBadge(gt.cur?.visits, gt.prev?.visits));
     if (gt.cur?.conv != null) cards += card('🔄', 'Conversión', `${(gt.cur.conv).toFixed(1)}%`, `<div style="font-size:11px">${ppBadge(gt.cur.conv, gt.prev?.conv)}</div>`);
     if (hasAds) {
-      cards += card('📣', 'Inversión publi', money(gt.cur?.adSpend), '');
-      if (gt.cur?.adRevenue > 0) cards += card('📈', 'Factu. publi', money(gt.cur?.adRevenue), gt.cur?.adSalesPct != null ? `<div style="font-size:11px;color:var(--muted)">${gt.cur.adSalesPct.toFixed(0)}% de ventas</div>` : '');
-      if (gt.cur?.tacos != null) cards += card('🎯', 'TACOS', `${gt.cur.tacos.toFixed(1)}%`, '');
+      cards += card('📣', 'Inversión publi', money(gt.cur?.adSpend), pctBadge(gt.cur?.adSpend, gt.prev?.adSpend));
+      if (gt.cur?.adRevenue > 0) cards += card('📈', 'Factu. publi', money(gt.cur?.adRevenue), pctBadge(gt.cur?.adRevenue, gt.prev?.adRevenue) + (gt.cur?.adSalesPct != null ? `<div style="font-size:11px;color:var(--muted)">${gt.cur.adSalesPct.toFixed(0)}% de ventas</div>` : ''));
+      if (gt.cur?.tacos != null) {
+        const tacosDiff = gt.prev?.tacos != null ? gt.cur.tacos - gt.prev.tacos : null;
+        const tacosCol  = tacosDiff == null ? '' : tacosDiff <= -0.5 ? 'color:#2e7d32' : tacosDiff >= 0.5 ? 'color:#c62828' : '';
+        cards += card('🎯', 'TACOS', `${gt.cur.tacos.toFixed(1)}%`, tacosDiff != null ? `<div style="font-size:11px;${tacosCol}">${tacosDiff >= 0 ? '+' : ''}${tacosDiff.toFixed(1)}pp</div>` : '');
+      }
     }
     cards += `</div>`;
 
@@ -12434,7 +12438,7 @@ async function loadHotsaleReport() {
       <th style="${tdR}">Ticket</th>
       <th style="${tdR}">Visitas</th><th style="${tdR}">vs ant.</th>
       <th style="${tdR}">Conversión</th>`;
-    if (hasAds) thead += `<th style="${tdR}">Inv. publi</th><th style="${tdR}">Factu publi</th><th style="${tdR}">% publi</th><th style="${tdR}">TACOS</th>`;
+    if (hasAds) thead += `<th style="${tdR}">Inv. publi</th><th style="${tdR}">vs ant.</th><th style="${tdR}">Factu publi</th><th style="${tdR}">vs ant.</th><th style="${tdR}">% publi</th><th style="${tdR}">TACOS</th><th style="${tdR}">vs ant.</th>`;
     thead += '</tr>';
 
     const inlineBadge = (cur, prev) => {
@@ -12463,9 +12467,12 @@ async function loadHotsaleReport() {
         <td style="${tdR}">${ppBadge(cur.conv, prev.conv)}</td>
         ${hasAds ? `
         <td style="${tdR}">${cur.adSpend > 0 ? money(cur.adSpend) : '—'}</td>
+        <td style="${tdR}">${inlineBadge(cur.adSpend, prev.adSpend)}</td>
         <td style="${tdR}">${cur.adRevenue > 0 ? money(cur.adRevenue) : '—'}</td>
+        <td style="${tdR}">${inlineBadge(cur.adRevenue, prev.adRevenue)}</td>
         <td style="${tdR}">${cur.adSalesPct != null ? cur.adSalesPct.toFixed(0)+'%' : '—'}</td>
-        <td style="${tdR}">${cur.tacos != null ? cur.tacos.toFixed(1)+'%' : '—'}</td>` : ''}
+        <td style="${tdR}">${cur.tacos != null ? cur.tacos.toFixed(1)+'%' : '—'}</td>
+        <td style="${tdR}">${(() => { const d = cur.tacos != null && prev.tacos != null ? cur.tacos - prev.tacos : null; if (d == null) return '—'; const c = d <= -0.5 ? '#2e7d32' : d >= 0.5 ? '#c62828' : '#e65100'; return `<span style="color:${c};font-weight:600">${d >= 0 ? '+' : ''}${d.toFixed(1)}pp</span>`; })()}</td>` : ''}
       </tr>`;
     }
 

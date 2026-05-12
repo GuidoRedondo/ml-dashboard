@@ -1031,8 +1031,8 @@ async function generateHotsaleReport(dateFrom, dateTo) {
         allSoldIds.length ? fetchVisitsDailyMap(allSoldIds, prevDays[0], prevDays[prevDays.length-1], headers) : Promise.resolve({}),
       ]);
 
-      // Ads por día
-      let adsPerDay = {};
+      // Ads por día — período actual Y período anterior en paralelo
+      let adsPerDay = {}, prevAdsPerDay = {};
       try {
         const me = await fetch(`${ML_API}/users/me`, { headers }).then(r => r.json());
         const siteId = me.site_id || 'MLA';
@@ -1041,13 +1041,18 @@ async function generateHotsaleReport(dateFrom, dateTo) {
         const advRes = await fetch(`${ML_API}/advertising/advertisers?product_id=PADS`, { headers: h1 }).then(r => r.json());
         const advId  = (advRes.advertisers || []).find(a => a.site_id === siteId)?.advertiser_id || advRes.advertisers?.[0]?.advertiser_id;
         if (advId) {
-          const adsResults = await Promise.all(days.map(day =>
-            fetch(`${ML_API}/advertising/${siteId}/advertisers/${advId}/product_ads/campaigns/search?limit=50&offset=0&date_from=${day}&date_to=${day}&metrics=cost,total_amount&metrics_summary=true`, { headers: h2 })
-              .then(r => r.json()).catch(() => ({}))
-          ));
+          const adsUrl = (day) => `${ML_API}/advertising/${siteId}/advertisers/${advId}/product_ads/campaigns/search?limit=50&offset=0&date_from=${day}&date_to=${day}&metrics=cost,total_amount&metrics_summary=true`;
+          const [curAds, prevAds] = await Promise.all([
+            Promise.all(days.map(d => fetch(adsUrl(d), { headers: h2 }).then(r => r.json()).catch(() => ({})))),
+            Promise.all(prevDays.map(d => fetch(adsUrl(d), { headers: h2 }).then(r => r.json()).catch(() => ({})))),
+          ]);
           days.forEach((day, i) => {
-            const s = adsResults[i]?.metrics_summary || {};
+            const s = curAds[i]?.metrics_summary || {};
             adsPerDay[day] = { cost: parseFloat(s.cost) || 0, adRevenue: parseFloat(s.total_amount) || 0 };
+          });
+          prevDays.forEach((pDay, i) => {
+            const s = prevAds[i]?.metrics_summary || {};
+            prevAdsPerDay[pDay] = { cost: parseFloat(s.cost) || 0, adRevenue: parseFloat(s.total_amount) || 0 };
           });
         }
       } catch(_) {}
@@ -1069,11 +1074,16 @@ async function generateHotsaleReport(dateFrom, dateTo) {
         prev.visits = prevVisMap[pDay] || 0;
         cur.conv    = cur.visits  > 0 ? cur.sales  / cur.visits  * 100 : null;
         prev.conv   = prev.visits > 0 ? prev.sales / prev.visits * 100 : null;
-        const ads = adsPerDay[day] || { cost: 0, adRevenue: 0 };
-        cur.adSpend    = ads.cost;
-        cur.adRevenue  = ads.adRevenue;
-        cur.tacos      = cur.revenue > 0 && ads.cost > 0 ? ads.cost / cur.revenue * 100 : null;
-        cur.adSalesPct = cur.revenue > 0 && ads.adRevenue > 0 ? ads.adRevenue / cur.revenue * 100 : null;
+        const ads     = adsPerDay[pDay]     || { cost: 0, adRevenue: 0 };
+        const prevAds = prevAdsPerDay[pDay] || { cost: 0, adRevenue: 0 };
+        cur.adSpend    = adsPerDay[day]?.cost      || 0;
+        cur.adRevenue  = adsPerDay[day]?.adRevenue || 0;
+        cur.tacos      = cur.revenue > 0 && cur.adSpend   > 0 ? cur.adSpend   / cur.revenue * 100 : null;
+        cur.adSalesPct = cur.revenue > 0 && cur.adRevenue > 0 ? cur.adRevenue / cur.revenue * 100 : null;
+        prev.adSpend    = prevAds.cost;
+        prev.adRevenue  = prevAds.adRevenue;
+        prev.tacos      = prev.revenue > 0 && prevAds.cost      > 0 ? prevAds.cost      / prev.revenue * 100 : null;
+        prev.adSalesPct = prev.revenue > 0 && prevAds.adRevenue > 0 ? prevAds.adRevenue / prev.revenue * 100 : null;
         dayResults[day] = { cur, prev, prevDate: pDay };
       }
 
@@ -1085,8 +1095,10 @@ async function generateHotsaleReport(dateFrom, dateTo) {
       total.prev.ticket   = total.prev.sales > 0 ? total.prev.revenue / total.prev.sales : 0;
       total.cur.conv      = total.cur.visits  > 0 ? total.cur.sales  / total.cur.visits  * 100 : null;
       total.prev.conv     = total.prev.visits > 0 ? total.prev.sales / total.prev.visits * 100 : null;
-      total.cur.tacos      = total.cur.revenue > 0 && total.cur.adSpend > 0 ? total.cur.adSpend / total.cur.revenue * 100 : null;
-      total.cur.adSalesPct = total.cur.revenue > 0 && total.cur.adRevenue > 0 ? total.cur.adRevenue / total.cur.revenue * 100 : null;
+      total.cur.tacos       = total.cur.revenue  > 0 && total.cur.adSpend   > 0 ? total.cur.adSpend   / total.cur.revenue  * 100 : null;
+      total.cur.adSalesPct  = total.cur.revenue  > 0 && total.cur.adRevenue > 0 ? total.cur.adRevenue / total.cur.revenue  * 100 : null;
+      total.prev.tacos      = total.prev.revenue > 0 && total.prev.adSpend   > 0 ? total.prev.adSpend   / total.prev.revenue * 100 : null;
+      total.prev.adSalesPct = total.prev.revenue > 0 && total.prev.adRevenue > 0 ? total.prev.adRevenue / total.prev.revenue * 100 : null;
 
       clientResults.push({ name: client.name, id: client.id, days: dayResults, total });
     } catch(e) {
