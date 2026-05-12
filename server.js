@@ -1025,10 +1025,27 @@ async function generateHotsaleReport(dateFrom, dateTo) {
         ...prevOrdersData.orders.flatMap(o => (o.order_items || []).map(oi => oi.item?.id).filter(Boolean)),
       ])];
 
-      // Visitas por día (una sola tanda de llamadas por rango completo)
+      // Traer TODOS los ítems activos para visitas precisas (no solo los que vendieron)
+      const activeRes = await fetch(`${ML_API}/users/${uid}/items/search?status=active&limit=100`, { headers })
+        .then(r => r.json()).catch(() => ({ results: [] }));
+      let activeIds = activeRes.results || [];
+      // Paginación si tiene más de 100 ítems activos (máx 2 páginas extra = 300 ítems)
+      if ((activeRes.paging?.total || 0) > 100) {
+        const extras = await Promise.all(
+          [100, 200].slice(0, Math.ceil(((activeRes.paging?.total || 100) - 100) / 100)).map(offset =>
+            fetch(`${ML_API}/users/${uid}/items/search?status=active&limit=100&offset=${offset}`, { headers })
+              .then(r => r.json()).catch(() => ({ results: [] }))
+          )
+        );
+        extras.forEach(r => activeIds.push(...(r.results || [])));
+      }
+      // Combinar activos + vendidos, limitar a 300 para no sobrecargar
+      const visitIds = [...new Set([...activeIds, ...allSoldIds])].slice(0, 300);
+
+      // Visitas por día — rango completo en una sola tanda de llamadas
       const [curVisMap, prevVisMap] = await Promise.all([
-        allSoldIds.length ? fetchVisitsDailyMap(allSoldIds, days[0], days[days.length-1], headers) : Promise.resolve({}),
-        allSoldIds.length ? fetchVisitsDailyMap(allSoldIds, prevDays[0], prevDays[prevDays.length-1], headers) : Promise.resolve({}),
+        visitIds.length ? fetchVisitsDailyMap(visitIds, days[0], days[days.length-1], headers) : Promise.resolve({}),
+        visitIds.length ? fetchVisitsDailyMap(visitIds, prevDays[0], prevDays[prevDays.length-1], headers) : Promise.resolve({}),
       ]);
 
       // Ads por día — período actual Y período anterior en paralelo
