@@ -7572,17 +7572,12 @@ app.get('/api/analisis/umbrales', requireAuth, async (req, res) => {
           : null;
         const promoPrice = b.promotions?.[0]?.price ? parseFloat(b.promotions[0].price) : null;
 
-        // Log para debug en Railway
-        if (b.id === 'MLA616009829') {
-          console.log('[CLIFF DEBUG]', b.id, { basePrice, origPrice, saleRaw: JSON.stringify(saleRaw), promoPrice });
-        }
-
         // Precio efectivo: el menor de todos los candidatos válidos
         const candidates = [basePrice, salePrice, promoPrice].filter(v => v && v > 0);
         const precio     = Math.min(...candidates);
 
         // Determinar si hay descuento activo
-        const precioLista   = (origPrice && origPrice > precio) ? origPrice : basePrice;
+        const precioLista    = (origPrice && origPrice > precio) ? origPrice : basePrice;
         const tieneDescuento = precio < precioLista;
 
         const isFull  = b.shipping?.logistic_type === 'fulfillment';
@@ -7597,6 +7592,7 @@ app.get('/api/analisis/umbrales', requireAuth, async (req, res) => {
           tiene_descuento: tieneDescuento,
           is_full:      isFull,
           logistica:    b.shipping?.logistic_type || 'unknown',
+          _raw: { price: b.price, original_price: b.original_price, sale_price: saleRaw, promo_price: b.promotions?.[0]?.price ?? null },
           ...op,
         });
       });
