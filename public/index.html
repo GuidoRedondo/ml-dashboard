@@ -4728,7 +4728,7 @@ async function loadUmbrales(forceRefresh) {
 
   el.innerHTML = '<div style="padding:40px;text-align:center;color:var(--muted)">Analizando publicaciones... esto puede tardar unos segundos</div>';
   try {
-    const data = await apiCall(`/api/analisis/umbrales?client_id=${client.id}`);
+    const data = await apiCall('GET', `/api/analisis/umbrales?client_id=${client.id}`);
     _umbralesData = data;
     renderUmbrales(data);
   } catch(e) {
@@ -4922,11 +4922,7 @@ async function registrarAccionUmbral(mla, titulo, precioActual, precioSugerido, 
   if (!client) return;
   btn.disabled = true;
   try {
-    await apiCall('/api/analisis/umbrales/accion', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ client_id: client.id, mla, titulo, precio_actual: precioActual, precio_sugerido: precioSugerido, ahorro_neto_mensual: ahorroMensual, accion }),
-    });
+    await apiCall('POST', '/api/analisis/umbrales/accion', { client_id: client.id, mla, titulo, precio_actual: precioActual, precio_sugerido: precioSugerido, ahorro_neto_mensual: ahorroMensual, accion });
     showToast(`✓ Acción "${accion}" registrada`);
     _umbralesData = null;
     loadUmbrales(true);
