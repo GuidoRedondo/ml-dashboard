@@ -9270,12 +9270,14 @@ async function loadReporteGastos(clientId, mes) {
 
 function renderReporteGastos(gastos, clientId, mes) {
   const el = document.getElementById('reporteGastosContent');
-  const categorias = ['personal','alquiler','marketing','logistica','servicios','impuestos','otros'];
+  const categorias = ['personal','alquiler','marketing','logistica','servicios','otros'];
 
-  // Separar Envíos Flex del resto
-  const gastosRegulares = gastos.filter(g => g.categoria !== 'envios_flex');
+  // Separar campos dedicados del resto
+  const gastosRegulares = gastos.filter(g => g.categoria !== 'envios_flex' && g.categoria !== 'impuestos');
   const flexRow = gastos.find(g => g.categoria === 'envios_flex');
   const flexMonto = flexRow ? parseFloat(flexRow.monto) : 0;
+  const impuestosRow = gastos.find(g => g.categoria === 'impuestos');
+  const impuestosMonto = impuestosRow ? parseFloat(impuestosRow.monto) : 0;
 
   const rows = gastosRegulares.map((g, i) => `
     <tr id="gasto-row-${i}">
@@ -9305,7 +9307,7 @@ function renderReporteGastos(gastos, clientId, mes) {
     </div>
 
     <!-- Campo dedicado Envíos Flex -->
-    <div style="background:var(--surface2);border:1px solid var(--border);border-left:4px solid #3b82f6;border-radius:10px;padding:14px 16px;margin-bottom:16px;display:flex;align-items:center;gap:16px;flex-wrap:wrap">
+    <div style="background:var(--surface2);border:1px solid var(--border);border-left:4px solid #3b82f6;border-radius:10px;padding:14px 16px;margin-bottom:10px;display:flex;align-items:center;gap:16px;flex-wrap:wrap">
       <div style="flex:1;min-width:200px">
         <div style="font-size:12px;font-weight:700;color:#3b82f6;margin-bottom:4px">🚚 ENVÍOS FLEX / FULL (costo vendedor)</div>
         <div style="font-size:11px;color:var(--muted)">Se suma a los costos de envío en el P&L — aparece en negativo junto con los demás envíos</div>
@@ -9314,6 +9316,19 @@ function renderReporteGastos(gastos, clientId, mes) {
         <span style="font-size:13px;color:var(--muted)">$</span>
         <input type="number" id="gastoEnvioFlex" value="${flexMonto || ''}" placeholder="0"
           style="width:150px;padding:7px 10px;border-radius:8px;border:1px solid #3b82f6;background:var(--surface);color:var(--text);font-size:14px;text-align:right;font-weight:700">
+      </div>
+    </div>
+
+    <!-- Campo dedicado Impuestos -->
+    <div style="background:var(--surface2);border:1px solid var(--border);border-left:4px solid #b45309;border-radius:10px;padding:14px 16px;margin-bottom:16px;display:flex;align-items:center;gap:16px;flex-wrap:wrap">
+      <div style="flex:1;min-width:200px">
+        <div style="font-size:12px;font-weight:700;color:#b45309;margin-bottom:4px">🧾 IMPUESTOS (carga manual)</div>
+        <div style="font-size:11px;color:var(--muted)">Aparece como línea separada "Impuestos" en el P&L — entre Gastos Fijos y Utilidad Final</div>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px">
+        <span style="font-size:13px;color:var(--muted)">$</span>
+        <input type="number" id="gastoImpuestos" value="${impuestosMonto || ''}" placeholder="0"
+          style="width:150px;padding:7px 10px;border-radius:8px;border:1px solid #b45309;background:var(--surface);color:var(--text);font-size:14px;text-align:right;font-weight:700">
       </div>
     </div>
 
@@ -9333,7 +9348,7 @@ function agregarGasto() {
   const tbody = document.querySelector('#gastosTable tbody');
   if (!tbody) return;
   const tr = document.createElement('tr');
-  const categorias = ['personal','alquiler','marketing','logistica','servicios','impuestos','otros'];
+  const categorias = ['personal','alquiler','marketing','logistica','servicios','otros'];
   tr.innerHTML = `
     <td style="padding:7px 8px;border-bottom:1px solid var(--border)">
       <input placeholder="Ej: Sueldo empleado" style="width:100%;padding:4px 7px;border-radius:6px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px" class="gasto-concepto">
@@ -9361,9 +9376,11 @@ async function guardarGastos(clientId, mes) {
     const categoria = tr.querySelector('.gasto-cat')?.value || 'otros';
     if (concepto && monto > 0) gastos.push({ concepto, monto, categoria });
   });
-  // Incluir Envíos Flex como categoría especial
+  // Incluir campos dedicados como categorías especiales
   const flexMonto = parseFloat(document.getElementById('gastoEnvioFlex')?.value) || 0;
   if (flexMonto > 0) gastos.push({ concepto: 'Envíos Flex/Full', monto: flexMonto, categoria: 'envios_flex' });
+  const impuestosMonto = parseFloat(document.getElementById('gastoImpuestos')?.value) || 0;
+  if (impuestosMonto > 0) gastos.push({ concepto: 'Impuestos', monto: impuestosMonto, categoria: 'impuestos' });
   const r = await apiCall('POST', '/api/reporte/gastos', { client_id: clientId, mes, gastos });
   if (r?.ok) showToast('✅ Gastos guardados');
 }
