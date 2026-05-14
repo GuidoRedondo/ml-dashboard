@@ -6422,7 +6422,12 @@ app.get('/api/debug/precio', requireAuth, async (req, res) => {
     // También fetch del batch con atributos (como lo hace el cliff finder)
     const batch = await fetch(`${ML_API}/items?ids=${item_id}&attributes=id,title,price,original_price,promotions,sale_price,shipping`, { headers }).then(r => r.json());
     const b = Array.isArray(batch) ? batch[0]?.body : null;
-    res.json({ full, batch_body: b });
+    res.json({
+      price:          full.price,
+      original_price: full.original_price,
+      sale_price:     full.sale_price,
+      promotions:     full.promotions,
+    });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -7550,8 +7555,9 @@ app.get('/api/analisis/umbrales', requireAuth, async (req, res) => {
     const oportunidades = [];
     for (let i = 0; i < allIds.length; i += 20) {
       const batch = allIds.slice(i, i + 20);
+      // Sin filtro de atributos — ML no devuelve sale_price correctamente con el filtro
       const data = await fetch(
-        `${ML_API}/items?ids=${batch.join(',')}&attributes=id,title,price,original_price,promotions,sale_price,shipping,permalink,listing_type_id`,
+        `${ML_API}/items?ids=${batch.join(',')}`,
         { headers }
       ).then(r => r.json()).catch(() => []);
 
@@ -7559,10 +7565,13 @@ app.get('/api/analisis/umbrales', requireAuth, async (req, res) => {
         if (r.code !== 200 || !r.body) return;
         const b = r.body;
         const basePrice  = parseFloat(b.price) || 0;
-        // Precio efectivo: usar el menor entre price, promotions[0].price y sale_price.amount
+        // sale_price puede ser número o {amount:...} según el tipo de promo
+        const saleRaw    = b.sale_price;
+        const salePrice  = saleRaw != null
+          ? (typeof saleRaw === 'object' ? parseFloat(saleRaw.amount || 0) : parseFloat(saleRaw))
+          : null;
         const promoPrice = b.promotions?.[0]?.price ? parseFloat(b.promotions[0].price) : null;
-        const salePrice  = b.sale_price?.amount     ? parseFloat(b.sale_price.amount)   : null;
-        const candidates = [basePrice, promoPrice, salePrice].filter(v => v && v > 0);
+        const candidates = [basePrice, salePrice, promoPrice].filter(v => v > 0);
         const precio     = Math.min(...candidates);
         const isFull  = b.shipping?.logistic_type === 'fulfillment';
         const op = calcCliffOportunidad(precio, isFull);
