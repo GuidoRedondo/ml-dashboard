@@ -9536,6 +9536,26 @@ function renderPyL(pyl) {
             </div>`).join('')}
       </div>` : ''}
 
+      <!-- Impuestos manuales -->
+      ${pyl.impuestos_manuales?.items?.length ? `
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden">
+        <div style="padding:12px 16px;background:#fef9ec;border-bottom:1px solid var(--border)">
+          <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:#b45309">🧾 Impuestos</div>
+          <div style="font-size:20px;font-weight:800;font-family:var(--font-b);color:#b45309;margin-top:2px">${fmtM(pyl.impuestos_manuales.total)}</div>
+          <div style="font-size:11px;color:#b45309;opacity:.7">${pyl.ingresos.facturacion>0?fmtP(pyl.impuestos_manuales.total/pyl.ingresos.facturacion*100):''} de la facturación</div>
+        </div>
+        ${[...pyl.impuestos_manuales.items]
+          .sort((a,b)=>parseFloat(b.monto)-parseFloat(a.monto))
+          .map(g=>`
+            <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 16px;border-bottom:1px solid var(--border)">
+              <span style="font-size:12px;color:var(--muted)">${g.concepto}</span>
+              <div style="text-align:right;white-space:nowrap">
+                <span style="font-size:13px;font-weight:600">${fmtM(parseFloat(g.monto))}</span>
+                ${pyl.ingresos.facturacion>0?`<span style="font-size:10px;color:var(--muted);margin-left:6px">${(parseFloat(g.monto)/pyl.ingresos.facturacion*100).toFixed(1)}%</span>`:''}
+              </div>
+            </div>`).join('')}
+      </div>` : ''}
+
       <!-- Métricas clave -->
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
         ${[
@@ -9591,6 +9611,12 @@ async function exportarReporteExcel() {
     ...(pyl.gastos_fijos.items||[]).map(g => [g.concepto, -g.monto]),
     ['TOTAL GASTOS FIJOS', -pyl.gastos_fijos.total],
     [],
+    ...((pyl.impuestos_manuales?.items||[]).length ? [
+      ['IMPUESTOS', ''],
+      ...(pyl.impuestos_manuales.items||[]).map(g => [g.concepto, -g.monto]),
+      ['TOTAL IMPUESTOS', -pyl.impuestos_manuales.total],
+      [],
+    ] : []),
     ['UTILIDAD FINAL', pyl.utilidad_final],
     ['% Recibido', pyl.margenes.pct_recibido + '%'],
     ['Margen %', pyl.margenes.margen + '%'],
