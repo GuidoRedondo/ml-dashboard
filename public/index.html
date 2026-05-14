@@ -4828,13 +4828,11 @@ function renderUmbralesTabla(items, client, riskLabel, riskDesc) {
       ? '<span style="font-size:10px;padding:2px 6px;border-radius:4px;font-weight:700;background:#0ea5e933;color:#0ea5e9">FULL</span>'
       : '<span style="font-size:10px;padding:2px 6px;border-radius:4px;font-weight:600;background:var(--surface2);color:var(--muted)">No FULL</span>';
 
-    const rawInfo = op._raw ? `price:${op._raw.price} | orig:${op._raw.original_price} | sale:${JSON.stringify(op._raw.sale_price)} | promo:${op._raw.promo_price}` : '';
-    const debugBtn = rawInfo ? `<span onclick="alert('${rawInfo.replace(/'/g,'\\'')}')" style="cursor:pointer;color:var(--muted);font-size:10px;margin-left:4px" title="${rawInfo}">ℹ</span>` : '';
     const precioCell = op.tiene_descuento
       ? `<span style="color:#ff9100;font-weight:700">${fmt$(op.precio)}</span>
          <span style="font-size:10px;color:var(--muted);text-decoration:line-through;margin-left:4px">${fmt$(op.precio_lista)}</span>
-         <span style="font-size:10px;color:#ff9100;margin-left:3px">%</span>${debugBtn}`
-      : `<span>${fmt$(op.precio)}</span>${debugBtn}`;
+         <span style="font-size:10px;color:#ff9100;margin-left:3px">%</span>`
+      : fmt$(op.precio);
 
     return `<tr style="border-bottom:1px solid var(--border)">
       <td style="padding:8px 6px;font-size:12px;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${op.title}">
