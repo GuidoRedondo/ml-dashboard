@@ -4802,12 +4802,6 @@ function renderUmbrales(data) {
       <strong>Cómo funciona:</strong> ML cobra cargo fijo por venta: &lt;$16k → $1.255 | $16k–$24k → $2.500 | $24k–$33k → $3.030 | ≥$33k → $0 pero el vendedor paga el envío FULL (~$7.430).
       Bajar un ítem FULL de $33.001 a $32.999 ahorra ~$4.400 por venta sin afectar la conversión porque siempre muestra "Envío gratis".
     </div>
-    <details style="margin-top:10px">
-      <summary style="font-size:11px;color:var(--muted);cursor:pointer">🔍 Debug precios raw (temporal)</summary>
-      <pre style="font-size:10px;color:var(--muted);background:var(--surface2);padding:10px;border-radius:6px;overflow-x:auto;margin-top:6px;white-space:pre-wrap">${[...seguras,...testear,...otras].map(o=>
-        `${o.id}: price=${o._raw?.price} | orig=${o._raw?.original_price} | sale=${JSON.stringify(o._raw?.sale_price)} | promo=${o._raw?.promo_price}`
-      ).join('\n')}</pre>
-    </details>
   `;
 }
 

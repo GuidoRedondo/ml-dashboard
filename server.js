@@ -7551,19 +7551,33 @@ app.get('/api/analisis/umbrales', requireAuth, async (req, res) => {
       offset += 100;
     }
 
-    // 2. Fetch detalles en batches — necesitamos precio + logistica
-    const oportunidades = [];
+    // 2. Pass 1: batch ligero — precio de lista + logística para detectar candidatos
+    const candidatos = [];
     for (let i = 0; i < allIds.length; i += 20) {
       const batch = allIds.slice(i, i + 20);
-      // Sin filtro de atributos — ML no devuelve sale_price correctamente con el filtro
       const data = await fetch(
-        `${ML_API}/items?ids=${batch.join(',')}`,
+        `${ML_API}/items?ids=${batch.join(',')}&attributes=id,price,shipping,title,permalink,listing_type_id`,
         { headers }
       ).then(r => r.json()).catch(() => []);
-
       (Array.isArray(data) ? data : []).forEach(r => {
         if (r.code !== 200 || !r.body) return;
         const b = r.body;
+        const precio = parseFloat(b.price) || 0;
+        const isFull = b.shipping?.logistic_type === 'fulfillment';
+        // Ampliar margen +20% para no perder ítems con descuento por encima del umbral real
+        if (getEscalaIdx(precio * 0.80) !== getEscalaIdx(precio) || getEscalaIdx(precio) > 0) {
+          candidatos.push({ id: b.id, precioLista: precio, isFull,
+            title: b.title, permalink: b.permalink, logistica: b.shipping?.logistic_type || 'unknown' });
+        }
+      });
+    }
+
+    // Pass 2: fetch individual para candidatos — obtiene sale_price real
+    const oportunidades = [];
+    await Promise.all(candidatos.map(async c => {
+      try {
+        const b = await fetch(`${ML_API}/items/${c.id}`, { headers }).then(r => r.json());
+        if (b.error) return;
         const basePrice  = parseFloat(b.price) || 0;
         const origPrice  = b.original_price ? parseFloat(b.original_price) : null;
         const saleRaw    = b.sale_price;
@@ -7571,32 +7585,26 @@ app.get('/api/analisis/umbrales', requireAuth, async (req, res) => {
           ? (typeof saleRaw === 'object' ? parseFloat(saleRaw.amount || saleRaw.regular_amount || 0) : parseFloat(saleRaw))
           : null;
         const promoPrice = b.promotions?.[0]?.price ? parseFloat(b.promotions[0].price) : null;
-
-        // Precio efectivo: el menor de todos los candidatos válidos
         const candidates = [basePrice, salePrice, promoPrice].filter(v => v && v > 0);
         const precio     = Math.min(...candidates);
-
-        // Determinar si hay descuento activo
         const precioLista    = (origPrice && origPrice > precio) ? origPrice : basePrice;
         const tieneDescuento = precio < precioLista;
-
         const isFull  = b.shipping?.logistic_type === 'fulfillment';
         const op = calcCliffOportunidad(precio, isFull);
         if (!op) return;
         oportunidades.push({
-          id:           b.id,
-          title:        b.title,
-          permalink:    b.permalink,
+          id:              b.id,
+          title:           b.title || c.title,
+          permalink:       b.permalink || c.permalink,
           precio,
-          precio_lista: tieneDescuento ? precioLista : null,
+          precio_lista:    tieneDescuento ? precioLista : null,
           tiene_descuento: tieneDescuento,
-          is_full:      isFull,
-          logistica:    b.shipping?.logistic_type || 'unknown',
-          _raw: { price: b.price, original_price: b.original_price, sale_price: saleRaw, promo_price: b.promotions?.[0]?.price ?? null },
+          is_full:         isFull,
+          logistica:       b.shipping?.logistic_type || c.logistica,
           ...op,
         });
-      });
-    }
+      } catch(e) {}
+    }));
 
     // 3. Historial de acciones (última por ítem)
     const accionesRes = await pool.query(
