@@ -7536,16 +7536,19 @@ app.get('/api/analisis/umbrales', requireAuth, async (req, res) => {
     for (let i = 0; i < allIds.length; i += 20) {
       const batch = allIds.slice(i, i + 20);
       const data = await fetch(
-        `${ML_API}/items?ids=${batch.join(',')}&attributes=id,title,price,sale_price,shipping,permalink,listing_type_id`,
+        `${ML_API}/items?ids=${batch.join(',')}&attributes=id,title,price,original_price,promotions,sale_price,shipping,permalink,listing_type_id`,
         { headers }
       ).then(r => r.json()).catch(() => []);
 
       (Array.isArray(data) ? data : []).forEach(r => {
         if (r.code !== 200 || !r.body) return;
         const b = r.body;
-        const basePrice = parseFloat(b.price) || 0;
-        const saleAmt   = b.sale_price?.amount ? parseFloat(b.sale_price.amount) : null;
-        const precio    = (saleAmt && saleAmt < basePrice) ? saleAmt : basePrice;
+        const basePrice  = parseFloat(b.price) || 0;
+        // Precio efectivo: usar el menor entre price, promotions[0].price y sale_price.amount
+        const promoPrice = b.promotions?.[0]?.price ? parseFloat(b.promotions[0].price) : null;
+        const salePrice  = b.sale_price?.amount     ? parseFloat(b.sale_price.amount)   : null;
+        const candidates = [basePrice, promoPrice, salePrice].filter(v => v && v > 0);
+        const precio     = Math.min(...candidates);
         const isFull  = b.shipping?.logistic_type === 'fulfillment';
         const op = calcCliffOportunidad(precio, isFull);
         if (!op) return;
