@@ -8879,6 +8879,7 @@ async function ejecutarComparacion() {
         cmv:               diff_fn(pylA.cmv?.total,               pylB.cmv?.total),
         utilidad_antes_gf: diff_fn(pylA.utilidad_antes_gf,        pylB.utilidad_antes_gf),
         gastos_fijos:      diff_fn(pylA.gastos_fijos?.total,      pylB.gastos_fijos?.total),
+        impuestos_manuales: diff_fn(pylA.impuestos_manuales?.total, pylB.impuestos_manuales?.total),
         utilidad_final:    diff_fn(pylA.utilidad_final,           pylB.utilidad_final),
         margen:            diff_fn(parseFloat(pylA.margenes?.margen),    parseFloat(pylB.margenes?.margen)),
         rentabilidad:      diff_fn(parseFloat(pylA.margenes?.rentabilidad), parseFloat(pylB.margenes?.rentabilidad)),
@@ -8974,14 +8975,20 @@ function renderComparacion(data, mes_a, mes_b) {
 
   // ── Tabla P&L lado a lado ─────────────────────────────────────────────────
   const th = txt => `<th style="padding:9px 12px;text-align:right;font-size:11px;font-weight:600;color:var(--muted);border-bottom:2px solid var(--border);white-space:nowrap">${txt}</th>`;
-  const sec = label => `<tr><td colspan="4" style="padding:7px 12px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;background:var(--surface2);border-top:1px solid var(--border)">${label}</td></tr>`;
-  const row = (label, va, vb, d, indent=false, bold=false, esPositivo=true) => `
+  const sec = (label, color='var(--surface2)') => `<tr><td colspan="5" style="padding:7px 12px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;background:${color};border-top:1px solid var(--border)">${label}</td></tr>`;
+
+  // Fila con valor + % de facturación por columna
+  const row = (label, va, vb, d, indent=false, bold=false, esPositivo=true, factA=null, factB=null) => {
+    const pctA = factA && parseFloat(factA) ? `<div style="font-size:10px;color:var(--muted);margin-top:1px">${(Math.abs(parseFloat(va)||0) / parseFloat(factA) * 100).toFixed(1)}%</div>` : '';
+    const pctB = factB && parseFloat(factB) ? `<div style="font-size:10px;color:var(--muted);margin-top:1px">${(Math.abs(parseFloat(vb)||0) / parseFloat(factB) * 100).toFixed(1)}%</div>` : '';
+    return `
     <tr style="border-bottom:1px solid var(--border)">
       <td style="padding:8px 12px;font-size:12px;${bold?'font-weight:700;':''}${indent?'padding-left:24px;color:var(--muted)':''}">${label}</td>
-      <td style="padding:8px 12px;text-align:right;font-size:12px;${bold?'font-weight:700;':''}">${fmt(va)}</td>
-      <td style="padding:8px 12px;text-align:right;font-size:12px;color:var(--muted)">${fmt(vb)}</td>
+      <td style="padding:8px 12px;text-align:right;font-size:12px;${bold?'font-weight:700;':''}">${fmt(va)}${pctA}</td>
+      <td style="padding:8px 12px;text-align:right;font-size:12px;color:var(--muted)">${fmt(vb)}${pctB}</td>
       ${deltaCell(d, esPositivo)}
     </tr>`;
+  };
   const rowPct = (label, va, vb, d) => `
     <tr style="border-bottom:1px solid var(--border)">
       <td style="padding:8px 12px;font-size:12px;color:var(--muted)">${label}</td>
@@ -8991,6 +8998,13 @@ function renderComparacion(data, mes_a, mes_b) {
     </tr>`;
 
   const a = pyl_a; const b = pyl_b;
+  const factA = a?.ingresos?.facturacion;
+  const factB = b?.ingresos?.facturacion;
+
+  // Total impuestos por mes = IVA neto + impuestos manuales
+  const totalImpA = (parseFloat(a?.iva?.neto)||0) + (parseFloat(a?.impuestos_manuales?.total)||0);
+  const totalImpB = (parseFloat(b?.iva?.neto)||0) + (parseFloat(b?.impuestos_manuales?.total)||0);
+
   const tabla = `
     <div class="kpi-card" style="padding:0;overflow:hidden">
       <div style="overflow-x:auto">
@@ -9007,21 +9021,24 @@ function renderComparacion(data, mes_a, mes_b) {
             ${row('Ingreso envío comprador',  a?.ingresos?.envio_comprador, b?.ingresos?.envio_comprador, null, true)}
             ${row('TOTAL INGRESOS',           a?.ingresos?.total,           b?.ingresos?.total,           diff?.facturacion,   false, true)}
             ${sec('📤 Egresos ML')}
-            ${row('Comisión ML',              a?.egresos_ml?.comision,      b?.egresos_ml?.comision,      null, true, false, false)}
-            ${row('Costo envío vendedor',     a?.egresos_ml?.envio_vendedor,b?.egresos_ml?.envio_vendedor,null, true, false, false)}
-            ${row('Publicidad (PADS)',        a?.egresos_ml?.publicidad,    b?.egresos_ml?.publicidad,    null, true, false, false)}
-            ${row('IVA neto a pagar',         a?.egresos_ml?.iva_neto,      b?.egresos_ml?.iva_neto,      null, true, false, false)}
-            ${row('TOTAL EGRESOS ML',         a?.egresos_ml?.total,         b?.egresos_ml?.total,         diff?.total_egresos_ml, false, true, false)}
+            ${row('Comisión ML',              a?.egresos_ml?.comision,      b?.egresos_ml?.comision,      null, true, false, false, factA, factB)}
+            ${row('Costo envío vendedor',     a?.egresos_ml?.envio_vendedor,b?.egresos_ml?.envio_vendedor,null, true, false, false, factA, factB)}
+            ${row('Publicidad (PADS)',        a?.egresos_ml?.publicidad,    b?.egresos_ml?.publicidad,    null, true, false, false, factA, factB)}
+            ${row('TOTAL EGRESOS ML',         a?.egresos_ml?.total,         b?.egresos_ml?.total,         diff?.total_egresos_ml, false, true, false, factA, factB)}
             ${sec('💰 Resultado')}
-            ${row('RESULTADO NETO ML',        a?.resultado_neto_ml,         b?.resultado_neto_ml,         diff?.resultado_neto, false, true)}
+            ${row('RESULTADO NETO ML',        a?.resultado_neto_ml,         b?.resultado_neto_ml,         diff?.resultado_neto, false, true, true, factA, factB)}
             ${rowPct('% Recibido',            a?.margenes?.pct_recibido,    b?.margenes?.pct_recibido,    diff?.pct_recibido)}
             ${sec('🏭 Costo Merc. Vendida')}
-            ${row('Costo de mercancía',       a?.cmv?.total,                b?.cmv?.total,                diff?.cmv,           false, true, false)}
-            ${row('UTILIDAD ANTES GF',        a?.utilidad_antes_gf,         b?.utilidad_antes_gf,         diff?.utilidad_antes_gf, false, true)}
+            ${row('Costo de mercancía',       a?.cmv?.total,                b?.cmv?.total,                diff?.cmv,           false, true, false, factA, factB)}
+            ${row('UTILIDAD ANTES GF',        a?.utilidad_antes_gf,         b?.utilidad_antes_gf,         diff?.utilidad_antes_gf, false, true, true, factA, factB)}
             ${sec('🏢 Gastos Fijos')}
-            ${row('TOTAL GASTOS FIJOS',       a?.gastos_fijos?.total,       b?.gastos_fijos?.total,       diff?.gastos_fijos,  false, true, false)}
+            ${row('TOTAL GASTOS FIJOS',       a?.gastos_fijos?.total,       b?.gastos_fijos?.total,       diff?.gastos_fijos,  false, true, false, factA, factB)}
+            ${sec('🧾 Impuestos', '#fef9ec')}
+            ${row('IVA neto a pagar',         a?.iva?.neto,                 b?.iva?.neto,                 diff?.iva_neto,      true, false, false, factA, factB)}
+            ${(a?.impuestos_manuales?.total || b?.impuestos_manuales?.total) ? row('Impuestos manuales', a?.impuestos_manuales?.total, b?.impuestos_manuales?.total, diff?.impuestos_manuales, true, false, false, factA, factB) : ''}
+            ${row('TOTAL IMPUESTOS',          totalImpA,                    totalImpB,                    totalImpA - totalImpB, false, true, false, factA, factB)}
             ${sec('📊 Resultado Final')}
-            ${row('UTILIDAD FINAL',           a?.utilidad_final,            b?.utilidad_final,            diff?.utilidad_final, false, true)}
+            ${row('UTILIDAD FINAL',           a?.utilidad_final,            b?.utilidad_final,            diff?.utilidad_final, false, true, true, factA, factB)}
             ${rowPct('Margen %',              a?.margenes?.margen,          b?.margenes?.margen,          diff?.margen)}
             ${rowPct('Rentabilidad %',        a?.margenes?.rentabilidad,    b?.margenes?.rentabilidad,    diff?.rentabilidad)}
           </tbody>

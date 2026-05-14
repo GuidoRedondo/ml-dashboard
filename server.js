@@ -4211,6 +4211,7 @@ app.get('/api/reporte/comparar', requireAuth, async (req, res) => {
         cmv:               diffN(pylA.cmv?.total,               pylB.cmv?.total),
         utilidad_antes_gf: diffN(pylA.utilidad_antes_gf,        pylB.utilidad_antes_gf),
         gastos_fijos:      diffN(pylA.gastos_fijos?.total,      pylB.gastos_fijos?.total),
+        impuestos_manuales: diffN(pylA.impuestos_manuales?.total, pylB.impuestos_manuales?.total),
         utilidad_final:    diffN(pylA.utilidad_final,           pylB.utilidad_final),
         iva_neto:          diffN(pylA.iva?.neto,                pylB.iva?.neto),
         margen:            diffN(pylA.margenes?.margen,         pylB.margenes?.margen),
