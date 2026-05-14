@@ -6572,6 +6572,89 @@ app.get('/api/seguimiento', requireAuth, async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
+// POST /api/seguimiento/backfill — rellena snapshots históricos día por día
+app.post('/api/seguimiento/backfill', requireAuth, async (req, res) => {
+  try {
+    const client_id = parseInt(req.body?.client_id || req.query.client_id);
+    const days      = parseInt(req.body?.days || req.query.days) || 60;
+    if (!client_id) return res.status(400).json({ error: 'client_id requerido' });
+
+    const token = await getClientToken(client_id);
+    const clientRow = await pool.query('SELECT ml_user_id FROM clients WHERE id=$1', [client_id]);
+    const uid = clientRow.rows[0]?.ml_user_id;
+    if (!token || !uid) return res.status(400).json({ error: 'Sin token o uid' });
+    const headers = { Authorization: `Bearer ${token}` };
+
+    const segs = await pool.query(
+      'SELECT * FROM seguimiento_publicaciones WHERE client_id=$1 AND activa=true',
+      [client_id]
+    );
+    if (!segs.rows.length) return res.json({ ok: true, snapshots: 0, message: 'Sin publicaciones en seguimiento' });
+
+    const today    = new Date().toLocaleDateString('en-CA', { timeZone: ART });
+    const fromDate = new Date(new Date(today + 'T12:00:00Z') - days * 86400000).toISOString().slice(0,10);
+    const curFrom  = new Date(fromDate + 'T00:00:00-03:00').toISOString().slice(0,19) + '.000-00:00';
+    const curTo    = new Date(today    + 'T23:59:59-03:00').toISOString().slice(0,19) + '.000-00:00';
+
+    // Traer todas las órdenes del período y agrupar por (item, día)
+    const ordersByItemDay = {};
+    let offset = 0;
+    while (true) {
+      const data = await fetch(
+        `${ML_API}/orders/search?seller=${uid}&order.status=paid&order.date_closed.from=${curFrom}&order.date_closed.to=${curTo}&limit=50&offset=${offset}`,
+        { headers }
+      ).then(r => r.json()).catch(() => ({ results: [] }));
+      const results = data.results || [];
+      results.forEach(o => {
+        const day = new Date(o.date_closed || o.date_created).toLocaleDateString('en-CA', { timeZone: ART });
+        (o.order_items || []).forEach(oi => {
+          const id = oi.item?.id;
+          if (id) { const k = `${id}_${day}`; ordersByItemDay[k] = (ordersByItemDay[k] || 0) + 1; }
+        });
+      });
+      if (results.length < 50) break;
+      offset += 50;
+    }
+
+    // Para cada publicación, traer visitas del período completo (una sola llamada)
+    let totalSnapshots = 0;
+    const allDays = [];
+    { let c = new Date(fromDate + 'T12:00:00Z'); const e = new Date(today + 'T12:00:00Z');
+      while (c <= e) { allDays.push(c.toISOString().slice(0,10)); c = new Date(c.getTime() + 86400000); } }
+
+    for (const seg of segs.rows) {
+      try {
+        const visRes = await fetch(
+          `${ML_API}/items/${seg.mla}/visits/time_window?date_from=${fromDate}&date_to=${today}&unit=day`,
+          { headers }
+        ).then(r => r.json()).catch(() => ({}));
+        const visitsByDay = {};
+        (visRes.results || []).forEach(r => {
+          if (r.date) { const d = r.date.slice(0,10); visitsByDay[d] = (visitsByDay[d] || 0) + (r.total || r.visits || 0); }
+        });
+        if (!visRes.results && visRes.total_visits) visitsByDay[today] = visRes.total_visits;
+
+        for (const day of allDays) {
+          const visitas = visitsByDay[day] || 0;
+          const ordenes = ordersByItemDay[`${seg.mla}_${day}`] || 0;
+          if (visitas === 0 && ordenes === 0) continue;
+          await pool.query(`
+            INSERT INTO seguimiento_snapshots_diarios (seguimiento_id, dia, precio, stock, visitas, ordenes, ritmo_dia)
+            VALUES ($1, $2, NULL, NULL, $3, $4, $4)
+            ON CONFLICT (seguimiento_id, dia) DO UPDATE SET
+              visitas = GREATEST(EXCLUDED.visitas, seguimiento_snapshots_diarios.visitas),
+              ordenes = GREATEST(EXCLUDED.ordenes, seguimiento_snapshots_diarios.ordenes),
+              ritmo_dia = EXCLUDED.ritmo_dia
+          `, [seg.id, day, visitas, ordenes]);
+          totalSnapshots++;
+        }
+      } catch(_) {}
+    }
+
+    res.json({ ok: true, snapshots: totalSnapshots, items: segs.rows.length, days, fromDate, toDate: today });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
 // GET /api/seguimiento/:id/evolucion — serie completa para gráfico
 app.get('/api/seguimiento/:id/evolucion', requireAuth, async (req, res) => {
   try {

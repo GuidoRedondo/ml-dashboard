@@ -869,6 +869,15 @@ tbody td {
             <option value="60">Últimos 60 días</option>
           </select>
           <button onclick="loadSeguimiento(true)" class="sync-btn" style="font-size:12px;padding:6px 14px">🔄 Actualizar</button>
+          <div style="margin-left:auto;display:flex;align-items:center;gap:8px">
+            <select id="segBackfillDays" style="padding:6px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:12px">
+              <option value="14">14 días</option>
+              <option value="30">30 días</option>
+              <option value="60" selected>60 días</option>
+              <option value="90">90 días</option>
+            </select>
+            <button onclick="backfillSeguimiento()" id="segBackfillBtn" class="sync-btn" style="font-size:12px;padding:6px 14px;background:#6366f1;color:#fff">📥 Rellenar histórico</button>
+          </div>
         </div>
         <div id="seguimientoContent"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Marcá publicaciones con ★ en la tabla de Publicaciones para hacer seguimiento.</div></div>
       </div>
@@ -4216,6 +4225,24 @@ function renderSegChart(el, series) {
   svg += `<text x="${padL+120}" y="${padT - 4}" font-size="9" fill="#FFD700" font-family="sans-serif">- - Precio</text>`;
 
   el.innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="100%" height="100%" style="overflow:visible">${svg}</svg>`;
+}
+
+async function backfillSeguimiento() {
+  const client = getActiveClient();
+  if (!client) return;
+  const days = document.getElementById('segBackfillDays')?.value || 60;
+  const btn  = document.getElementById('segBackfillBtn');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Rellenando…'; }
+  try {
+    const data = await apiCall('POST', '/api/seguimiento/backfill', { client_id: client.id, days: parseInt(days) });
+    if (data?.ok) {
+      showToast(`✅ ${data.snapshots} snapshots cargados para ${data.items} publicación${data.items !== 1 ? 'es' : ''} (${data.days} días)`);
+      loadSeguimiento();
+    } else {
+      showToast('❌ Error: ' + (data?.error || 'desconocido'));
+    }
+  } catch(e) { showToast('❌ Error: ' + e.message); }
+  finally { if (btn) { btn.disabled = false; btn.textContent = '📥 Rellenar histórico'; } }
 }
 
 async function quitarSeguimiento(id, titulo, btn) {
