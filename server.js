@@ -7565,24 +7565,38 @@ app.get('/api/analisis/umbrales', requireAuth, async (req, res) => {
         if (r.code !== 200 || !r.body) return;
         const b = r.body;
         const basePrice  = parseFloat(b.price) || 0;
-        // sale_price puede ser número o {amount:...} según el tipo de promo
+        const origPrice  = b.original_price ? parseFloat(b.original_price) : null;
         const saleRaw    = b.sale_price;
         const salePrice  = saleRaw != null
-          ? (typeof saleRaw === 'object' ? parseFloat(saleRaw.amount || 0) : parseFloat(saleRaw))
+          ? (typeof saleRaw === 'object' ? parseFloat(saleRaw.amount || saleRaw.regular_amount || 0) : parseFloat(saleRaw))
           : null;
         const promoPrice = b.promotions?.[0]?.price ? parseFloat(b.promotions[0].price) : null;
-        const candidates = [basePrice, salePrice, promoPrice].filter(v => v > 0);
+
+        // Log para debug en Railway
+        if (b.id === 'MLA616009829') {
+          console.log('[CLIFF DEBUG]', b.id, { basePrice, origPrice, saleRaw: JSON.stringify(saleRaw), promoPrice });
+        }
+
+        // Precio efectivo: el menor de todos los candidatos válidos
+        const candidates = [basePrice, salePrice, promoPrice].filter(v => v && v > 0);
         const precio     = Math.min(...candidates);
+
+        // Determinar si hay descuento activo
+        const precioLista   = (origPrice && origPrice > precio) ? origPrice : basePrice;
+        const tieneDescuento = precio < precioLista;
+
         const isFull  = b.shipping?.logistic_type === 'fulfillment';
         const op = calcCliffOportunidad(precio, isFull);
         if (!op) return;
         oportunidades.push({
-          id:        b.id,
-          title:     b.title,
-          permalink: b.permalink,
+          id:           b.id,
+          title:        b.title,
+          permalink:    b.permalink,
           precio,
-          is_full:   isFull,
-          logistica: b.shipping?.logistic_type || 'unknown',
+          precio_lista: tieneDescuento ? precioLista : null,
+          tiene_descuento: tieneDescuento,
+          is_full:      isFull,
+          logistica:    b.shipping?.logistic_type || 'unknown',
           ...op,
         });
       });
