@@ -6411,6 +6411,30 @@ app.get('/api/debug/app-token', requireAuth, async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
+app.get('/api/debug/precio', requireAuth, async (req, res) => {
+  try {
+    const { client_id, item_id } = req.query;
+    const token = await getClientToken(parseInt(client_id));
+    if (!token) return res.status(403).json({ error: 'Sin token' });
+    const headers = { Authorization: `Bearer ${token}` };
+    // Fetch sin filtro de atributos para ver todo
+    const full = await fetch(`${ML_API}/items/${item_id}`, { headers }).then(r => r.json());
+    // También fetch del batch con atributos (como lo hace el cliff finder)
+    const batch = await fetch(`${ML_API}/items?ids=${item_id}&attributes=id,title,price,original_price,promotions,sale_price,shipping`, { headers }).then(r => r.json());
+    const b = Array.isArray(batch) ? batch[0]?.body : null;
+    res.json({
+      full_price:          full.price,
+      full_original_price: full.original_price,
+      full_sale_price:     full.sale_price,
+      full_promotions:     full.promotions,
+      batch_price:         b?.price,
+      batch_original_price:b?.original_price,
+      batch_sale_price:    b?.sale_price,
+      batch_promotions:    b?.promotions,
+    });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
 app.get('/api/debug/visits', requireAuth, async (req, res) => {
   try {
     const clientId = parseInt(req.query.client_id);
