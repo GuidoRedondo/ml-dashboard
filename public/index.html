@@ -4824,11 +4824,16 @@ function renderUmbralesTabla(items, client, riskLabel, riskDesc) {
       ? `<span style="font-size:10px;padding:2px 6px;border-radius:4px;font-weight:600;background:${ua.accion==='aplicada'?'#16a34a':ua.accion==='ignorada'?'#374151':'#92400e'};color:#fff">${ua.accion.toUpperCase()}</span>`
       : '';
 
+    const logBadge = op.is_full
+      ? '<span style="font-size:10px;padding:2px 6px;border-radius:4px;font-weight:700;background:#0ea5e933;color:#0ea5e9">FULL</span>'
+      : '<span style="font-size:10px;padding:2px 6px;border-radius:4px;font-weight:600;background:var(--surface2);color:var(--muted)">No FULL</span>';
+
     return `<tr style="border-bottom:1px solid var(--border)">
       <td style="padding:8px 6px;font-size:12px;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${op.title}">
         ${op.permalink ? `<a href="${op.permalink}" target="_blank" style="color:var(--accent);text-decoration:none">${op.title}</a>` : op.title}
         ${accionBadge}
       </td>
+      <td style="padding:8px 6px;text-align:center">${logBadge}</td>
       <td style="padding:8px 6px;text-align:right;font-size:12px">${fmt$(op.precio)}</td>
       <td style="padding:8px 6px;text-align:right;font-size:12px;color:#22c55e">${fmt$(op.precio_sugerido)}</td>
       <td style="padding:8px 6px;text-align:right;font-size:12px;color:#0ea5e9;font-weight:700">${fmt$(op.ahorro_x_venta)}</td>
@@ -4855,6 +4860,7 @@ function renderUmbralesTabla(items, client, riskLabel, riskDesc) {
         <thead>
           <tr style="border-bottom:2px solid var(--border);color:var(--muted);font-size:11px">
             <th style="padding:6px;text-align:left">Publicación</th>
+            <th style="padding:6px;text-align:center">Logística</th>
             <th style="padding:6px;text-align:right">Precio actual</th>
             <th style="padding:6px;text-align:right">Precio sugerido</th>
             <th style="padding:6px;text-align:right">Ahorro/venta</th>
