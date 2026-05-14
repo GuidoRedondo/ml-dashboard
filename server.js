@@ -7576,7 +7576,10 @@ app.get('/api/analisis/umbrales', requireAuth, async (req, res) => {
     const oportunidades = [];
     await Promise.all(candidatos.map(async c => {
       try {
-        const b = await fetch(`${ML_API}/items/${c.id}`, { headers }).then(r => r.json());
+        const [b, pricesResp] = await Promise.all([
+          fetch(`${ML_API}/items/${c.id}`, { headers }).then(r => r.json()),
+          fetch(`${ML_API}/items/${c.id}/prices`, { headers }).then(r => r.json()).catch(() => null),
+        ]);
         if (b.error) return;
         const basePrice  = parseFloat(b.price) || 0;
         const origPrice  = b.original_price ? parseFloat(b.original_price) : null;
@@ -7585,7 +7588,12 @@ app.get('/api/analisis/umbrales', requireAuth, async (req, res) => {
           ? (typeof saleRaw === 'object' ? parseFloat(saleRaw.amount || saleRaw.regular_amount || 0) : parseFloat(saleRaw))
           : null;
         const promoPrice = b.promotions?.[0]?.price ? parseFloat(b.promotions[0].price) : null;
-        const candidates = [basePrice, salePrice, promoPrice].filter(v => v && v > 0);
+        // /items/{id}/prices puede tener el precio promocional
+        const pricesAmt  = pricesResp?.prices?.find(p => p.type === 'promotion' || p.type === 'standard')?.amount;
+        const pricesPromo = pricesResp?.prices?.filter(p => p.type !== 'standard')
+          .map(p => parseFloat(p.amount)).filter(v => v > 0);
+        const minPricesPromo = pricesPromo?.length ? Math.min(...pricesPromo) : null;
+        const candidates = [basePrice, salePrice, promoPrice, minPricesPromo].filter(v => v && v > 0);
         const precio     = Math.min(...candidates);
         const precioLista    = (origPrice && origPrice > precio) ? origPrice : basePrice;
         const tieneDescuento = precio < precioLista;
@@ -7601,6 +7609,7 @@ app.get('/api/analisis/umbrales', requireAuth, async (req, res) => {
           tiene_descuento: tieneDescuento,
           is_full:         isFull,
           logistica:       b.shipping?.logistic_type || c.logistica,
+          _d: b.id === 'MLA2641274730' ? { price: b.price, orig: b.original_price, sale: b.sale_price, promo: b.promotions?.[0]?.price, prices_resp: pricesResp } : undefined,
           ...op,
         });
       } catch(e) {}
