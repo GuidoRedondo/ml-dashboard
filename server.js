@@ -7609,7 +7609,6 @@ app.get('/api/analisis/umbrales', requireAuth, async (req, res) => {
           tiene_descuento: tieneDescuento,
           is_full:         isFull,
           logistica:       b.shipping?.logistic_type || c.logistica,
-          _d: b.id === 'MLA2641274730' ? { price: b.price, orig: b.original_price, sale: b.sale_price, promo: b.promotions?.[0]?.price, prices_resp: pricesResp } : undefined,
           ...op,
         });
       } catch(e) {}
