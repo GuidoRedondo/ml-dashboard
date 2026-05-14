@@ -3515,7 +3515,7 @@ async function loadPublicaciones() {
     el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:20px;text-align:center">Sincronizá primero para ver datos</div>';
     return;
   }
-  loadSeguimientoMap(); // cargar mapa de seguimiento en paralelo
+  await loadSeguimientoMap(); // esperar antes de renderizar las filas
   const range2 = getDateRange();
   const dateParams = '&date_from=' + range2.date_from + '&date_to=' + range2.date_to;
   el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:20px;text-align:center">⏳ Cargando publicaciones... puede tardar 30-60 segundos</div>';
@@ -4017,7 +4017,7 @@ async function loadSeguimiento(forceRefresh) {
   el.innerHTML = '<div style="color:var(--muted);padding:30px;text-align:center">⏳ Cargando snapshots…</div>';
   try {
     const data = await apiCall('GET', `/api/seguimiento?client_id=${client.id}&days=${days}`);
-    if (!data?.ok) { el.innerHTML = '<div style="color:#c62828;padding:20px">Error al cargar seguimiento.</div>'; return; }
+    if (!data?.ok) { el.innerHTML = `<div style="color:#c62828;padding:20px">Error al cargar seguimiento: ${data?.error || 'respuesta inválida'}</div>`; return; }
     if (!data.items?.length) {
       el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">No hay publicaciones en seguimiento. Marcalas con ★ en la pestaña Publicaciones.</div>';
       return;
