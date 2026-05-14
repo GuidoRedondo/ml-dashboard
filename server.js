@@ -310,6 +310,28 @@ async function initDB() {
       updated_at TIMESTAMP DEFAULT NOW(),
       UNIQUE(cliente_id, periodo)
     );
+    CREATE TABLE IF NOT EXISTS seguimiento_publicaciones (
+      id SERIAL PRIMARY KEY,
+      client_id INTEGER REFERENCES clients(id) ON DELETE CASCADE,
+      mla TEXT NOT NULL,
+      titulo TEXT,
+      nota TEXT,
+      marcada_at TIMESTAMPTZ DEFAULT NOW(),
+      marcada_por TEXT,
+      activa BOOLEAN DEFAULT true,
+      UNIQUE(client_id, mla)
+    );
+    CREATE TABLE IF NOT EXISTS seguimiento_snapshots_diarios (
+      id SERIAL PRIMARY KEY,
+      seguimiento_id INTEGER REFERENCES seguimiento_publicaciones(id) ON DELETE CASCADE,
+      dia DATE NOT NULL,
+      precio NUMERIC(12,2),
+      stock INTEGER,
+      visitas INTEGER DEFAULT 0,
+      ordenes INTEGER DEFAULT 0,
+      ritmo_dia NUMERIC(8,3),
+      UNIQUE(seguimiento_id, dia)
+    );
   `);
 
   // Create default admin if not exists (password: admin123 - change after first login)
@@ -2443,6 +2465,7 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
         revenue_prev:    prevRev,
         trend_pct:       trend !== null ? parseFloat(trend.toFixed(1)) : null,
         units:           i.units,
+        orders:          i.orders || 0,
         visits:          vis.visits || 0,
         conversion:      vis.conversion || 0,
         comision:        i.comision || (i.revenue > 0 ? (i.revenue - i.net) : 0),
@@ -6355,6 +6378,207 @@ app.get('/api/debug/visits', requireAuth, async (req, res) => {
         .then(r => r.json()).catch(e => ({ fetch_error: e.message }))
     ));
     res.json({ date, itemIds, visitsResults, searchRes_paging: searchRes.paging });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── SEGUIMIENTO DE PUBLICACIONES ──────────────────────────────────────────────
+
+async function takeSeguimientoSnapshot(seg, token, uid, todayOrders) {
+  const headers = { Authorization: `Bearer ${token}` };
+  const today   = new Date().toLocaleDateString('en-CA', { timeZone: ART }); // YYYY-MM-DD
+
+  // Precio y stock actuales
+  const itemRes = await fetch(`${ML_API}/items/${seg.mla}?attributes=price,available_quantity`, { headers })
+    .then(r => r.json()).catch(() => ({}));
+  const precio = itemRes.price != null ? parseFloat(itemRes.price) : null;
+  const stock  = itemRes.available_quantity != null ? parseInt(itemRes.available_quantity) : null;
+
+  // Visitas de hoy
+  const visRes = await fetch(`${ML_API}/items/${seg.mla}/visits/time_window?date_from=${today}&date_to=${today}&unit=day`, { headers })
+    .then(r => r.json()).catch(() => ({}));
+  let visitas = 0;
+  if (visRes.total_visits) visitas = visRes.total_visits;
+  else if (Array.isArray(visRes.results)) {
+    visitas = visRes.results.reduce((s, r) => s + (r.total || r.visits || 0), 0);
+  }
+
+  // Órdenes de hoy para este ítem (del mapa pre-calculado)
+  const ordenes   = todayOrders[seg.mla] || 0;
+  const ritmo_dia = ordenes; // valor diario = órdenes del día
+
+  await pool.query(`
+    INSERT INTO seguimiento_snapshots_diarios (seguimiento_id, dia, precio, stock, visitas, ordenes, ritmo_dia)
+    VALUES ($1, $2, $3, $4, $5, $6, $7)
+    ON CONFLICT (seguimiento_id, dia) DO UPDATE SET
+      precio = EXCLUDED.precio, stock = EXCLUDED.stock,
+      visitas = EXCLUDED.visitas, ordenes = EXCLUDED.ordenes, ritmo_dia = EXCLUDED.ritmo_dia
+  `, [seg.id, today, precio, stock, visitas, ordenes, ritmo_dia]);
+}
+
+async function buildTodayOrders(uid, token) {
+  const headers = { Authorization: `Bearer ${token}` };
+  const today   = new Date().toLocaleDateString('en-CA', { timeZone: ART });
+  const from    = new Date(today + 'T00:00:00-03:00').toISOString().slice(0,19) + '.000-00:00';
+  const to      = new Date(today + 'T23:59:59-03:00').toISOString().slice(0,19) + '.000-00:00';
+  const map = {};
+  let offset = 0;
+  while (true) {
+    const data = await fetch(
+      `${ML_API}/orders/search?seller=${uid}&order.status=paid&order.date_closed.from=${from}&order.date_closed.to=${to}&limit=50&offset=${offset}`,
+      { headers }
+    ).then(r => r.json()).catch(() => ({ results: [] }));
+    const results = data.results || [];
+    results.forEach(o => {
+      (o.order_items || []).forEach(oi => {
+        const id = oi.item?.id;
+        if (id) map[id] = (map[id] || 0) + 1;
+      });
+    });
+    if (results.length < 50) break;
+    offset += 50;
+  }
+  return map;
+}
+
+// POST /api/seguimiento — marca un ítem
+app.post('/api/seguimiento', requireAuth, async (req, res) => {
+  try {
+    const { mla, titulo, nota, marcada_por, client_id } = req.body;
+    if (!mla || !client_id) return res.status(400).json({ error: 'mla y client_id requeridos' });
+
+    const result = await pool.query(`
+      INSERT INTO seguimiento_publicaciones (client_id, mla, titulo, nota, marcada_por, activa)
+      VALUES ($1, $2, $3, $4, $5, true)
+      ON CONFLICT (client_id, mla) DO UPDATE SET
+        activa = true, titulo = EXCLUDED.titulo, nota = EXCLUDED.nota,
+        marcada_por = EXCLUDED.marcada_por, marcada_at = NOW()
+      RETURNING *
+    `, [client_id, mla, titulo || mla, nota || null, marcada_por || req.user?.username || null]);
+
+    const seg = result.rows[0];
+
+    // Snapshot inmediato
+    try {
+      const token = await getClientToken(parseInt(client_id));
+      const clientRow = await pool.query('SELECT ml_user_id FROM clients WHERE id=$1', [parseInt(client_id)]);
+      const uid = clientRow.rows[0]?.ml_user_id;
+      if (token && uid) {
+        const todayOrders = await buildTodayOrders(uid, token);
+        await takeSeguimientoSnapshot(seg, token, uid, todayOrders);
+      }
+    } catch(_) {}
+
+    res.json({ ok: true, seguimiento: seg });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// DELETE /api/seguimiento/:id — soft delete
+app.delete('/api/seguimiento/:id', requireAuth, async (req, res) => {
+  try {
+    await pool.query('UPDATE seguimiento_publicaciones SET activa=false WHERE id=$1', [req.params.id]);
+    res.json({ ok: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// GET /api/seguimiento — lista + snapshot lazy + comparación de períodos
+app.get('/api/seguimiento', requireAuth, async (req, res) => {
+  try {
+    const client_id  = parseInt(req.query.client_id);
+    const rangeDays  = parseInt(req.query.days) || 14;
+    if (!client_id) return res.status(400).json({ error: 'client_id requerido' });
+
+    const segs = await pool.query(
+      'SELECT * FROM seguimiento_publicaciones WHERE client_id=$1 AND activa=true ORDER BY marcada_at DESC',
+      [client_id]
+    );
+    if (!segs.rows.length) return res.json({ ok: true, items: [] });
+
+    // Snapshot lazy de hoy
+    try {
+      const token = await getClientToken(client_id);
+      const clientRow = await pool.query('SELECT ml_user_id FROM clients WHERE id=$1', [client_id]);
+      const uid = clientRow.rows[0]?.ml_user_id;
+      if (token && uid) {
+        const todayOrders = await buildTodayOrders(uid, token);
+        await Promise.all(segs.rows.map(seg =>
+          takeSeguimientoSnapshot(seg, token, uid, todayOrders).catch(() => {})
+        ));
+      }
+    } catch(_) {}
+
+    // Calcular períodos
+    const today = new Date().toLocaleDateString('en-CA', { timeZone: ART });
+    const curTo   = today;
+    const curFrom = new Date(new Date(today + 'T12:00:00Z') - rangeDays * 86400000).toISOString().slice(0,10);
+    const prevTo  = new Date(new Date(curFrom + 'T12:00:00Z') - 86400000).toISOString().slice(0,10);
+    const prevFrom= new Date(new Date(prevTo  + 'T12:00:00Z') - (rangeDays - 1) * 86400000).toISOString().slice(0,10);
+
+    const segIds = segs.rows.map(s => s.id);
+    const snaps  = await pool.query(
+      `SELECT * FROM seguimiento_snapshots_diarios WHERE seguimiento_id = ANY($1) AND dia >= $2 ORDER BY dia`,
+      [segIds, prevFrom]
+    );
+
+    const snapsBySeg = {};
+    snaps.rows.forEach(s => {
+      if (!snapsBySeg[s.seguimiento_id]) snapsBySeg[s.seguimiento_id] = [];
+      snapsBySeg[s.seguimiento_id].push(s);
+    });
+
+    const calcPeriod = (rows, from, to) => {
+      const inRange = rows.filter(r => r.dia >= from && r.dia <= to);
+      if (!inRange.length) return null;
+      const visitas = inRange.reduce((s, r) => s + (r.visitas || 0), 0);
+      const ordenes = inRange.reduce((s, r) => s + (r.ordenes || 0), 0);
+      const ritmos  = inRange.map(r => parseFloat(r.ritmo_dia) || 0);
+      const ritmo   = ritmos.length ? ritmos.reduce((a,b) => a+b, 0) / ritmos.length : 0;
+      const ultimo  = inRange[inRange.length - 1];
+      return {
+        visitas, ordenes,
+        conversion: visitas > 0 ? parseFloat((ordenes / visitas * 100).toFixed(2)) : 0,
+        ritmo_dia:  parseFloat(ritmo.toFixed(3)),
+        precio:     ultimo ? parseFloat(ultimo.precio) || null : null,
+        stock:      ultimo ? ultimo.stock : null,
+      };
+    };
+
+    const items = segs.rows.map(seg => {
+      const rows = snapsBySeg[seg.id] || [];
+      const cur  = calcPeriod(rows, curFrom, curTo);
+      const prev = calcPeriod(rows, prevFrom, prevTo);
+      const delta = (c, p, key) => {
+        if (!c || !p || p[key] == null || c[key] == null) return null;
+        const d = c[key] - p[key];
+        const pct = p[key] !== 0 ? d / Math.abs(p[key]) * 100 : null;
+        return { abs: parseFloat(d.toFixed(3)), pct: pct != null ? parseFloat(pct.toFixed(1)) : null };
+      };
+      return {
+        ...seg,
+        periodo: { curFrom, curTo, prevFrom, prevTo },
+        cur, prev,
+        delta: cur && prev ? {
+          visitas:    delta(cur, prev, 'visitas'),
+          ordenes:    delta(cur, prev, 'ordenes'),
+          conversion: delta(cur, prev, 'conversion'),
+          ritmo_dia:  delta(cur, prev, 'ritmo_dia'),
+          precio:     delta(cur, prev, 'precio'),
+        } : null,
+        snapshots_count: rows.length,
+      };
+    });
+
+    res.json({ ok: true, items, curFrom, curTo, prevFrom, prevTo });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// GET /api/seguimiento/:id/evolucion — serie completa para gráfico
+app.get('/api/seguimiento/:id/evolucion', requireAuth, async (req, res) => {
+  try {
+    const rows = await pool.query(
+      'SELECT dia, precio, stock, visitas, ordenes, ritmo_dia FROM seguimiento_snapshots_diarios WHERE seguimiento_id=$1 ORDER BY dia',
+      [req.params.id]
+    );
+    res.json({ ok: true, series: rows.rows });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 

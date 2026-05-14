@@ -832,6 +832,10 @@ tbody td {
           style="padding:8px 18px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-2px;font-family:var(--font-b)">
           🕐 Ventas por hora
         </button>
+        <button id="tab-perf-seguimiento" onclick="switchPerfTab('seguimiento')"
+          style="padding:8px 18px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-2px;font-family:var(--font-b)">
+          ⭐ Seguimiento
+        </button>
       </div>
       <!-- Tab Análisis -->
       <div id="perf-tab-analisis">
@@ -853,6 +857,20 @@ tbody td {
       <!-- Tab Ventas por hora -->
       <div id="perf-tab-ventas-hora" style="display:none">
         <iframe id="iframe-ventas-hora" src="" style="width:100%;height:700px;border:none;border-radius:12px"></iframe>
+      </div>
+      <!-- Tab Seguimiento -->
+      <div id="perf-tab-seguimiento" style="display:none">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap">
+          <span style="font-size:12px;font-weight:600;color:var(--muted)">Período:</span>
+          <select id="segDaysSelect" onchange="loadSeguimiento()" style="padding:6px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px">
+            <option value="7">Últimos 7 días</option>
+            <option value="14" selected>Últimos 14 días</option>
+            <option value="30">Últimos 30 días</option>
+            <option value="60">Últimos 60 días</option>
+          </select>
+          <button onclick="loadSeguimiento(true)" class="sync-btn" style="font-size:12px;padding:6px 14px">🔄 Actualizar</button>
+        </div>
+        <div id="seguimientoContent"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Marcá publicaciones con ★ en la tabla de Publicaciones para hacer seguimiento.</div></div>
       </div>
     </div>
 
@@ -3762,7 +3780,7 @@ let _perfPubModeFilter = null;
 
 function switchPerfTab(tab) {
   _perfActiveTab = tab;
-  ['analisis','publicaciones','ventas-hora'].forEach(t => {
+  ['analisis','publicaciones','ventas-hora','seguimiento'].forEach(t => {
     const el  = document.getElementById(`perf-tab-${t}`);
     const btn = document.getElementById(`tab-perf-${t}`);
     if (el)  el.style.display  = t === tab ? '' : 'none';
@@ -3773,7 +3791,8 @@ function switchPerfTab(tab) {
   });
   const btnExport = document.getElementById('btnExportPerf');
   if (btnExport) btnExport.style.display = (tab === 'publicaciones' || tab === 'ventas-hora') ? 'none' : '';
-  if (tab === 'publicaciones') { window._perfPubSearch = ''; renderPerfPublicaciones(); }
+  if (tab === 'publicaciones') { window._perfPubSearch = ''; loadSeguimientoMap(); renderPerfPublicaciones(); }
+  if (tab === 'seguimiento') loadSeguimiento();
   if (tab === 'ventas-hora') {
     const client = getActiveClient();
     const iframe = document.getElementById('iframe-ventas-hora');
@@ -3885,7 +3904,12 @@ function renderPerfPublicaciones() {
     const trendColor = p.trend_pct == null ? 'var(--muted)' : p.trend_pct >= 0 ? '#00e676' : '#ff5252';
     const pctTotal = (p.revenue / totalRevenue * 100).toFixed(1);
     const convColor = !p.conversion ? 'var(--muted)' : p.conversion >= 3 ? '#00e676' : p.conversion >= 1 ? '#ff9100' : '#ff5252';
+    const seg = window._seguimientoMap?.[p.id];
+    const star = seg ? '★' : '☆';
+    const starColor = seg ? '#FFD700' : 'var(--muted)';
+    const clientId = p.cuenta ? state.accounts.find(a => a.name === p.cuenta)?.id : getActiveClient()?.id;
     return `<tr style="border-bottom:1px solid var(--border);${idx%2===0?'background:rgba(255,255,255,.015)':''}">
+      <td style="padding:7px 6px;text-align:center;cursor:pointer;font-size:16px;color:${starColor}" title="${seg ? 'Quitar seguimiento' : 'Seguir esta publicación'}" onclick="toggleSeguimiento('${p.id}','${p.title.replace(/'/g,"\\'")}',${clientId})">${star}</td>
       <td style="padding:7px 10px;font-size:11px;white-space:nowrap">
         <a href="https://articulo.mercadolibre.com.ar/${p.id}" target="_blank" style="color:var(--accent);text-decoration:none;font-weight:600">${p.id}</a>
       </td>
@@ -3923,6 +3947,7 @@ function renderPerfPublicaciones() {
       <table style="width:100%;border-collapse:collapse">
         <thead>
           <tr style="background:var(--surface2)">
+            <th style="padding:9px 6px;text-align:center;font-size:11px;font-weight:600;color:var(--muted);position:sticky;top:0;background:var(--surface2);z-index:2">★</th>
             ${th('id',        'MLA',          'left')}
             ${th('title',     'Título',       'left')}
             ${th('units',     'Unidades')}
@@ -3943,6 +3968,259 @@ function sortPerfPub(col) {
   if (_perfPubSort.col === col) _perfPubSort.asc = !_perfPubSort.asc;
   else { _perfPubSort.col = col; _perfPubSort.asc = false; }
   renderPerfPublicaciones();
+}
+
+// ── SEGUIMIENTO DE PUBLICACIONES ─────────────────────────────────────────────
+
+window._seguimientoMap = {}; // mla -> { id, nota }
+
+async function loadSeguimientoMap() {
+  const client = getActiveClient();
+  if (!client) return;
+  try {
+    const data = await apiCall('GET', `/api/seguimiento?client_id=${client.id}&days=1`);
+    window._seguimientoMap = {};
+    (data?.items || []).forEach(s => { window._seguimientoMap[s.mla] = { id: s.id, nota: s.nota }; });
+  } catch(_) {}
+}
+
+async function toggleSeguimiento(mla, titulo, clientId) {
+  const seg = window._seguimientoMap?.[mla];
+  if (seg) {
+    if (!confirm(`¿Quitar "${titulo}" del seguimiento?`)) return;
+    await apiCall('DELETE', `/api/seguimiento/${seg.id}`);
+    delete window._seguimientoMap[mla];
+    showToast('Publicación quitada del seguimiento');
+  } else {
+    const nota = prompt(`Opcional: ¿qué cambio hiciste en "${titulo}"? (nota para el seguimiento)`);
+    if (nota === null) return; // canceló el prompt
+    await apiCall('POST', '/api/seguimiento', { mla, titulo, nota: nota || null, client_id: clientId });
+    window._seguimientoMap[mla] = { id: null, nota: nota || null };
+    showToast('★ Publicación agregada al seguimiento');
+    await loadSeguimientoMap(); // refrescar para obtener el id real
+  }
+  renderPerfPublicaciones();
+}
+
+async function loadSeguimiento(forceRefresh) {
+  const el = document.getElementById('seguimientoContent');
+  if (!el) return;
+  const client = getActiveClient();
+  if (!client) { el.innerHTML = '<div style="color:var(--muted);padding:20px">Seleccioná un cliente primero.</div>'; return; }
+  const days = document.getElementById('segDaysSelect')?.value || 14;
+  el.innerHTML = '<div style="color:var(--muted);padding:30px;text-align:center">⏳ Cargando snapshots…</div>';
+  try {
+    const data = await apiCall('GET', `/api/seguimiento?client_id=${client.id}&days=${days}`);
+    if (!data?.ok) { el.innerHTML = '<div style="color:#c62828;padding:20px">Error al cargar seguimiento.</div>'; return; }
+    if (!data.items?.length) {
+      el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">No hay publicaciones en seguimiento. Marcalas con ★ en la pestaña Publicaciones.</div>';
+      return;
+    }
+    renderSeguimiento(data);
+  } catch(e) { el.innerHTML = `<div style="color:#c62828;padding:20px">Error: ${e.message}</div>`; }
+}
+
+function renderSeguimiento(data) {
+  const el = document.getElementById('seguimientoContent');
+  const { items, curFrom, curTo, prevFrom, prevTo } = data;
+  const fmt  = n => n == null ? '—' : '$' + Math.round(n).toLocaleString('es-AR');
+  const fmtN = n => n == null ? '—' : Math.round(n).toLocaleString('es-AR');
+  const fmtD = d => { if (!d) return '—'; const dt = new Date(d + 'T12:00:00Z'); return dt.toLocaleDateString('es-AR', {day:'2-digit',month:'short'}); };
+
+  const deltaCell = (delta, key, invert, isMoney, isPct) => {
+    if (!delta || delta[key] == null) return '<td style="padding:6px 8px;text-align:right;font-size:11px;color:var(--muted)">s/d</td>';
+    const { abs, pct } = delta[key];
+    const positive = invert ? abs < 0 : abs > 0;
+    const color = abs === 0 ? 'var(--muted)' : positive ? '#00e676' : '#ff5252';
+    const sign = abs >= 0 ? '+' : '';
+    const valStr = isPct ? `${sign}${abs.toFixed(1)}pp` : isMoney ? (sign + '$' + Math.abs(Math.round(abs)).toLocaleString('es-AR') + (abs < 0 ? ' ↓' : ' ↑')) : `${sign}${Math.round(abs)}`;
+    const pctStr = pct != null && !isPct ? `<div style="font-size:10px;color:${color}">${sign}${pct.toFixed(0)}%</div>` : '';
+    return `<td style="padding:6px 8px;text-align:right;font-size:12px;font-weight:700;color:${color}">${valStr}${pctStr}</td>`;
+  };
+
+  const metricVal = (m, key, isMoney, isPct) => {
+    if (!m) return '<td style="padding:6px 8px;text-align:right;font-size:12px;color:var(--muted)">s/d</td>';
+    const v = m[key];
+    if (v == null) return '<td style="padding:6px 8px;text-align:right;font-size:12px;color:var(--muted)">—</td>';
+    const str = isPct ? v.toFixed(1) + '%' : isMoney ? fmt(v) : fmtN(v);
+    return `<td style="padding:6px 8px;text-align:right;font-size:12px">${str}</td>`;
+  };
+
+  const thead = `<tr style="font-size:11px;color:var(--muted);background:var(--surface2);border-bottom:2px solid var(--border)">
+    <th style="padding:8px 10px;text-align:left;position:sticky;top:0;background:var(--surface2)">Publicación</th>
+    <th style="padding:8px 10px;text-align:left;position:sticky;top:0;background:var(--surface2)" colspan="2">Visitas</th>
+    <th style="padding:8px 10px;text-align:center;position:sticky;top:0;background:var(--surface2)">Δ</th>
+    <th style="padding:8px 10px;text-align:left;position:sticky;top:0;background:var(--surface2)" colspan="2">Órdenes</th>
+    <th style="padding:8px 10px;text-align:center;position:sticky;top:0;background:var(--surface2)">Δ</th>
+    <th style="padding:8px 10px;text-align:left;position:sticky;top:0;background:var(--surface2)" colspan="2">Conversión</th>
+    <th style="padding:8px 10px;text-align:center;position:sticky;top:0;background:var(--surface2)">Δ</th>
+    <th style="padding:8px 10px;text-align:left;position:sticky;top:0;background:var(--surface2)" colspan="2">Ritmo/día</th>
+    <th style="padding:8px 10px;text-align:center;position:sticky;top:0;background:var(--surface2)">Δ</th>
+    <th style="padding:8px 10px;text-align:left;position:sticky;top:0;background:var(--surface2)" colspan="2">Precio</th>
+    <th style="padding:8px 10px;text-align:center;position:sticky;top:0;background:var(--surface2)">Δ</th>
+    <th style="padding:8px 10px;text-align:center;position:sticky;top:0;background:var(--surface2)">Evolución</th>
+    <th style="padding:8px 10px;text-align:center;position:sticky;top:0;background:var(--surface2)">Acción</th>
+  </tr>
+  <tr style="font-size:10px;color:var(--muted);background:var(--surface2)">
+    <td></td>
+    <td style="padding:2px 8px;text-align:right">${fmtD(prevFrom)}–${fmtD(prevTo)}</td>
+    <td style="padding:2px 8px;text-align:right">${fmtD(curFrom)}–${fmtD(curTo)}</td>
+    <td></td>
+    <td style="padding:2px 8px;text-align:right">${fmtD(prevFrom)}–${fmtD(prevTo)}</td>
+    <td style="padding:2px 8px;text-align:right">${fmtD(curFrom)}–${fmtD(curTo)}</td>
+    <td></td>
+    <td style="padding:2px 8px;text-align:right">${fmtD(prevFrom)}–${fmtD(prevTo)}</td>
+    <td style="padding:2px 8px;text-align:right">${fmtD(curFrom)}–${fmtD(curTo)}</td>
+    <td></td>
+    <td style="padding:2px 8px;text-align:right">${fmtD(prevFrom)}–${fmtD(prevTo)}</td>
+    <td style="padding:2px 8px;text-align:right">${fmtD(curFrom)}–${fmtD(curTo)}</td>
+    <td></td>
+    <td style="padding:2px 8px;text-align:right">${fmtD(prevFrom)}–${fmtD(prevTo)}</td>
+    <td style="padding:2px 8px;text-align:right">${fmtD(curFrom)}–${fmtD(curTo)}</td>
+    <td></td>
+    <td></td>
+    <td></td>
+  </tr>`;
+
+  let tbody = '';
+  items.forEach(item => {
+    const marcadaDate = new Date(item.marcada_at).toLocaleDateString('es-AR', {day:'2-digit',month:'short',year:'2-digit'});
+    tbody += `<tr id="seg-row-${item.id}" style="border-bottom:1px solid var(--border);cursor:pointer" onclick="toggleSegEvolucion(${item.id}, this)">
+      <td style="padding:8px 10px;min-width:180px">
+        <div style="font-size:12px;font-weight:700;color:var(--text)">${item.titulo || item.mla}</div>
+        <div style="font-size:10px;color:var(--muted)">${item.mla} · marcado ${marcadaDate}${item.nota ? ' · <em>' + item.nota + '</em>' : ''}</div>
+        ${item.snapshots_count < 2 ? '<div style="font-size:10px;color:#d97706">⚠ Pocos snapshots aún</div>' : ''}
+      </td>
+      ${metricVal(item.prev, 'visitas', false, false)}
+      ${metricVal(item.cur,  'visitas', false, false)}
+      ${deltaCell(item.delta, 'visitas', false, false, false)}
+      ${metricVal(item.prev, 'ordenes', false, false)}
+      ${metricVal(item.cur,  'ordenes', false, false)}
+      ${deltaCell(item.delta, 'ordenes', false, false, false)}
+      ${metricVal(item.prev, 'conversion', false, true)}
+      ${metricVal(item.cur,  'conversion', false, true)}
+      ${deltaCell(item.delta, 'conversion', false, false, true)}
+      ${metricVal(item.prev, 'ritmo_dia', false, false)}
+      ${metricVal(item.cur,  'ritmo_dia', false, false)}
+      ${deltaCell(item.delta, 'ritmo_dia', false, false, false)}
+      ${metricVal(item.prev, 'precio', true, false)}
+      ${metricVal(item.cur,  'precio', true, false)}
+      ${deltaCell(item.delta, 'precio', false, true, false)}
+      <td style="padding:8px;text-align:center;font-size:12px;color:var(--accent)">📈</td>
+      <td style="padding:8px;text-align:center">
+        <button onclick="event.stopPropagation();quitarSeguimiento(${item.id},'${(item.titulo||item.mla).replace(/'/g,"\\'")}',this)" style="padding:3px 8px;border:1px solid var(--border);border-radius:6px;background:none;color:var(--muted);font-size:11px;cursor:pointer">✕</button>
+      </td>
+    </tr>
+    <tr id="seg-evo-${item.id}" style="display:none">
+      <td colspan="18" style="padding:0">
+        <div style="padding:16px 20px;background:var(--surface)">
+          <div id="seg-chart-${item.id}" style="width:100%;height:160px">
+            <div style="color:var(--muted);font-size:12px">Cargando evolución…</div>
+          </div>
+        </div>
+      </td>
+    </tr>`;
+  });
+
+  el.innerHTML = `
+    <div style="font-size:12px;color:var(--muted);margin-bottom:10px">${items.length} publicación${items.length !== 1 ? 'es' : ''} en seguimiento · Click en una fila para ver evolución</div>
+    <div style="overflow-x:auto;border-radius:10px;border:1px solid var(--border)">
+      <table style="width:100%;border-collapse:collapse;font-size:13px">
+        <thead>${thead}</thead>
+        <tbody>${tbody}</tbody>
+      </table>
+    </div>`;
+}
+
+async function toggleSegEvolucion(id, row) {
+  const evoRow = document.getElementById(`seg-evo-${id}`);
+  if (!evoRow) return;
+  const isOpen = evoRow.style.display !== 'none';
+  evoRow.style.display = isOpen ? 'none' : '';
+  if (!isOpen) {
+    const chartEl = document.getElementById(`seg-chart-${id}`);
+    if (!chartEl || chartEl.dataset.loaded) return;
+    chartEl.dataset.loaded = '1';
+    try {
+      const data = await apiCall('GET', `/api/seguimiento/${id}/evolucion`);
+      renderSegChart(chartEl, data.series || []);
+    } catch(e) { if (chartEl) chartEl.innerHTML = '<div style="color:#c62828;font-size:12px">Error al cargar evolución.</div>'; }
+  }
+}
+
+function renderSegChart(el, series) {
+  if (!series.length) { el.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:20px">Sin datos de evolución aún.</div>'; return; }
+  const W = el.clientWidth || 700, H = 150;
+  const padL = 45, padR = 20, padT = 15, padB = 35;
+  const innerW = W - padL - padR, innerH = H - padT - padB;
+  const n = series.length;
+  const stepX = n > 1 ? innerW / (n - 1) : innerW;
+
+  const metrics = [
+    { key: 'visitas', color: '#6366f1', label: 'Visitas' },
+    { key: 'ordenes', color: '#00e676', label: 'Órdenes' },
+  ];
+
+  const fmtDate = d => { const dt = new Date(d + 'T12:00:00Z'); return dt.toLocaleDateString('es-AR', {day:'2-digit',month:'short'}); };
+
+  let svg = '';
+  // Grid
+  for (let g = 0; g <= 3; g++) {
+    const y = padT + (g / 3) * innerH;
+    svg += `<line x1="${padL}" y1="${y.toFixed(1)}" x2="${padL+innerW}" y2="${y.toFixed(1)}" stroke="rgba(255,255,255,.06)" stroke-width="1"/>`;
+  }
+
+  metrics.forEach(({ key, color }) => {
+    const vals = series.map(s => parseInt(s[key]) || 0);
+    const maxV = Math.max(...vals, 1);
+    const pts  = vals.map((v, i) => ({ x: padL + i * stepX, y: padT + innerH - (v / maxV) * innerH, v }));
+    if (!vals.some(v => v > 0)) return;
+    const pStr = pts.map(p => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ');
+    svg += `<polyline points="${pStr}" fill="none" stroke="${color}" stroke-width="2" stroke-linejoin="round"/>`;
+    pts.forEach(p => {
+      const tip = `${key === 'visitas' ? 'Visitas' : 'Órdenes'}: ${p.v}`;
+      svg += `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="3" fill="${color}" stroke="rgba(0,0,0,.4)" stroke-width="1"><title>${tip}</title></circle>`;
+    });
+  });
+
+  // Precio como línea secundaria
+  const precios = series.map(s => parseFloat(s.precio) || 0).filter(v => v > 0);
+  if (precios.length > 0) {
+    const maxP = Math.max(...precios, 1);
+    const pricePts = series.map((s, i) => {
+      const v = parseFloat(s.precio) || 0;
+      return { x: padL + i * stepX, y: padT + innerH - (v / maxP) * innerH, v };
+    }).filter(p => p.v > 0);
+    if (pricePts.length > 1) {
+      const pStr = pricePts.map(p => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ');
+      svg += `<polyline points="${pStr}" fill="none" stroke="#FFD700" stroke-width="1.5" stroke-dasharray="4 3" stroke-linejoin="round"/>`;
+    }
+  }
+
+  // X labels (cada 3 días)
+  series.forEach((s, i) => {
+    if (i % Math.max(1, Math.floor(n / 5)) !== 0 && i !== n - 1) return;
+    const x = padL + i * stepX;
+    svg += `<text x="${x.toFixed(1)}" y="${H - 8}" text-anchor="middle" font-size="9" fill="rgba(255,255,255,.45)" font-family="sans-serif">${fmtDate(s.dia)}</text>`;
+  });
+
+  // Leyenda
+  svg += `<text x="${padL}" y="${padT - 4}" font-size="9" fill="#6366f1" font-family="sans-serif">─ Visitas</text>`;
+  svg += `<text x="${padL+60}" y="${padT - 4}" font-size="9" fill="#00e676" font-family="sans-serif">─ Órdenes</text>`;
+  svg += `<text x="${padL+120}" y="${padT - 4}" font-size="9" fill="#FFD700" font-family="sans-serif">- - Precio</text>`;
+
+  el.innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="100%" height="100%" style="overflow:visible">${svg}</svg>`;
+}
+
+async function quitarSeguimiento(id, titulo, btn) {
+  if (!confirm(`¿Quitar "${titulo}" del seguimiento? Se conserva el historial.`)) return;
+  btn.disabled = true;
+  try {
+    await apiCall('DELETE', `/api/seguimiento/${id}`);
+    await loadSeguimientoMap();
+    showToast('Publicación quitada del seguimiento');
+    loadSeguimiento();
+  } catch(e) { showToast('Error al quitar: ' + e.message); btn.disabled = false; }
 }
 
 function setPerfPubModeFilter(mode) {
