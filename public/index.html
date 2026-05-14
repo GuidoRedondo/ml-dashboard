@@ -924,12 +924,14 @@ tbody td {
           <button id="rentTabSimulador" onclick="switchRentTab('simulador')" class="sync-btn">🧮 Simulador</button>
           <button id="rentTabDescuentos" onclick="switchRentTab('descuentos')" class="sync-btn">🏷️ Descuentos</button>
           <button id="rentTabFees" onclick="switchRentTab('fees')" class="sync-btn">🔍 Verificador</button>
+          <button id="rentTabUmbrales" onclick="switchRentTab('umbrales')" class="sync-btn">🎯 Umbrales</button>
         </div>
       </div>
       <div id="rentabilidadContent"><div style="color:var(--muted);font-size:13px;padding:20px;text-align:center">Sincronizá primero para ver los datos</div></div>
       <div id="simuladorContent" style="display:none"></div>
       <div id="descuentosContent" style="display:none"></div>
       <div id="feesContent" style="display:none"></div>
+      <div id="umbralesContent" style="display:none"></div>
     </div>
 
     <!-- ADS -->
@@ -4278,13 +4280,16 @@ function switchRentTab(tab) {
   document.getElementById('simuladorContent').style.display    = tab === 'simulador'  ? '' : 'none';
   document.getElementById('descuentosContent').style.display   = tab === 'descuentos' ? '' : 'none';
   document.getElementById('feesContent').style.display         = tab === 'fees'       ? '' : 'none';
+  document.getElementById('umbralesContent').style.display     = tab === 'umbrales'   ? '' : 'none';
   document.getElementById('rentTabAnalisis').style.background   = tab === 'analisis'   ? 'var(--accent)' : 'var(--surface2)';
   document.getElementById('rentTabSimulador').style.background  = tab === 'simulador'  ? 'var(--accent)' : 'var(--surface2)';
   document.getElementById('rentTabDescuentos').style.background = tab === 'descuentos' ? 'var(--accent)' : 'var(--surface2)';
   document.getElementById('rentTabFees').style.background       = tab === 'fees'       ? 'var(--accent)' : 'var(--surface2)';
+  document.getElementById('rentTabUmbrales').style.background   = tab === 'umbrales'   ? 'var(--accent)' : 'var(--surface2)';
   if (tab === 'simulador')  loadSimulador();
   if (tab === 'descuentos') loadDescuentos();
   if (tab === 'fees')       initVerificadorFees();
+  if (tab === 'umbrales')   loadUmbrales();
 }
 
 // ── VERIFICADOR DE FEES ML ──────────────────────────────────────────────────
@@ -4698,6 +4703,236 @@ function getComisionPct(mlaId, lt, categoryId) {
   // Primero buscar resultado exacto por MLA
   if (window._comisionMap?.[mlaId] != null) return window._comisionMap[mlaId];
   return null;
+}
+
+// ── CLIFF FINDER / UMBRALES ──────────────────────────────────────────────────
+
+const CARGO_FIJO_ESCALAS_FE = [
+  { desde: 0,     hasta: 15999, cargo: 1255 },
+  { desde: 16000, hasta: 23999, cargo: 2500 },
+  { desde: 24000, hasta: 32999, cargo: 3030 },
+  { desde: 33000, hasta: Infinity, cargo: 0 },
+];
+
+let _umbralesData = null;
+let _umbralesTab  = 'seguras';
+
+async function loadUmbrales(forceRefresh) {
+  const el = document.getElementById('umbralesContent');
+  if (!el) return;
+  const client = getActiveClient();
+  if (!client) { el.innerHTML = '<p style="color:var(--muted);padding:20px">Seleccioná un cliente</p>'; return; }
+
+  if (_umbralesData && !forceRefresh) { renderUmbrales(_umbralesData); return; }
+
+  el.innerHTML = '<div style="padding:40px;text-align:center;color:var(--muted)">Analizando publicaciones... esto puede tardar unos segundos</div>';
+  try {
+    const data = await apiCall(`/api/analisis/umbrales?client_id=${client.id}`);
+    _umbralesData = data;
+    renderUmbrales(data);
+  } catch(e) {
+    el.innerHTML = `<div style="padding:20px;color:#ff5252">Error: ${e.message}</div>`;
+  }
+}
+
+function renderUmbrales(data) {
+  const el = document.getElementById('umbralesContent');
+  if (!el) return;
+  const client = getActiveClient();
+
+  // Cross-reference with by_product for units sold
+  const byProductMap = {};
+  state.accounts.forEach(acc => {
+    (acc.data?.rentabilidad?.by_product || []).forEach(p => { byProductMap[p.id] = p.units || 0; });
+  });
+
+  const enrichOp = op => ({
+    ...op,
+    ventas_mes: byProductMap[op.id] || null,
+    ahorro_mensual: byProductMap[op.id] ? Math.round(op.ahorro_x_venta * byProductMap[op.id]) : null,
+  });
+
+  const seguras = (data.seguras || []).map(enrichOp);
+  const testear = (data.testear || []).map(enrichOp);
+  const otras   = (data.otras   || []).map(enrichOp);
+  const historial = data.historial || [];
+
+  // KPI cards
+  const totalAhorroPot = [...seguras, ...testear, ...otras]
+    .reduce((s, o) => s + (o.ahorro_mensual || 0), 0);
+  const fmt$ = n => n != null ? '$' + Math.round(n).toLocaleString('es-AR') : '—';
+
+  const tabBtn = (id, label, active) =>
+    `<button onclick="switchUmbralesTab('${id}')" id="uTab-${id}"
+      style="padding:7px 16px;font-size:12px;font-weight:600;border:none;border-radius:6px;cursor:pointer;font-family:var(--font-b);
+             background:${active ? 'var(--accent)' : 'var(--surface2)'};color:${active ? '#fff' : 'var(--text)'}">
+      ${label}
+    </button>`;
+
+  el.innerHTML = `
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:10px">
+      <div>
+        <h3 style="margin:0 0 4px;font-family:var(--font-b);font-size:15px">🎯 Detector de Umbrales ML</h3>
+        <p style="margin:0;font-size:12px;color:var(--muted)">Identifica publicaciones donde bajar el precio aumenta la ganancia neta</p>
+      </div>
+      <button onclick="loadUmbrales(true)" class="sync-btn" style="background:var(--surface2)">🔄 Actualizar</button>
+    </div>
+
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:20px">
+      ${kpiCard2('Seguras (FULL)', seguras.length, '', '#22c55e')}
+      ${kpiCard2('A testear', testear.length, '', '#f59e0b')}
+      ${kpiCard2('Otras', otras.length, '', '#8b5cf6')}
+      ${kpiCard2('Ahorro potencial/mes', totalAhorroPot > 0 ? fmt$(totalAhorroPot) : '—', '', '#0ea5e9', true)}
+    </div>
+
+    <div style="display:flex;gap:8px;margin-bottom:16px">
+      ${tabBtn('seguras', `✅ Seguras (${seguras.length})`, _umbralesTab === 'seguras')}
+      ${tabBtn('testear', `⚠️ A testear (${testear.length})`, _umbralesTab === 'testear')}
+      ${tabBtn('otras',   `📌 Otras (${otras.length})`,       _umbralesTab === 'otras')}
+      ${tabBtn('historial', `📋 Historial (${historial.length})`, _umbralesTab === 'historial')}
+    </div>
+
+    <div id="umbrales-tab-seguras"  style="display:${_umbralesTab==='seguras'?'':'none'}">${renderUmbralesTabla(seguras,  client, 'LOW',    'FULL — sin impacto en conversión')}</div>
+    <div id="umbrales-tab-testear"  style="display:${_umbralesTab==='testear'?'':'none'}">${renderUmbralesTabla(testear, client, 'MEDIUM', 'No-FULL — puede afectar conversión')}</div>
+    <div id="umbrales-tab-otras"    style="display:${_umbralesTab==='otras'?'':'none'}">${renderUmbralesTabla(otras,   client, 'LOW',    'Umbral de cargo fijo < $33k')}</div>
+    <div id="umbrales-tab-historial" style="display:${_umbralesTab==='historial'?'':'none'}">${renderUmbralesHistorial(historial)}</div>
+
+    <div style="margin-top:16px;padding:12px;background:var(--surface2);border-radius:8px;font-size:11px;color:var(--muted)">
+      <strong>Cómo funciona:</strong> ML cobra cargo fijo por venta: &lt;$16k → $1.255 | $16k–$24k → $2.500 | $24k–$33k → $3.030 | ≥$33k → $0 pero el vendedor paga el envío FULL (~$7.430).
+      Bajar un ítem FULL de $33.001 a $32.999 ahorra ~$4.400 por venta sin afectar la conversión porque siempre muestra "Envío gratis".
+    </div>
+  `;
+}
+
+function kpiCard2(label, value, sub, color, big) {
+  return `<div style="background:var(--surface2);border-radius:10px;padding:14px;border-left:3px solid ${color}">
+    <div style="font-size:11px;color:var(--muted);margin-bottom:4px">${label}</div>
+    <div style="font-size:${big?'18px':'22px'};font-weight:700;color:${color};font-family:var(--font-b)">${value}</div>
+    ${sub ? `<div style="font-size:11px;color:var(--muted);margin-top:2px">${sub}</div>` : ''}
+  </div>`;
+}
+
+function renderUmbralesTabla(items, client, riskLabel, riskDesc) {
+  if (!items.length) return '<div style="padding:30px;text-align:center;color:var(--muted);font-size:13px">No hay oportunidades en esta categoría</div>';
+  const fmt$ = n => n != null ? '$' + Math.round(n).toLocaleString('es-AR') : '—';
+  const riskColor = riskLabel === 'LOW' ? '#22c55e' : riskLabel === 'MEDIUM' ? '#f59e0b' : '#8b5cf6';
+
+  const rows = items.map(op => {
+    const ua = op.ultima_accion;
+    const accionBadge = ua
+      ? `<span style="font-size:10px;padding:2px 6px;border-radius:4px;font-weight:600;background:${ua.accion==='aplicada'?'#16a34a':ua.accion==='ignorada'?'#374151':'#92400e'};color:#fff">${ua.accion.toUpperCase()}</span>`
+      : '';
+
+    return `<tr style="border-bottom:1px solid var(--border)">
+      <td style="padding:8px 6px;font-size:12px;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${op.title}">
+        ${op.permalink ? `<a href="${op.permalink}" target="_blank" style="color:var(--accent);text-decoration:none">${op.title}</a>` : op.title}
+        ${accionBadge}
+      </td>
+      <td style="padding:8px 6px;text-align:right;font-size:12px">${fmt$(op.precio)}</td>
+      <td style="padding:8px 6px;text-align:right;font-size:12px;color:#22c55e">${fmt$(op.precio_sugerido)}</td>
+      <td style="padding:8px 6px;text-align:right;font-size:12px;color:#0ea5e9;font-weight:700">${fmt$(op.ahorro_x_venta)}</td>
+      <td style="padding:8px 6px;text-align:right;font-size:12px">${op.ventas_mes != null ? op.ventas_mes : '<span style="color:var(--muted)">—</span>'}</td>
+      <td style="padding:8px 6px;text-align:right;font-size:12px;color:#22c55e;font-weight:700">${fmt$(op.ahorro_mensual)}</td>
+      <td style="padding:8px 6px;text-align:center">
+        <span style="font-size:10px;padding:2px 6px;border-radius:4px;font-weight:600;background:${riskColor}22;color:${riskColor}">${riskLabel}</span>
+      </td>
+      <td style="padding:8px 6px;text-align:center;white-space:nowrap">
+        <button onclick="registrarAccionUmbral('${op.id}','${(op.title||'').replace(/'/g,'\\\'').slice(0,60)}',${op.precio},${op.precio_sugerido},${op.ahorro_mensual||0},'aplicada',this)"
+          style="font-size:10px;padding:3px 7px;border:none;border-radius:4px;cursor:pointer;background:#16a34a;color:#fff;margin-right:3px">✓ Aplicar</button>
+        <button onclick="registrarAccionUmbral('${op.id}','${(op.title||'').replace(/'/g,'\\\'').slice(0,60)}',${op.precio},${op.precio_sugerido},${op.ahorro_mensual||0},'pospuesta',this)"
+          style="font-size:10px;padding:3px 7px;border:none;border-radius:4px;cursor:pointer;background:#92400e;color:#fff;margin-right:3px">⏸ Posponer</button>
+        <button onclick="registrarAccionUmbral('${op.id}','${(op.title||'').replace(/'/g,'\\\'').slice(0,60)}',${op.precio},${op.precio_sugerido},${op.ahorro_mensual||0},'ignorada',this)"
+          style="font-size:10px;padding:3px 7px;border:none;border-radius:4px;cursor:pointer;background:#374151;color:#fff">✗ Ignorar</button>
+      </td>
+    </tr>`;
+  }).join('');
+
+  return `
+    <p style="font-size:12px;color:var(--muted);margin:0 0 10px">${riskDesc}</p>
+    <div style="overflow-x:auto">
+      <table style="width:100%;border-collapse:collapse;font-size:12px">
+        <thead>
+          <tr style="border-bottom:2px solid var(--border);color:var(--muted);font-size:11px">
+            <th style="padding:6px;text-align:left">Publicación</th>
+            <th style="padding:6px;text-align:right">Precio actual</th>
+            <th style="padding:6px;text-align:right">Precio sugerido</th>
+            <th style="padding:6px;text-align:right">Ahorro/venta</th>
+            <th style="padding:6px;text-align:right">Ventas/mes</th>
+            <th style="padding:6px;text-align:right">Ahorro/mes</th>
+            <th style="padding:6px;text-align:center">Riesgo</th>
+            <th style="padding:6px;text-align:center">Acciones</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+}
+
+function renderUmbralesHistorial(historial) {
+  if (!historial.length) return '<div style="padding:30px;text-align:center;color:var(--muted);font-size:13px">Sin acciones registradas</div>';
+  const fmt$ = n => n != null ? '$' + Math.round(n).toLocaleString('es-AR') : '—';
+  const fmtDate = d => d ? new Date(d).toLocaleDateString('es-AR', { day:'2-digit', month:'2-digit', year:'numeric' }) : '';
+
+  const rows = historial.map(a => {
+    const color = a.accion === 'aplicada' ? '#22c55e' : a.accion === 'ignorada' ? '#6b7280' : '#f59e0b';
+    return `<tr style="border-bottom:1px solid var(--border)">
+      <td style="padding:7px 6px;font-size:12px">${fmtDate(a.created_at)}</td>
+      <td style="padding:7px 6px;font-size:12px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${a.titulo || a.mla}</td>
+      <td style="padding:7px 6px;font-size:12px;text-align:right">${fmt$(a.precio_actual)}</td>
+      <td style="padding:7px 6px;font-size:12px;text-align:right;color:#22c55e">${fmt$(a.precio_sugerido)}</td>
+      <td style="padding:7px 6px;font-size:12px;text-align:right;color:#0ea5e9">${fmt$(a.ahorro_neto_mensual)}</td>
+      <td style="padding:7px 6px;text-align:center">
+        <span style="font-size:10px;padding:2px 7px;border-radius:4px;font-weight:600;background:${color}22;color:${color}">${a.accion.toUpperCase()}</span>
+      </td>
+      ${a.notas ? `<td style="padding:7px 6px;font-size:11px;color:var(--muted)">${a.notas}</td>` : '<td></td>'}
+    </tr>`;
+  }).join('');
+
+  return `<div style="overflow-x:auto">
+    <table style="width:100%;border-collapse:collapse">
+      <thead>
+        <tr style="border-bottom:2px solid var(--border);color:var(--muted);font-size:11px">
+          <th style="padding:6px;text-align:left">Fecha</th>
+          <th style="padding:6px;text-align:left">Publicación</th>
+          <th style="padding:6px;text-align:right">Precio anterior</th>
+          <th style="padding:6px;text-align:right">Precio sugerido</th>
+          <th style="padding:6px;text-align:right">Ahorro est./mes</th>
+          <th style="padding:6px;text-align:center">Acción</th>
+          <th style="padding:6px;text-align:left">Notas</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>
+  </div>`;
+}
+
+function switchUmbralesTab(tab) {
+  _umbralesTab = tab;
+  ['seguras','testear','otras','historial'].forEach(t => {
+    const el = document.getElementById(`umbrales-tab-${t}`);
+    const btn = document.getElementById(`uTab-${t}`);
+    if (el) el.style.display = t === tab ? '' : 'none';
+    if (btn) { btn.style.background = t === tab ? 'var(--accent)' : 'var(--surface2)'; btn.style.color = t === tab ? '#fff' : 'var(--text)'; }
+  });
+}
+
+async function registrarAccionUmbral(mla, titulo, precioActual, precioSugerido, ahorroMensual, accion, btn) {
+  const client = getActiveClient();
+  if (!client) return;
+  btn.disabled = true;
+  try {
+    await apiCall('/api/analisis/umbrales/accion', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ client_id: client.id, mla, titulo, precio_actual: precioActual, precio_sugerido: precioSugerido, ahorro_neto_mensual: ahorroMensual, accion }),
+    });
+    showToast(`✓ Acción "${accion}" registrada`);
+    _umbralesData = null;
+    loadUmbrales(true);
+  } catch(e) {
+    showToast('❌ Error al registrar acción');
+    btn.disabled = false;
+  }
 }
 
 async function loadDescuentos() {

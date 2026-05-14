@@ -59,6 +59,42 @@ const PORT = process.env.PORT || 3000;
 const ML_API = 'https://api.mercadolibre.com';
 const ART = 'America/Argentina/Buenos_Aires';
 
+// ── CLIFF FINDER — escalas de cargo fijo ML ──────────────────────────────────
+const CARGO_FIJO_ESCALAS = [
+  { desde: 0,     hasta: 15999, cargo: 1255 },
+  { desde: 16000, hasta: 23999, cargo: 2500 },
+  { desde: 24000, hasta: 32999, cargo: 3030 },
+  { desde: 33000, hasta: Infinity, cargo: 0 },
+];
+const ENVIO_FULL_33K = 7430;
+
+function getEscalaIdx(precio) {
+  return CARGO_FIJO_ESCALAS.findIndex(e => precio >= e.desde && precio <= e.hasta);
+}
+
+function calcCliffOportunidad(precio, isFull) {
+  const idxActual = getEscalaIdx(precio);
+  if (idxActual <= 0) return null;
+  const escalaActual = CARGO_FIJO_ESCALAS[idxActual];
+  const escalaTarget = CARGO_FIJO_ESCALAS[idxActual - 1];
+  const precioSugerido = escalaTarget.hasta;
+  const envioActual   = (isFull && idxActual === CARGO_FIJO_ESCALAS.length - 1) ? ENVIO_FULL_33K : 0;
+  const diffPrecio    = precio - precioSugerido;
+  const netoXVenta    = -diffPrecio
+    + diffPrecio * 0.165
+    + diffPrecio * 0.044
+    - (escalaTarget.cargo - escalaActual.cargo)
+    + envioActual;
+  if (netoXVenta <= 0) return null;
+  return {
+    precio_sugerido: precioSugerido,
+    cargo_actual:    escalaActual.cargo,
+    cargo_sugerido:  escalaTarget.cargo,
+    envio_actual:    envioActual,
+    ahorro_x_venta:  Math.round(netoXVenta),
+  };
+}
+
 // ── DATABASE ──────────────────────────────────────────────────────────────────
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -332,6 +368,18 @@ async function initDB() {
       ordenes INTEGER DEFAULT 0,
       ritmo_dia NUMERIC(8,3),
       UNIQUE(seguimiento_id, dia)
+    );
+    CREATE TABLE IF NOT EXISTS ml_cliff_actions (
+      id          SERIAL PRIMARY KEY,
+      client_id   INTEGER NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+      mla         TEXT NOT NULL,
+      titulo      TEXT,
+      precio_actual       NUMERIC(12,2),
+      precio_sugerido     NUMERIC(12,2),
+      ahorro_neto_mensual NUMERIC(12,2),
+      accion      VARCHAR(20) NOT NULL,
+      notas       TEXT,
+      created_at  TIMESTAMPTZ DEFAULT NOW()
     );
   `);
 
@@ -7453,6 +7501,117 @@ app.delete('/api/informe-mensual/:id', requireAuth, requireAdmin, async (req, re
     await pool.query('DELETE FROM informes_mensuales WHERE id=$1', [req.params.id]);
     res.json({ ok: true });
   } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── CLIFF FINDER ─────────────────────────────────────────────────────────────
+
+// GET /api/analisis/umbrales — detecta ítems cerca de umbrales de cargo fijo
+app.get('/api/analisis/umbrales', requireAuth, async (req, res) => {
+  try {
+    const clientId = parseInt(req.query.client_id);
+    if (!clientId) return res.status(400).json({ error: 'client_id requerido' });
+
+    const token = await getClientToken(clientId);
+    if (!token) return res.status(403).json({ error: 'Sin token ML' });
+    const headers = { Authorization: `Bearer ${token}` };
+
+    const clRes = await pool.query('SELECT ml_user_id FROM clients WHERE id=$1', [clientId]);
+    const uid = clRes.rows[0]?.ml_user_id;
+    if (!uid) return res.status(400).json({ error: 'Cliente sin ML User ID' });
+
+    // 1. Obtener todos los IDs activos
+    const allIds = [];
+    let offset = 0;
+    while (allIds.length < 400) {
+      const r = await fetch(`${ML_API}/users/${uid}/items/search?status=active&limit=100&offset=${offset}`, { headers })
+        .then(r => r.json()).catch(() => ({}));
+      const ids = r.results || [];
+      allIds.push(...ids);
+      if (ids.length < 100) break;
+      offset += 100;
+    }
+
+    // 2. Fetch detalles en batches — necesitamos precio + logistica
+    const oportunidades = [];
+    for (let i = 0; i < allIds.length; i += 20) {
+      const batch = allIds.slice(i, i + 20);
+      const data = await fetch(
+        `${ML_API}/items?ids=${batch.join(',')}&attributes=id,title,price,shipping,permalink,listing_type_id`,
+        { headers }
+      ).then(r => r.json()).catch(() => []);
+
+      (Array.isArray(data) ? data : []).forEach(r => {
+        if (r.code !== 200 || !r.body) return;
+        const b = r.body;
+        const precio  = parseFloat(b.price) || 0;
+        const isFull  = b.shipping?.logistic_type === 'fulfillment';
+        const op = calcCliffOportunidad(precio, isFull);
+        if (!op) return;
+        oportunidades.push({
+          id:        b.id,
+          title:     b.title,
+          permalink: b.permalink,
+          precio,
+          is_full:   isFull,
+          logistica: b.shipping?.logistic_type || 'unknown',
+          ...op,
+        });
+      });
+    }
+
+    // 3. Historial de acciones (última por ítem)
+    const accionesRes = await pool.query(
+      `SELECT DISTINCT ON (mla) id, mla, titulo, precio_actual, precio_sugerido,
+              ahorro_neto_mensual, accion, notas, created_at
+       FROM ml_cliff_actions WHERE client_id=$1
+       ORDER BY mla, created_at DESC`,
+      [clientId]
+    );
+    const accionesMap = {};
+    accionesRes.rows.forEach(a => { accionesMap[a.mla] = a; });
+
+    // 4. Historial completo (para tab Historial)
+    const historialRes = await pool.query(
+      `SELECT id, mla, titulo, precio_actual, precio_sugerido, ahorro_neto_mensual, accion, notas, created_at
+       FROM ml_cliff_actions WHERE client_id=$1 ORDER BY created_at DESC LIMIT 200`,
+      [clientId]
+    );
+
+    // 5. Clasificar y enriquecer con última acción
+    oportunidades.forEach(op => {
+      op.ultima_accion = accionesMap[op.id] || null;
+    });
+
+    const seguras = oportunidades.filter(o => o.is_full && o.cargo_actual === 0)
+      .sort((a, b) => b.ahorro_x_venta - a.ahorro_x_venta);
+    const testear = oportunidades.filter(o => !o.is_full && o.cargo_actual === 0)
+      .sort((a, b) => b.ahorro_x_venta - a.ahorro_x_venta);
+    const otras   = oportunidades.filter(o => o.cargo_actual !== 0)
+      .sort((a, b) => b.ahorro_x_venta - a.ahorro_x_venta);
+
+    res.json({ seguras, testear, otras, historial: historialRes.rows });
+  } catch(e) {
+    console.error('[CLIFF FINDER]', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /api/analisis/umbrales/accion — registra una acción sobre una oportunidad
+app.post('/api/analisis/umbrales/accion', requireAuth, async (req, res) => {
+  try {
+    const { client_id, mla, titulo, precio_actual, precio_sugerido, ahorro_neto_mensual, accion, notas } = req.body;
+    if (!client_id || !mla || !accion) return res.status(400).json({ error: 'Faltan campos' });
+    const validAcciones = ['aplicada', 'pospuesta', 'ignorada'];
+    if (!validAcciones.includes(accion)) return res.status(400).json({ error: 'Acción inválida' });
+    await pool.query(
+      `INSERT INTO ml_cliff_actions (client_id, mla, titulo, precio_actual, precio_sugerido, ahorro_neto_mensual, accion, notas)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+      [client_id, mla, titulo, precio_actual || null, precio_sugerido || null, ahorro_neto_mensual || null, accion, notas || null]
+    );
+    res.json({ ok: true });
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 initDB().then(() => {
