@@ -4017,6 +4017,7 @@ async function toggleSeguimiento(mla, titulo, clientId) {
     await loadSeguimientoMap(); // refrescar para obtener el id real
   }
   renderPerfPublicaciones();
+  if (_adsActiveTab === 'anuncios' && _adsAnunciosData) renderAdsAnuncios(_adsAnunciosData);
 }
 
 async function loadSeguimiento(forceRefresh) {
@@ -7282,7 +7283,10 @@ async function loadAdsAnuncios() {
     const client = getActiveClient();
     if (!client) { el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">Sin cuenta conectada</div>'; return; }
     const range = getDateRange();
-    const data = await apiCall('GET', `/api/ads-anuncios?client_id=${client.id}&date_from=${range.date_from}&date_to=${range.date_to}`);
+    const [data] = await Promise.all([
+      apiCall('GET', `/api/ads-anuncios?client_id=${client.id}&date_from=${range.date_from}&date_to=${range.date_to}`),
+      loadSeguimientoMap(),
+    ]);
     if (!data) { el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">Error al cargar</div>'; return; }
     _adsAnunciosData = data;
     renderAdsAnuncios(data);
@@ -7385,8 +7389,13 @@ function renderAdsAnuncios(data) {
   const rows = sorted.map((i, idx) => {
     const stockStr = i.stock == null ? '—' : i.stock.toLocaleString('es-AR');
     const cobStr   = i.cobertura_dias == null ? '—' : i.cobertura_dias + 'd';
+    const segA = window._seguimientoMap?.[i.item_id];
+    const starA = segA ? '★' : '☆';
+    const starColorA = segA ? '#FFD700' : 'rgba(255,255,255,.45)';
+    const clientIdA = getActiveClient()?.id;
     return `
     <tr data-search="${(i.item_id + ' ' + i.title).toLowerCase()}" data-campaign="${(i.campaign||'').toLowerCase()}" style="border-bottom:1px solid var(--border);${idx%2===0?'background:rgba(255,255,255,.02)':''}">
+      <td style="padding:7px 4px;text-align:center;cursor:pointer;font-size:16px;color:${starColorA}" onclick="toggleSeguimiento('${i.item_id}','${(i.title||'').replace(/'/g,"\\'").slice(0,80)}',${clientIdA})" title="${segA?'Quitar seguimiento':'Seguir publicación'}">${starA}</td>
       <td style="padding:7px 10px;font-size:12px;white-space:nowrap">
         <span onclick="navigator.clipboard.writeText('${i.item_id}');showToast('📋 ${i.item_id} copiado')" style="color:var(--accent);font-weight:600;cursor:pointer" title="Copiar MLA">${i.item_id}</span>
       </td>
@@ -7429,6 +7438,7 @@ function renderAdsAnuncios(data) {
     <div style="overflow-x:auto;max-height:520px;overflow-y:auto">
       <table style="width:100%;border-collapse:collapse">
         <thead><tr style="background:var(--surface2);position:sticky;top:0;z-index:2">
+          <th style="padding:8px 4px;text-align:center;font-size:11px;font-weight:600;color:var(--muted);border-bottom:1px solid var(--border)">★</th>
           ${th('item_id',    'MLA',         'left')}
           ${th('title',      'Título',      'left')}
           ${th('status',     'Estado Ads',  'center')}
