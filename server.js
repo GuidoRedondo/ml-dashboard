@@ -57,6 +57,7 @@ async function sendEmail({ to, subject, html }) {
 const app = express();
 const PORT = process.env.PORT || 3000;
 const ML_API = 'https://api.mercadolibre.com';
+const ART = 'America/Argentina/Buenos_Aires';
 
 // ── DATABASE ──────────────────────────────────────────────────────────────────
 const pool = new Pool({
