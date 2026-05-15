@@ -4992,8 +4992,8 @@ async function loadDescuentos() {
     const precioLista = item.original_price || null;
     const tieneDescuento = !!(precioLista && precioML > 0 && precioLista > precioML);
 
-    // Comisión
-    const lt = ltMap[item.mla_id];
+    // Comisión — usa listing_type_id del batch si _pubsData no lo tiene aún
+    const lt = ltMap[item.mla_id] || item.listing_type_id || null;
     const catId = pub?.category_id || null;
     const comPctML  = getComisionPct(item.mla_id, lt, catId);
     const comPctHist = bp?.revenue > 0 ? (bp.comision / bp.revenue * 100) : 6;

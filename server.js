@@ -3891,7 +3891,7 @@ app.get('/api/reporte/items-activos', requireAuth, async (req, res) => {
     for (let i = 0; i < allItemIds.length; i += 20) {
       const batch = allItemIds.slice(i, i + 20);
       try {
-        const data = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,title,seller_custom_field,attributes,price,original_price,sale_price,available_quantity`, { headers }).then(r => r.json());
+        const data = await fetch(`${ML_API}/items?ids=${batch.join(',')}`, { headers }).then(r => r.json());
         (Array.isArray(data) ? data : []).forEach(r => {
           if (r.code !== 200 || !r.body) return;
           const b = r.body;
@@ -3904,10 +3904,11 @@ app.get('/api/reporte/items-activos', requireAuth, async (req, res) => {
           const salePrice = saleRaw != null
             ? (typeof saleRaw === 'object' ? parseFloat(saleRaw.amount || saleRaw.regular_amount || 0) : parseFloat(saleRaw))
             : null;
-          const candidates = [basePrice, salePrice].filter(v => v && v > 0);
+          const promoPrice = b.promotions?.[0]?.price ? parseFloat(b.promotions[0].price) : null;
+          const candidates = [basePrice, salePrice, promoPrice].filter(v => v && v > 0);
           const price = Math.min(...candidates);
           const precioLista = origPrice && origPrice > price ? origPrice : (price < basePrice ? basePrice : null);
-          itemsMap[b.id] = { mla_id: b.id, title: b.title, sku, price, original_price: precioLista, stock: b.available_quantity };
+          itemsMap[b.id] = { mla_id: b.id, title: b.title, sku, price, original_price: precioLista, stock: b.available_quantity, listing_type_id: b.listing_type_id };
         });
       } catch(e) {}
     }
