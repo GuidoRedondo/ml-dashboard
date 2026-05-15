@@ -4987,7 +4987,10 @@ async function loadDescuentos() {
     const pub = (window._pubsData || []).find(p => p.id === item.mla_id);
 
     // Precio: promedio real del período si vendió, si no el precio actual de ML
-    const precio = bp?.units > 0 ? bp.revenue / bp.units : (item.price || 0);
+    const precioML = parseFloat(item.price) || 0;
+    const precio = bp?.units > 0 ? bp.revenue / bp.units : precioML;
+    const precioLista = item.original_price || null;
+    const tieneDescuento = !!(precioLista && precioML > 0 && precioLista > precioML);
 
     // Comisión
     const lt = ltMap[item.mla_id];
@@ -5010,7 +5013,7 @@ async function loadDescuentos() {
 
     return {
       id: item.mla_id, title: item.title,
-      precio,
+      precio, precioLista, tieneDescuento,
       costo: item.costo_unit || 0,
       hasCMV: !!(item.has_cost && item.costo_unit > 0),
       comPct: parseFloat(comPct.toFixed(1)),
@@ -5128,7 +5131,11 @@ function renderDescuentos() {
     html += '<td style="padding:6px 8px;font-size:12px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + p.title.replace(/"/g,"'") + '">'
       + '<a href="https://articulo.mercadolibre.com.ar/' + mlaLink + '" target="_blank" style="color:var(--text);text-decoration:none">' + p.title + '</a>'
       + '</td>';
-    html += '<td style="padding:6px 8px;text-align:right;font-size:12px">$' + Math.round(p.precio).toLocaleString('es-AR') + '</td>';
+    const precioDisplay = p.tieneDescuento
+      ? '<span style="color:#ff9100;font-weight:700">$' + Math.round(p.precio).toLocaleString('es-AR') + '</span>'
+        + '<br><span style="font-size:10px;color:var(--muted);text-decoration:line-through">$' + Math.round(p.precioLista).toLocaleString('es-AR') + '</span>'
+      : '$' + Math.round(p.precio).toLocaleString('es-AR');
+    html += '<td style="padding:6px 8px;text-align:right;font-size:12px">' + precioDisplay + '</td>';
     html += '<td style="padding:6px 8px;text-align:right;font-size:12px;color:' + (p.hasCMV ? 'var(--text)' : '#f59e0b') + '">' + (p.hasCMV ? '$' + Math.round(p.costo).toLocaleString('es-AR') : '⚠ sin CMV') + '</td>';
     html += '<td style="padding:4px 6px;text-align:center">'
       + '<input id="dsc_com_' + p.id + '" type="number" value="' + comPct + '" min="0" max="30" step="0.1" onchange="renderDescuentos()" style="width:52px;padding:3px 5px;border-radius:5px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:11px;text-align:center">%'

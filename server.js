@@ -3891,14 +3891,16 @@ app.get('/api/reporte/items-activos', requireAuth, async (req, res) => {
     for (let i = 0; i < allItemIds.length; i += 20) {
       const batch = allItemIds.slice(i, i + 20);
       try {
-        const data = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,title,seller_custom_field,attributes,price,available_quantity`, { headers }).then(r => r.json());
+        const data = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,title,seller_custom_field,attributes,price,original_price,available_quantity`, { headers }).then(r => r.json());
         (Array.isArray(data) ? data : []).forEach(r => {
           if (r.code !== 200 || !r.body) return;
           const b = r.body;
           const sku = b.seller_custom_field
             || b.attributes?.find(a => a.id === 'SELLER_SKU')?.value_name
             || null;
-          itemsMap[b.id] = { mla_id: b.id, title: b.title, sku, price: b.price, stock: b.available_quantity };
+          const price = parseFloat(b.price) || 0;
+          const origPrice = b.original_price ? parseFloat(b.original_price) : null;
+          itemsMap[b.id] = { mla_id: b.id, title: b.title, sku, price, original_price: (origPrice && origPrice > price) ? origPrice : null, stock: b.available_quantity };
         });
       } catch(e) {}
     }
