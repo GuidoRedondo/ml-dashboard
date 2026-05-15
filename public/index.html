@@ -4987,13 +4987,16 @@ async function loadDescuentos() {
 
   const dias = window._perfDays || 30;
 
-  // Promedio de envío real de ítems no-FULL >= $33k que sí vendieron → fallback para los sin historia
-  const envioSamples = itemsData.items
-    .map(item => ({ item, bp: byProductMap[item.mla_id] }))
-    .filter(({ item, bp }) => bp?.units > 0 && (item.price || 0) >= 33000 && item.logistic_type !== 'fulfillment')
-    .map(({ bp }) => (bp.envio_pagado || 0) / bp.units);
-  const avgEnvioUnit = envioSamples.length
-    ? Math.round(envioSamples.reduce((s, v) => s + v, 0) / envioSamples.length) : 0;
+  // Promedios de envío real por tipo logístico → fallback para ítems sin ventas en el período
+  const calcAvgEnvio = (filterFn) => {
+    const samples = itemsData.items
+      .map(item => ({ item, bp: byProductMap[item.mla_id] }))
+      .filter(({ item, bp }) => bp?.units > 0 && (item.price || 0) >= 33000 && filterFn(item))
+      .map(({ bp }) => (bp.envio_pagado || 0) / bp.units);
+    return samples.length ? Math.round(samples.reduce((s, v) => s + v, 0) / samples.length) : 0;
+  };
+  const avgEnvioFull    = calcAvgEnvio(i => i.logistic_type === 'fulfillment');
+  const avgEnvioNormal  = calcAvgEnvio(i => i.logistic_type !== 'fulfillment');
 
   const products = itemsData.items.map(item => {
     const bp  = byProductMap[item.mla_id];
@@ -5015,14 +5018,13 @@ async function loadDescuentos() {
 
     // Costo de envío por unidad (vendedor):
     //   1. Histórico real si vendió en el período
-    //   2. FULL → $0 (ML absorbe el envío)
-    //   3. No-FULL >= $33k sin historia → promedio del resto de ítems
+    //   2. Sin historia >= $33k → promedio de ítems del mismo tipo logístico
     const isFull = item.logistic_type === 'fulfillment' || pub?.is_full;
     const envioUnit = bp?.units > 0 && precio >= 33000
       ? Math.round((bp.envio_pagado || 0) / bp.units)
-      : isFull ? 0
-      : precio >= 33000 ? avgEnvioUnit
-      : 0;
+      : precio >= 33000
+        ? (isFull ? avgEnvioFull : avgEnvioNormal)
+        : 0;
 
     // Stock
     const stock = pub
