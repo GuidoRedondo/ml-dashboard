@@ -3886,31 +3886,31 @@ app.get('/api/reporte/items-activos', requireAuth, async (req, res) => {
       offset += 100;
     }
 
-    // Fetch detalles en batches de 20 (título + SKU)
+    // Fetch detalles individuales en paralelo (igual que Umbrales — el batch no devuelve sale_price)
     const itemsMap = {};
-    for (let i = 0; i < allItemIds.length; i += 20) {
-      const batch = allItemIds.slice(i, i + 20);
-      try {
-        const data = await fetch(`${ML_API}/items?ids=${batch.join(',')}`, { headers }).then(r => r.json());
-        (Array.isArray(data) ? data : []).forEach(r => {
-          if (r.code !== 200 || !r.body) return;
-          const b = r.body;
+    const PARALLEL = 20;
+    for (let i = 0; i < allItemIds.length; i += PARALLEL) {
+      const batch = allItemIds.slice(i, i + PARALLEL);
+      await Promise.all(batch.map(async itemId => {
+        try {
+          const b = await fetch(`${ML_API}/items/${itemId}`, { headers }).then(r => r.json());
+          if (b.error || !b.id) return;
           const sku = b.seller_custom_field
             || b.attributes?.find(a => a.id === 'SELLER_SKU')?.value_name
             || null;
-          const basePrice = parseFloat(b.price) || 0;
-          const origPrice = b.original_price ? parseFloat(b.original_price) : null;
-          const saleRaw   = b.sale_price;
-          const salePrice = saleRaw != null
+          const basePrice  = parseFloat(b.price) || 0;
+          const origPrice  = b.original_price ? parseFloat(b.original_price) : null;
+          const saleRaw    = b.sale_price;
+          const salePrice  = saleRaw != null
             ? (typeof saleRaw === 'object' ? parseFloat(saleRaw.amount || saleRaw.regular_amount || 0) : parseFloat(saleRaw))
             : null;
           const promoPrice = b.promotions?.[0]?.price ? parseFloat(b.promotions[0].price) : null;
           const candidates = [basePrice, salePrice, promoPrice].filter(v => v && v > 0);
-          const price = Math.min(...candidates);
+          const price      = Math.min(...candidates);
           const precioLista = origPrice && origPrice > price ? origPrice : (price < basePrice ? basePrice : null);
-          itemsMap[b.id] = { mla_id: b.id, title: b.title, sku, price, original_price: precioLista, stock: b.available_quantity, listing_type_id: b.listing_type_id };
-        });
-      } catch(e) {}
+          itemsMap[b.id]   = { mla_id: b.id, title: b.title, sku, price, original_price: precioLista, stock: b.available_quantity, listing_type_id: b.listing_type_id };
+        } catch(e) {}
+      }));
     }
 
     // Costos guardados
