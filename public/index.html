@@ -4664,47 +4664,49 @@ function exportDescuentosExcel() {
   showToast('✅ Excel descargado');
 }
 
-// ── Mapa de comisiones ML — sale_fee_amount total (base + cuotas) por ítem ──
+// ── Mapa de comisiones y envío ML por ítem desde listing_prices ──
 async function loadComisionMap(items) {
   if (window._comisionMap) return window._comisionMap;
   const client = getActiveClient();
   if (!client) return {};
 
-  // Agrupar por lt+category+precio redondeado a $500 (misma comisión % en esa franja)
-  const combos = {};
-  (items || []).forEach(item => {
-    const lt  = item.listing_type_id;
-    const cat = item.category_id || '';
-    const price = item.price;
-    if (!lt || !price) return;
-    const key = lt + '|' + cat + '|' + Math.round(price / 500) * 500;
-    if (!combos[key]) combos[key] = { lt, cat, price, ids: [] };
-    combos[key].ids.push(item.mla_id);
-  });
+  // Cada ítem es potencialmente único (peso + logística + precio), llamamos uno por uno en paralelo
+  const comMap = {};   // { mla_id: pct }
+  const envioMap = {}; // { mla_id: $ }
 
-  const map = {};
-  const comboKeys = Object.keys(combos);
-
-  for (let i = 0; i < comboKeys.length; i += 10) {
-    const batch = comboKeys.slice(i, i + 10);
-    await Promise.all(batch.map(async key => {
-      const { lt, cat, price, ids } = combos[key];
+  for (let i = 0; i < (items || []).length; i += 10) {
+    const batch = items.slice(i, i + 10);
+    await Promise.all(batch.map(async item => {
+      const { mla_id, listing_type_id: lt, category_id: cat, price,
+              logistic_type, shipping_mode, shipping_weight } = item;
+      if (!lt || !price) return;
       try {
-        let path = `/sites/MLA/listing_prices?price=${Math.round(price)}&listing_type_id=${lt}`;
-        if (cat) path += `&category_id=${cat}`;
+        let path = `/sites/MLA/listing_prices?price=${Math.round(price)}&listing_type_id=${lt}&currency_id=ARS`;
+        if (cat)              path += `&category_id=${cat}`;
+        if (logistic_type)    path += `&logistic_type=${logistic_type}`;
+        if (shipping_mode)    path += `&shipping_modes=${shipping_mode}`;
+        if (shipping_weight)  path += `&billable_weight=${shipping_weight}`;
         const r = await apiCall('GET', `/api/proxy-ml?path=${encodeURIComponent(path)}&client_id=${client.id}`);
-        // sale_fee_amount = total (base + cuotas); dividir por precio = % real total
+
+        // Comisión total (base + cuotas)
         const totalFee = r?.sale_fee_amount ?? null;
-        if (totalFee != null && price > 0) {
-          const pct = parseFloat((totalFee / price * 100).toFixed(2));
-          ids.forEach(id => { map[id] = pct; });
-        }
+        if (totalFee != null && price > 0)
+          comMap[mla_id] = parseFloat((totalFee / price * 100).toFixed(2));
+
+        // Costo de envío del vendedor — ML lo devuelve en shipping.costs o shipping.cost
+        const costs = r?.shipping?.costs;
+        const sellerCost = Array.isArray(costs)
+          ? (costs.find(c => c.type === 'seller')?.amount ?? null)
+          : (r?.shipping?.seller_cost ?? r?.shipping?.cost ?? null);
+        if (sellerCost != null && parseFloat(sellerCost) > 0)
+          envioMap[mla_id] = Math.round(parseFloat(sellerCost));
       } catch(e) {}
     }));
   }
 
-  window._comisionMap = map;
-  return map;
+  window._comisionMap  = comMap;
+  window._envioMap     = envioMap;
+  return comMap;
 }
 
 function getComisionPct(mlaId, lt, categoryId) {
@@ -4987,16 +4989,7 @@ async function loadDescuentos() {
 
   const dias = window._perfDays || 30;
 
-  // Promedios de envío real por tipo logístico → fallback para ítems sin ventas en el período
-  const calcAvgEnvio = (filterFn) => {
-    const samples = itemsData.items
-      .map(item => ({ item, bp: byProductMap[item.mla_id] }))
-      .filter(({ item, bp }) => bp?.units > 0 && (item.price || 0) >= 33000 && filterFn(item))
-      .map(({ bp }) => (bp.envio_pagado || 0) / bp.units);
-    return samples.length ? Math.round(samples.reduce((s, v) => s + v, 0) / samples.length) : 0;
-  };
-  const avgEnvioFull    = calcAvgEnvio(i => i.logistic_type === 'fulfillment');
-  const avgEnvioNormal  = calcAvgEnvio(i => i.logistic_type !== 'fulfillment');
+  const envioAPIMap = window._envioMap || {};
 
   const products = itemsData.items.map(item => {
     const bp  = byProductMap[item.mla_id];
@@ -5016,14 +5009,11 @@ async function loadDescuentos() {
     // ML API ahora incluye cuotas; solo usar histórico si ML no respondió
     const comPct = comPctML != null ? comPctML : (comPctHist != null ? parseFloat(comPctHist.toFixed(1)) : 13);
 
-    // Costo de envío por unidad (vendedor):
-    //   1. Histórico real si vendió en el período
-    //   2. Sin historia >= $33k → promedio de ítems del mismo tipo logístico
-    const isFull = item.logistic_type === 'fulfillment' || pub?.is_full;
-    const envioUnit = bp?.units > 0 && precio >= 33000
-      ? Math.round((bp.envio_pagado || 0) / bp.units)
-      : precio >= 33000
-        ? (isFull ? avgEnvioFull : avgEnvioNormal)
+    // Costo de envío por unidad: API listing_prices (exacto), luego histórico, luego 0
+    const envioUnit = envioAPIMap[item.mla_id] != null
+      ? envioAPIMap[item.mla_id]
+      : bp?.units > 0 && precio >= 33000
+        ? Math.round((bp.envio_pagado || 0) / bp.units)
         : 0;
 
     // Stock
