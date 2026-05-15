@@ -3893,7 +3893,10 @@ app.get('/api/reporte/items-activos', requireAuth, async (req, res) => {
       const batch = allItemIds.slice(i, i + PARALLEL);
       await Promise.all(batch.map(async itemId => {
         try {
-          const b = await fetch(`${ML_API}/items/${itemId}`, { headers }).then(r => r.json());
+          const [b, pricesResp] = await Promise.all([
+            fetch(`${ML_API}/items/${itemId}`, { headers }).then(r => r.json()),
+            fetch(`${ML_API}/items/${itemId}/prices`, { headers }).then(r => r.json()).catch(() => null),
+          ]);
           if (b.error || !b.id) return;
           const sku = b.seller_custom_field
             || b.attributes?.find(a => a.id === 'SELLER_SKU')?.value_name
@@ -3905,7 +3908,10 @@ app.get('/api/reporte/items-activos', requireAuth, async (req, res) => {
             ? (typeof saleRaw === 'object' ? parseFloat(saleRaw.amount || saleRaw.regular_amount || 0) : parseFloat(saleRaw))
             : null;
           const promoPrice = b.promotions?.[0]?.price ? parseFloat(b.promotions[0].price) : null;
-          const candidates = [basePrice, salePrice, promoPrice].filter(v => v && v > 0);
+          const pricesPromo = pricesResp?.prices?.filter(p => p.type !== 'standard')
+            .map(p => parseFloat(p.amount)).filter(v => v > 0);
+          const minPricesPromo = pricesPromo?.length ? Math.min(...pricesPromo) : null;
+          const candidates = [basePrice, salePrice, promoPrice, minPricesPromo].filter(v => v && v > 0);
           const price      = Math.min(...candidates);
           const precioLista = origPrice && origPrice > price ? origPrice : (price < basePrice ? basePrice : null);
           itemsMap[b.id]   = { mla_id: b.id, title: b.title, sku, price, original_price: precioLista, stock: b.available_quantity, listing_type_id: b.listing_type_id };
