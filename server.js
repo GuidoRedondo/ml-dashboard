@@ -3914,7 +3914,7 @@ app.get('/api/reporte/items-activos', requireAuth, async (req, res) => {
           const candidates = [basePrice, salePrice, promoPrice, minPricesPromo].filter(v => v && v > 0);
           const price      = Math.min(...candidates);
           const precioLista = origPrice && origPrice > price ? origPrice : (price < basePrice ? basePrice : null);
-          itemsMap[b.id]   = { mla_id: b.id, title: b.title, sku, price, original_price: precioLista, stock: b.available_quantity, listing_type_id: b.listing_type_id };
+          itemsMap[b.id]   = { mla_id: b.id, title: b.title, sku, price, original_price: precioLista, stock: b.available_quantity, listing_type_id: b.listing_type_id, category_id: b.category_id };
         } catch(e) {}
       }));
     }

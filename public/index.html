@@ -4664,34 +4664,41 @@ function exportDescuentosExcel() {
   showToast('✅ Excel descargado');
 }
 
-// ── Mapa de comisiones ML por listing type ──────────────────────────────────
-async function loadComisionMap() {
+// ── Mapa de comisiones ML — sale_fee_amount total (base + cuotas) por ítem ──
+async function loadComisionMap(items) {
   if (window._comisionMap) return window._comisionMap;
   const client = getActiveClient();
   if (!client) return {};
 
-  // Agrupar productos por combinación única lt+category+precio (redondeado a centenas)
+  // Agrupar por lt+category+precio redondeado a $500 (misma comisión % en esa franja)
   const combos = {};
-  (window._pubsData || []).forEach(p => {
-    if (!p.listing_type_id || !p.category_id || !p.price) return;
-    const key = p.listing_type_id + '|' + p.category_id + '|' + Math.round(p.price / 100) * 100;
-    if (!combos[key]) combos[key] = { lt: p.listing_type_id, cat: p.category_id, price: p.price, ids: [] };
-    combos[key].ids.push(p.id);
+  (items || []).forEach(item => {
+    const lt  = item.listing_type_id;
+    const cat = item.category_id || '';
+    const price = item.price;
+    if (!lt || !price) return;
+    const key = lt + '|' + cat + '|' + Math.round(price / 500) * 500;
+    if (!combos[key]) combos[key] = { lt, cat, price, ids: [] };
+    combos[key].ids.push(item.mla_id);
   });
 
-  const map = {}; // { mla_id: pct }
+  const map = {};
   const comboKeys = Object.keys(combos);
 
-  // Consultar en paralelo (máx 10 a la vez)
   for (let i = 0; i < comboKeys.length; i += 10) {
     const batch = comboKeys.slice(i, i + 10);
     await Promise.all(batch.map(async key => {
       const { lt, cat, price, ids } = combos[key];
       try {
-        const path = `/sites/MLA/listing_prices?price=${Math.round(price)}&listing_type_id=${lt}&category_id=${cat}`;
+        let path = `/sites/MLA/listing_prices?price=${Math.round(price)}&listing_type_id=${lt}`;
+        if (cat) path += `&category_id=${cat}`;
         const r = await apiCall('GET', `/api/proxy-ml?path=${encodeURIComponent(path)}&client_id=${client.id}`);
-        const pct = r?.sale_fee_details?.meli_percentage_fee ?? r?.sale_fee_details?.percentage_fee ?? null;
-        if (pct != null) ids.forEach(id => { map[id] = pct; });
+        // sale_fee_amount = total (base + cuotas); dividir por precio = % real total
+        const totalFee = r?.sale_fee_amount ?? null;
+        if (totalFee != null && price > 0) {
+          const pct = parseFloat((totalFee / price * 100).toFixed(2));
+          ids.forEach(id => { map[id] = pct; });
+        }
       } catch(e) {}
     }));
   }
@@ -4958,10 +4965,8 @@ async function loadDescuentos() {
   el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">⏳ Cargando publicaciones activas...</div>';
 
   // Fuente principal: TODAS las publicaciones activas + costos guardados
-  const [itemsData, comisionMap] = await Promise.all([
-    apiCall('GET', `/api/reporte/items-activos?client_id=${client.id}`).catch(() => null),
-    loadComisionMap(),
-  ]);
+  const itemsData = await apiCall('GET', `/api/reporte/items-activos?client_id=${client.id}`).catch(() => null);
+  const comisionMap = await loadComisionMap(itemsData?.items || []);
 
   if (!itemsData?.items?.length) {
     el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">No se encontraron publicaciones activas</div>';
@@ -4992,13 +4997,13 @@ async function loadDescuentos() {
     const precioLista = item.original_price || null;
     const tieneDescuento = !!(precioLista && precioML > 0 && precioLista > precioML);
 
-    // Comisión — usa listing_type_id del batch si _pubsData no lo tiene aún
-    const lt = ltMap[item.mla_id] || item.listing_type_id || null;
-    const catId = pub?.category_id || null;
+    // Comisión — listing_prices con precio real devuelve sale_fee_amount (base + cuotas)
+    const lt = item.listing_type_id || ltMap[item.mla_id] || null;
+    const catId = item.category_id || pub?.category_id || null;
     const comPctML   = getComisionPct(item.mla_id, lt, catId);
-    // Histórico es la fuente más precisa: incluye comisión base + cuotas + cualquier otro cargo
     const comPctHist = bp?.revenue > 0 ? (bp.comision / bp.revenue * 100) : null;
-    const comPct = comPctHist != null ? parseFloat(comPctHist.toFixed(1)) : (comPctML ?? 13);
+    // ML API ahora incluye cuotas; solo usar histórico si ML no respondió
+    const comPct = comPctML != null ? comPctML : (comPctHist != null ? parseFloat(comPctHist.toFixed(1)) : 13);
 
     // Envío estimado por unidad (solo si vendió y precio >= $33k)
     const envioUnit = bp && precio >= 33000 && bp.units > 0
@@ -5018,7 +5023,7 @@ async function loadDescuentos() {
       costo: item.costo_unit || 0,
       hasCMV: !!(item.has_cost && item.costo_unit > 0),
       comPct: parseFloat(comPct.toFixed(1)),
-      comSource: comPctHist != null ? 'real' : (comPctML != null ? 'ML*' : 'est.'),
+      comSource: comPctML != null ? 'ML' : (comPctHist != null ? 'hist.' : 'est.'),
       envioUnit,
       stock, cobertura, units, cuenta: client.name,
     };
@@ -5140,7 +5145,7 @@ function renderDescuentos() {
     html += '<td style="padding:6px 8px;text-align:right;font-size:12px;color:' + (p.hasCMV ? 'var(--text)' : '#f59e0b') + '">' + (p.hasCMV ? '$' + Math.round(p.costo).toLocaleString('es-AR') : '⚠ sin CMV') + '</td>';
     html += '<td style="padding:4px 6px;text-align:center">'
       + '<input id="dsc_com_' + p.id + '" type="number" value="' + comPct + '" min="0" max="30" step="0.1" onchange="renderDescuentos()" style="width:52px;padding:3px 5px;border-radius:5px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:11px;text-align:center">%'
-      + '<div style="font-size:9px;color:' + (p.comSource === 'real' ? '#00e676' : p.comSource === 'ML*' ? '#f59e0b' : '#ff5252') + ';margin-top:1px">' + (p.comSource === 'real' ? '✓ real' : p.comSource === 'ML*' ? '⚠ ML s/cuotas' : '≈ est.') + '</div>'
+      + '<div style="font-size:9px;color:' + (p.comSource === 'ML' ? '#00e676' : p.comSource === 'hist.' ? '#f59e0b' : '#ff5252') + ';margin-top:1px">' + (p.comSource === 'ML' ? '✓ ML' : p.comSource === 'hist.' ? '≈ hist.' : '≈ est.') + '</div>'
       + '</td>';
     html += '<td style="padding:4px 6px;text-align:center">'
       + '<input id="dsc_env_' + p.id + '" type="number" value="' + envioUnit + '" min="0" step="10" onchange="renderDescuentos()" style="width:64px;padding:3px 5px;border-radius:5px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:11px;text-align:center">'
