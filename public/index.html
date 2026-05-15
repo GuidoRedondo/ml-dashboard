@@ -4986,9 +4986,9 @@ async function loadDescuentos() {
     const bp  = byProductMap[item.mla_id];
     const pub = (window._pubsData || []).find(p => p.id === item.mla_id);
 
-    // Precio: promedio real del período si vendió, si no el precio actual de ML
+    // Precio: siempre el precio actual de ML (para descuentos hipotéticos, no promedio histórico)
     const precioML = parseFloat(item.price) || 0;
-    const precio = bp?.units > 0 ? bp.revenue / bp.units : precioML;
+    const precio = precioML;
     const precioLista = item.original_price || null;
     const tieneDescuento = !!(precioLista && precioML > 0 && precioLista > precioML);
 
