@@ -5966,6 +5966,130 @@ app.get('/api/preguntas', requireAuth, async (req, res) => {
   } catch(e) { console.error('[PREGUNTAS]', e.message, e.stack); res.status(500).json({ error: e.message }); }
 });
 
+// ── PREGUNTAS — detalle completo para análisis y descarga ─────────────────────
+app.get('/api/preguntas-detalle', requireAuth, async (req, res) => {
+  try {
+    const token = await getClientToken(parseInt(req.query.client_id));
+    if (!token) return res.status(403).json({ error: 'Sin token' });
+    const headers = { 'Authorization': `Bearer ${token}` };
+    const uid = req.query.uid;
+    const now = new Date();
+    let dateFrom, dateTo;
+    if (req.query.date_from && req.query.date_to) {
+      dateFrom = new Date(req.query.date_from + 'T00:00:00');
+      dateTo   = new Date(req.query.date_to   + 'T23:59:59');
+    } else {
+      const days = parseInt(req.query.days) || 30;
+      dateFrom = new Date(now.getTime() - days * 24*60*60*1000);
+      dateTo   = now;
+    }
+
+    // ── 1. Traer todas las preguntas del período (respondidas + sin responder) ─
+    const fetchByStatus = async (status) => {
+      let acc = [];
+      let offset = 0;
+      while (true) {
+        const url = `${ML_API}/questions/search?seller_id=${uid}&status=${status}&sort_fields=date_created&sort_types=DESC&limit=50&offset=${offset}`;
+        const r = await fetch(url, { headers }).then(r => r.json()).catch(() => ({}));
+        const qs = r.questions || r.data || [];
+        if (!qs.length) break;
+        const inRange = qs.filter(q => {
+          const d = new Date(q.date_created);
+          return d >= dateFrom && d <= dateTo;
+        });
+        acc = acc.concat(inRange);
+        const oldest = new Date(qs[qs.length-1].date_created);
+        if (oldest < dateFrom || qs.length < 50) break;
+        offset += 50;
+        if (offset > 2000) break;
+      }
+      return acc;
+    };
+    const answered   = await fetchByStatus('ANSWERED');
+    const unanswered = await fetchByStatus('UNANSWERED');
+    const allQ = answered.concat(unanswered);
+
+    // ── 2. Títulos de publicaciones (en lotes de 20) ──────────────────────────
+    const itemIds = [...new Set(allQ.map(q => q.item_id).filter(Boolean))];
+    const titleMap = {};
+    for (let i = 0; i < itemIds.length; i += 20) {
+      const batch = itemIds.slice(i, i + 20);
+      const raw = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,title,permalink`, { headers })
+        .then(r => r.json()).catch(() => []);
+      (Array.isArray(raw) ? raw : []).forEach(entry => {
+        const it = entry.body || entry;
+        if (it?.id) titleMap[it.id] = { title: it.title || '', permalink: it.permalink || '' };
+      });
+    }
+
+    // ── 3. Órdenes del período → compradores que compraron ────────────────────
+    const fmt = d => new Date(d).toISOString().slice(0,19) + '.000-00:00';
+    const { orders } = await fetchAllOrders(uid, headers, fmt(dateFrom), fmt(dateTo));
+    const orderBuyerIds = new Set(orders.map(o => o.buyer && String(o.buyer.id)).filter(Boolean));
+
+    const fmtTime = mins => {
+      if (mins === null || mins === undefined) return '';
+      if (mins < 1) return '< 1min';
+      if (mins < 60) return mins + 'min';
+      if (mins < 1440) return (mins/60).toFixed(1).replace('.0','') + 'hs';
+      return (mins/1440).toFixed(1).replace('.0','') + 'd';
+    };
+
+    // ── 4. Armar filas de detalle ─────────────────────────────────────────────
+    const responseTimes = [];
+    const preguntas = allQ.map(q => {
+      const asked = new Date(q.date_created);
+      let mins = null;
+      if (q.answer && q.answer.date_created) {
+        const m = Math.round((new Date(q.answer.date_created) - asked) / 60000);
+        if (m >= 0 && m <= 43200) { mins = m; responseTimes.push(m); }
+      }
+      const buyerId = (q.from && String(q.from.id)) || '';
+      return {
+        item_id:           q.item_id || '',
+        item_titulo:       (titleMap[q.item_id] && titleMap[q.item_id].title) || '',
+        permalink:         (titleMap[q.item_id] && titleMap[q.item_id].permalink) || '',
+        estado:            q.status === 'ANSWERED' ? 'Respondida' : 'Sin responder',
+        pregunta:          q.text || '',
+        respuesta:         (q.answer && q.answer.text) || '',
+        fecha_pregunta:    q.date_created || '',
+        fecha_respuesta:   (q.answer && q.answer.date_created) || '',
+        minutos_respuesta: mins,
+        tiempo_respuesta:  fmtTime(mins),
+        comprador_id:      buyerId,
+        genero_venta:      buyerId ? orderBuyerIds.has(buyerId) : false,
+      };
+    });
+    preguntas.sort((a,b) => new Date(b.fecha_pregunta) - new Date(a.fecha_pregunta));
+
+    const avg = arr => arr.length ? Math.round(arr.reduce((a,b)=>a+b,0)/arr.length) : null;
+    const median = arr => { if (!arr.length) return null; const s=[...arr].sort((a,b)=>a-b); return s[Math.floor(s.length/2)]; };
+
+    const askerIds = new Set(preguntas.map(p => p.comprador_id).filter(Boolean));
+    const compradoresConvertidos = [...askerIds].filter(id => orderBuyerIds.has(id)).length;
+    const conVenta = preguntas.filter(p => p.genero_venta).length;
+
+    console.log(`[PREGUNTAS-DETALLE] total=${preguntas.length} respondidas=${answered.length} sin_resp=${unanswered.length} con_venta=${conVenta}`);
+
+    res.json({
+      preguntas,
+      resumen: {
+        total:                  preguntas.length,
+        respondidas:            preguntas.filter(p => p.estado === 'Respondida').length,
+        sin_responder:          preguntas.filter(p => p.estado === 'Sin responder').length,
+        tiempo_promedio:        fmtTime(avg(responseTimes)),
+        tiempo_mediana:         fmtTime(median(responseTimes)),
+        mins_promedio:          avg(responseTimes),
+        mins_mediana:           median(responseTimes),
+        compradores_unicos:     askerIds.size,
+        compradores_convertidos: compradoresConvertidos,
+        con_venta:              conVenta,
+        tasa_conversion:        askerIds.size > 0 ? parseFloat(((compradoresConvertidos / askerIds.size) * 100).toFixed(1)) : 0,
+      },
+    });
+  } catch(e) { console.error('[PREGUNTAS-DETALLE]', e.message, e.stack); res.status(500).json({ error: e.message }); }
+});
+
 app.get('/api/devoluciones', requireAuth, async (req, res) => {
   try {
     const uid = req.query.uid;
