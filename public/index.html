@@ -1110,6 +1110,10 @@ tbody td {
           style="padding:8px 18px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-2px;font-family:var(--font-b)">
           🏆 Mercado
         </button>
+        <button id="tab-comp-categoria" onclick="switchCompTab('categoria')"
+          style="padding:8px 18px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-2px;font-family:var(--font-b)">
+          📦 Categoría
+        </button>
         <button id="tab-comp-diagnostico" onclick="switchCompTab('diagnostico')"
           style="padding:8px 18px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-2px;font-family:var(--font-b)">
           🔍 Diagnóstico
@@ -1162,6 +1166,38 @@ tbody td {
           <div id="compAnalisisResult"></div>
         </div>
         <div id="competenciaContent"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Cargando categorías...</div></div>
+      </div>
+      <!-- Tab: Categoría -->
+      <div id="comp-tab-categoria" style="display:none">
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px 18px;margin-bottom:16px">
+          <div style="font-size:13px;font-weight:600;margin-bottom:10px;color:var(--text)">📦 Análisis por Categoría</div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+            <select id="catModSelect" onchange="onCatModSelect()"
+              style="flex:1;min-width:220px;padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px">
+              <option value="">— Tus top 3 categorías —</option>
+            </select>
+            <input id="catModInput" type="text" placeholder="...o pegá un category_id (MLA…)"
+              style="flex:1;min-width:200px;padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px"
+              onkeydown="if(event.key==='Enter') loadCategoriaData(this.value.trim())">
+            <button onclick="loadCategoriaData(document.getElementById('catModInput').value.trim())"
+              style="padding:8px 18px;background:var(--accent);color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap">
+              Analizar
+            </button>
+          </div>
+        </div>
+        <div id="catModKpis" style="display:none;gap:12px;margin-bottom:16px;flex-wrap:wrap"></div>
+        <div id="catModViews" style="display:none">
+          <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap">
+            <button id="catpill-sellers" onclick="switchCatView('sellers')"
+              style="padding:6px 14px;border-radius:8px;border:1px solid var(--accent);background:var(--accent);color:#fff;font-size:12px;font-weight:600;cursor:pointer">🏆 Sellers</button>
+            <button id="catpill-productos" onclick="switchCatView('productos')"
+              style="padding:6px 14px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:12px;font-weight:600;cursor:pointer">📦 Productos</button>
+            <button id="catpill-gaps" onclick="switchCatView('gaps')"
+              style="padding:6px 14px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:12px;font-weight:600;cursor:pointer">🎯 Gaps</button>
+          </div>
+          <div id="catModBody"></div>
+        </div>
+        <div id="catModEmpty"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Cargando tus categorías...</div></div>
       </div>
       <!-- Tab: Diagnóstico -->
       <div id="comp-tab-diagnostico" style="display:none">
@@ -11793,7 +11829,7 @@ async function loadMercadoML() {
 
 function switchCompTab(tab) {
   _compActiveTab = tab;
-  ['categorias','mercado','diagnostico','destaque','competidores'].forEach(t => {
+  ['categorias','mercado','categoria','diagnostico','destaque','competidores'].forEach(t => {
     const el  = document.getElementById(`comp-tab-${t}`);
     const btn = document.getElementById(`tab-comp-${t}`);
     if (el)  el.style.display  = t === tab ? '' : 'none';
@@ -11804,8 +11840,170 @@ function switchCompTab(tab) {
   });
   if (tab === 'categorias' && !_catVentasLoaded) loadCatVentas();
   if (tab === 'mercado')     { loadCompetencia(); initMercadoMLCats(); }
+  if (tab === 'categoria')   loadCategoriaModule();
   if (tab === 'diagnostico') loadDiagnostico();
   if (tab === 'destaque')    initDestaqueTab();
+}
+
+// ── COMPETENCIA > CATEGORÍA ───────────────────────────────────────────────────
+let _catModData = { ranking:null, sellers:null, gaps:null, categoryId:null };
+let _catModView = 'sellers';
+let _catModLoaded = false;
+const _catFmt = n => '$' + Math.round(n||0).toLocaleString('es-AR');
+
+async function loadCategoriaModule() {
+  const client = getActiveClient();
+  const empty = document.getElementById('catModEmpty');
+  if (!client) { empty.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Seleccioná un cliente</div>'; return; }
+  if (_catModLoaded) return;
+  const data = await apiCall('GET', `/api/competencia/categorias-cliente?client_id=${client.id}`);
+  if (!data || !data.categorias) { empty.innerHTML = '<div style="color:#ef4444;font-size:13px;padding:40px;text-align:center">No se pudieron cargar las categorías</div>'; return; }
+  const sel = document.getElementById('catModSelect');
+  sel.innerHTML = '<option value="">— Tus top 3 categorías —</option>' +
+    data.categorias.map(c => `<option value="${c.category_id}" data-name="${(c.category_name||'').replace(/"/g,'&quot;')}">${c.category_name} (${c.client_mlas_count} MLAs)</option>`).join('');
+  _catModLoaded = true;
+  empty.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Elegí una de tus categorías o pegá un category_id</div>';
+  if (data.categorias[0]) {
+    sel.value = data.categorias[0].category_id;
+    loadCategoriaData(data.categorias[0].category_id, data.categorias[0].category_name);
+  }
+}
+
+function onCatModSelect() {
+  const sel = document.getElementById('catModSelect');
+  if (!sel.value) return;
+  loadCategoriaData(sel.value, sel.options[sel.selectedIndex].getAttribute('data-name') || sel.value);
+}
+
+async function loadCategoriaData(categoryId, categoryName) {
+  if (!categoryId) return;
+  const client = getActiveClient();
+  if (!client) return;
+  _catModData = { ranking:null, sellers:null, gaps:null, categoryId, categoryName: categoryName || categoryId };
+  document.getElementById('catModViews').style.display = '';
+  document.getElementById('catModEmpty').style.display = 'none';
+  document.getElementById('catModKpis').style.display = 'none';
+  document.getElementById('catModBody').innerHTML = '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">⏳ Consultando ML…</div>';
+  try {
+    const cid = client.id;
+    const [ranking, sellers] = await Promise.all([
+      apiCall('GET', `/api/competencia/categoria-ranking?category_id=${categoryId}&client_id=${cid}`),
+      apiCall('GET', `/api/competencia/categoria-sellers?category_id=${categoryId}&client_id=${cid}`)
+    ]);
+    _catModData.ranking = ranking;
+    _catModData.sellers = sellers;
+    renderCatKpis(sellers);
+    apiCall('GET', `/api/competencia/categoria-gaps?category_id=${categoryId}&client_id=${cid}`)
+      .then(g => { _catModData.gaps = g; if (_catModView === 'gaps') renderCatView(); });
+    switchCatView(_catModView);
+  } catch(e) {
+    document.getElementById('catModBody').innerHTML = `<div style="color:#ef4444;font-size:13px;padding:20px">Error: ${e.message}</div>`;
+  }
+}
+
+function renderCatKpis(sellers) {
+  const kpis = document.getElementById('catModKpis');
+  if (!sellers) { kpis.style.display = 'none'; return; }
+  const card = (label, value, accent) => `
+    <div style="flex:1;min-width:160px;background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:14px 16px">
+      <div style="font-size:11px;color:var(--muted);margin-bottom:4px">${label}</div>
+      <div style="font-size:20px;font-weight:700;color:${accent||'var(--text)'};font-family:var(--font-b)">${value}</div>
+    </div>`;
+  kpis.style.display = 'flex';
+  kpis.innerHTML =
+    card('Facturación est. categoría', _catFmt(sellers.total_facturacion_estimada)) +
+    card('Sellers únicos (top 50)', (sellers.sellers||[]).length) +
+    card('Share del cliente', (sellers.client_share_pct||0) + '%', 'var(--accent)');
+}
+
+function switchCatView(view) {
+  _catModView = view;
+  ['sellers','productos','gaps'].forEach(v => {
+    const btn = document.getElementById('catpill-' + v);
+    if (!btn) return;
+    const on = v === view;
+    btn.style.background  = on ? 'var(--accent)' : 'var(--surface)';
+    btn.style.color       = on ? '#fff' : 'var(--text)';
+    btn.style.borderColor = on ? 'var(--accent)' : 'var(--border)';
+  });
+  renderCatView();
+}
+
+function renderCatView() {
+  const body = document.getElementById('catModBody');
+  if (_catModView === 'sellers')   return renderCatSellers(body);
+  if (_catModView === 'productos') return renderCatProductos(body);
+  if (_catModView === 'gaps')      return renderCatGaps(body);
+}
+
+function renderCatSellers(body) {
+  const d = _catModData.sellers;
+  if (!d || !d.sellers || !d.sellers.length) { body.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Sin datos de sellers</div>'; return; }
+  const rows = d.sellers.map((s, i) => `
+    <tr style="${s.is_client ? 'background:rgba(255,212,0,0.12)' : ''};border-top:1px solid var(--border)">
+      <td style="padding:8px 10px;color:var(--muted)">${i+1}</td>
+      <td style="padding:8px 10px;font-weight:${s.is_client?'700':'500'}">${s.nickname||s.seller_id}${s.is_client?' ⭐':''}</td>
+      <td style="padding:8px 10px;text-align:center">${s.publicaciones_top50}</td>
+      <td style="padding:8px 10px;text-align:right">${(s.unidades_totales||0).toLocaleString('es-AR')}</td>
+      <td style="padding:8px 10px;text-align:right">${_catFmt(s.facturacion_estimada)}</td>
+      <td style="padding:8px 10px;text-align:right;font-weight:600">${s.share_pct}%</td>
+    </tr>`).join('');
+  body.innerHTML = `
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden;overflow-x:auto">
+      <table style="width:100%;border-collapse:collapse;font-size:13px;color:var(--text)">
+        <thead><tr style="background:var(--surface2);color:var(--muted);font-size:10px;text-transform:uppercase">
+          <th style="padding:8px 10px;text-align:left">#</th><th style="padding:8px 10px;text-align:left">Seller</th>
+          <th style="padding:8px 10px;text-align:center">Public. top 50</th><th style="padding:8px 10px;text-align:right">Unidades</th>
+          <th style="padding:8px 10px;text-align:right">Fact. estimada</th><th style="padding:8px 10px;text-align:right">Share</th>
+        </tr></thead><tbody>${rows}</tbody>
+      </table>
+    </div>`;
+}
+
+function renderCatProductos(body) {
+  const d = _catModData.ranking;
+  if (!d || !d.items || !d.items.length) { body.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Sin datos de productos</div>'; return; }
+  const rows = d.items.map(it => `
+    <tr style="${it.is_client ? 'background:rgba(255,212,0,0.12)' : ''};border-top:1px solid var(--border)">
+      <td style="padding:6px 8px;color:var(--muted)">${it.position}</td>
+      <td style="padding:6px 8px">${it.thumbnail?`<img src="${it.thumbnail}" style="width:38px;height:38px;object-fit:contain;border-radius:6px;background:#fff">`:''}</td>
+      <td style="padding:6px 8px;max-width:280px">${it.title||''}${it.is_client?' ⭐':''}</td>
+      <td style="padding:6px 8px;color:var(--muted)">${it.seller_nickname||''}</td>
+      <td style="padding:6px 8px;text-align:right">${_catFmt(it.price)}</td>
+      <td style="padding:6px 8px;text-align:right">${(it.sold_quantity||0).toLocaleString('es-AR')}</td>
+      <td style="padding:6px 8px;text-align:right">${it.estimated_daily_sales!=null?it.estimated_daily_sales:'—'}</td>
+      <td style="padding:6px 8px;text-align:center">${it.permalink?`<a href="${it.permalink}" target="_blank" style="color:var(--accent);text-decoration:none">ver →</a>`:''}</td>
+    </tr>`).join('');
+  body.innerHTML = `
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden;overflow-x:auto">
+      <table style="width:100%;border-collapse:collapse;font-size:12px;color:var(--text)">
+        <thead><tr style="background:var(--surface2);color:var(--muted);font-size:10px;text-transform:uppercase">
+          <th style="padding:6px 8px;text-align:left">#</th><th style="padding:6px 8px"></th>
+          <th style="padding:6px 8px;text-align:left">Producto</th><th style="padding:6px 8px;text-align:left">Seller</th>
+          <th style="padding:6px 8px;text-align:right">Precio</th><th style="padding:6px 8px;text-align:right">Vendidos</th>
+          <th style="padding:6px 8px;text-align:right">Ventas/día</th><th style="padding:6px 8px;text-align:center">Link</th>
+        </tr></thead><tbody>${rows}</tbody>
+      </table>
+    </div>`;
+}
+
+function renderCatGaps(body) {
+  const d = _catModData.gaps;
+  if (!d) { body.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">⏳ Calculando gaps…</div>'; return; }
+  if (!d.gaps || !d.gaps.length) { body.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">✅ Sin gaps — el cliente está en todo el top 20</div>'; return; }
+  body.innerHTML = `
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px">
+      ${d.gaps.map(g => `
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:14px">
+          <div style="font-size:13px;font-weight:600;margin-bottom:6px;color:var(--text)">${g.title||''}</div>
+          <div style="font-size:11px;color:var(--muted);margin-bottom:8px">${g.seller_nickname||''}</div>
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <span style="font-size:15px;font-weight:700;color:var(--accent)">${_catFmt(g.price)}</span>
+            <span style="font-size:11px;color:var(--muted)">${(g.sold_quantity||0).toLocaleString('es-AR')} vendidos</span>
+          </div>
+          ${g.permalink?`<a href="${g.permalink}" target="_blank" style="display:block;margin-top:8px;font-size:12px;color:var(--accent);text-decoration:none">ver en ML →</a>`:''}
+        </div>`).join('')}
+    </div>`;
 }
 
 // ── ANÁLISIS DE COMPETIDORES ──────────────────────────────────────────────────

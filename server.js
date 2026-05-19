@@ -4593,6 +4593,9 @@ app.get('/api/item-fees', requireAuth, async (req, res) => {
 });
 
 // ── DIAGNÓSTICO COMPETIDORES ──────────────────────────────────────────────────
+// Competencia > Categoría — módulo aparte (backend_competencia_categoria.js)
+require('./backend_competencia_categoria')(app, { pool, requireAuth, getClientToken, getAppToken, ML_API });
+
 app.get('/api/competencia/categorias', requireAuth, async (req, res) => {
   try {
     const { client_id } = req.query;
