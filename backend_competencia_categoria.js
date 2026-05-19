@@ -181,23 +181,38 @@ module.exports = function registerCategoriaRoutes(app, ctx) {
     } catch (e) { log(`highlights: error de red — ${e.message}`); }
     const hlIds = content.filter(c => c && c.type === 'ITEM' && c.id).map(c => c.id);
     console.log(`[COMP-CAT] highlights ${categoryId}: status ${status}, ${hlIds.length} items ITEM de ${content.length} en content`);
+    const typeCounts = {};
+    content.forEach(c => { const t = (c && c.type) || 'UNKNOWN'; typeCounts[t] = (typeCounts[t] || 0) + 1; });
     const debug = {
       url,
       highlights_status: status,
       content_count: content.length,
+      content_types: typeCounts,
       item_count: hlIds.length,
     };
     if (!hlIds.length) return { listings: [], via: 'highlights', debug };
 
     // highlights solo devuelve ids → traer el detalle con /items
     const listings = [];
+    debug.items_fetch = [];
     for (let i = 0; i < hlIds.length; i += 20) {
       const batch = hlIds.slice(i, i + 20);
-      const data = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,title,price,sold_quantity,permalink,thumbnail,catalog_product_id,seller_id`,
-        { headers: authHeaders }).then(r => r.json()).catch(() => []);
-      (Array.isArray(data) ? data : []).forEach(r => {
-        if (r.code === 200 && r.body) listings.push(normalizeItemBody(r.body));
+      let httpStatus = 0, parsed = null;
+      try {
+        const res = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,title,price,sold_quantity,permalink,thumbnail,catalog_product_id,seller_id`,
+          { headers: authHeaders });
+        httpStatus = res.status;
+        parsed = await res.json();
+      } catch (e) { log(`items detalle: error de red — ${e.message}`); }
+      const arr = Array.isArray(parsed) ? parsed : [];
+      debug.items_fetch.push({
+        ids: batch,
+        http_status: httpStatus,
+        codes: arr.map(r => r && r.code),
+        response_shape: Array.isArray(parsed) ? 'array'
+          : (parsed && typeof parsed === 'object' ? Object.keys(parsed) : String(parsed)),
       });
+      arr.forEach(r => { if (r.code === 200 && r.body) listings.push(normalizeItemBody(r.body)); });
     }
     debug.listings_count = listings.length;
     return { listings, via: 'highlights', debug };
