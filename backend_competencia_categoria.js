@@ -12,6 +12,11 @@
 // Cache en Postgres: ranking 6h, sellers de ML 7 días, gaps siempre se calcula.
 'use strict';
 
+// Mismo HTTP client que server.js (línea 4: const fetch = require('node-fetch')).
+// El fetch global no está disponible en el Node de Railway; node-fetch v2 tiene
+// API idéntica, así que los call-sites no cambian.
+const fetch = require('node-fetch');
+
 const RANKING_TTL_MS = 6 * 60 * 60 * 1000;       // 6 horas
 const SELLERS_TTL_MS = 7 * 24 * 60 * 60 * 1000;  // 7 días
 const SEARCH_LIMIT   = 50;
