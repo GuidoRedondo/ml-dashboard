@@ -998,7 +998,10 @@ tbody td {
     <div class="page" id="page-preguntas">
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px;flex-wrap:wrap">
         <h2 style="margin:0;font-family:var(--font-b);flex:1">❓ Preguntas</h2>
-        <select id="preguntasFilter" onchange="renderPreguntasDetalle()" style="padding:6px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px">
+        <select id="preguntasFilterMLA" onchange="setPreguntasFiltroMLA(this.value)" style="padding:6px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px;max-width:280px">
+          <option value="">Todas las publicaciones</option>
+        </select>
+        <select id="preguntasFilter" onchange="setPreguntasFiltroEstado(this.value)" style="padding:6px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px">
           <option value="all">Todas</option>
           <option value="respondida">Respondidas</option>
           <option value="sin">Sin responder</option>
@@ -1008,6 +1011,7 @@ tbody td {
         <button onclick="exportarPreguntasExcel()" class="sync-btn" style="background:#16a34a;color:#fff;border:none">📥 Excel</button>
       </div>
       <div id="preguntasResumen" style="margin-bottom:16px"></div>
+      <div id="preguntasRanking" style="margin-bottom:16px"></div>
       <div id="preguntasContent"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Cargando...</div></div>
     </div>
 
@@ -7099,9 +7103,11 @@ async function loadPreguntasCard() {
   }
 }
 
-// ─── SECCIÓN PREGUNTAS (detalle + descarga) ──────────────────────────────────
+// ─── SECCIÓN PREGUNTAS (detalle + ranking + descarga) ────────────────────────
 let _preguntasData = null;
-let _preguntasResumen = null;
+let _preguntasRanking = null;
+let _preguntasFiltroEstado = 'all';
+let _preguntasFiltroMLA = '';
 
 function _pregEsc(s) {
   return String(s ?? '').replace(/[&<>"]/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c]));
@@ -7118,19 +7124,29 @@ function _pregTimeColor(mins) {
   if (mins < 60) return '#d97706';
   return '#dc2626';
 }
+function _pregFmtTime(mins) {
+  if (mins === null || mins === undefined) return '—';
+  if (mins < 1) return '< 1min';
+  if (mins < 60) return mins + 'min';
+  if (mins < 1440) return (mins/60).toFixed(1).replace('.0','') + 'hs';
+  return (mins/1440).toFixed(1).replace('.0','') + 'd';
+}
 
 async function loadPreguntasDetalle() {
   const cont = document.getElementById('preguntasContent');
   const resEl = document.getElementById('preguntasResumen');
+  const rankEl = document.getElementById('preguntasRanking');
   if (!cont) return;
   const client = getActiveClient();
   if (!client || !client.ml_user_id) {
     if (resEl) resEl.innerHTML = '';
+    if (rankEl) rankEl.innerHTML = '';
     cont.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Seleccioná una cuenta para ver las preguntas.</div>';
     return;
   }
   cont.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">⏳ Cargando preguntas del período...</div>';
   if (resEl) resEl.innerHTML = '';
+  if (rankEl) rankEl.innerHTML = '';
   try {
     const { date_from, date_to } = getDateRange();
     const d = await apiCall('GET', `/api/preguntas-detalle?uid=${client.ml_user_id}&client_id=${client.id}&date_from=${date_from}&date_to=${date_to}`);
@@ -7139,48 +7155,170 @@ async function loadPreguntasDetalle() {
       return;
     }
     _preguntasData = d.preguntas || [];
-    _preguntasResumen = d.resumen || {};
+    _preguntasRanking = d.ranking || [];
+    _preguntasFiltroEstado = 'all';
+    _preguntasFiltroMLA = '';
+    const selE = document.getElementById('preguntasFilter');
+    if (selE) selE.value = 'all';
+    poblarPreguntasMLA();
     renderPreguntasResumen();
+    renderPreguntasRanking();
     renderPreguntasDetalle();
   } catch(e) {
     cont.innerHTML = `<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Error: ${_pregEsc(e.message)}</div>`;
   }
 }
 
+function poblarPreguntasMLA() {
+  const sel = document.getElementById('preguntasFilterMLA');
+  if (!sel) return;
+  const opts = (_preguntasRanking || []).map(r =>
+    `<option value="${_pregEsc(r.item_id)}">${_pregEsc(r.item_id)} · ${_pregEsc((r.item_titulo||'').slice(0,42))} (${r.preguntas})</option>`
+  ).join('');
+  sel.innerHTML = '<option value="">Todas las publicaciones</option>' + opts;
+  sel.value = _preguntasFiltroMLA;
+}
+
+function getPreguntasFiltradas() {
+  let rows = _preguntasData || [];
+  if (_preguntasFiltroMLA) rows = rows.filter(p => p.item_id === _preguntasFiltroMLA);
+  if (_preguntasFiltroEstado === 'respondida') rows = rows.filter(p => p.estado === 'Respondida');
+  else if (_preguntasFiltroEstado === 'sin')   rows = rows.filter(p => p.estado === 'Sin responder');
+  else if (_preguntasFiltroEstado === 'venta') rows = rows.filter(p => p.genero_venta);
+  return rows;
+}
+
+function setPreguntasFiltroEstado(v) {
+  _preguntasFiltroEstado = v || 'all';
+  const sel = document.getElementById('preguntasFilter');
+  if (sel) sel.value = _preguntasFiltroEstado;
+  renderPreguntasResumen();
+  renderPreguntasDetalle();
+}
+function setPreguntasFiltroMLA(v) {
+  _preguntasFiltroMLA = v || '';
+  const sel = document.getElementById('preguntasFilterMLA');
+  if (sel) sel.value = _preguntasFiltroMLA;
+  renderPreguntasResumen();
+  renderPreguntasRanking();
+  renderPreguntasDetalle();
+}
+
+function _pregResumen(rows) {
+  const mins = rows.filter(p => p.minutos_respuesta != null).map(p => p.minutos_respuesta);
+  const avg = mins.length ? Math.round(mins.reduce((a,b)=>a+b,0)/mins.length) : null;
+  const sorted = [...mins].sort((a,b)=>a-b);
+  const med = sorted.length ? sorted[Math.floor(sorted.length/2)] : null;
+  const askers = new Set(rows.map(p=>p.comprador_id).filter(Boolean));
+  const conv   = new Set(rows.filter(p=>p.genero_venta).map(p=>p.comprador_id).filter(Boolean));
+  return {
+    total:          rows.length,
+    respondidas:    rows.filter(p=>p.estado==='Respondida').length,
+    sin_responder:  rows.filter(p=>p.estado==='Sin responder').length,
+    mins_promedio:  avg,
+    mins_mediana:   med,
+    con_venta:      rows.filter(p=>p.genero_venta).length,
+    convertidos:    conv.size,
+    tasa_conversion: askers.size ? +(conv.size/askers.size*100).toFixed(1) : 0,
+  };
+}
+
 function renderPreguntasResumen() {
   const el = document.getElementById('preguntasResumen');
-  if (!el || !_preguntasResumen) return;
-  const r = _preguntasResumen;
-  const kpi = (label, value, sub, color) => `
-    <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px 16px;min-width:0">
-      <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:6px">${label}</div>
+  if (!el || !_preguntasData) return;
+  // El resumen refleja el filtro por publicación; los estados son su desglose.
+  const base = _preguntasFiltroMLA ? _preguntasData.filter(p=>p.item_id===_preguntasFiltroMLA) : _preguntasData;
+  const r = _pregResumen(base);
+  const f = _preguntasFiltroEstado;
+  const card = (key, label, value, sub, color) => {
+    const active = key && key === f;
+    return `<div ${key ? `onclick="setPreguntasFiltroEstado('${active ? 'all' : key}')"` : ''}
+      style="background:${active?'var(--surface2)':'var(--surface)'};border:1.5px solid ${active?(color||'var(--accent)'):'var(--border)'};border-radius:10px;padding:14px 16px;min-width:0;${key?'cursor:pointer':''}">
+      <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:6px">${label}${active?' ✓':''}</div>
       <div style="font-size:22px;font-weight:700;font-family:var(--font-b);color:${color||'var(--text)'}">${value ?? '—'}</div>
       ${sub ? `<div style="font-size:11px;color:var(--muted);margin-top:3px">${sub}</div>` : ''}
     </div>`;
-  const respColor = (r.sin_responder || 0) > 0 ? '#ef4444' : '#22c55e';
-  const tasaColor = (r.tasa_conversion||0) >= 30 ? '#22c55e' : (r.tasa_conversion||0) >= 15 ? '#f59e0b' : '#ef4444';
-  el.innerHTML = `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px">
-    ${kpi('Preguntas recibidas', (r.total||0).toLocaleString('es-AR'), 'en el período', '')}
-    ${kpi('Respondidas', (r.respondidas||0).toLocaleString('es-AR'), `${r.total>0?Math.round(r.respondidas/r.total*100):0}% del total`, '#22c55e')}
-    ${kpi('Sin responder', (r.sin_responder||0).toLocaleString('es-AR'), 'pendientes', respColor)}
-    ${kpi('Tiempo promedio', r.tiempo_promedio || '—', 'en responder', _pregTimeColor(r.mins_promedio))}
-    ${kpi('Tiempo mediana', r.tiempo_mediana || '—', 'en responder', _pregTimeColor(r.mins_mediana))}
-    ${kpi('Generaron venta', (r.con_venta||0).toLocaleString('es-AR'), `${r.compradores_convertidos||0} compradores`, '#6366f1')}
-    ${kpi('Tasa de conversión', (r.tasa_conversion||0) + '%', 'preguntaron → compraron', tasaColor)}
-  </div>`;
+  };
+  const respColor = r.sin_responder > 0 ? '#ef4444' : '#22c55e';
+  const tasaColor = r.tasa_conversion >= 30 ? '#22c55e' : r.tasa_conversion >= 15 ? '#f59e0b' : '#ef4444';
+  el.innerHTML = `
+    <div style="font-size:11px;color:var(--muted);margin-bottom:8px">💡 Cliqueá una tarjeta para filtrar la tabla por estado.</div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px">
+      ${card('all','Preguntas recibidas',r.total.toLocaleString('es-AR'),'en el período','')}
+      ${card('respondida','Respondidas',r.respondidas.toLocaleString('es-AR'),`${r.total>0?Math.round(r.respondidas/r.total*100):0}% del total`,'#22c55e')}
+      ${card('sin','Sin responder',r.sin_responder.toLocaleString('es-AR'),'pendientes',respColor)}
+      ${card(null,'Tiempo promedio',_pregFmtTime(r.mins_promedio),'en responder',_pregTimeColor(r.mins_promedio))}
+      ${card(null,'Tiempo mediana',_pregFmtTime(r.mins_mediana),'en responder',_pregTimeColor(r.mins_mediana))}
+      ${card('venta','Generaron venta',r.con_venta.toLocaleString('es-AR'),`${r.convertidos} compradores`,'#6366f1')}
+      ${card(null,'Tasa de conversión',r.tasa_conversion+'%','preguntaron → compraron',tasaColor)}
+    </div>`;
+}
+
+function renderPreguntasRanking() {
+  const el = document.getElementById('preguntasRanking');
+  if (!el) return;
+  const rk = _preguntasRanking || [];
+  if (!rk.length) { el.innerHTML = ''; return; }
+  const maxPreg = Math.max(...rk.map(r=>r.preguntas), 1);
+  const td = 'padding:7px 10px;border-bottom:1px solid var(--border);font-size:12px';
+  const th = 'padding:7px 10px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);border-bottom:2px solid var(--border);white-space:nowrap';
+  const body = rk.map((r,i) => {
+    const sel = r.item_id === _preguntasFiltroMLA;
+    const convColor = r.conversion >= 30 ? '#16a34a' : r.conversion >= 15 ? '#d97706' : 'var(--muted)';
+    const barW = Math.round(r.preguntas/maxPreg*100);
+    return `<tr onclick="setPreguntasFiltroMLA('${sel?'':_pregEsc(r.item_id)}')" style="cursor:pointer;background:${sel?'var(--surface2)':'transparent'}">
+      <td style="${td};color:var(--muted);text-align:center">${i+1}</td>
+      <td style="${td};white-space:nowrap;font-weight:600;color:${sel?'var(--accent)':'var(--text)'}">${_pregEsc(r.item_id)}${sel?' ✓':''}</td>
+      <td style="${td};max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${_pregEsc(r.item_titulo)}</td>
+      <td style="${td}">
+        <div style="display:flex;align-items:center;gap:6px">
+          <span style="font-weight:700;min-width:24px">${r.preguntas}</span>
+          <span style="flex:1;height:6px;background:var(--border);border-radius:3px;overflow:hidden;min-width:40px"><span style="display:block;height:100%;width:${barW}%;background:var(--accent)"></span></span>
+        </div>
+      </td>
+      <td style="${td};text-align:center;font-weight:600">${r.ventas}</td>
+      <td style="${td};text-align:center;font-weight:700;color:${convColor}">${r.conversion}%</td>
+    </tr>`;
+  }).join('');
+  el.innerHTML = `
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;overflow:hidden">
+      <div style="padding:12px 14px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;border-bottom:1px solid var(--border)">
+        <div style="font-size:13px;font-weight:700;font-family:var(--font-b)">🏆 Ranking de publicaciones</div>
+        <div style="font-size:11px;color:var(--muted)">${rk.length} publicación(es) · cliqueá una fila para filtrar el detalle</div>
+      </div>
+      <div style="overflow-x:auto;max-height:340px;overflow-y:auto">
+        <table style="width:100%;border-collapse:collapse">
+          <thead><tr>
+            <th style="${th};text-align:center">#</th>
+            <th style="${th}">Publicación</th>
+            <th style="${th}">Título</th>
+            <th style="${th}">Preguntas</th>
+            <th style="${th};text-align:center">Ventas</th>
+            <th style="${th};text-align:center" title="% de compradores que preguntaron sobre la publicación y luego compraron">Conversión</th>
+          </tr></thead>
+          <tbody>${body}</tbody>
+        </table>
+      </div>
+    </div>`;
 }
 
 function renderPreguntasDetalle() {
   const cont = document.getElementById('preguntasContent');
   if (!cont || !_preguntasData) return;
-  const filtro = document.getElementById('preguntasFilter')?.value || 'all';
-  let rows = _preguntasData;
-  if (filtro === 'respondida') rows = rows.filter(p => p.estado === 'Respondida');
-  else if (filtro === 'sin')   rows = rows.filter(p => p.estado === 'Sin responder');
-  else if (filtro === 'venta') rows = rows.filter(p => p.genero_venta);
+  const rows = getPreguntasFiltradas();
+
+  const chip = (txt, onclear) => `<span style="display:inline-flex;align-items:center;gap:5px;background:var(--surface2);border:1px solid var(--border);border-radius:20px;padding:3px 10px;font-size:11px;color:var(--text)">${txt} <span onclick="${onclear}" style="cursor:pointer;color:var(--muted);font-weight:700">✕</span></span>`;
+  const chips = [];
+  if (_preguntasFiltroMLA) chips.push(chip('📦 ' + _pregEsc(_preguntasFiltroMLA), "setPreguntasFiltroMLA('')"));
+  if (_preguntasFiltroEstado !== 'all') {
+    const lbl = { respondida:'Respondidas', sin:'Sin responder', venta:'Generaron venta' }[_preguntasFiltroEstado] || _preguntasFiltroEstado;
+    chips.push(chip(lbl, "setPreguntasFiltroEstado('all')"));
+  }
+  const header = `<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap">
+    <span style="font-size:12px;color:var(--muted)">${rows.length} pregunta(s)</span>${chips.join('')}</div>`;
 
   if (!rows.length) {
-    cont.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">No hay preguntas para este filtro.</div>';
+    cont.innerHTML = header + '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">No hay preguntas para este filtro.</div>';
     return;
   }
 
@@ -7208,8 +7346,7 @@ function renderPreguntasDetalle() {
     </tr>`;
   }).join('');
 
-  cont.innerHTML = `
-    <div style="font-size:12px;color:var(--muted);margin-bottom:8px">${rows.length} pregunta(s)</div>
+  cont.innerHTML = header + `
     <div style="overflow-x:auto;background:var(--surface);border:1px solid var(--border);border-radius:10px">
       <table style="width:100%;border-collapse:collapse">
         <thead><tr>
@@ -7232,11 +7369,7 @@ function exportarPreguntasExcel() {
   const XLSX = window.XLSX;
   if (!XLSX) { showToast('Librería Excel no disponible'); return; }
   const client = getActiveClient();
-  const filtro = document.getElementById('preguntasFilter')?.value || 'all';
-  let rows = _preguntasData;
-  if (filtro === 'respondida') rows = rows.filter(p => p.estado === 'Respondida');
-  else if (filtro === 'sin')   rows = rows.filter(p => p.estado === 'Sin responder');
-  else if (filtro === 'venta') rows = rows.filter(p => p.genero_venta);
+  const rows = getPreguntasFiltradas();
 
   const data = rows.map(p => ({
     'Publicación':       p.item_id,
@@ -7256,6 +7389,24 @@ function exportarPreguntasExcel() {
   ws['!cols'] = [{wch:14},{wch:38},{wch:30},{wch:13},{wch:48},{wch:48},{wch:18},{wch:18},{wch:16},{wch:14},{wch:16},{wch:14}];
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Preguntas');
+
+  // Hoja 2: ranking de publicaciones
+  if (_preguntasRanking && _preguntasRanking.length) {
+    const rk = _preguntasRanking.map((r,i) => ({
+      '#':            i + 1,
+      'Publicación':  r.item_id,
+      'Título':       r.item_titulo,
+      'Link':         r.permalink,
+      'Preguntas':    r.preguntas,
+      'Compradores que preguntaron': r.compradores,
+      'Ventas (unidades)': r.ventas,
+      'Conversión (%)': r.conversion,
+    }));
+    const wsR = XLSX.utils.json_to_sheet(rk);
+    wsR['!cols'] = [{wch:5},{wch:14},{wch:42},{wch:30},{wch:11},{wch:24},{wch:18},{wch:15}];
+    XLSX.utils.book_append_sheet(wb, wsR, 'Ranking');
+  }
+
   const fecha = new Date().toISOString().slice(0,10);
   XLSX.writeFile(wb, `Preguntas_${(client?.name||'cliente').replace(/\s+/g,'_')}_${fecha}.xlsx`);
 }
