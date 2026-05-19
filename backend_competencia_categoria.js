@@ -15,7 +15,8 @@
 // /highlights/MLA/category/{cat} — el endpoint oficial de "más vendidos" por
 // categoría — autenticado con el access_token del cliente (da 401 sin token).
 //
-// Cache en Postgres: ranking 6h, sellers 7 días, nombres de categoría 30 días.
+// Cache en Postgres: ranking 6h (no se cachean resultados vacíos), sellers 7
+// días, nombres de categoría 30 días.
 'use strict';
 
 // Mismo HTTP client que server.js (línea 4: const fetch = require('node-fetch')).
@@ -180,7 +181,13 @@ module.exports = function registerCategoriaRoutes(app, ctx) {
     } catch (e) { log(`highlights: error de red — ${e.message}`); }
     const hlIds = content.filter(c => c && c.type === 'ITEM' && c.id).map(c => c.id);
     console.log(`[COMP-CAT] highlights ${categoryId}: status ${status}, ${hlIds.length} items ITEM de ${content.length} en content`);
-    if (!hlIds.length) return { listings: [], via: 'highlights' };
+    const debug = {
+      url,
+      highlights_status: status,
+      content_count: content.length,
+      item_count: hlIds.length,
+    };
+    if (!hlIds.length) return { listings: [], via: 'highlights', debug };
 
     // highlights solo devuelve ids → traer el detalle con /items
     const listings = [];
@@ -192,7 +199,8 @@ module.exports = function registerCategoriaRoutes(app, ctx) {
         if (r.code === 200 && r.body) listings.push(normalizeItemBody(r.body));
       });
     }
-    return { listings, via: 'highlights' };
+    debug.listings_count = listings.length;
+    return { listings, via: 'highlights', debug };
   }
 
   // ── Ranking: dedup de llamadas en vuelo ─────────────────────────────────────
@@ -220,7 +228,7 @@ module.exports = function registerCategoriaRoutes(app, ctx) {
     } catch (e) { log('error leyendo cache ranking:', e.message); }
 
     log(`ranking ${categoryId}: MISS — consultando ML`);
-    const { listings, via } = await fetchCategoryListings(categoryId, clientId);
+    const { listings, via, debug } = await fetchCategoryListings(categoryId, clientId);
 
     // Orden por sold_quantity desc del lado del backend
     const results = listings.slice().sort((a, b) => (b.sold_quantity || 0) - (a.sold_quantity || 0));
@@ -277,14 +285,24 @@ module.exports = function registerCategoriaRoutes(app, ctx) {
       };
     });
 
-    const payload = { items, fetched_at: new Date().toISOString() };
-    try {
-      await pool.query(`
-        INSERT INTO category_ranking_cache (category_id, fetched_at, payload)
-        VALUES ($1, NOW(), $2)
-        ON CONFLICT (category_id) DO UPDATE SET fetched_at=NOW(), payload=$2
-      `, [categoryId, JSON.stringify(payload)]);
-    } catch (e) { log('error guardando cache ranking:', e.message); }
+    const payload = {
+      items,
+      fetched_at: new Date().toISOString(),
+      _debug: Object.assign({ via }, debug || {}),
+    };
+    // No se cachea un resultado vacío: un fetch fallido no debe tapar la
+    // categoría 6h — la próxima carga reintenta sola.
+    if (items.length > 0) {
+      try {
+        await pool.query(`
+          INSERT INTO category_ranking_cache (category_id, fetched_at, payload)
+          VALUES ($1, NOW(), $2)
+          ON CONFLICT (category_id) DO UPDATE SET fetched_at=NOW(), payload=$2
+        `, [categoryId, JSON.stringify(payload)]);
+      } catch (e) { log('error guardando cache ranking:', e.message); }
+    } else {
+      log(`ranking ${categoryId}: 0 items — no se cachea (se reintentará en la próxima carga)`);
+    }
     return payload;
   }
 
@@ -339,7 +357,11 @@ module.exports = function registerCategoriaRoutes(app, ctx) {
       if (!category_id) return res.status(400).json({ error: 'Falta category_id' });
       if (!client_id) return res.status(400).json({ error: 'Falta client_id' });
       const payload = await getRanking(category_id, parseInt(client_id));
-      res.json({ items: payload.items.slice(0, limit), fetched_at: payload.fetched_at });
+      res.json({
+        items: payload.items.slice(0, limit),
+        fetched_at: payload.fetched_at,
+        _debug: payload._debug || null,
+      });
     } catch (e) {
       console.error('[COMP-CAT] categoria-ranking:', e.message);
       res.status(500).json({ error: e.message });
