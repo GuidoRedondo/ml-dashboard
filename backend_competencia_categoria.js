@@ -130,18 +130,31 @@ module.exports = function registerCategoriaRoutes(app, ctx) {
 
     log(`ranking ${categoryId}: MISS — consultando ML`);
     const { appToken, userToken } = await getSearchTokens(clientId);
-    const urlSorted = `${ML_API}/sites/MLA/search?category=${categoryId}&sort=sold_quantity_desc&limit=${SEARCH_LIMIT}`;
-    const urlPlain  = `${ML_API}/sites/MLA/search?category=${categoryId}&limit=${SEARCH_LIMIT}`;
+
+    // sold_quantity_desc NO es un valor de sort válido del search público de ML
+    // (válidos: relevance, price_asc, price_desc). Se pide sin sort y se ordena
+    // por sold_quantity del lado del backend. Se prueba app token y user token.
+    const searchUrl = `${ML_API}/sites/MLA/search?category=${categoryId}&limit=${SEARCH_LIMIT}`;
+    console.log('[COMP-CAT] URL:', searchUrl);
 
     let results = [];
-    for (const at of [
-      { url: urlSorted, token: appToken }, { url: urlPlain, token: appToken },
-      { url: urlSorted, token: userToken }, { url: urlPlain, token: userToken },
-    ]) {
-      if (!at.token) continue;
-      const s = await mlGet(at.url, at.token);
-      if (s && s.results && s.results.length) { results = s.results; break; }
+    for (const token of [appToken, userToken]) {
+      if (!token) continue;
+      let res, data;
+      try {
+        res = await fetch(searchUrl, { headers: { Authorization: `Bearer ${token}` } });
+        data = await res.json();
+      } catch (e) {
+        log(`ranking ${categoryId}: error de red consultando ML — ${e.message}`);
+        continue;
+      }
+      console.log(`[COMP-CAT] ranking ${categoryId}: ML status`, res.status,
+                  'results:', data && data.results ? data.results.length : 0);
+      if (data && data.results && data.results.length) { results = data.results; break; }
     }
+
+    // Orden por sold_quantity desc del lado del backend (reemplaza al sort de ML)
+    results = results.sort((a, b) => (b.sold_quantity || 0) - (a.sold_quantity || 0));
     log(`ranking ${categoryId}: ${results.length} resultados de ML`);
 
     const enrichToken = userToken || appToken;
@@ -333,6 +346,18 @@ module.exports = function registerCategoriaRoutes(app, ctx) {
       res.json({ gaps });
     } catch (e) {
       console.error('[COMP-CAT] categoria-gaps:', e.message);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ── Cache clear (debug) — vacía category_ranking_cache ──────────────────────
+  app.get('/api/competencia/cache-clear', requireAuth, async (req, res) => {
+    try {
+      const r = await pool.query('DELETE FROM category_ranking_cache');
+      log(`cache-clear: ${r.rowCount} filas borradas de category_ranking_cache`);
+      res.json({ ok: true, deleted: r.rowCount });
+    } catch (e) {
+      console.error('[COMP-CAT] cache-clear:', e.message);
       res.status(500).json({ error: e.message });
     }
   });
