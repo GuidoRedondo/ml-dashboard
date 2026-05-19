@@ -4083,10 +4083,16 @@ app.get('/api/reporte/pyl', requireAuth, async (req, res) => {
       egreso_imp_operacion += parseFloat(o.taxes?.amount)||0;
 
       // Reembolsos: monto que ML devolvió al comprador y descontó del payout.
-      // En órdenes paid sin devolución esto es 0, así que sumar siempre es seguro.
-      (o.payments||[]).forEach(p => {
-        egreso_reembolsos += parseFloat(p.transaction_amount_refunded)||0;
-      });
+      // Solo se cuenta en órdenes NO canceladas. En una orden cancelada el
+      // reembolso volvió al comprador y la venta nunca entró a facturación
+      // (ver 'if (!cancelada) facturacion += ...' arriba) — restarlo descontaría
+      // una plata que el vendedor nunca recibió, subestimando la utilidad. La
+      // pérdida real de una cancelación queda capturada por comisión + impuestos.
+      if (!cancelada) {
+        (o.payments||[]).forEach(p => {
+          egreso_reembolsos += parseFloat(p.transaction_amount_refunded)||0;
+        });
+      }
     });
 
     // Shipping costs — usar /costs endpoint que es el correcto
