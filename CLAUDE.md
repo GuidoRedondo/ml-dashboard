@@ -76,7 +76,7 @@ This is a **single-file Node.js/Express backend** (`server.js`) + **single-file 
 - **Ads / Publicidad**: `GET /api/ads`, `GET /api/ads-anuncios`, `GET /api/ads-items`
 - **Listings**: `GET /api/items-full`, `GET /api/categorias-ventas`
 - **Diagnóstico mensual**: `GET /api/diagnostico`, `POST /api/diagnostico/calcular`, `POST /api/diagnostico/manuales`
-- **Reporte financiero (P&L)**: `GET /api/reporte/items-vendidos`, `GET /api/reporte/items-activos`, `POST /api/reporte/costos`, `GET|POST /api/reporte/gastos`, `GET /api/reporte/pyl`, `GET /api/reporte/meses-disponibles`, `GET /api/reporte/comparar`
+- **Reporte financiero (P&L)**: `GET /api/reporte/items-vendidos`, `GET /api/reporte/items-activos`, `POST /api/reporte/costos`, `GET|POST /api/reporte/gastos`, `GET /api/reporte/pyl`, `GET /api/reporte/devoluciones-analisis`, `GET /api/reporte/meses-disponibles`, `GET /api/reporte/comparar`
 - **Logística / Full Stock**: `GET /api/logistica`, `GET /api/logistica/full-stock`, `PUT /api/logistica/full-stock-global`, `PUT /api/logistica/full-stock/:item_id`
 - **Competencia**: `GET /api/competencia`, `GET /api/competencia/item`, `GET /api/competencia/categorias`, `GET /api/competencia/diagnostico`
 - **Other**: `GET /api/promociones`, `GET /api/preguntas`, `GET /api/devoluciones`, `GET /api/bitacora`, `POST /api/bitacora`, `PUT|DELETE /api/bitacora/:id`, `GET /api/proxy-ml`, `GET /api/item-fees`

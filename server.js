@@ -4228,6 +4228,134 @@ app.get('/api/reporte/pyl', requireAuth, async (req, res) => {
   } catch(e) { console.error('[REPORTE PYL]', e.message, e.stack); res.status(500).json({ error: e.message }); }
 });
 
+// GET /api/reporte/devoluciones-analisis — análisis de cancelaciones y devoluciones por SKU
+app.get('/api/reporte/devoluciones-analisis', requireAuth, async (req, res) => {
+  try {
+    const { client_id, date_from, date_to } = req.query;
+    const token = await getClientToken(parseInt(client_id));
+    if (!token) return res.status(403).json({ error: 'Sin token' });
+    const headers = { 'Authorization': `Bearer ${token}` };
+
+    const clientRes = await pool.query('SELECT ml_user_id, name FROM clients WHERE id=$1', [client_id]);
+    const { ml_user_id: uid, name: clientName } = clientRes.rows[0] || {};
+    if (!uid) return res.status(400).json({ error: 'Cliente sin ML User ID' });
+
+    const fmt = d => new Date(d).toISOString().slice(0,19) + '.000-00:00';
+    const { orders } = await fetchOrdersForPyL(uid, headers, fmt(date_from + 'T00:00:00'), fmt(date_to + 'T23:59:59'));
+
+    // Razón legible: cancel_detail puede ser objeto {group,code,description} o string.
+    // Para partially_refunded ML no expone la razón en la orden → queda null.
+    const leerRazon = cd => {
+      if (!cd) return null;
+      if (typeof cd === 'string') return cd;
+      return cd.description || cd.code || cd.group || null;
+    };
+
+    const byMla = {};
+    const bucket = (id, title) => {
+      if (!byMla[id]) byMla[id] = {
+        mla_id: id, title: title || id,
+        ventas_totales_unidades: 0, canceladas: 0, devueltas: 0,
+        monto_perdido: 0, _razones: {},
+      };
+      return byMla[id];
+    };
+
+    let canceladas_count = 0, devueltas_count = 0, monto_perdido_total = 0;
+
+    orders.forEach(o => {
+      const esCancelada = o.status === 'cancelled';
+      const esDevuelta  = o.status === 'partially_refunded';
+      const problema    = esCancelada || esDevuelta;
+      if (esCancelada) canceladas_count++;
+      if (esDevuelta)  devueltas_count++;
+
+      const items = o.order_items || [];
+      const unidsOrden = items.reduce((s, oi) => s + (oi.quantity || 0), 0) || 1;
+
+      // Reembolsos + impuestos van a nivel orden; se prorratean por unidades a cada item.
+      // La comisión sí es exacta por item (oi.sale_fee). Mismas fuentes que /api/reporte/pyl.
+      let refund = 0;
+      (o.payments || []).forEach(p => { refund += parseFloat(p.transaction_amount_refunded) || 0; });
+      const impuestos = parseFloat(o.taxes?.amount) || 0;
+      const perdidaNivelOrden = problema ? (refund + impuestos) : 0;
+      const razon = leerRazon(o.cancel_detail);
+
+      items.forEach(oi => {
+        const id = oi.item?.id;
+        if (!id) return;
+        const b = bucket(id, oi.item?.title);
+        const q = oi.quantity || 0;
+        b.ventas_totales_unidades += q;
+        if (!problema) return;
+        if (esCancelada) b.canceladas += q;
+        if (esDevuelta)  b.devueltas  += q;
+        b.monto_perdido += (parseFloat(oi.sale_fee) || 0) + perdidaNivelOrden * (q / unidsOrden);
+        if (razon) b._razones[razon] = (b._razones[razon] || 0) + 1;
+      });
+
+      if (problema) {
+        let comisionOrden = 0;
+        items.forEach(oi => { comisionOrden += parseFloat(oi.sale_fee) || 0; });
+        monto_perdido_total += refund + impuestos + comisionOrden;
+      }
+    });
+
+    // SKU por MLA (mismo patrón que /api/reporte/items-vendidos)
+    const itemIds = Object.keys(byMla);
+    const skuMap = {};
+    for (let i = 0; i < itemIds.length; i += 20) {
+      const batch = itemIds.slice(i, i + 20);
+      try {
+        const data = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,seller_custom_field,attributes,variations`, { headers }).then(r => r.json());
+        (Array.isArray(data) ? data : []).forEach(r => {
+          if (r.code !== 200 || !r.body) return;
+          const b = r.body;
+          skuMap[b.id] = b.seller_custom_field
+            || b.attributes?.find(a => a.id === 'SELLER_SKU')?.value_name
+            || b.variations?.[0]?.attributes?.find(a => a.id === 'SELLER_SKU')?.value_name
+            || null;
+        });
+      } catch(e) {}
+    }
+
+    const skus_problema = Object.values(byMla)
+      .filter(b => b.canceladas > 0 || b.devueltas > 0)
+      .map(b => {
+        const vt = b.ventas_totales_unidades || 0;
+        return {
+          mla_id: b.mla_id,
+          sku: skuMap[b.mla_id] || null,
+          title: b.title,
+          ventas_totales_unidades: vt,
+          canceladas: b.canceladas,
+          devueltas: b.devueltas,
+          tasa_cancelacion: vt > 0 ? +(b.canceladas / vt).toFixed(4) : 0,
+          tasa_devolucion:  vt > 0 ? +(b.devueltas  / vt).toFixed(4) : 0,
+          monto_perdido: Math.round(b.monto_perdido),
+          razones_top: Object.entries(b._razones).sort((a, c) => c[1] - a[1]).slice(0, 3).map(([r]) => r),
+        };
+      })
+      .sort((a, c) => c.monto_perdido - a.monto_perdido);
+
+    const total_ordenes = orders.length;
+    res.json({
+      cliente: clientName,
+      periodo: { from: date_from, to: date_to },
+      resumen: {
+        total_ordenes,
+        canceladas_count,
+        canceladas_pct: total_ordenes > 0 ? +(canceladas_count / total_ordenes * 100).toFixed(1) : 0,
+        devueltas_count,
+        devueltas_pct: total_ordenes > 0 ? +(devueltas_count / total_ordenes * 100).toFixed(1) : 0,
+        tasa_problema_total_pct: total_ordenes > 0 ? +((canceladas_count + devueltas_count) / total_ordenes * 100).toFixed(1) : 0,
+        monto_perdido_total: Math.round(monto_perdido_total),
+      },
+      skus_problema,
+    });
+  } catch(e) { console.error('[REPORTE DEVOLUCIONES]', e.message, e.stack); res.status(500).json({ error: e.message }); }
+});
+
 // GET /api/reporte/meses-disponibles — lista meses guardados de un cliente
 app.get('/api/reporte/meses-disponibles', requireAuth, async (req, res) => {
   try {
