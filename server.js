@@ -976,6 +976,41 @@ async function fetchAllOrders(uid, headers, fromStr, toStr) {
   } catch(e) { return { orders: [], amount: 0 }; }
 }
 
+// ── P&L ORDERS — criterio Método Redondo ──────────────────────────────────────
+// fetchOrdersForPyL existe APARTE de fetchAllOrders porque el P&L necesita TODAS
+// las órdenes con movimiento de plata, no sólo las "paid". Según el criterio
+// Método Redondo, las órdenes con devolución parcial (partially_refunded) y las
+// canceladas (cancelled) igual generaron movimientos que ML cobró o retuvo:
+// comisión, impuestos y reembolsos descontados del payout. Excluirlas infla la
+// utilidad del reporte. fetchAllOrders se deja intacta porque los otros 21
+// endpoints que la usan SÍ quieren únicamente ventas concretadas (status=paid).
+async function fetchOrdersForPyL(uid, headers, fromStr, toStr) {
+  const statuses = ['paid', 'partially_refunded', 'cancelled'];
+  try {
+    const perStatus = await Promise.all(statuses.map(async status => {
+      const base = `${ML_API}/orders/search?seller=${uid}&order.status=${status}&sort=date_desc&limit=50&order.date_created.from=${encodeURIComponent(fromStr)}&order.date_created.to=${encodeURIComponent(toStr)}`;
+      const first = await fetch(base, { headers }).then(r => r.json()).catch(() => ({}));
+      const total = (first.paging && first.paging.total) || 0;
+      let all = first.results || [];
+      if (total > 50) {
+        const maxPages = Math.min(Math.ceil(total / 50), 300); // hasta 15000 órdenes
+        for (let b = 1; b < maxPages; b += 5) {
+          const end = Math.min(b + 5, maxPages);
+          const batch = await Promise.all(Array.from({length: end - b}, (_, i) =>
+            fetch(`${base}&offset=${(b+i)*50}`, { headers }).then(r => r.json()).catch(() => ({results:[]}))
+          ));
+          batch.forEach(p => { if (p.results) all = all.concat(p.results); });
+        }
+      }
+      return all;
+    }));
+    const orders = perStatus.flat();
+    let amount = 0;
+    orders.forEach(o => { amount += parseFloat(o.total_amount) || 0; });
+    return { orders, amount };
+  } catch(e) { return { orders: [], amount: 0 }; }
+}
+
 async function fetchVisits(itemIds, days, headers) {
   try {
     const results = await Promise.all(itemIds.map(id =>
@@ -4000,7 +4035,7 @@ app.get('/api/reporte/pyl', requireAuth, async (req, res) => {
     if (!uid) return res.status(400).json({ error: 'Cliente sin ML User ID' });
 
     const fmt = d => new Date(d).toISOString().slice(0,19) + '.000-00:00';
-    const { orders } = await fetchAllOrders(uid, headers, fmt(date_from + 'T00:00:00'), fmt(date_to + 'T23:59:59'));
+    const { orders } = await fetchOrdersForPyL(uid, headers, fmt(date_from + 'T00:00:00'), fmt(date_to + 'T23:59:59'));
 
     // ── Ingresos ──────────────────────────────────────────────────────────────
     let facturacion = 0, ingreso_envio_comprador = 0;
@@ -4008,16 +4043,34 @@ app.get('/api/reporte/pyl', requireAuth, async (req, res) => {
     const byMla = {};
 
     orders.forEach(o => {
-      facturacion += parseFloat(o.total_amount)||0;
+      const cancelada = o.status === 'cancelled';
+
+      // Facturación: las canceladas NO facturan. paid y partially_refunded sí
+      // (ML facturó la operación aunque después hubo una devolución parcial).
+      if (!cancelada) facturacion += parseFloat(o.total_amount)||0;
+
       (o.order_items||[]).forEach(oi => {
+        // Comisión: ML la cobra igual, incluso si la orden se cancela o se
+        // devuelve parcialmente. sale_fee viene > 0 en esos casos.
         egreso_comision += parseFloat(oi.sale_fee)||0;
         const id = oi.item?.id;
         if (!id) return;
+        // Las canceladas no aportan unidades/revenue (el producto no se vendió),
+        // así que no entran al detalle por MLA ni al CMV.
+        if (cancelada) return;
         if (!byMla[id]) byMla[id] = { mla_id: id, title: oi.item?.title || id, units: 0, revenue: 0 };
         byMla[id].units   += oi.quantity||0;
         byMla[id].revenue += (parseFloat(oi.unit_price)||0)*(oi.quantity||0);
       });
+
+      // Impuestos: ML los retiene aun en órdenes canceladas o devueltas.
       egreso_impuestos += parseFloat(o.taxes?.amount)||0;
+
+      // Reembolsos: monto que ML devolvió al comprador y descontó del payout.
+      // En órdenes paid sin devolución esto es 0, así que sumar siempre es seguro.
+      (o.payments||[]).forEach(p => {
+        egreso_reembolsos += parseFloat(p.transaction_amount_refunded)||0;
+      });
     });
 
     // Shipping costs — usar /costs endpoint que es el correcto
@@ -6069,10 +6122,44 @@ app.get('/api/preguntas-detalle', requireAuth, async (req, res) => {
     const compradoresConvertidos = [...askerIds].filter(id => orderBuyerIds.has(id)).length;
     const conVenta = preguntas.filter(p => p.genero_venta).length;
 
-    console.log(`[PREGUNTAS-DETALLE] total=${preguntas.length} respondidas=${answered.length} sin_resp=${unanswered.length} con_venta=${conVenta}`);
+    // ── 5. Ranking de publicaciones (preguntas, ventas reales, conversión) ─────
+    const ventasPorItem = {}; // item_id → unidades vendidas en el período
+    orders.forEach(o => {
+      (o.order_items || []).forEach(oi => {
+        const id = oi.item && oi.item.id;
+        if (!id) return;
+        ventasPorItem[id] = (ventasPorItem[id] || 0) + (oi.quantity || 1);
+      });
+    });
+    const rankMap = {};
+    preguntas.forEach(p => {
+      if (!p.item_id) return;
+      const r = rankMap[p.item_id] || (rankMap[p.item_id] = {
+        item_id: p.item_id, item_titulo: p.item_titulo, permalink: p.permalink,
+        preguntas: 0, askers: new Set(), convertidos: new Set(),
+      });
+      r.preguntas++;
+      if (p.comprador_id) {
+        r.askers.add(p.comprador_id);
+        if (p.genero_venta) r.convertidos.add(p.comprador_id);
+      }
+    });
+    const ranking = Object.values(rankMap).map(r => ({
+      item_id:     r.item_id,
+      item_titulo: r.item_titulo,
+      permalink:   r.permalink,
+      preguntas:   r.preguntas,
+      compradores: r.askers.size,
+      convertidos: r.convertidos.size,
+      ventas:      ventasPorItem[r.item_id] || 0,
+      conversion:  r.askers.size > 0 ? parseFloat(((r.convertidos.size / r.askers.size) * 100).toFixed(1)) : 0,
+    })).sort((a,b) => b.preguntas - a.preguntas || b.ventas - a.ventas);
+
+    console.log(`[PREGUNTAS-DETALLE] total=${preguntas.length} respondidas=${answered.length} sin_resp=${unanswered.length} con_venta=${conVenta} pubs=${ranking.length}`);
 
     res.json({
       preguntas,
+      ranking,
       resumen: {
         total:                  preguntas.length,
         respondidas:            preguntas.filter(p => p.estado === 'Respondida').length,
