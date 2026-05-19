@@ -1448,6 +1448,12 @@ tbody td {
           <button onclick="guardarRoasTarget()" style="padding:4px 10px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:12px;cursor:pointer;font-family:var(--font)">Guardar</button>
         </div>
         <div style="display:flex;align-items:center;gap:8px">
+          <label style="font-size:12px;color:var(--muted);white-space:nowrap">Tasa IIBB %:</label>
+          <input type="number" id="dp-iibb-input" min="0" max="20" step="0.1" value="4"
+            style="width:70px;padding:4px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px;font-family:var(--font)">
+          <button onclick="guardarIibbTasa()" style="padding:4px 10px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:12px;cursor:pointer;font-family:var(--font)">Guardar</button>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px">
           <label style="font-size:12px;color:var(--muted)">Nivel:</label>
           <select id="dp-filter-nivel" onchange="loadDecisionesPubli()"
             style="padding:4px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:12px;font-family:var(--font)">
@@ -5996,6 +6002,9 @@ function renderRentabilidad(R, allProducts, costsMap) {
       <div style="font-size:11px;color:var(--muted);margin-top:4px">${sub}</div>
     </div>`;
 
+  // TODO(IIBB): el KPI "COMISIONES + IMP." combina comisión + impuesto de operación y
+  // este panel recalcula utilidad_final en el front. Al rehacer Rentabilidad, separar
+  // IIBB como línea propia y usar stats.utilidad del backend (ya descuenta IIBB).
   el.innerHTML = `
     <!-- KPIs superiores -->
     <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:10px;margin-bottom:16px">
@@ -13541,6 +13550,7 @@ async function loadDecisionesPubli() {
     const clients = await apiCall('GET', '/api/clients').catch(() => []);
     const found = (clients || []).find(c => c.id === client.id);
     if (found?.roas_target) document.getElementById('dp-roas-input').value = found.roas_target;
+    if (found?.tasa_iibb_pct != null) document.getElementById('dp-iibb-input').value = found.tasa_iibb_pct;
   }
 
   const estadoMap = { nuevas: 'nueva', aplicadas: 'aplicada', descartadas: 'descartada' };
@@ -13714,6 +13724,15 @@ async function guardarRoasTarget() {
   if (!val || val <= 0) { showToast('❌ ROAS target inválido'); return; }
   await apiCall('PATCH', `/api/clients/${client.id}/roas-target`, { roas_target: val });
   showToast(`✅ ROAS target actualizado a ${val}x`);
+}
+
+async function guardarIibbTasa() {
+  const client = getActiveClient();
+  if (!client) { showToast('Seleccioná un cliente primero'); return; }
+  const val = parseFloat(document.getElementById('dp-iibb-input').value);
+  if (isNaN(val) || val < 0) { showToast('❌ Tasa IIBB inválida'); return; }
+  await apiCall('PATCH', `/api/clients/${client.id}/iibb-tasa`, { tasa_iibb_pct: val });
+  showToast(`✅ Tasa IIBB actualizada a ${val}%`);
 }
 
 async function resetearYAnalizar() {

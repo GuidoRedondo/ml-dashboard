@@ -332,6 +332,8 @@ async function initDB() {
     CREATE INDEX IF NOT EXISTS idx_dec_cliente ON decisiones_publi(client_id, creada_en DESC);
     DO $$ BEGIN
       ALTER TABLE clients ADD COLUMN IF NOT EXISTS roas_target NUMERIC DEFAULT 4;
+      ALTER TABLE clients ADD COLUMN IF NOT EXISTS tasa_iibb_pct DECIMAL(5,2) DEFAULT 4.00;
+      UPDATE clients SET tasa_iibb_pct = 4.00 WHERE tasa_iibb_pct IS NULL;
     EXCEPTION WHEN OTHERS THEN NULL; END $$;
   `);
 
@@ -612,11 +614,13 @@ app.get('/api/clients', requireAuth, async (req, res) => {
     if (req.user.role === 'cliente' && req.user.client_id) {
       // Cliente solo ve su propia cuenta
       query = `SELECT id, name, ml_user_id, site_id, active, token_expires_at, updated_at,
+               roas_target, tasa_iibb_pct,
                (refresh_token IS NOT NULL AND refresh_token != '') AS has_refresh_token
                FROM clients WHERE id = $1`;
       params = [req.user.client_id];
     } else {
       query = `SELECT id, name, ml_user_id, site_id, active, token_expires_at, updated_at,
+               roas_target, tasa_iibb_pct,
                (refresh_token IS NOT NULL AND refresh_token != '') AS has_refresh_token
                FROM clients ORDER BY name`;
     }
@@ -2571,10 +2575,14 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
     });
     const hasCMVDash = cmv_cubierto_dash > 0;
     const iva21 = 0.21;
+    // IIBB estimado del cliente — egreso impositivo, mismo patrón que el P&L de /api/reporte/pyl
+    const iibbRowDash = await pool.query('SELECT tasa_iibb_pct FROM clients WHERE id=$1', [clientId]);
+    const tasaIibbDash = parseFloat(iibbRowDash.rows[0]?.tasa_iibb_pct) || 0;
+    const iibbEstimadoDash = totalFacturacion * (tasaIibbDash / 100);
     const ivaVentasDash   = hasCMVDash ? curData.amount / (1+iva21) * iva21 : 0;
     const ivaComprasDash  = hasCMVDash ? (totalSaleFee + totalSellerShip + cmv_total_dash) / (1+iva21) * iva21 : 0;
     const ivaNetoDash     = hasCMVDash ? Math.max(0, ivaVentasDash - ivaComprasDash) : 0;
-    const utilidadDash    = hasCMVDash ? netoML - cmv_total_dash - adsSpend - ivaNetoDash : null;
+    const utilidadDash    = hasCMVDash ? netoML - cmv_total_dash - adsSpend - ivaNetoDash - iibbEstimadoDash : null;
     const margenDash      = hasCMVDash && curData.amount > 0 ? (utilidadDash / curData.amount * 100) : null;
 
     // ── Período anterior — métricas financieras ───────────────────────────────
@@ -2597,7 +2605,10 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
     const prevImporteRecibido = prevData.amount - prevSaleFeeCalc - prevTaxesCalc;
     const prevPctRecibido     = prevFacCalc > 0 ? (prevImporteRecibido / prevFacCalc * 100) : 0;
     const prevNetoML          = prevFacCalc - prevSaleFeeCalc - prevTaxesCalc;
-    const prevUtilidad        = hasCMVDash ? prevNetoML - prevCMVCalc : null;
+    // IIBB del período anterior: se descuenta para que el comparativo mes-a-mes no
+    // muestre una caída artificial de margen (el mes actual ya descuenta IIBB).
+    const iibbEstimadoPrev    = prevFacCalc * (tasaIibbDash / 100);
+    const prevUtilidad        = hasCMVDash ? prevNetoML - prevCMVCalc - iibbEstimadoPrev : null;
     const prevMargen          = prevUtilidad != null && prevFacCalc > 0 ? (prevUtilidad / prevFacCalc * 100) : null;
 
     const R_extra = {
@@ -2612,6 +2623,8 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
       utilidad:         utilidadDash,
       margen_pct:       margenDash != null ? parseFloat(margenDash.toFixed(1)) : null,
       iva_neto:         ivaNetoDash,
+      iibb_estimado:    iibbEstimadoDash,
+      iibb_tasa_pct:    tasaIibbDash,
       by_product:       byProduct,
     };
 
@@ -2698,6 +2711,8 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
         porcentaje_recibido: parseFloat(porcentajeRecibido),
         ads_spend: adsSpend,
         costo_productos: cmv_total_dash,
+        iibb_estimado: iibbEstimadoDash,
+        iibb_tasa_pct: tasaIibbDash,
         has_cmv: hasCMVDash,
         cmv_cubierto: cmv_cubierto_dash,
         cmv_total_items: Object.keys(byItem).length,
@@ -4030,8 +4045,9 @@ app.get('/api/reporte/pyl', requireAuth, async (req, res) => {
     if (!token) return res.status(403).json({ error: 'Sin token' });
     const headers = { 'Authorization': `Bearer ${token}` };
 
-    const clientRes = await pool.query('SELECT ml_user_id, name FROM clients WHERE id=$1', [client_id]);
+    const clientRes = await pool.query('SELECT ml_user_id, name, tasa_iibb_pct FROM clients WHERE id=$1', [client_id]);
     const { ml_user_id: uid, name: clientName } = clientRes.rows[0] || {};
+    const tasaIibb = parseFloat(clientRes.rows[0]?.tasa_iibb_pct) || 0;
     if (!uid) return res.status(400).json({ error: 'Cliente sin ML User ID' });
 
     const fmt = d => new Date(d).toISOString().slice(0,19) + '.000-00:00';
@@ -4039,7 +4055,7 @@ app.get('/api/reporte/pyl', requireAuth, async (req, res) => {
 
     // ── Ingresos ──────────────────────────────────────────────────────────────
     let facturacion = 0, ingreso_envio_comprador = 0;
-    let egreso_comision = 0, egreso_impuestos = 0, egreso_reembolsos = 0;
+    let egreso_comision = 0, egreso_imp_operacion = 0, egreso_reembolsos = 0;
     const byMla = {};
 
     orders.forEach(o => {
@@ -4064,7 +4080,7 @@ app.get('/api/reporte/pyl', requireAuth, async (req, res) => {
       });
 
       // Impuestos: ML los retiene aun en órdenes canceladas o devueltas.
-      egreso_impuestos += parseFloat(o.taxes?.amount)||0;
+      egreso_imp_operacion += parseFloat(o.taxes?.amount)||0;
 
       // Reembolsos: monto que ML devolvió al comprador y descontó del payout.
       // En órdenes paid sin devolución esto es 0, así que sumar siempre es seguro.
@@ -4149,8 +4165,11 @@ app.get('/api/reporte/pyl', requireAuth, async (req, res) => {
     const iva_compras  = (egreso_comision + egreso_envio_total + cmv_total) / (1 + iva21) * iva21;
     const iva_neto     = Math.max(0, iva_ventas - iva_compras);
 
-    // IVA forma parte de los egresos ML → afecta el Resultado Neto ML
-    const total_egresos_ml  = egreso_comision + egreso_impuestos + egreso_envio_total + egreso_publicidad + egreso_reembolsos + iva_neto;
+    // IIBB estimado: facturación × tasa del cliente. Egreso impositivo provincial.
+    const iibb_estimado = facturacion * (tasaIibb / 100);
+
+    // IVA + IIBB forman parte de los egresos ML → afectan el Resultado Neto ML
+    const total_egresos_ml  = egreso_comision + egreso_imp_operacion + egreso_envio_total + egreso_publicidad + egreso_reembolsos + iva_neto + iibb_estimado;
     const resultado_neto_ml = total_ingresos - total_egresos_ml;
     const utilidad_antes_gf = resultado_neto_ml - cmv_total;
     const utilidad_final    = utilidad_antes_gf - total_gastos_fijos - total_impuestos_manuales;
@@ -4165,7 +4184,8 @@ app.get('/api/reporte/pyl', requireAuth, async (req, res) => {
       },
       egresos_ml: {
         comision: egreso_comision,
-        impuestos: egreso_impuestos,
+        impuestos: egreso_imp_operacion,
+        imp_operacion: egreso_imp_operacion,
         envio_vendedor: egreso_envio_vendedor,
         envios_flex_manual,
         envio_total: egreso_envio_total,
@@ -4174,6 +4194,8 @@ app.get('/api/reporte/pyl', requireAuth, async (req, res) => {
         iva_ventas,
         iva_compras,
         iva_neto,
+        iibb_estimado,
+        iibb_tasa_pct: tasaIibb,
         total: total_egresos_ml
       },
       resultado_neto_ml,
@@ -4272,6 +4294,8 @@ app.get('/api/reporte/comparar', requireAuth, async (req, res) => {
       mes_a, mes_b,
       pyl_a: pylA,
       pyl_b: pylB,
+      // TODO(IIBB): agregar fila diff.iibb — total_egresos_ml ya incluye IIBB pero
+      // el delta de IIBB no se expone como fila propia en este comparativo.
       diff: {
         facturacion:       diffN(pylA.ingresos?.facturacion,    pylB.ingresos?.facturacion),
         ordenes:           diffN(pylA.ordenes,                   pylB.ordenes),
@@ -7293,6 +7317,16 @@ app.patch('/api/clients/:id/roas-target', requireAuth, async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
+app.patch('/api/clients/:id/iibb-tasa', requireAuth, async (req, res) => {
+  try {
+    const { tasa_iibb_pct } = req.body;
+    // Una tasa de 0 es válida (cliente exento / monotributista), por eso no se rechaza el falsy
+    if (tasa_iibb_pct == null || isNaN(parseFloat(tasa_iibb_pct))) return res.status(400).json({ error: 'tasa_iibb_pct inválido' });
+    await pool.query('UPDATE clients SET tasa_iibb_pct=$1, updated_at=NOW() WHERE id=$2', [parseFloat(tasa_iibb_pct), req.params.id]);
+    res.json({ ok: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
 app.post('/api/publi-analyzer/ejecutar', requireAuth, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ error: 'Solo admin' });
   res.json({ ok: true, mensaje: 'Motor de publicidad iniciado en background' });
@@ -7651,6 +7685,9 @@ app.get('/api/informe-mensual/generar/:clienteId/:periodo', requireAuth, async (
         margen_var_pts: parseFloat((mfAct - mfAnt).toFixed(1)),
         highlights: ['', '', '']
       },
+      // TODO(IIBB): performance_financiera no expone IIBB como fila propia. Los
+      // totales (utilidad/margen) ya lo reflejan vía snapshot; agregar fila iibb
+      // al actualizar este flujo.
       performance_financiera: {
         ingresos_productos:     { actual: facAct,   anterior: facAnt },
         ingresos_envio:         { actual: envAct,   anterior: envAnt },
