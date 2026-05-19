@@ -15,6 +15,12 @@ CREATE TABLE IF NOT EXISTS ml_sellers_cache (
   fetched_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS ml_categories_cache (
+  category_id TEXT PRIMARY KEY,
+  name TEXT,
+  fetched_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS category_snapshots (
   category_id TEXT NOT NULL,
   mla TEXT NOT NULL,

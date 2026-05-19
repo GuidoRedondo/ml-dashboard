@@ -3,26 +3,30 @@
 // Se monta desde server.js:
 //   require('./backend_competencia_categoria')(app, { pool, requireAuth, getClientToken, getAppToken, ML_API });
 //
-// 4 rutas:
+// 4 rutas + cache-clear:
 //   GET /api/competencia/categorias-cliente   top 3 categorías del cliente
 //   GET /api/competencia/categoria-ranking    top 50 productos de una categoría
 //   GET /api/competencia/categoria-sellers    ranking de sellers de la categoría
 //   GET /api/competencia/categoria-gaps       productos del top 20 que el cliente no tiene
+//   GET /api/competencia/cache-clear          vacía los caches de categoría
 //
-// Cache en Postgres: ranking 6h, sellers de ML 7 días, gaps siempre se calcula.
+// Estrategia de listings (ML cerró /sites/MLA/search por categoría sin `q`):
+//   Opción A — search con q = primera palabra del nombre de la categoría.
+//   Opción B — fallback a /highlights/MLA/category/{cat} (público) si A falla.
+//
+// Cache en Postgres: ranking 6h, sellers 7 días, nombres de categoría 30 días.
 'use strict';
 
 // Mismo HTTP client que server.js (línea 4: const fetch = require('node-fetch')).
-// El fetch global no está disponible en el Node de Railway; node-fetch v2 tiene
-// API idéntica, así que los call-sites no cambian.
 const fetch = require('node-fetch');
 
-const RANKING_TTL_MS = 6 * 60 * 60 * 1000;       // 6 horas
-const SELLERS_TTL_MS = 7 * 24 * 60 * 60 * 1000;  // 7 días
-const SEARCH_LIMIT   = 50;
+const RANKING_TTL_MS    = 6 * 60 * 60 * 1000;        // 6 horas
+const SELLERS_TTL_MS    = 7 * 24 * 60 * 60 * 1000;   // 7 días
+const CATEGORIES_TTL_MS = 30 * 24 * 60 * 60 * 1000;  // 30 días
+const SEARCH_LIMIT      = 50;
 
 module.exports = function registerCategoriaRoutes(app, ctx) {
-  const { pool, requireAuth, getClientToken, getAppToken, ML_API } = ctx;
+  const { pool, requireAuth, getClientToken, ML_API } = ctx;
   const log = (...a) => console.log('[COMP-CAT]', ...a);
 
   // ── DDL idempotente (mismo criterio que initDB) ────────────────────────────
@@ -37,6 +41,11 @@ module.exports = function registerCategoriaRoutes(app, ctx) {
         seller_id BIGINT PRIMARY KEY,
         nickname TEXT,
         reputation JSONB,
+        fetched_at TIMESTAMP NOT NULL DEFAULT NOW()
+      );
+      CREATE TABLE IF NOT EXISTS ml_categories_cache (
+        category_id TEXT PRIMARY KEY,
+        name TEXT,
         fetched_at TIMESTAMP NOT NULL DEFAULT NOW()
       );
       CREATE TABLE IF NOT EXISTS category_snapshots (
@@ -60,15 +69,6 @@ module.exports = function registerCategoriaRoutes(app, ctx) {
   function mlGet(url, token) {
     const headers = token ? { Authorization: `Bearer ${token}` } : {};
     return fetch(url, { headers }).then(r => r.json()).catch(() => null);
-  }
-
-  // Token para búsquedas de categoría: app token preferido (el user token da 403
-  // desde IPs de Railway en /sites/MLA/search?category=), con fallback al user token.
-  async function getSearchTokens(clientId) {
-    let appToken = null;
-    try { appToken = await getAppToken(clientId); } catch (e) {}
-    const userToken = await getClientToken(clientId);
-    return { appToken, userToken };
   }
 
   // Items activos del cliente con detalle (id, title, category_id, catalog_product_id)
@@ -118,8 +118,132 @@ module.exports = function registerCategoriaRoutes(app, ctx) {
     return { seller_id: sellerId, nickname: u.nickname || null, reputation };
   }
 
+  // Nombre de la categoría con cache de 30 días en ml_categories_cache
+  async function getCategoryName(categoryId) {
+    try {
+      const c = await pool.query('SELECT name, fetched_at FROM ml_categories_cache WHERE category_id=$1', [categoryId]);
+      if (c.rows[0] && (Date.now() - new Date(c.rows[0].fetched_at).getTime()) < CATEGORIES_TTL_MS) {
+        return c.rows[0].name;
+      }
+    } catch (e) {}
+    let name = null;
+    try {
+      const cat = await fetch(`${ML_API}/categories/${categoryId}`).then(r => r.json());
+      name = (cat && cat.name) || null;
+    } catch (e) {}
+    if (name) {
+      try {
+        await pool.query(`
+          INSERT INTO ml_categories_cache (category_id, name, fetched_at)
+          VALUES ($1,$2,NOW())
+          ON CONFLICT (category_id) DO UPDATE SET name=$2, fetched_at=NOW()
+        `, [categoryId, name]);
+      } catch (e) { log('error guardando categoria:', e.message); }
+    }
+    return name;
+  }
+
+  // Primera palabra del nombre con > 3 caracteres → query para el search de ML
+  function firstSignificantWord(name) {
+    if (!name) return null;
+    const words = String(name).split(/\s+/).filter(Boolean);
+    return words.find(w => w.length > 3) || words[0] || null;
+  }
+
+  // Normalizan resultado de /sites/MLA/search y body de /items a la misma forma
+  function normalizeSearchItem(r) {
+    return {
+      id: r.id,
+      title: r.title || '',
+      price: parseFloat(r.price) || 0,
+      sold_quantity: r.sold_quantity || 0,
+      permalink: r.permalink || null,
+      thumbnail: r.thumbnail || null,
+      catalog_product_id: r.catalog_product_id || null,
+      seller_id: (r.seller && (r.seller.id || r.seller)) || null,
+      seller_nickname: (r.seller && r.seller.nickname) || null,
+    };
+  }
+  function normalizeItemBody(b) {
+    return {
+      id: b.id,
+      title: b.title || '',
+      price: parseFloat(b.price) || 0,
+      sold_quantity: b.sold_quantity || 0,
+      permalink: b.permalink || null,
+      thumbnail: b.thumbnail || null,
+      catalog_product_id: b.catalog_product_id || null,
+      seller_id: b.seller_id || null,
+      seller_nickname: null,
+    };
+  }
+
+  // Trae los listings de una categoría. Opción A (search con q) → B (highlights).
+  async function fetchCategoryListings(categoryId, clientId) {
+    const userToken = await getClientToken(clientId);
+
+    // ── Opción A: search con q = nombre de la categoría ──────────────────────
+    const catName = await getCategoryName(categoryId);
+    const q = firstSignificantWord(catName);
+    if (q && userToken) {
+      const url = `${ML_API}/sites/MLA/search?category=${categoryId}&q=${encodeURIComponent(q)}&limit=${SEARCH_LIMIT}`;
+      console.log('[COMP-CAT] URL:', url);
+      let status = 0, results = [];
+      try {
+        const res = await fetch(url, { headers: { Authorization: `Bearer ${userToken}` } });
+        status = res.status;
+        const data = await res.json();
+        results = (data && data.results) || [];
+      } catch (e) { log(`search con q: error de red — ${e.message}`); }
+      console.log(`[COMP-CAT] search categoria con q="${q}": status ${status}, results ${results.length}`);
+      if (status === 200 && results.length) {
+        return { listings: results.map(normalizeSearchItem), via: 'search' };
+      }
+    } else {
+      log(`categoria ${categoryId}: sin q (nombre="${catName}") o sin token — salteando Opción A`);
+    }
+
+    // ── Opción B: highlights (endpoint público, sin auth ni q) ───────────────
+    let hlIds = [];
+    try {
+      const res = await fetch(`${ML_API}/highlights/MLA/category/${categoryId}`);
+      const data = await res.json();
+      hlIds = ((data && data.content) || [])
+        .filter(c => c && c.type === 'ITEM' && c.id)
+        .map(c => c.id);
+    } catch (e) { log(`highlights: error de red — ${e.message}`); }
+    console.log(`[COMP-CAT] usado highlights fallback para ${categoryId}: ${hlIds.length} items`);
+    if (!hlIds.length) return { listings: [], via: 'highlights' };
+
+    // highlights solo devuelve ids → traer el detalle con /items
+    const listings = [];
+    for (let i = 0; i < hlIds.length; i += 20) {
+      const batch = hlIds.slice(i, i + 20);
+      const data = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,title,price,sold_quantity,permalink,thumbnail,catalog_product_id,seller_id`,
+        { headers: userToken ? { Authorization: `Bearer ${userToken}` } : {} }).then(r => r.json()).catch(() => []);
+      (Array.isArray(data) ? data : []).forEach(r => {
+        if (r.code === 200 && r.body) listings.push(normalizeItemBody(r.body));
+      });
+    }
+    return { listings, via: 'highlights' };
+  }
+
+  // ── Ranking: dedup de llamadas en vuelo ─────────────────────────────────────
+  // ranking + sellers se piden en paralelo desde el front (Promise.all). Con el
+  // cache frío ambas hacían MISS y golpeaban ML por separado. El Map de promesas
+  // en vuelo hace que la segunda reutilice la primera. Key = categoría+cliente.
+  const _inflight = new Map();
+
+  function getRanking(categoryId, clientId) {
+    const key = `${categoryId}:${clientId}`;
+    if (_inflight.has(key)) return _inflight.get(key);
+    const p = _computeRanking(categoryId, clientId).finally(() => _inflight.delete(key));
+    _inflight.set(key, p);
+    return p;
+  }
+
   // Núcleo: ranking top 50 de una categoría (cache 6h). Lo usan las rutas 2, 3 y 4.
-  async function getRanking(categoryId, clientId) {
+  async function _computeRanking(categoryId, clientId) {
     try {
       const c = await pool.query('SELECT fetched_at, payload FROM category_ranking_cache WHERE category_id=$1', [categoryId]);
       if (c.rows[0] && (Date.now() - new Date(c.rows[0].fetched_at).getTime()) < RANKING_TTL_MS) {
@@ -129,35 +253,13 @@ module.exports = function registerCategoriaRoutes(app, ctx) {
     } catch (e) { log('error leyendo cache ranking:', e.message); }
 
     log(`ranking ${categoryId}: MISS — consultando ML`);
-    const { appToken, userToken } = await getSearchTokens(clientId);
+    const { listings, via } = await fetchCategoryListings(categoryId, clientId);
 
-    // sold_quantity_desc NO es un valor de sort válido del search público de ML
-    // (válidos: relevance, price_asc, price_desc). Se pide sin sort y se ordena
-    // por sold_quantity del lado del backend. Se prueba app token y user token.
-    const searchUrl = `${ML_API}/sites/MLA/search?category=${categoryId}&limit=${SEARCH_LIMIT}`;
-    console.log('[COMP-CAT] URL:', searchUrl);
+    // Orden por sold_quantity desc del lado del backend
+    const results = listings.slice().sort((a, b) => (b.sold_quantity || 0) - (a.sold_quantity || 0));
+    log(`ranking ${categoryId}: ${results.length} resultados (via ${via})`);
 
-    let results = [];
-    for (const token of [appToken, userToken]) {
-      if (!token) continue;
-      let res, data;
-      try {
-        res = await fetch(searchUrl, { headers: { Authorization: `Bearer ${token}` } });
-        data = await res.json();
-      } catch (e) {
-        log(`ranking ${categoryId}: error de red consultando ML — ${e.message}`);
-        continue;
-      }
-      console.log(`[COMP-CAT] ranking ${categoryId}: ML status`, res.status,
-                  'results:', data && data.results ? data.results.length : 0);
-      if (data && data.results && data.results.length) { results = data.results; break; }
-    }
-
-    // Orden por sold_quantity desc del lado del backend (reemplaza al sort de ML)
-    results = results.sort((a, b) => (b.sold_quantity || 0) - (a.sold_quantity || 0));
-    log(`ranking ${categoryId}: ${results.length} resultados de ML`);
-
-    const enrichToken = userToken || appToken;
+    const userToken = await getClientToken(clientId);
 
     // date_created por item → estimación de ventas/día
     const ids = results.map(r => r.id).filter(Boolean);
@@ -165,7 +267,7 @@ module.exports = function registerCategoriaRoutes(app, ctx) {
     for (let i = 0; i < ids.length; i += 20) {
       const batch = ids.slice(i, i + 20);
       const data = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,date_created`,
-        { headers: { Authorization: `Bearer ${enrichToken}` } }).then(r => r.json()).catch(() => []);
+        { headers: userToken ? { Authorization: `Bearer ${userToken}` } : {} }).then(r => r.json()).catch(() => []);
       (Array.isArray(data) ? data : []).forEach(r => {
         if (r.code === 200 && r.body && r.body.date_created) createdMap[r.body.id] = r.body.date_created;
       });
@@ -179,13 +281,13 @@ module.exports = function registerCategoriaRoutes(app, ctx) {
     } catch (e) {}
 
     // enriquecer sellers (cache 7d)
-    const sellerIds = [...new Set(results.map(r => r.seller && (r.seller.id || r.seller)).filter(Boolean))];
+    const sellerIds = [...new Set(results.map(r => r.seller_id).filter(Boolean))];
     const sellerMap = {};
-    await Promise.all(sellerIds.map(async sid => { sellerMap[sid] = await getSellerCached(sid, enrichToken); }));
+    await Promise.all(sellerIds.map(async sid => { sellerMap[sid] = await getSellerCached(sid, userToken); }));
 
     const now = Date.now();
     const items = results.map((r, idx) => {
-      const sid = r.seller && (r.seller.id || r.seller);
+      const sid = r.seller_id;
       let dailySales = null;
       if (createdMap[r.id]) {
         const days = Math.max(1, (now - new Date(createdMap[r.id]).getTime()) / 86400000);
@@ -196,7 +298,7 @@ module.exports = function registerCategoriaRoutes(app, ctx) {
         mla: r.id,
         title: r.title,
         seller_id: sid || null,
-        seller_nickname: (info && info.nickname) || (r.seller && r.seller.nickname) || null,
+        seller_nickname: (info && info.nickname) || r.seller_nickname || null,
         price: parseFloat(r.price) || 0,
         sold_quantity: r.sold_quantity || 0,
         permalink: r.permalink || null,
@@ -249,11 +351,11 @@ module.exports = function registerCategoriaRoutes(app, ctx) {
       items.forEach(it => { if (it.category_id) catCount[it.category_id] = (catCount[it.category_id] || 0) + 1; });
       const top3 = Object.entries(catCount).sort((a, b) => b[1] - a[1]).slice(0, 3);
 
-      const categorias = await Promise.all(top3.map(async ([cid, count]) => {
-        let name = cid;
-        try { const cat = await fetch(`${ML_API}/categories/${cid}`).then(r => r.json()); name = cat.name || cid; } catch (e) {}
-        return { category_id: cid, category_name: name, client_mlas_count: count };
-      }));
+      const categorias = await Promise.all(top3.map(async ([cid, count]) => ({
+        category_id: cid,
+        category_name: (await getCategoryName(cid)) || cid,
+        client_mlas_count: count,
+      })));
       log(`categorias-cliente ${client_id}: ${items.length} MLAs -> top3 ${categorias.map(c => c.category_id).join(',')}`);
       res.json({ categorias });
     } catch (e) {
@@ -350,12 +452,13 @@ module.exports = function registerCategoriaRoutes(app, ctx) {
     }
   });
 
-  // ── Cache clear (debug) — vacía category_ranking_cache ──────────────────────
+  // ── Cache clear (debug) — vacía ranking + nombres de categoría ──────────────
   app.get('/api/competencia/cache-clear', requireAuth, async (req, res) => {
     try {
-      const r = await pool.query('DELETE FROM category_ranking_cache');
-      log(`cache-clear: ${r.rowCount} filas borradas de category_ranking_cache`);
-      res.json({ ok: true, deleted: r.rowCount });
+      const r1 = await pool.query('DELETE FROM category_ranking_cache');
+      const r2 = await pool.query('DELETE FROM ml_categories_cache');
+      log(`cache-clear: ${r1.rowCount} ranking + ${r2.rowCount} categorias borradas`);
+      res.json({ ok: true, deleted: { ranking: r1.rowCount, categories: r2.rowCount } });
     } catch (e) {
       console.error('[COMP-CAT] cache-clear:', e.message);
       res.status(500).json({ error: e.message });
