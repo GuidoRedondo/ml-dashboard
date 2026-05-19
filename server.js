@@ -4274,11 +4274,16 @@ app.get('/api/reporte/devoluciones-analisis', requireAuth, async (req, res) => {
       const unidsOrden = items.reduce((s, oi) => s + (oi.quantity || 0), 0) || 1;
 
       // Reembolsos + impuestos van a nivel orden; se prorratean por unidades a cada item.
-      // La comisión sí es exacta por item (oi.sale_fee). Mismas fuentes que /api/reporte/pyl.
+      // La comisión sí es exacta por item (oi.sale_fee).
+      // En una orden 100% cancelada el reembolso volvió al comprador y la venta NO
+      // entró a facturación → contarlo sobreestima la pérdida. La pérdida real de
+      // una cancelación es la comisión + impuestos que ML retuvo igual. En una
+      // devolución parcial el reembolso SÍ es pérdida (la venta sí facturó).
       let refund = 0;
       (o.payments || []).forEach(p => { refund += parseFloat(p.transaction_amount_refunded) || 0; });
       const impuestos = parseFloat(o.taxes?.amount) || 0;
-      const perdidaNivelOrden = problema ? (refund + impuestos) : 0;
+      const refundComputable = esDevuelta ? refund : 0;
+      const perdidaNivelOrden = problema ? (refundComputable + impuestos) : 0;
       const razon = leerRazon(o.cancel_detail);
 
       items.forEach(oi => {
@@ -4297,7 +4302,7 @@ app.get('/api/reporte/devoluciones-analisis', requireAuth, async (req, res) => {
       if (problema) {
         let comisionOrden = 0;
         items.forEach(oi => { comisionOrden += parseFloat(oi.sale_fee) || 0; });
-        monto_perdido_total += refund + impuestos + comisionOrden;
+        monto_perdido_total += refundComputable + impuestos + comisionOrden;
       }
     });
 
