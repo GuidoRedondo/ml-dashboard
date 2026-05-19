@@ -10,9 +10,10 @@
 //   GET /api/competencia/categoria-gaps       productos del top 20 que el cliente no tiene
 //   GET /api/competencia/cache-clear          vacía los caches de categoría
 //
-// Estrategia de listings (ML cerró /sites/MLA/search por categoría sin `q`):
-//   Opción A — search con q = primera palabra del nombre de la categoría.
-//   Opción B — fallback a /highlights/MLA/category/{cat} (público) si A falla.
+// Estrategia de listings: /sites/MLA/search por categoría está cerrado para
+// apps no certificadas (403 desde cualquier IP, con o sin token). Se usa
+// /highlights/MLA/category/{cat} — el endpoint oficial de "más vendidos" por
+// categoría — autenticado con el access_token del cliente (da 401 sin token).
 //
 // Cache en Postgres: ranking 6h, sellers 7 días, nombres de categoría 30 días.
 'use strict';
@@ -143,27 +144,7 @@ module.exports = function registerCategoriaRoutes(app, ctx) {
     return name;
   }
 
-  // Primera palabra del nombre con > 3 caracteres → query para el search de ML
-  function firstSignificantWord(name) {
-    if (!name) return null;
-    const words = String(name).split(/\s+/).filter(Boolean);
-    return words.find(w => w.length > 3) || words[0] || null;
-  }
-
-  // Normalizan resultado de /sites/MLA/search y body de /items a la misma forma
-  function normalizeSearchItem(r) {
-    return {
-      id: r.id,
-      title: r.title || '',
-      price: parseFloat(r.price) || 0,
-      sold_quantity: r.sold_quantity || 0,
-      permalink: r.permalink || null,
-      thumbnail: r.thumbnail || null,
-      catalog_product_id: r.catalog_product_id || null,
-      seller_id: (r.seller && (r.seller.id || r.seller)) || null,
-      seller_nickname: (r.seller && r.seller.nickname) || null,
-    };
-  }
+  // Normaliza un body de /items a la forma que consume _computeRanking
   function normalizeItemBody(b) {
     return {
       id: b.id,
@@ -178,41 +159,27 @@ module.exports = function registerCategoriaRoutes(app, ctx) {
     };
   }
 
-  // Trae los listings de una categoría. Opción A (search con q) → B (highlights).
+  // Trae los listings de una categoría desde /highlights/MLA/category/{cat}.
+  // /sites/MLA/search por categoría está cerrado para apps no certificadas
+  // (403 confirmado desde IP residencial e IP de Railway, con y sin token).
+  // Highlights es el endpoint oficial de "más vendidos" por categoría —
+  // requiere token (da 401 sin él), por eso se autentica con el access_token
+  // del cliente. Devuelve solo ids → el detalle se trae con /items.
   async function fetchCategoryListings(categoryId, clientId) {
     const userToken = await getClientToken(clientId);
+    const authHeaders = userToken ? { Authorization: `Bearer ${userToken}` } : {};
 
-    // ── Opción A: search con q = nombre de la categoría ──────────────────────
-    const catName = await getCategoryName(categoryId);
-    const q = firstSignificantWord(catName);
-    if (q && userToken) {
-      const url = `${ML_API}/sites/MLA/search?category=${categoryId}&q=${encodeURIComponent(q)}&limit=${SEARCH_LIMIT}`;
-      console.log('[COMP-CAT] URL:', url);
-      let status = 0, results = [];
-      try {
-        const res = await fetch(url, { headers: { Authorization: `Bearer ${userToken}` } });
-        status = res.status;
-        const data = await res.json();
-        results = (data && data.results) || [];
-      } catch (e) { log(`search con q: error de red — ${e.message}`); }
-      console.log(`[COMP-CAT] search categoria con q="${q}": status ${status}, results ${results.length}`);
-      if (status === 200 && results.length) {
-        return { listings: results.map(normalizeSearchItem), via: 'search' };
-      }
-    } else {
-      log(`categoria ${categoryId}: sin q (nombre="${catName}") o sin token — salteando Opción A`);
-    }
-
-    // ── Opción B: highlights (endpoint público, sin auth ni q) ───────────────
-    let hlIds = [];
+    const url = `${ML_API}/highlights/MLA/category/${categoryId}`;
+    console.log('[COMP-CAT] URL:', url);
+    let status = 0, content = [];
     try {
-      const res = await fetch(`${ML_API}/highlights/MLA/category/${categoryId}`);
+      const res = await fetch(url, { headers: authHeaders });
+      status = res.status;
       const data = await res.json();
-      hlIds = ((data && data.content) || [])
-        .filter(c => c && c.type === 'ITEM' && c.id)
-        .map(c => c.id);
+      content = (data && data.content) || [];
     } catch (e) { log(`highlights: error de red — ${e.message}`); }
-    console.log(`[COMP-CAT] usado highlights fallback para ${categoryId}: ${hlIds.length} items`);
+    const hlIds = content.filter(c => c && c.type === 'ITEM' && c.id).map(c => c.id);
+    console.log(`[COMP-CAT] highlights ${categoryId}: status ${status}, ${hlIds.length} items ITEM de ${content.length} en content`);
     if (!hlIds.length) return { listings: [], via: 'highlights' };
 
     // highlights solo devuelve ids → traer el detalle con /items
@@ -220,7 +187,7 @@ module.exports = function registerCategoriaRoutes(app, ctx) {
     for (let i = 0; i < hlIds.length; i += 20) {
       const batch = hlIds.slice(i, i + 20);
       const data = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,title,price,sold_quantity,permalink,thumbnail,catalog_product_id,seller_id`,
-        { headers: userToken ? { Authorization: `Bearer ${userToken}` } : {} }).then(r => r.json()).catch(() => []);
+        { headers: authHeaders }).then(r => r.json()).catch(() => []);
       (Array.isArray(data) ? data : []).forEach(r => {
         if (r.code === 200 && r.body) listings.push(normalizeItemBody(r.body));
       });
