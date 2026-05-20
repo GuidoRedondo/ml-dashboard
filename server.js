@@ -6827,6 +6827,48 @@ app.get('/api/debug/visits', requireAuth, async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
+// Debug específico: compara varios endpoints de visitas a nivel usuario.
+// Permite ver el shape exacto de la respuesta de ML y descubrir cuál coincide
+// con el panel oficial. Pasar ?client_id=N&days=7 (o &date_from=YYYY-MM-DD&date_to=...)
+app.get('/api/debug/user-visits', requireAuth, async (req, res) => {
+  try {
+    const clientId = parseInt(req.query.client_id);
+    const token = await getClientToken(clientId);
+    if (!token) return res.json({ error: 'Sin token' });
+    const headers = { Authorization: `Bearer ${token}` };
+    const cr = await pool.query('SELECT ml_user_id FROM clients WHERE id=$1', [clientId]);
+    const uid = cr.rows[0] && cr.rows[0].ml_user_id;
+    if (!uid) return res.json({ error: 'Cliente sin ml_user_id' });
+
+    const days = parseInt(req.query.days) || 7;
+    const dateFrom = req.query.date_from || new Date(Date.now() - days * 86400000).toISOString().slice(0,10);
+    const dateTo   = req.query.date_to   || new Date().toISOString().slice(0,10);
+
+    const urls = [
+      // Lo que el dashboard usa ahora
+      `${ML_API}/users/${uid}/items_visits/time_window?date_from=${dateFrom}&date_to=${dateTo}&unit=day`,
+      // Variante con last= en vez de date range
+      `${ML_API}/users/${uid}/items_visits/time_window?last=${days}&unit=day`,
+      // Endpoint alternativo común — sin /time_window
+      `${ML_API}/users/${uid}/items_visits?date_from=${dateFrom}&date_to=${dateTo}`,
+      // Endpoint legacy (cuando aplicable)
+      `${ML_API}/users/${uid}/items_visits?last=${days}&unit=day`,
+    ];
+
+    const results = await Promise.all(urls.map(url =>
+      fetch(url, { headers })
+        .then(async r => ({
+          url,
+          http_status: r.status,
+          body: await r.json().catch(() => null),
+        }))
+        .catch(e => ({ url, error: e.message }))
+    ));
+
+    res.json({ uid, dateFrom, dateTo, days, results });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
 // ── SEGUIMIENTO DE PUBLICACIONES ──────────────────────────────────────────────
 
 async function takeSeguimientoSnapshot(seg, token, uid, todayOrders) {
