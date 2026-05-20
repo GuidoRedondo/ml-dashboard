@@ -1,1 +1,6 @@
 .claude/
+node_modules/
+*.bak
+*.bak_*
+.env
+.env.local

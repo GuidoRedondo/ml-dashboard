@@ -165,7 +165,12 @@ module.exports = function registerCategoriaRoutes(app, ctx) {
   // (403 confirmado desde IP residencial e IP de Railway, con y sin token).
   // Highlights es el endpoint oficial de "más vendidos" por categoría —
   // requiere token (da 401 sin él), por eso se autentica con el access_token
-  // del cliente. Devuelve solo ids → el detalle se trae con /items.
+  // del cliente. El content puede traer dos tipos de entrada:
+  //   - type=ITEM    → id es MLAxxxx (publicación) → se busca por /items
+  //   - type=PRODUCT → id es catalog_product_id    → se resuelve a item_id
+  //                    via /products/{id}.buy_box_winner.item_id
+  // En categorías dominadas por catálogo (gran parte de MLA hoy) casi todo el
+  // content es PRODUCT, así que sin esta resolución el ranking queda vacío.
   async function fetchCategoryListings(categoryId, clientId) {
     const userToken = await getClientToken(clientId);
     const authHeaders = userToken ? { Authorization: `Bearer ${userToken}` } : {};
@@ -177,26 +182,78 @@ module.exports = function registerCategoriaRoutes(app, ctx) {
       const res = await fetch(url, { headers: authHeaders });
       status = res.status;
       const data = await res.json();
-      content = (data && data.content) || [];
+      // Defensivo: ML a veces devuelve {content:[...]} y a veces {results:[...]}.
+      content = (data && (data.content || data.results)) || [];
     } catch (e) { log(`highlights: error de red — ${e.message}`); }
-    const hlIds = content.filter(c => c && c.type === 'ITEM' && c.id).map(c => c.id);
-    console.log(`[COMP-CAT] highlights ${categoryId}: status ${status}, ${hlIds.length} items ITEM de ${content.length} en content`);
+
     const typeCounts = {};
     content.forEach(c => { const t = (c && c.type) || 'UNKNOWN'; typeCounts[t] = (typeCounts[t] || 0) + 1; });
+
+    const itemIds = [];
+    const productIds = [];
+    content.forEach(c => {
+      if (!c || !c.id) return;
+      if (c.type === 'ITEM') itemIds.push(c.id);
+      else if (c.type === 'PRODUCT') productIds.push(c.id);
+    });
+
+    console.log(`[COMP-CAT] highlights ${categoryId}: status ${status}, content ${content.length} (ITEM:${itemIds.length} PRODUCT:${productIds.length})`);
+
     const debug = {
       url,
       highlights_status: status,
       content_count: content.length,
       content_types: typeCounts,
-      item_count: hlIds.length,
+      item_count: itemIds.length,
+      product_count: productIds.length,
     };
-    if (!hlIds.length) return { listings: [], via: 'highlights', debug };
 
-    // highlights solo devuelve ids → traer el detalle con /items
-    const listings = [];
+    // Resolver PRODUCT → item_id del buy_box_winner.
+    const productToItem = {};  // catalog_product_id -> item_id
+    if (productIds.length) {
+      debug.products_fetch = [];
+      const CONCURRENCY = 8;
+      for (let i = 0; i < productIds.length; i += CONCURRENCY) {
+        const batch = productIds.slice(i, i + CONCURRENCY);
+        await Promise.all(batch.map(async pid => {
+          let httpStatus = 0, parsed = null;
+          try {
+            const res = await fetch(`${ML_API}/products/${pid}`, { headers: authHeaders });
+            httpStatus = res.status;
+            parsed = await res.json();
+          } catch (e) {
+            debug.products_fetch.push({ id: pid, error: e.message });
+            return;
+          }
+          const winnerId = parsed && parsed.buy_box_winner && parsed.buy_box_winner.item_id;
+          if (winnerId) productToItem[pid] = winnerId;
+          debug.products_fetch.push({ id: pid, http_status: httpStatus, winner: winnerId || null });
+        }));
+      }
+    }
+
+    // Lista final preservando orden de highlights (que ya viene rankeado por ML).
+    // catalogByItemId permite enriquecer catalog_product_id en items que no lo
+    // traen del /items pero sí los conocemos por venir del bloque PRODUCT.
+    const orderedIds = [];
+    const catalogByItemId = {};
+    content.forEach(c => {
+      if (!c || !c.id) return;
+      if (c.type === 'ITEM') orderedIds.push(c.id);
+      else if (c.type === 'PRODUCT') {
+        const iid = productToItem[c.id];
+        if (iid) { orderedIds.push(iid); catalogByItemId[iid] = c.id; }
+      }
+    });
+    debug.resolved_item_ids = orderedIds.length;
+
+    if (!orderedIds.length) return { listings: [], via: 'highlights', debug };
+
+    // highlights solo devuelve ids → traer el detalle con /items.
     debug.items_fetch = [];
-    for (let i = 0; i < hlIds.length; i += 20) {
-      const batch = hlIds.slice(i, i + 20);
+    const byId = {};
+    for (let i = 0; i < orderedIds.length; i += 20) {
+      const batch = orderedIds.slice(i, i + 20);
       let httpStatus = 0, parsed = null;
       try {
         const res = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,title,price,sold_quantity,permalink,thumbnail,catalog_product_id,seller_id`,
@@ -212,8 +269,15 @@ module.exports = function registerCategoriaRoutes(app, ctx) {
         response_shape: Array.isArray(parsed) ? 'array'
           : (parsed && typeof parsed === 'object' ? Object.keys(parsed) : String(parsed)),
       });
-      arr.forEach(r => { if (r.code === 200 && r.body) listings.push(normalizeItemBody(r.body)); });
+      arr.forEach(r => {
+        if (r.code === 200 && r.body) {
+          const n = normalizeItemBody(r.body);
+          if (!n.catalog_product_id && catalogByItemId[n.id]) n.catalog_product_id = catalogByItemId[n.id];
+          byId[n.id] = n;
+        }
+      });
     }
+    const listings = orderedIds.map(iid => byId[iid]).filter(Boolean);
     debug.listings_count = listings.length;
     return { listings, via: 'highlights', debug };
   }
