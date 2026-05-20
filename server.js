@@ -1052,6 +1052,33 @@ async function fetchVisitsRange(itemIds, dateFrom, dateTo, headers) {
   } catch(e) { return {}; }
 }
 
+// Visitas a nivel usuario — endpoint agregado oficial de ML.
+// /users/{uid}/items_visits/time_window devuelve EL MISMO número que ML muestra
+// en su panel (cuenta visitas de todos los ítems, activos + pausados, con y
+// sin ventas). Antes sumábamos /items/{id}/visits sobre un slice de items —
+// quedaba 3-5x por debajo del real porque dejaba afuera ítems sin ventas.
+// Devuelve null si ML responde con error (caller decide qué hacer).
+async function fetchUserVisits(uid, dateFrom, dateTo, headers) {
+  try {
+    const r = await fetch(`${ML_API}/users/${uid}/items_visits/time_window?date_from=${dateFrom}&date_to=${dateTo}&unit=day`, { headers })
+      .then(r => r.json());
+    if (!r || r.error) return null;
+    const byDay = {};
+    let total = 0;
+    if (Array.isArray(r.results)) {
+      r.results.forEach(x => {
+        if (!x || !x.date) return;
+        const k = x.date.slice(0, 10);
+        const n = x.total || x.visits || 0;
+        byDay[k] = n;
+        total += n;
+      });
+    }
+    if (typeof r.total_visits === 'number') total = r.total_visits;
+    return { total, byDay };
+  } catch(e) { return null; }
+}
+
 // ── REPORTE HOTSALE ───────────────────────────────────────────────────────────
 
 async function generateHotsaleReport(dateFrom, dateTo) {
@@ -1087,26 +1114,6 @@ async function generateHotsaleReport(dateFrom, dateTo) {
     return fetch(url, { ...opts, signal: ctrl.signal }).finally(() => clearTimeout(t));
   };
 
-  const fetchVisitsDailyMap = async (itemIds, dFrom, dTo, headers) => {
-    const map = {}; // { YYYY-MM-DD: totalVisits }
-    for (let i = 0; i < itemIds.length; i += 20) {
-      const batch = itemIds.slice(i, i + 20);
-      const results = await Promise.all(batch.map(id =>
-        fetchWithTimeout(
-          `${ML_API}/items/${id}/visits/time_window?date_from=${dFrom}&date_to=${dTo}&unit=day`,
-          { headers }
-        ).then(r => r.json()).catch(() => null)
-      ));
-      results.forEach(v => {
-        if (!v) return;
-        const rows = v.results || (Array.isArray(v) ? v : []);
-        rows.forEach(r => { if (r.date) { const k = r.date.slice(0,10); map[k] = (map[k] || 0) + (r.total || r.visits || 0); } });
-        if (rows.length === 0 && v.total_visits) map[dFrom] = (map[dFrom] || 0) + v.total_visits;
-      });
-    }
-    return map;
-  };
-
   const clientsRes = await pool.query('SELECT id, name, ml_user_id FROM clients ORDER BY name');
   const clientResults = [];
 
@@ -1139,32 +1146,15 @@ async function generateHotsaleReport(dateFrom, dateTo) {
       const curByDate  = byDate(curOrdersData.orders);
       const prevByDate = byDate(prevOrdersData.orders);
 
-      const allSoldIds = [...new Set([
-        ...curOrdersData.orders.flatMap(o => (o.order_items || []).map(oi => oi.item?.id).filter(Boolean)),
-        ...prevOrdersData.orders.flatMap(o => (o.order_items || []).map(oi => oi.item?.id).filter(Boolean)),
-      ])];
-
-      // Traer TODOS los ítems activos para visitas precisas (no solo los que vendieron)
-      const activeRes = await fetchWithTimeout(`${ML_API}/users/${uid}/items/search?status=active&limit=100`, { headers })
-        .then(r => r.json()).catch(() => ({ results: [] }));
-      let activeIds = activeRes.results || [];
-      if ((activeRes.paging?.total || 0) > 100) {
-        const extras = await Promise.all(
-          [100, 200].slice(0, Math.ceil(((activeRes.paging?.total || 100) - 100) / 100)).map(offset =>
-            fetchWithTimeout(`${ML_API}/users/${uid}/items/search?status=active&limit=100&offset=${offset}`, { headers })
-              .then(r => r.json()).catch(() => ({ results: [] }))
-          )
-        );
-        extras.forEach(r => activeIds.push(...(r.results || [])));
-      }
-      // Combinar activos + vendidos, limitar a 100 ítems para evitar timeouts
-      const visitIds = [...new Set([...activeIds, ...allSoldIds])].slice(0, 100);
-
-      // Visitas por día — rango completo en una sola tanda de llamadas
-      const [curVisMap, prevVisMap] = await Promise.all([
-        visitIds.length ? fetchVisitsDailyMap(visitIds, days[0], days[days.length-1], headers) : Promise.resolve({}),
-        visitIds.length ? fetchVisitsDailyMap(visitIds, prevDays[0], prevDays[prevDays.length-1], headers) : Promise.resolve({}),
+      // Visitas por día — endpoint agregado del usuario en una sola llamada por
+      // período. Antes tomábamos un slice de 100 ítems activos+vendidos y la
+      // suma quedaba muy por debajo del real (panel ML usa todo el catálogo).
+      const [uv, puv] = await Promise.all([
+        fetchUserVisits(uid, days[0], days[days.length-1], headers),
+        fetchUserVisits(uid, prevDays[0], prevDays[prevDays.length-1], headers),
       ]);
+      const curVisMap  = uv  ? uv.byDay  : {};
+      const prevVisMap = puv ? puv.byDay : {};
 
       // Ads por día — período actual Y período anterior en paralelo
       let adsPerDay = {}, prevAdsPerDay = {};
@@ -2220,18 +2210,27 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
     });
 
     const soldItemIds = Object.keys(salesByItem);
-    let totalVisits = 0, prevTotalVisits = 0, topItems = [];
+    let topItems = [];
 
-    // Fetchear visitas para ítems con ventas
+    // Totales de visitas — vía endpoint agregado de usuario (cuenta TODO el
+    // catálogo, no solo ítems con ventas). Antes sumábamos per-item sobre
+    // soldItemIds y daba 3-5x menos que el panel de ML.
+    const ymd = d => d.toISOString().slice(0, 10);
+    const [uv, puv] = await Promise.all([
+      fetchUserVisits(uid, ymd(curFrom), ymd(curTo), headers),
+      fetchUserVisits(uid, ymd(prevFrom), ymd(prevTo), headers),
+    ]);
+    const totalVisits     = uv  ? uv.total  : 0;
+    const prevTotalVisits = puv ? puv.total : 0;
+
+    // Visitas per-item (solo ítems con ventas) — usado para la conversión por
+    // producto en topItems. El total no se calcula sumando esto.
     if (soldItemIds.length > 0) {
-      const allVisitsMap = {}, allPrevVisitsMap = {};
+      const allVisitsMap = {};
       for (let i = 0; i < soldItemIds.length; i += 20) {
         const batch = soldItemIds.slice(i, i + 20);
-        const [vm, pvm] = await Promise.all([fetchVisits(batch, effectiveDays, headers), fetchVisits(batch, effectiveDays * 2, headers)]);
-        Object.assign(allVisitsMap, vm); Object.assign(allPrevVisitsMap, pvm);
+        Object.assign(allVisitsMap, await fetchVisits(batch, effectiveDays, headers));
       }
-      totalVisits = Object.values(allVisitsMap).reduce((s, v) => s + v, 0);
-      prevTotalVisits = Math.max(0, Object.values(allPrevVisitsMap).reduce((s, v) => s + v, 0) - totalVisits);
       topItems = Object.values(salesByItem).map(item => {
         const curVisits = allVisitsMap[item.id] || 0;
         const conv = curVisits > 0 ? ((item.units / curVisits) * 100).toFixed(1) : '0.0';
