@@ -28,7 +28,7 @@ const CATEGORIES_TTL_MS = 30 * 24 * 60 * 60 * 1000;  // 30 días
 const SEARCH_LIMIT      = 50;
 
 module.exports = function registerCategoriaRoutes(app, ctx) {
-  const { pool, requireAuth, getClientToken, ML_API } = ctx;
+  const { pool, requireAuth, getClientToken, getAppToken, ML_API } = ctx;
   const log = (...a) => console.log('[COMP-CAT]', ...a);
 
   // ── DDL idempotente (mismo criterio que initDB) ────────────────────────────
@@ -160,65 +160,76 @@ module.exports = function registerCategoriaRoutes(app, ctx) {
     };
   }
 
-  // Trae los listings de una categoría desde /highlights/MLA/category/{cat}.
-  // /sites/MLA/search por categoría está cerrado para apps no certificadas
-  // (403 confirmado desde IP residencial e IP de Railway, con y sin token).
-  // Highlights es el endpoint oficial de "más vendidos" por categoría —
-  // requiere token (da 401 sin él), por eso se autentica con el access_token
-  // del cliente. El content puede traer dos tipos de entrada:
+  // Normaliza un resultado de /sites/MLA/search a la misma forma (incluye seller embed).
+  function normalizeSearchItem(r) {
+    return {
+      id: r.id,
+      title: r.title || '',
+      price: parseFloat(r.price) || 0,
+      sold_quantity: r.sold_quantity || 0,
+      permalink: r.permalink || null,
+      thumbnail: r.thumbnail || null,
+      catalog_product_id: r.catalog_product_id || null,
+      seller_id: (r.seller && (r.seller.id || r.seller)) || null,
+      seller_nickname: (r.seller && r.seller.nickname) || null,
+    };
+  }
+
+  // Primera palabra con > 3 caracteres del nombre — sirve como q para search.
+  function firstSignificantWord(name) {
+    if (!name) return null;
+    const words = String(name).split(/\s+/).filter(Boolean);
+    return words.find(w => w.length > 3) || words[0] || null;
+  }
+
+  // Trae los listings de una categoría con cadena de fallbacks. Las restricciones
+  // de ML para apps no certificadas cambian seguido — lo que ayer respondía 200
+  // hoy puede ser 403, así que probamos varias vías y el debug muestra cuál ganó.
+  //
+  // Cadena: highlights(user) → highlights(app) → search(user, q+category) →
+  //         search(user, q) post-filtrado por category_id.
+  //
+  // Si la respuesta es highlights, el content puede traer dos tipos de entrada:
   //   - type=ITEM    → id es MLAxxxx (publicación) → se busca por /items
   //   - type=PRODUCT → id es catalog_product_id    → se resuelve a item_id
   //                    via /products/{id}.buy_box_winner.item_id
-  // En categorías dominadas por catálogo (gran parte de MLA hoy) casi todo el
-  // content es PRODUCT, así que sin esta resolución el ranking queda vacío.
-  async function fetchCategoryListings(categoryId, clientId) {
-    const userToken = await getClientToken(clientId);
-    const authHeaders = userToken ? { Authorization: `Bearer ${userToken}` } : {};
-
+  async function _fetchHighlights(categoryId, headers, label) {
     const url = `${ML_API}/highlights/MLA/category/${categoryId}`;
-    console.log('[COMP-CAT] URL:', url);
     let status = 0, content = [];
     try {
-      const res = await fetch(url, { headers: authHeaders });
+      const res = await fetch(url, { headers });
       status = res.status;
       const data = await res.json();
-      // Defensivo: ML a veces devuelve {content:[...]} y a veces {results:[...]}.
       content = (data && (data.content || data.results)) || [];
-    } catch (e) { log(`highlights: error de red — ${e.message}`); }
+    } catch (e) { log(`highlights ${label}: error de red — ${e.message}`); }
+    log(`highlights ${label} ${categoryId}: status ${status}, content ${content.length}`);
+    return { status, content, url };
+  }
 
-    const typeCounts = {};
-    content.forEach(c => { const t = (c && c.type) || 'UNKNOWN'; typeCounts[t] = (typeCounts[t] || 0) + 1; });
-
+  async function _resolveHighlightsContent(content, headers, debug) {
     const itemIds = [];
     const productIds = [];
+    const typeCounts = {};
     content.forEach(c => {
+      const t = (c && c.type) || 'UNKNOWN';
+      typeCounts[t] = (typeCounts[t] || 0) + 1;
       if (!c || !c.id) return;
       if (c.type === 'ITEM') itemIds.push(c.id);
       else if (c.type === 'PRODUCT') productIds.push(c.id);
     });
+    debug.content_types = typeCounts;
+    debug.item_count = itemIds.length;
+    debug.product_count = productIds.length;
 
-    console.log(`[COMP-CAT] highlights ${categoryId}: status ${status}, content ${content.length} (ITEM:${itemIds.length} PRODUCT:${productIds.length})`);
-
-    const debug = {
-      url,
-      highlights_status: status,
-      content_count: content.length,
-      content_types: typeCounts,
-      item_count: itemIds.length,
-      product_count: productIds.length,
-    };
-
-    // Resolver PRODUCT → item_id del buy_box_winner.
-    const productToItem = {};  // catalog_product_id -> item_id
+    const productToItem = {};
     if (productIds.length) {
       debug.products_fetch = [];
-      const CONCURRENCY = 8;
-      for (let i = 0; i < productIds.length; i += CONCURRENCY) {
-        const batch = productIds.slice(i, i + CONCURRENCY);
+      for (let i = 0; i < productIds.length; i += 8) {
+        const batch = productIds.slice(i, i + 8);
         await Promise.all(batch.map(async pid => {
           let httpStatus = 0, parsed = null;
           try {
-            const res = await fetch(`${ML_API}/products/${pid}`, { headers: authHeaders });
+            const res = await fetch(`${ML_API}/products/${pid}`, { headers });
             httpStatus = res.status;
             parsed = await res.json();
           } catch (e) {
@@ -232,9 +243,6 @@ module.exports = function registerCategoriaRoutes(app, ctx) {
       }
     }
 
-    // Lista final preservando orden de highlights (que ya viene rankeado por ML).
-    // catalogByItemId permite enriquecer catalog_product_id en items que no lo
-    // traen del /items pero sí los conocemos por venir del bloque PRODUCT.
     const orderedIds = [];
     const catalogByItemId = {};
     content.forEach(c => {
@@ -246,26 +254,21 @@ module.exports = function registerCategoriaRoutes(app, ctx) {
       }
     });
     debug.resolved_item_ids = orderedIds.length;
+    if (!orderedIds.length) return [];
 
-    if (!orderedIds.length) return { listings: [], via: 'highlights', debug };
-
-    // highlights solo devuelve ids → traer el detalle con /items.
     debug.items_fetch = [];
     const byId = {};
     for (let i = 0; i < orderedIds.length; i += 20) {
       const batch = orderedIds.slice(i, i + 20);
       let httpStatus = 0, parsed = null;
       try {
-        const res = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,title,price,sold_quantity,permalink,thumbnail,catalog_product_id,seller_id`,
-          { headers: authHeaders });
+        const res = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,title,price,sold_quantity,permalink,thumbnail,catalog_product_id,seller_id`, { headers });
         httpStatus = res.status;
         parsed = await res.json();
       } catch (e) { log(`items detalle: error de red — ${e.message}`); }
       const arr = Array.isArray(parsed) ? parsed : [];
       debug.items_fetch.push({
-        ids: batch,
-        http_status: httpStatus,
-        codes: arr.map(r => r && r.code),
+        ids: batch, http_status: httpStatus, codes: arr.map(r => r && r.code),
         response_shape: Array.isArray(parsed) ? 'array'
           : (parsed && typeof parsed === 'object' ? Object.keys(parsed) : String(parsed)),
       });
@@ -277,9 +280,112 @@ module.exports = function registerCategoriaRoutes(app, ctx) {
         }
       });
     }
-    const listings = orderedIds.map(iid => byId[iid]).filter(Boolean);
-    debug.listings_count = listings.length;
-    return { listings, via: 'highlights', debug };
+    return orderedIds.map(iid => byId[iid]).filter(Boolean);
+  }
+
+  async function _searchListings(categoryId, q, userToken, opts, debug) {
+    const params = new URLSearchParams();
+    if (q) params.set('q', q);
+    if (opts.withCategory) params.set('category', categoryId);
+    params.set('limit', String(SEARCH_LIMIT));
+    const url = `${ML_API}/sites/MLA/search?${params.toString()}`;
+    let status = 0, results = [];
+    try {
+      const res = await fetch(url, { headers: userToken ? { Authorization: `Bearer ${userToken}` } : {} });
+      status = res.status;
+      const data = await res.json();
+      results = (data && data.results) || [];
+    } catch (e) { log(`search ${opts.label}: error de red — ${e.message}`); }
+    log(`search ${opts.label} ${categoryId} q="${q}": status ${status}, ${results.length} resultados`);
+    debug.url = url;
+    debug.status = status;
+    debug.raw_count = results.length;
+    if (status !== 200 || !results.length) return [];
+    // Si la búsqueda no fue por category, filtramos en server por category_id.
+    const filtered = opts.withCategory ? results : results.filter(r => r.category_id === categoryId);
+    debug.filtered_count = filtered.length;
+    return filtered.map(normalizeSearchItem);
+  }
+
+  async function fetchCategoryListings(categoryId, clientId) {
+    const userToken = await getClientToken(clientId);
+    const appToken = getAppToken ? await getAppToken(clientId).catch(() => null) : null;
+    const userHeaders = userToken ? { Authorization: `Bearer ${userToken}` } : {};
+    const appHeaders = appToken ? { Authorization: `Bearer ${appToken}` } : null;
+
+    const debug = { attempts: [] };
+
+    // ── Intento 1: highlights con user token ────────────────────────────────
+    {
+      const hl = await _fetchHighlights(categoryId, userHeaders, 'user');
+      const att = { strategy: 'highlights_user', url: hl.url, http_status: hl.status, content_count: hl.content.length };
+      debug.attempts.push(att);
+      if (hl.status === 200 && hl.content.length) {
+        const listings = await _resolveHighlightsContent(hl.content, userHeaders, att);
+        att.listings_count = listings.length;
+        if (listings.length) {
+          // Mantenemos los campos top-level que ya consumía el front para no romper compat.
+          Object.assign(debug, {
+            url: hl.url, highlights_status: hl.status,
+            content_count: hl.content.length, content_types: att.content_types,
+            item_count: att.item_count, product_count: att.product_count,
+            resolved_item_ids: att.resolved_item_ids, listings_count: listings.length,
+          });
+          return { listings, via: 'highlights_user', debug };
+        }
+      }
+    }
+
+    // ── Intento 2: highlights con app token (client_credentials) ────────────
+    if (appHeaders) {
+      const hl = await _fetchHighlights(categoryId, appHeaders, 'app');
+      const att = { strategy: 'highlights_app', url: hl.url, http_status: hl.status, content_count: hl.content.length };
+      debug.attempts.push(att);
+      if (hl.status === 200 && hl.content.length) {
+        const listings = await _resolveHighlightsContent(hl.content, appHeaders, att);
+        att.listings_count = listings.length;
+        if (listings.length) {
+          Object.assign(debug, {
+            url: hl.url, highlights_status: hl.status,
+            content_count: hl.content.length, content_types: att.content_types,
+            item_count: att.item_count, product_count: att.product_count,
+            resolved_item_ids: att.resolved_item_ids, listings_count: listings.length,
+          });
+          return { listings, via: 'highlights_app', debug };
+        }
+      }
+    } else {
+      debug.attempts.push({ strategy: 'highlights_app', skipped: 'sin app token' });
+    }
+
+    // ── Intento 3: search con q + category ──────────────────────────────────
+    const catName = await getCategoryName(categoryId);
+    const q = firstSignificantWord(catName);
+    if (q && userToken) {
+      const att = { strategy: 'search_q_cat', q, category_name: catName };
+      debug.attempts.push(att);
+      const listings = await _searchListings(categoryId, q, userToken, { withCategory: true, label: 'q+cat' }, att);
+      if (listings.length) {
+        debug.listings_count = listings.length;
+        return { listings, via: 'search_q_cat', debug };
+      }
+    } else {
+      debug.attempts.push({ strategy: 'search_q_cat', skipped: q ? 'sin user token' : `sin q (catName="${catName}")` });
+    }
+
+    // ── Intento 4: search con q sin category, post-filtrado ─────────────────
+    if (q && userToken) {
+      const att = { strategy: 'search_q_only', q };
+      debug.attempts.push(att);
+      const listings = await _searchListings(categoryId, q, userToken, { withCategory: false, label: 'q only' }, att);
+      if (listings.length) {
+        debug.listings_count = listings.length;
+        return { listings, via: 'search_q_only', debug };
+      }
+    }
+
+    debug.listings_count = 0;
+    return { listings: [], via: 'none', debug };
   }
 
   // ── Ranking: dedup de llamadas en vuelo ─────────────────────────────────────
