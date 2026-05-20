@@ -6829,15 +6829,29 @@ app.get('/api/debug/visits', requireAuth, async (req, res) => {
 
 // Debug específico: compara varios endpoints de visitas a nivel usuario.
 // Permite ver el shape exacto de la respuesta de ML y descubrir cuál coincide
-// con el panel oficial. Pasar ?client_id=N&days=7 (o &date_from=YYYY-MM-DD&date_to=...)
+// con el panel oficial.
+// Buscar por nombre: ?client_name=LT  (parcial, case-insensitive)
+// O por id directo: ?client_id=N
+// Opcional: &days=7 o &date_from=YYYY-MM-DD&date_to=...
 app.get('/api/debug/user-visits', requireAuth, async (req, res) => {
   try {
-    const clientId = parseInt(req.query.client_id);
+    let clientId = parseInt(req.query.client_id) || null;
+    if (!clientId && req.query.client_name) {
+      const search = await pool.query(
+        'SELECT id, name FROM clients WHERE LOWER(name) LIKE LOWER($1) ORDER BY name',
+        [`%${req.query.client_name}%`]
+      );
+      if (!search.rows.length) return res.json({ error: `Cliente "${req.query.client_name}" no encontrado` });
+      if (search.rows.length > 1) return res.json({ error: 'Múltiples coincidencias — usá client_id', matches: search.rows });
+      clientId = search.rows[0].id;
+    }
+    if (!clientId) return res.json({ error: 'Falta client_id o client_name' });
     const token = await getClientToken(clientId);
-    if (!token) return res.json({ error: 'Sin token' });
+    if (!token) return res.json({ error: 'Sin token', client_id: clientId });
     const headers = { Authorization: `Bearer ${token}` };
-    const cr = await pool.query('SELECT ml_user_id FROM clients WHERE id=$1', [clientId]);
+    const cr = await pool.query('SELECT ml_user_id, name FROM clients WHERE id=$1', [clientId]);
     const uid = cr.rows[0] && cr.rows[0].ml_user_id;
+    const clientName = cr.rows[0] && cr.rows[0].name;
     if (!uid) return res.json({ error: 'Cliente sin ml_user_id' });
 
     const days = parseInt(req.query.days) || 7;
@@ -6865,7 +6879,7 @@ app.get('/api/debug/user-visits', requireAuth, async (req, res) => {
         .catch(e => ({ url, error: e.message }))
     ));
 
-    res.json({ uid, dateFrom, dateTo, days, results });
+    res.json({ client_id: clientId, client_name: clientName, uid, dateFrom, dateTo, days, results });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
