@@ -193,17 +193,33 @@ module.exports = function registerCategoriaRoutes(app, ctx) {
   //   - type=ITEM    → id es MLAxxxx (publicación) → se busca por /items
   //   - type=PRODUCT → id es catalog_product_id    → se resuelve a item_id
   //                    via /products/{id}.buy_box_winner.item_id
+  // Header común — varias APIs públicas de ML rechazan user-agents de Node por
+  // default. Forzar un UA de navegador es inocuo y previene falsos 403.
+  const BROWSER_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+  function _withUA(headers) {
+    return Object.assign({}, headers || {}, { 'User-Agent': BROWSER_UA, Accept: 'application/json' });
+  }
+  // Recorta el body para debug (ML devuelve {error, message, status, cause:[]}).
+  function _trimErrorBody(data) {
+    if (!data || typeof data !== 'object') return data;
+    const o = {};
+    ['error', 'message', 'status', 'code'].forEach(k => { if (data[k] !== undefined) o[k] = data[k]; });
+    if (Array.isArray(data.cause) && data.cause.length) o.cause = data.cause.slice(0, 3);
+    return Object.keys(o).length ? o : data;
+  }
+
   async function _fetchHighlights(categoryId, headers, label) {
     const url = `${ML_API}/highlights/MLA/category/${categoryId}`;
-    let status = 0, content = [];
+    let status = 0, content = [], errorBody = null;
     try {
-      const res = await fetch(url, { headers });
+      const res = await fetch(url, { headers: _withUA(headers) });
       status = res.status;
       const data = await res.json();
       content = (data && (data.content || data.results)) || [];
-    } catch (e) { log(`highlights ${label}: error de red — ${e.message}`); }
-    log(`highlights ${label} ${categoryId}: status ${status}, content ${content.length}`);
-    return { status, content, url };
+      if (status >= 400) errorBody = _trimErrorBody(data);
+    } catch (e) { log(`highlights ${label}: error de red — ${e.message}`); errorBody = { network_error: e.message }; }
+    log(`highlights ${label} ${categoryId}: status ${status}, content ${content.length}${errorBody ? ' err=' + JSON.stringify(errorBody) : ''}`);
+    return { status, content, url, errorBody };
   }
 
   async function _resolveHighlightsContent(content, headers, debug) {
@@ -229,7 +245,7 @@ module.exports = function registerCategoriaRoutes(app, ctx) {
         await Promise.all(batch.map(async pid => {
           let httpStatus = 0, parsed = null;
           try {
-            const res = await fetch(`${ML_API}/products/${pid}`, { headers });
+            const res = await fetch(`${ML_API}/products/${pid}`, { headers: _withUA(headers) });
             httpStatus = res.status;
             parsed = await res.json();
           } catch (e) {
@@ -262,7 +278,7 @@ module.exports = function registerCategoriaRoutes(app, ctx) {
       const batch = orderedIds.slice(i, i + 20);
       let httpStatus = 0, parsed = null;
       try {
-        const res = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,title,price,sold_quantity,permalink,thumbnail,catalog_product_id,seller_id`, { headers });
+        const res = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,title,price,sold_quantity,permalink,thumbnail,catalog_product_id,seller_id`, { headers: _withUA(headers) });
         httpStatus = res.status;
         parsed = await res.json();
       } catch (e) { log(`items detalle: error de red — ${e.message}`); }
@@ -289,17 +305,20 @@ module.exports = function registerCategoriaRoutes(app, ctx) {
     if (opts.withCategory) params.set('category', categoryId);
     params.set('limit', String(SEARCH_LIMIT));
     const url = `${ML_API}/sites/MLA/search?${params.toString()}`;
-    let status = 0, results = [];
+    let status = 0, results = [], errorBody = null;
     try {
-      const res = await fetch(url, { headers: userToken ? { Authorization: `Bearer ${userToken}` } : {} });
+      const baseHeaders = userToken ? { Authorization: `Bearer ${userToken}` } : {};
+      const res = await fetch(url, { headers: _withUA(baseHeaders) });
       status = res.status;
       const data = await res.json();
       results = (data && data.results) || [];
-    } catch (e) { log(`search ${opts.label}: error de red — ${e.message}`); }
-    log(`search ${opts.label} ${categoryId} q="${q}": status ${status}, ${results.length} resultados`);
+      if (status >= 400) errorBody = _trimErrorBody(data);
+    } catch (e) { log(`search ${opts.label}: error de red — ${e.message}`); errorBody = { network_error: e.message }; }
+    log(`search ${opts.label} ${categoryId} q="${q}": status ${status}, ${results.length} resultados${errorBody ? ' err=' + JSON.stringify(errorBody) : ''}`);
     debug.url = url;
     debug.status = status;
     debug.raw_count = results.length;
+    if (errorBody) debug.error_body = errorBody;
     if (status !== 200 || !results.length) return [];
     // Si la búsqueda no fue por category, filtramos en server por category_id.
     const filtered = opts.withCategory ? results : results.filter(r => r.category_id === categoryId);
@@ -318,7 +337,7 @@ module.exports = function registerCategoriaRoutes(app, ctx) {
     // ── Intento 1: highlights con user token ────────────────────────────────
     {
       const hl = await _fetchHighlights(categoryId, userHeaders, 'user');
-      const att = { strategy: 'highlights_user', url: hl.url, http_status: hl.status, content_count: hl.content.length };
+      const att = { strategy: 'highlights_user', url: hl.url, http_status: hl.status, content_count: hl.content.length, error_body: hl.errorBody };
       debug.attempts.push(att);
       if (hl.status === 200 && hl.content.length) {
         const listings = await _resolveHighlightsContent(hl.content, userHeaders, att);
@@ -339,7 +358,7 @@ module.exports = function registerCategoriaRoutes(app, ctx) {
     // ── Intento 2: highlights con app token (client_credentials) ────────────
     if (appHeaders) {
       const hl = await _fetchHighlights(categoryId, appHeaders, 'app');
-      const att = { strategy: 'highlights_app', url: hl.url, http_status: hl.status, content_count: hl.content.length };
+      const att = { strategy: 'highlights_app', url: hl.url, http_status: hl.status, content_count: hl.content.length, error_body: hl.errorBody };
       debug.attempts.push(att);
       if (hl.status === 200 && hl.content.length) {
         const listings = await _resolveHighlightsContent(hl.content, appHeaders, att);
