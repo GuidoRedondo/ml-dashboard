@@ -1053,30 +1053,75 @@ async function fetchVisitsRange(itemIds, dateFrom, dateTo, headers) {
 }
 
 // Visitas a nivel usuario — endpoint agregado oficial de ML.
-// /users/{uid}/items_visits/time_window devuelve EL MISMO número que ML muestra
-// en su panel (cuenta visitas de todos los ítems, activos + pausados, con y
-// sin ventas). Antes sumábamos /items/{id}/visits sobre un slice de items —
-// quedaba 3-5x por debajo del real porque dejaba afuera ítems sin ventas.
-// Devuelve null si ML responde con error (caller decide qué hacer).
-async function fetchUserVisits(uid, dateFrom, dateTo, headers) {
+// /users/{uid}/items_visits[/time_window] devuelve EL MISMO número que ML
+// muestra en su panel (cuenta TODOS los ítems del seller). Antes sumábamos
+// /items/{id}/visits sobre un slice de items y quedaba 3-5x por debajo
+// porque dejaba afuera ítems sin ventas.
+//
+// OJO con el shape de ML:
+//   - /items_visits/time_window?last=N&unit=day → total + results[] por día. OK.
+//   - /items_visits/time_window?date_from=A&date_to=B&unit=day → BUG en ML:
+//     ignora date_from y devuelve solo el día date_to. ¡No usar!
+//   - /items_visits?date_from=A&date_to=B (sin /time_window) → total agregado
+//     correcto, pero sin desglose por día.
+//
+// Helper A: para "últimos N días" — devuelve {total, byDay}.
+async function fetchUserVisitsLastN(uid, days, headers) {
   try {
-    const r = await fetch(`${ML_API}/users/${uid}/items_visits/time_window?date_from=${dateFrom}&date_to=${dateTo}&unit=day`, { headers })
+    const r = await fetch(`${ML_API}/users/${uid}/items_visits/time_window?last=${days}&unit=day`, { headers })
       .then(r => r.json());
     if (!r || r.error) return null;
     const byDay = {};
-    let total = 0;
     if (Array.isArray(r.results)) {
       r.results.forEach(x => {
         if (!x || !x.date) return;
-        const k = x.date.slice(0, 10);
-        const n = x.total || x.visits || 0;
-        byDay[k] = n;
-        total += n;
+        byDay[x.date.slice(0, 10)] = x.total || x.visits || 0;
       });
     }
-    if (typeof r.total_visits === 'number') total = r.total_visits;
+    const total = typeof r.total_visits === 'number'
+      ? r.total_visits
+      : Object.values(byDay).reduce((s, n) => s + n, 0);
     return { total, byDay };
   } catch(e) { return null; }
+}
+
+// Helper B: para rango arbitrario — devuelve solo {total} (sin byDay porque
+// el endpoint con date range no entrega desglose diario confiable).
+async function fetchUserVisitsRange(uid, dateFrom, dateTo, headers) {
+  try {
+    const r = await fetch(`${ML_API}/users/${uid}/items_visits?date_from=${dateFrom}&date_to=${dateTo}`, { headers })
+      .then(r => r.json());
+    if (!r || r.error) return null;
+    const total = typeof r.total_visits === 'number' ? r.total_visits : 0;
+    return { total, byDay: {} };
+  } catch(e) { return null; }
+}
+
+// Wrapper para rango arbitrario [dateFrom, dateTo]. Estrategia:
+// pedimos `?last=N` con N = días desde dateFrom hasta hoy, y filtramos el
+// byDay al rango pedido. Funciona para período actual y para período anterior
+// (siempre que dateFrom no sea muy viejo — capamos en 365 días).
+async function fetchUserVisits(uid, dateFrom, dateTo, headers) {
+  const today = new Date().toISOString().slice(0, 10);
+  const dayMs = 86400000;
+  const daysFromTodayToFrom = Math.round((new Date(today) - new Date(dateFrom)) / dayMs) + 1;
+
+  if (daysFromTodayToFrom > 0 && daysFromTodayToFrom <= 365) {
+    const r = await fetchUserVisitsLastN(uid, daysFromTodayToFrom, headers);
+    if (r) {
+      const byDay = {};
+      let total = 0;
+      Object.entries(r.byDay).forEach(([day, n]) => {
+        if (day >= dateFrom && day <= dateTo) {
+          byDay[day] = n;
+          total += n;
+        }
+      });
+      return { total, byDay };
+    }
+  }
+  // Fallback: rango sin desglose por día (último recurso).
+  return await fetchUserVisitsRange(uid, dateFrom, dateTo, headers);
 }
 
 // ── REPORTE HOTSALE ───────────────────────────────────────────────────────────
