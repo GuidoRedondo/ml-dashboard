@@ -383,6 +383,16 @@ async function initDB() {
       notas       TEXT,
       created_at  TIMESTAMPTZ DEFAULT NOW()
     );
+    CREATE TABLE IF NOT EXISTS ml_visitas_cache (
+      client_id  INTEGER NOT NULL,
+      mla_id     VARCHAR(20) NOT NULL,
+      date_from  DATE NOT NULL,
+      date_to    DATE NOT NULL,
+      visitas    INTEGER NOT NULL,
+      fetched_at TIMESTAMP DEFAULT NOW(),
+      PRIMARY KEY (client_id, mla_id, date_from, date_to)
+    );
+    CREATE INDEX IF NOT EXISTS idx_ml_visitas_fetched ON ml_visitas_cache(fetched_at);
   `);
 
   // Create default admin if not exists (password: admin123 - change after first login)
@@ -4498,6 +4508,200 @@ app.get('/api/reporte/comparar', requireAuth, async (req, res) => {
 
     res.json(comparacion);
   } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── REPORTE VISITAS — endpoint para Eje 4 de Steve ───────────────────────────
+// Visitas + conversión por MLA. Schema fijo (lo consume scripts/eje_conversion.py).
+// Cache 12h en ml_visitas_cache. Si hay >500 MLAs activos, rankea por revenue
+// últimos 90d y queda con los top 500 (proteger rate-limit de ML).
+app.get('/api/reporte/visitas', requireAuth, async (req, res) => {
+  try {
+    const clientId = parseInt(req.query.client_id);
+    if (!clientId) return res.status(400).json({ error: 'client_id requerido' });
+
+    const today = new Date().toISOString().slice(0, 10);
+    const defaultFrom = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+    const dateFrom = req.query.date_from || defaultFrom;
+    const dateTo   = req.query.date_to   || today;
+    const forceRefresh = String(req.query.force_refresh || '').toLowerCase() === 'true';
+
+    const token = await getClientToken(clientId);
+    if (!token) return res.status(403).json({ error: 'Cliente sin token ML' });
+    const headers = { Authorization: `Bearer ${token}` };
+
+    const cr = await pool.query('SELECT ml_user_id FROM clients WHERE id=$1', [clientId]);
+    const uid = cr.rows[0] && cr.rows[0].ml_user_id;
+    if (!uid) return res.status(400).json({ error: 'Cliente sin ml_user_id' });
+
+    // 1. Items activos del cliente (paginado).
+    const activeIds = [];
+    let offset = 0;
+    while (true) {
+      const r = await fetch(`${ML_API}/users/${uid}/items/search?status=active&limit=100&offset=${offset}`, { headers })
+        .then(r => r.json()).catch(() => ({}));
+      const batch = r.results || [];
+      activeIds.push(...batch);
+      const total = (r.paging && r.paging.total) || 0;
+      if (batch.length < 100 || activeIds.length >= total) break;
+      offset += 100;
+      if (offset > 5000) break;
+    }
+
+    // 2. Órdenes del período pedido — para unidades_vendidas por MLA.
+    const fmt = d => new Date(d).toISOString().slice(0, 19) + '.000-00:00';
+    const { orders } = await fetchAllOrders(uid, headers, fmt(dateFrom + 'T00:00:00'), fmt(dateTo + 'T23:59:59'));
+    const salesByMla = {};
+    orders.forEach(o => {
+      (o.order_items || []).forEach(oi => {
+        const id = oi.item && oi.item.id;
+        if (!id) return;
+        if (!salesByMla[id]) salesByMla[id] = { units: 0, revenue: 0, title: oi.item.title || id };
+        salesByMla[id].units   += oi.quantity || 0;
+        salesByMla[id].revenue += (parseFloat(oi.unit_price) || 0) * (oi.quantity || 0);
+      });
+    });
+
+    // 3. Si hay >500 activos, recortar a top 500 por revenue 90d.
+    let workingIds = activeIds;
+    if (activeIds.length > 500) {
+      const from90 = new Date(Date.now() - 90 * 86400000).toISOString().slice(0, 10);
+      const rev90 = {};
+      // Si el período pedido cubre o excede 90d, reuso salesByMla. Si no, traigo aparte.
+      if (dateFrom <= from90) {
+        Object.entries(salesByMla).forEach(([id, v]) => { rev90[id] = v.revenue; });
+      } else {
+        const { orders: o90 } = await fetchAllOrders(uid, headers, fmt(from90 + 'T00:00:00'), fmt(today + 'T23:59:59'));
+        o90.forEach(o => {
+          (o.order_items || []).forEach(oi => {
+            const id = oi.item && oi.item.id;
+            if (!id) return;
+            rev90[id] = (rev90[id] || 0) + (parseFloat(oi.unit_price) || 0) * (oi.quantity || 0);
+          });
+        });
+      }
+      const activeSet = new Set(activeIds);
+      const ranked = Object.entries(rev90).filter(([id]) => activeSet.has(id)).sort((a, b) => b[1] - a[1]).map(([id]) => id);
+      const noSales = activeIds.filter(id => !rev90[id]);
+      workingIds = [...ranked.slice(0, 500), ...noSales.slice(0, Math.max(0, 500 - ranked.length))].slice(0, 500);
+    }
+
+    // 4. Decidir cache vs refetch.
+    const cacheRows = await pool.query(
+      `SELECT mla_id, visitas, fetched_at FROM ml_visitas_cache
+       WHERE client_id=$1 AND date_from=$2 AND date_to=$3 AND mla_id = ANY($4)`,
+      [clientId, dateFrom, dateTo, workingIds]
+    );
+    const TWELVE_HOURS = 12 * 60 * 60 * 1000;
+    const cacheMap = {};
+    let oldestFresh = null;
+    cacheRows.rows.forEach(r => {
+      const age = Date.now() - new Date(r.fetched_at).getTime();
+      if (age < TWELVE_HOURS) {
+        cacheMap[r.mla_id] = r.visitas;
+        if (!oldestFresh || new Date(r.fetched_at) < oldestFresh) oldestFresh = new Date(r.fetched_at);
+      }
+    });
+    const cacheCovers = workingIds.every(id => cacheMap[id] !== undefined);
+    const usarCache = !forceRefresh && cacheCovers;
+
+    let visitsMap = {};
+    let fetchedAt = new Date();
+    if (usarCache) {
+      visitsMap = cacheMap;
+      fetchedAt = oldestFresh || new Date();
+    } else {
+      // 5. Fetch a ML — per-item batched. Por bug en /items_visits/time_window con
+      // date_from+date_to (ignora date_from y devuelve solo el último día — ver
+      // memoria ml-visitas-endpoint-bug), uso ?last=N con N=days(dateFrom→hoy)
+      // y filtro localmente al rango pedido del array results.
+      const daysFromTodayToFrom = Math.max(1, Math.round((new Date(today) - new Date(dateFrom)) / 86400000) + 1);
+      const dateToIsToday = dateTo === today;
+      const visitsResults = {};
+      const CONCURRENCY = 20;
+      for (let i = 0; i < workingIds.length; i += CONCURRENCY) {
+        const batch = workingIds.slice(i, i + CONCURRENCY);
+        const res = await Promise.all(batch.map(id =>
+          fetch(`${ML_API}/items/${id}/visits/time_window?last=${daysFromTodayToFrom}&unit=day`, { headers })
+            .then(r => r.json()).catch(() => null)
+        ));
+        res.forEach((v, k) => {
+          const id = batch[k];
+          if (!v || v.error) { visitsResults[id] = 0; return; }
+          if (dateToIsToday && typeof v.total_visits === 'number') {
+            visitsResults[id] = v.total_visits;
+          } else if (Array.isArray(v.results)) {
+            let s = 0;
+            v.results.forEach(x => {
+              if (!x || !x.date) return;
+              const day = x.date.slice(0, 10);
+              if (day >= dateFrom && day <= dateTo) s += (x.total || x.visits || 0);
+            });
+            visitsResults[id] = s;
+          } else {
+            visitsResults[id] = 0;
+          }
+        });
+      }
+      visitsMap = visitsResults;
+
+      // 6. Upsert al cache.
+      const upsertVals = workingIds.map(id => [clientId, id, dateFrom, dateTo, visitsMap[id] || 0]);
+      for (let i = 0; i < upsertVals.length; i += 100) {
+        const chunk = upsertVals.slice(i, i + 100);
+        const placeholders = chunk.map((_, k) => `($${k*5+1},$${k*5+2},$${k*5+3},$${k*5+4},$${k*5+5},NOW())`).join(',');
+        const flat = chunk.flat();
+        await pool.query(
+          `INSERT INTO ml_visitas_cache (client_id, mla_id, date_from, date_to, visitas, fetched_at)
+           VALUES ${placeholders}
+           ON CONFLICT (client_id, mla_id, date_from, date_to)
+           DO UPDATE SET visitas=EXCLUDED.visitas, fetched_at=NOW()`,
+          flat
+        );
+      }
+    }
+
+    // 7. Resolver títulos faltantes (los que no tienen ventas no están en salesByMla).
+    const missingTitle = workingIds.filter(id => !salesByMla[id]);
+    const titleMap = {};
+    Object.entries(salesByMla).forEach(([id, v]) => { titleMap[id] = v.title; });
+    for (let i = 0; i < missingTitle.length; i += 20) {
+      const batch = missingTitle.slice(i, i + 20);
+      const data = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,title`, { headers })
+        .then(r => r.json()).catch(() => []);
+      (Array.isArray(data) ? data : []).forEach(r => {
+        if (r.code === 200 && r.body && r.body.id) titleMap[r.body.id] = r.body.title || r.body.id;
+      });
+    }
+
+    // 8. Construir respuesta con schema fijo (lo consume Steve).
+    const items = workingIds.map(id => {
+      const visitas = visitsMap[id] || 0;
+      const unidades = (salesByMla[id] && salesByMla[id].units) || 0;
+      const conversion = visitas > 0 ? parseFloat((unidades / visitas * 100).toFixed(2)) : 0;
+      return {
+        mla_id: id,
+        title: titleMap[id] || id,
+        visitas,
+        unidades_vendidas: unidades,
+        conversion,
+      };
+    });
+
+    const ageHours = (Date.now() - fetchedAt.getTime()) / 3600000;
+    res.json({
+      items,
+      metadatos: {
+        total_mlas_consultados: workingIds.length,
+        total_mlas_con_visitas: items.filter(i => i.visitas > 0).length,
+        fetched_at: fetchedAt.toISOString(),
+        desde_cache: usarCache,
+        cache_age_hours: parseFloat(ageHours.toFixed(2)),
+      },
+    });
+  } catch(e) {
+    console.error('[/api/reporte/visitas]', e.message);
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // ── DEBUG: inspect a specific order's shipment ───────────────────────────────

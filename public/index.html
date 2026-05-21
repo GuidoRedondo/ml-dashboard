@@ -831,6 +831,10 @@ tbody td {
           style="padding:8px 18px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-2px;font-family:var(--font-b)">
           📋 Publicaciones
         </button>
+        <button id="tab-perf-conversion" onclick="switchPerfTab('conversion')"
+          style="padding:8px 18px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-2px;font-family:var(--font-b)">
+          🎯 Conversión
+        </button>
         <button id="tab-perf-ventas-hora" onclick="switchPerfTab('ventas-hora')"
           style="padding:8px 18px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-2px;font-family:var(--font-b)">
           🕐 Ventas por hora
@@ -856,6 +860,31 @@ tbody td {
       <!-- Tab Publicaciones -->
       <div id="perf-tab-publicaciones" style="display:none">
         <div id="perfPubContent"></div>
+      </div>
+      <!-- Tab Conversión -->
+      <div id="perf-tab-conversion" style="display:none">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap">
+          <span style="font-size:12px;font-weight:600;color:var(--muted)">Desde:</span>
+          <input id="convDateFrom" type="date"
+            style="padding:6px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px">
+          <span style="font-size:12px;font-weight:600;color:var(--muted)">Hasta:</span>
+          <input id="convDateTo" type="date"
+            style="padding:6px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px">
+          <button id="convLoadBtn" onclick="loadConversion(false)" class="sync-btn" style="font-size:12px;padding:6px 14px">Aplicar</button>
+          <button id="convRefreshBtn" onclick="loadConversion(true)" class="sync-btn" style="font-size:12px;padding:6px 14px;background:#6366f1;color:#fff">🔄 Refrescar datos</button>
+          <span id="convLastUpdate" style="font-size:11px;color:var(--muted);margin-left:auto"></span>
+        </div>
+        <div id="convKpis" style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px"></div>
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap">
+          <input id="convSearch" type="text" placeholder="Buscar por título o MLA…"
+            oninput="renderConversionTable()"
+            style="flex:1;min-width:200px;padding:7px 12px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px;outline:none">
+          <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);cursor:pointer">
+            <input id="convOnlyRotos" type="checkbox" onchange="renderConversionTable()" style="margin:0"> Solo embudos rotos
+          </label>
+          <span id="convCount" style="font-size:11px;color:var(--muted)"></span>
+        </div>
+        <div id="convTableWrap"></div>
       </div>
       <!-- Tab Ventas por hora -->
       <div id="perf-tab-ventas-hora" style="display:none">
@@ -3863,7 +3892,7 @@ let _perfPubModeFilter = null;
 
 function switchPerfTab(tab) {
   _perfActiveTab = tab;
-  ['analisis','publicaciones','ventas-hora','seguimiento'].forEach(t => {
+  ['analisis','publicaciones','conversion','ventas-hora','seguimiento'].forEach(t => {
     const el  = document.getElementById(`perf-tab-${t}`);
     const btn = document.getElementById(`tab-perf-${t}`);
     if (el)  el.style.display  = t === tab ? '' : 'none';
@@ -3873,9 +3902,10 @@ function switchPerfTab(tab) {
     }
   });
   const btnExport = document.getElementById('btnExportPerf');
-  if (btnExport) btnExport.style.display = (tab === 'publicaciones' || tab === 'ventas-hora') ? 'none' : '';
+  if (btnExport) btnExport.style.display = (tab === 'publicaciones' || tab === 'ventas-hora' || tab === 'conversion') ? 'none' : '';
   if (tab === 'publicaciones') { window._perfPubSearch = ''; loadSeguimientoMap(); renderPerfPublicaciones(); }
   if (tab === 'seguimiento') loadSeguimiento();
+  if (tab === 'conversion') initConversionTab();
   if (tab === 'ventas-hora') {
     const client = getActiveClient();
     const iframe = document.getElementById('iframe-ventas-hora');
@@ -3885,6 +3915,160 @@ function switchPerfTab(tab) {
       iframe.src = target; // siempre recargar para reflejar cambios de período
     }
   }
+}
+
+// ── TAB CONVERSIÓN (Eje 4 de Steve) ──────────────────────────────────────────
+// Pega a /api/reporte/visitas y dibuja KPIs + tabla sortable. Las fechas son
+// independientes del selector global (default: últimos 30 días).
+let _convData = { items: null, metadatos: null };
+let _convSort = { col: 'visitas', dir: -1 };
+let _convInitialized = false;
+
+function initConversionTab() {
+  const dFrom = document.getElementById('convDateFrom');
+  const dTo   = document.getElementById('convDateTo');
+  if (!_convInitialized) {
+    const today = new Date().toISOString().slice(0, 10);
+    const from = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+    dFrom.value = from;
+    dTo.value   = today;
+    _convInitialized = true;
+    loadConversion(false);
+  }
+}
+
+async function loadConversion(forceRefresh) {
+  const client = getActiveClient();
+  if (!client) {
+    document.getElementById('convTableWrap').innerHTML = '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Seleccioná un cliente</div>';
+    return;
+  }
+  const dateFrom = document.getElementById('convDateFrom').value;
+  const dateTo   = document.getElementById('convDateTo').value;
+  if (!dateFrom || !dateTo) return;
+
+  const refreshBtn = document.getElementById('convRefreshBtn');
+  const loadBtn    = document.getElementById('convLoadBtn');
+  const tableWrap  = document.getElementById('convTableWrap');
+  const lastUpd    = document.getElementById('convLastUpdate');
+
+  refreshBtn.disabled = true; loadBtn.disabled = true;
+  refreshBtn.textContent = '⏳ Cargando…';
+  tableWrap.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">⏳ Trayendo visitas y cruzando con ventas… puede tardar 30-60 segundos la primera vez</div>';
+  document.getElementById('convKpis').innerHTML = '';
+  lastUpd.textContent = '';
+
+  try {
+    const qs = `client_id=${client.id}&date_from=${dateFrom}&date_to=${dateTo}${forceRefresh ? '&force_refresh=true' : ''}`;
+    const data = await apiCall('GET', `/api/reporte/visitas?${qs}`);
+    if (!data || data.error) {
+      tableWrap.innerHTML = `<div style="color:#ef4444;font-size:13px;padding:20px">Error: ${(data && data.error) || 'sin respuesta'}</div>`;
+      return;
+    }
+    _convData = { items: data.items || [], metadatos: data.metadatos || {} };
+    renderConversionKpis();
+    renderConversionTable();
+    const m = _convData.metadatos;
+    if (m && m.fetched_at) {
+      const h = m.cache_age_hours != null ? m.cache_age_hours : 0;
+      lastUpd.textContent = m.desde_cache
+        ? `Última actualización hace ${h.toFixed(1)}h (cache)`
+        : `Última actualización ahora`;
+    }
+  } catch(e) {
+    tableWrap.innerHTML = `<div style="color:#ef4444;font-size:13px;padding:20px">Error: ${e.message}</div>`;
+  } finally {
+    refreshBtn.disabled = false; loadBtn.disabled = false;
+    refreshBtn.textContent = '🔄 Refrescar datos';
+  }
+}
+
+function _convSemaforo(conv) {
+  if (conv > 5) return { color: '#10b981', emoji: '🟢' };
+  if (conv >= 2) return { color: '#f59e0b', emoji: '🟡' };
+  return { color: '#ef4444', emoji: '🔴' };
+}
+
+function renderConversionKpis() {
+  const kpis = document.getElementById('convKpis');
+  const items = (_convData.items || []).filter(i => i.visitas >= 100);
+  if (!items.length) {
+    kpis.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:20px">Sin items con >= 100 visitas en el rango.</div>';
+    return;
+  }
+  const totalVis = items.reduce((s, i) => s + i.visitas, 0);
+  const totalUni = items.reduce((s, i) => s + i.unidades_vendidas, 0);
+  const convProm = totalVis > 0 ? (totalUni / totalVis * 100) : 0;
+  const semProm  = _convSemaforo(convProm);
+  const rotos    = items.filter(i => i.visitas > 500 && i.conversion < 2).length;
+  const sinTraf  = items.filter(i => i.conversion > 5 && i.visitas < 500).length;
+  const card = (label, value, color) => `
+    <div style="flex:1;min-width:170px;background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:14px 16px">
+      <div style="font-size:11px;color:var(--muted);margin-bottom:4px">${label}</div>
+      <div style="font-size:22px;font-weight:700;color:${color || 'var(--text)'};font-family:var(--font-b)">${value}</div>
+    </div>`;
+  kpis.innerHTML =
+    card(`${semProm.emoji} Conversión promedio`, convProm.toFixed(2) + '%', semProm.color) +
+    card('Total visitas', totalVis.toLocaleString('es-AR')) +
+    card('🔴 Embudos rotos', rotos + (rotos === 1 ? ' producto' : ' productos'), rotos > 0 ? '#ef4444' : 'var(--text)') +
+    card('💎 Buenos sin tráfico', sinTraf + (sinTraf === 1 ? ' producto' : ' productos'), sinTraf > 0 ? '#10b981' : 'var(--text)');
+}
+
+function _convSortClick(col) {
+  if (_convSort.col === col) _convSort.dir = -_convSort.dir;
+  else { _convSort.col = col; _convSort.dir = -1; }
+  renderConversionTable();
+}
+
+function renderConversionTable() {
+  const wrap = document.getElementById('convTableWrap');
+  const count = document.getElementById('convCount');
+  let items = (_convData.items || []).filter(i => i.visitas >= 100);
+  const search = (document.getElementById('convSearch').value || '').trim().toLowerCase();
+  if (search) items = items.filter(i => (i.title || '').toLowerCase().includes(search) || (i.mla_id || '').toLowerCase().includes(search));
+  if (document.getElementById('convOnlyRotos').checked) {
+    items = items.filter(i => i.visitas > 500 && i.conversion < 2);
+  }
+  items.sort((a, b) => {
+    const ca = a[_convSort.col], cb = b[_convSort.col];
+    if (typeof ca === 'string') return _convSort.dir * ca.localeCompare(cb || '');
+    return _convSort.dir * ((ca || 0) - (cb || 0));
+  });
+  count.textContent = `${items.length} items`;
+  if (!items.length) {
+    wrap.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Sin resultados</div>';
+    return;
+  }
+  const arrow = col => _convSort.col === col ? (_convSort.dir < 0 ? ' ↓' : ' ↑') : '';
+  const th = (label, col, align) => `<th onclick="_convSortClick('${col}')" style="padding:8px 10px;text-align:${align||'left'};cursor:pointer;user-select:none">${label}${arrow(col)}</th>`;
+  const rows = items.map(i => {
+    const sem = _convSemaforo(i.conversion);
+    return `
+      <tr style="border-top:1px solid var(--border)">
+        <td style="padding:8px 10px;max-width:380px">${i.title || ''}</td>
+        <td style="padding:8px 10px;color:var(--muted)"><a href="https://articulo.mercadolibre.com.ar/${i.mla_id.replace('MLA','MLA-')}" target="_blank" style="color:var(--accent);text-decoration:none">${i.mla_id}</a></td>
+        <td style="padding:8px 10px;text-align:right">${(i.visitas||0).toLocaleString('es-AR')}</td>
+        <td style="padding:8px 10px;text-align:right">${(i.unidades_vendidas||0).toLocaleString('es-AR')}</td>
+        <td style="padding:8px 10px;text-align:right;font-weight:600;color:${sem.color}">${(i.conversion||0).toFixed(2)}%</td>
+        <td style="padding:8px 10px;text-align:center;font-size:16px">${sem.emoji}</td>
+      </tr>`;
+  }).join('');
+  wrap.innerHTML = `
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden;overflow-x:auto;max-height:600px;overflow-y:auto">
+      <table style="width:100%;border-collapse:collapse;font-size:13px;color:var(--text)">
+        <thead style="position:sticky;top:0;background:var(--surface2);z-index:1">
+          <tr style="color:var(--muted);font-size:10px;text-transform:uppercase">
+            ${th('Título', 'title', 'left')}
+            ${th('MLA', 'mla_id', 'left')}
+            ${th('Visitas', 'visitas', 'right')}
+            ${th('Unidades', 'unidades_vendidas', 'right')}
+            ${th('Conv. %', 'conversion', 'right')}
+            <th style="padding:8px 10px;text-align:center">Semáforo</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
 }
 
 function renderPerfPublicaciones() {
