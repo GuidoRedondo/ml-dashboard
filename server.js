@@ -4563,15 +4563,24 @@ app.get('/api/reporte/visitas', requireAuth, async (req, res) => {
     // Hacemos esto en paralelo con todo lo demás abajo via fetchUserVisits.
     const sellerVisitsP = fetchUserVisits(uid, dateFrom, dateTo, headers);
 
-    // 2. Órdenes del período pedido — para unidades_vendidas por MLA.
+    // 2. Órdenes del período pedido — ventas/unidades/facturación por MLA.
+    // "ventas" = órdenes distintas que contienen el MLA (1 orden con 5 unidades
+    // del mismo MLA = 1 venta, 5 unidades). "units" = suma de cantidades.
     const fmt = d => new Date(d).toISOString().slice(0, 19) + '.000-00:00';
     const { orders } = await fetchAllOrders(uid, headers, fmt(dateFrom + 'T00:00:00'), fmt(dateTo + 'T23:59:59'));
     const salesByMla = {};
+    const orderIdsByMla = {};
     orders.forEach(o => {
+      const orderId = o.id;
       (o.order_items || []).forEach(oi => {
         const id = oi.item && oi.item.id;
         if (!id) return;
-        if (!salesByMla[id]) salesByMla[id] = { units: 0, revenue: 0, title: oi.item.title || id };
+        if (!salesByMla[id]) salesByMla[id] = { units: 0, ventas: 0, revenue: 0, title: oi.item.title || id };
+        if (!orderIdsByMla[id]) orderIdsByMla[id] = new Set();
+        if (!orderIdsByMla[id].has(orderId)) {
+          orderIdsByMla[id].add(orderId);
+          salesByMla[id].ventas += 1;
+        }
         salesByMla[id].units   += oi.quantity || 0;
         salesByMla[id].revenue += (parseFloat(oi.unit_price) || 0) * (oi.quantity || 0);
       });
@@ -4692,17 +4701,20 @@ app.get('/api/reporte/visitas', requireAuth, async (req, res) => {
     }
 
     // 8. Construir respuesta con schema fijo (lo consume Steve).
-    // facturacion es un campo extra del schema base — Steve lo ignora, el
-    // frontend lo usa para sortear.
+    // conversion: ventas (órdenes) / visitas — métrica que pidió el usuario.
+    // ventas y facturacion son campos extras — Steve los ignora y sigue
+    // recalculando sobre unidades_vendidas (que se mantiene como antes).
     const items = workingIds.map(id => {
       const visitas = visitsMap[id] || 0;
       const unidades = (salesByMla[id] && salesByMla[id].units) || 0;
+      const ventas = (salesByMla[id] && salesByMla[id].ventas) || 0;
       const facturacion = (salesByMla[id] && salesByMla[id].revenue) || 0;
-      const conversion = visitas > 0 ? parseFloat((unidades / visitas * 100).toFixed(2)) : 0;
+      const conversion = visitas > 0 ? parseFloat((ventas / visitas * 100).toFixed(2)) : 0;
       return {
         mla_id: id,
         title: titleMap[id] || id,
         visitas,
+        ventas,
         unidades_vendidas: unidades,
         facturacion: Math.round(facturacion),
         conversion,

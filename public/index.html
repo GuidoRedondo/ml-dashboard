@@ -872,6 +872,7 @@ tbody td {
             style="padding:6px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px">
           <button id="convLoadBtn" onclick="loadConversion(false)" class="sync-btn" style="font-size:12px;padding:6px 14px">Aplicar</button>
           <button id="convRefreshBtn" onclick="loadConversion(true)" class="sync-btn" style="font-size:12px;padding:6px 14px;background:#6366f1;color:#fff">🔄 Refrescar datos</button>
+          <button id="convExportBtn" onclick="exportConversionExcel()" class="sync-btn" style="font-size:12px;padding:6px 14px">📥 Excel</button>
           <span id="convLastUpdate" style="font-size:11px;color:var(--muted);margin-left:auto"></span>
         </div>
         <div id="convKpis" style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px"></div>
@@ -4058,14 +4059,16 @@ function renderConversionTable() {
   const arrow = col => _convSort.col === col ? (_convSort.dir < 0 ? ' ↓' : ' ↑') : '';
   const th = (label, col, align) => `<th onclick="_convSortClick('${col}')" style="padding:8px 10px;text-align:${align||'left'};cursor:pointer;user-select:none">${label}${arrow(col)}</th>`;
   const fmtMoney = n => '$' + Math.round(n||0).toLocaleString('es-AR');
+  const esc = s => String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
   const rows = items.map(i => {
     const sem = _convSemaforo(i.conversion);
+    const link = `https://articulo.mercadolibre.com.ar/${i.mla_id.replace('MLA','MLA-')}`;
     return `
       <tr style="border-top:1px solid var(--border)">
-        <td style="padding:8px 10px;max-width:380px">${i.title || ''}</td>
-        <td style="padding:8px 10px;color:var(--muted)"><a href="https://articulo.mercadolibre.com.ar/${i.mla_id.replace('MLA','MLA-')}" target="_blank" style="color:var(--accent);text-decoration:none">${i.mla_id}</a></td>
+        <td style="padding:8px 10px;max-width:380px"><a href="${link}" target="_blank" style="color:var(--text);text-decoration:none" title="Abrir en ML">${esc(i.title)}</a></td>
+        <td style="padding:8px 10px;font-size:11px"><span style="color:var(--muted);cursor:pointer" title="Click para copiar" onclick="copyMLA(this,'${i.mla_id}')">${i.mla_id}</span></td>
         <td style="padding:8px 10px;text-align:right">${(i.visitas||0).toLocaleString('es-AR')}</td>
-        <td style="padding:8px 10px;text-align:right">${(i.unidades_vendidas||0).toLocaleString('es-AR')}</td>
+        <td style="padding:8px 10px;text-align:right">${(i.ventas||0).toLocaleString('es-AR')}</td>
         <td style="padding:8px 10px;text-align:right;color:var(--yellow);font-weight:600">${(i.facturacion||0) > 0 ? fmtMoney(i.facturacion) : '—'}</td>
         <td style="padding:8px 10px;text-align:right;font-weight:600;color:${sem.color}">${(i.conversion||0).toFixed(2)}%</td>
         <td style="padding:8px 10px;text-align:center;font-size:16px">${sem.emoji}</td>
@@ -4079,7 +4082,7 @@ function renderConversionTable() {
             ${th('Título', 'title', 'left')}
             ${th('MLA', 'mla_id', 'left')}
             ${th('Visitas', 'visitas', 'right')}
-            ${th('Unidades', 'unidades_vendidas', 'right')}
+            ${th('Ventas', 'ventas', 'right')}
             ${th('Facturación', 'facturacion', 'right')}
             ${th('Conv. %', 'conversion', 'right')}
             <th style="padding:8px 10px;text-align:center">Semáforo</th>
@@ -4088,6 +4091,46 @@ function renderConversionTable() {
         <tbody>${rows}</tbody>
       </table>
     </div>`;
+}
+
+// Excel — exporta los items visibles (filtrados+ordenados) con todas las cifras.
+function exportConversionExcel() {
+  const items = (_convData.items || []).filter(i => i.visitas >= 100);
+  if (!items.length) { alert('No hay datos para exportar'); return; }
+  // Re-aplicar filtros y orden actuales para que el Excel matchee la vista.
+  const search = (document.getElementById('convSearch').value || '').trim().toLowerCase();
+  let view = items;
+  if (search) view = view.filter(i => (i.title || '').toLowerCase().includes(search) || (i.mla_id || '').toLowerCase().includes(search));
+  if (document.getElementById('convOnlyRotos').checked) {
+    view = view.filter(i => i.visitas > 500 && i.conversion < 2);
+  }
+  view = view.slice().sort((a, b) => {
+    const ca = a[_convSort.col], cb = b[_convSort.col];
+    if (typeof ca === 'string') return _convSort.dir * ca.localeCompare(cb || '');
+    return _convSort.dir * ((ca || 0) - (cb || 0));
+  });
+
+  const rows = view.map(i => ({
+    'Título':         i.title || '',
+    'MLA':            i.mla_id,
+    'Link':           `https://articulo.mercadolibre.com.ar/${i.mla_id.replace('MLA','MLA-')}`,
+    'Visitas':        i.visitas || 0,
+    'Ventas':         i.ventas || 0,
+    'Unidades':       i.unidades_vendidas || 0,
+    'Facturación':    i.facturacion || 0,
+    'Conversión %':   i.conversion || 0,
+    'Semáforo':       _convSemaforo(i.conversion).emoji,
+  }));
+  const ws = XLSX.utils.json_to_sheet(rows);
+  // Ancho aproximado por columna
+  ws['!cols'] = [{wch:60},{wch:14},{wch:50},{wch:10},{wch:8},{wch:10},{wch:14},{wch:11},{wch:9}];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Conversión');
+  const client = getActiveClient();
+  const dFrom = document.getElementById('convDateFrom').value;
+  const dTo   = document.getElementById('convDateTo').value;
+  const fname = `Conversion_${(client?.name||'cliente').replace(/\s+/g,'_')}_${dFrom}_a_${dTo}.xlsx`;
+  XLSX.writeFile(wb, fname);
 }
 
 function renderPerfPublicaciones() {
