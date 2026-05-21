@@ -4086,6 +4086,7 @@ function renderConversionTable() {
   const rows = items.map(i => {
     const sem = _convSemaforo(i.conversion);
     const link = `https://articulo.mercadolibre.com.ar/${i.mla_id.replace('MLA','MLA-')}`;
+    const hasAds = (i.impresiones || 0) > 0;
     return `
       <tr style="border-top:1px solid var(--border)">
         <td style="padding:8px 10px;max-width:380px"><a href="${link}" target="_blank" style="color:var(--text);text-decoration:none" title="Abrir en ML">${esc(i.title)}</a></td>
@@ -4095,6 +4096,9 @@ function renderConversionTable() {
         <td style="padding:8px 10px;text-align:right">${(i.ventas||0).toLocaleString('es-AR')}</td>
         <td style="padding:8px 10px;text-align:right;color:var(--yellow);font-weight:600">${(i.facturacion||0) > 0 ? fmtMoney(i.facturacion) : '—'}</td>
         <td style="padding:8px 10px;text-align:right;font-weight:600;color:${sem.color}">${(i.conversion||0).toFixed(2)}%</td>
+        <td style="padding:8px 10px;text-align:right;color:${hasAds?'var(--text)':'var(--muted)'}">${hasAds ? (i.impresiones||0).toLocaleString('es-AR') : '—'}</td>
+        <td style="padding:8px 10px;text-align:right;color:${hasAds?'var(--text)':'var(--muted)'}">${hasAds ? (i.clicks||0).toLocaleString('es-AR') : '—'}</td>
+        <td style="padding:8px 10px;text-align:right;color:${hasAds?'var(--text)':'var(--muted)'};font-weight:${hasAds?'600':'400'}">${hasAds ? (i.ctr||0).toFixed(2) + '%' : '—'}</td>
         <td style="padding:8px 10px;text-align:center;font-size:16px">${sem.emoji}</td>
       </tr>`;
   }).join('');
@@ -4110,6 +4114,9 @@ function renderConversionTable() {
             ${th('Ventas', 'ventas', 'right')}
             ${th('Facturación', 'facturacion', 'right')}
             ${th('Conv. %', 'conversion', 'right')}
+            ${th('Impresiones', 'impresiones', 'right')}
+            ${th('Clicks', 'clicks', 'right')}
+            ${th('CTR %', 'ctr', 'right')}
             <th style="padding:8px 10px;text-align:center">Semáforo</th>
           </tr>
         </thead>
@@ -4147,11 +4154,14 @@ function exportConversionExcel() {
     'Unidades':       i.unidades_vendidas || 0,
     'Facturación':    i.facturacion || 0,
     'Conversión %':   i.conversion || 0,
+    'Impresiones':    i.impresiones || 0,
+    'Clicks':         i.clicks || 0,
+    'CTR %':          i.ctr || 0,
     'Semáforo':       _convSemaforo(i.conversion).emoji,
   }));
   const ws = XLSX.utils.json_to_sheet(rows);
   // Ancho aproximado por columna
-  ws['!cols'] = [{wch:60},{wch:14},{wch:50},{wch:11},{wch:12},{wch:10},{wch:8},{wch:10},{wch:14},{wch:11},{wch:9}];
+  ws['!cols'] = [{wch:60},{wch:14},{wch:50},{wch:11},{wch:12},{wch:10},{wch:8},{wch:10},{wch:14},{wch:11},{wch:12},{wch:9},{wch:9},{wch:9}];
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Conversión');
   const client = getActiveClient();

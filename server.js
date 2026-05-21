@@ -4510,6 +4510,48 @@ app.get('/api/reporte/comparar', requireAuth, async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
+// Publicidad agregada por MLA (PADS). Devuelve { item_id: {clicks, impresiones, ctr} }.
+// Si el cliente no tiene anuncios activos, devuelve {}. Si un mismo item está en
+// varias campañas, se suman clicks e impresiones y se recalcula el CTR.
+async function fetchAdsByItem(token, fromDate, toDate) {
+  try {
+    const h1 = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', 'Api-Version': '1' };
+    const h2 = { Authorization: `Bearer ${token}`, 'api-version': '2' };
+    const user = await fetch(`${ML_API}/users/me`, { headers: { Authorization: `Bearer ${token}` } }).then(r => r.json());
+    const siteId = (user && user.site_id) || 'MLA';
+    const advData = await fetch(`${ML_API}/advertising/advertisers?product_id=PADS`, { headers: h1 }).then(r => r.json()).catch(() => ({}));
+    const advertisers = (advData && advData.advertisers) || [];
+    if (!advertisers.length) return {};
+    const adv = advertisers.find(a => a.site_id === siteId) || advertisers[0];
+    const advId = adv.advertiser_id;
+    const metrics = 'clicks,prints,ctr';
+    const map = {};
+    let offset = 0, total = 999;
+    while (offset < total) {
+      const url = `${ML_API}/advertising/${siteId}/advertisers/${advId}/product_ads/ads/search?date_from=${fromDate}&date_to=${toDate}&metrics=${metrics}&limit=50&offset=${offset}`;
+      const data = await fetch(url, { headers: h2 }).then(r => r.json()).catch(() => ({}));
+      total = (data && data.paging && data.paging.total) || 0;
+      ((data && data.results) || []).forEach(ad => {
+        if (!ad.item_id) return;
+        const m = ad.metrics || {};
+        if (!map[ad.item_id]) map[ad.item_id] = { clicks: 0, impresiones: 0 };
+        map[ad.item_id].clicks += m.clicks || 0;
+        map[ad.item_id].impresiones += m.prints || 0;
+      });
+      if (((data && data.results) || []).length < 50) break;
+      offset += 50;
+      if (offset > 2000) break;
+    }
+    Object.values(map).forEach(m => {
+      m.ctr = m.impresiones > 0 ? parseFloat((m.clicks / m.impresiones * 100).toFixed(2)) : 0;
+    });
+    return map;
+  } catch(e) {
+    console.error('[fetchAdsByItem]', e.message);
+    return {};
+  }
+}
+
 // ── REPORTE VISITAS — endpoint para Eje 4 de Steve ───────────────────────────
 // Visitas + conversión por MLA. Schema fijo (lo consume scripts/eje_conversion.py).
 // Cache 12h en ml_visitas_cache. Si hay >MAX_ITEMS MLAs activos+pausados,
@@ -4560,8 +4602,9 @@ app.get('/api/reporte/visitas', requireAuth, async (req, res) => {
     const activeIds = [...new Set([...activeOnly, ...pausedOnly])];
 
     // 1.5. Total agregado de visitas del seller (oficial — matchea panel ML).
-    // Hacemos esto en paralelo con todo lo demás abajo via fetchUserVisits.
+    // Y métricas de publicidad por MLA (impresiones, clicks, CTR) en paralelo.
     const sellerVisitsP = fetchUserVisits(uid, dateFrom, dateTo, headers);
+    const adsByItemP    = fetchAdsByItem(token, dateFrom, dateTo);
 
     // 2. Órdenes del período pedido — ventas/unidades/facturación por MLA.
     // "ventas" = órdenes distintas que contienen el MLA (1 orden con 5 unidades
@@ -4717,8 +4760,10 @@ app.get('/api/reporte/visitas', requireAuth, async (req, res) => {
 
     // 8. Construir respuesta con schema fijo (lo consume Steve).
     // conversion: ventas (órdenes) / visitas — métrica que pidió el usuario.
-    // ventas, facturacion, price, original_price son campos extras — Steve los
-    // ignora y sigue recalculando sobre unidades_vendidas.
+    // ventas, facturacion, price, original_price, impresiones, clicks, ctr
+    // son campos extras — Steve los ignora y sigue recalculando sobre
+    // unidades_vendidas.
+    const adsByItem = await adsByItemP;
     const items = workingIds.map(id => {
       const visitas = visitsMap[id] || 0;
       const unidades = (salesByMla[id] && salesByMla[id].units) || 0;
@@ -4727,6 +4772,7 @@ app.get('/api/reporte/visitas', requireAuth, async (req, res) => {
       const conversion = visitas > 0 ? parseFloat((ventas / visitas * 100).toFixed(2)) : 0;
       const price = priceMap[id] != null ? priceMap[id] : null;
       const original_price = originalPriceMap[id] != null ? originalPriceMap[id] : null;
+      const ads = adsByItem[id] || { clicks: 0, impresiones: 0, ctr: 0 };
       return {
         mla_id: id,
         title: titleMap[id] || id,
@@ -4737,6 +4783,9 @@ app.get('/api/reporte/visitas', requireAuth, async (req, res) => {
         conversion,
         price,
         original_price,
+        impresiones: ads.impresiones,
+        clicks: ads.clicks,
+        ctr: ads.ctr,
       };
     });
 
