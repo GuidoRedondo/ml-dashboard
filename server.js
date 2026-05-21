@@ -4510,10 +4510,15 @@ app.get('/api/reporte/comparar', requireAuth, async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
-// Publicidad agregada por MLA (PADS). Devuelve { item_id: {clicks, impresiones, ctr} }.
-// Si el cliente no tiene anuncios activos, devuelve {}. Si un mismo item está en
-// varias campañas, se suman clicks e impresiones y se recalcula el CTR.
-async function fetchAdsByItem(token, fromDate, toDate) {
+// Publicidad agregada por MLA (PADS) — versión full con costo, revenue y unidades.
+// Devuelve un objeto con:
+//   { byItem: { item_id: { clicks, impresiones, ctr, costo, revenue_ad,
+//                          unidades_ad, acos, campaign_id, campaign_name } },
+//     advertiser_found: bool, raw_count: int }
+// Si un mismo item está en varias campañas, se suman las métricas y se mantiene
+// el primer campaign_id encontrado.
+async function fetchAdsByItemFull(token, fromDate, toDate) {
+  const out = { byItem: {}, advertiser_found: false, raw_count: 0 };
   try {
     const h1 = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', 'Api-Version': '1' };
     const h2 = { Authorization: `Bearer ${token}`, 'api-version': '2' };
@@ -4521,11 +4526,11 @@ async function fetchAdsByItem(token, fromDate, toDate) {
     const siteId = (user && user.site_id) || 'MLA';
     const advData = await fetch(`${ML_API}/advertising/advertisers?product_id=PADS`, { headers: h1 }).then(r => r.json()).catch(() => ({}));
     const advertisers = (advData && advData.advertisers) || [];
-    if (!advertisers.length) return {};
+    if (!advertisers.length) return out;
     const adv = advertisers.find(a => a.site_id === siteId) || advertisers[0];
     const advId = adv.advertiser_id;
-    const metrics = 'clicks,prints,ctr';
-    const map = {};
+    out.advertiser_found = true;
+    const metrics = 'clicks,prints,cost,total_amount,units_quantity,acos,ctr,cvr,roas';
     let offset = 0, total = 999;
     while (offset < total) {
       const url = `${ML_API}/advertising/${siteId}/advertisers/${advId}/product_ads/ads/search?date_from=${fromDate}&date_to=${toDate}&metrics=${metrics}&limit=50&offset=${offset}`;
@@ -4533,23 +4538,63 @@ async function fetchAdsByItem(token, fromDate, toDate) {
       total = (data && data.paging && data.paging.total) || 0;
       ((data && data.results) || []).forEach(ad => {
         if (!ad.item_id) return;
+        out.raw_count += 1;
         const m = ad.metrics || {};
-        if (!map[ad.item_id]) map[ad.item_id] = { clicks: 0, impresiones: 0 };
-        map[ad.item_id].clicks += m.clicks || 0;
-        map[ad.item_id].impresiones += m.prints || 0;
+        if (!out.byItem[ad.item_id]) {
+          out.byItem[ad.item_id] = {
+            clicks: 0, impresiones: 0, costo: 0, revenue_ad: 0, unidades_ad: 0,
+            campaign_id: ad.campaign_id || null, campaign_name: null,
+          };
+        }
+        const agg = out.byItem[ad.item_id];
+        agg.clicks      += m.clicks         || 0;
+        agg.impresiones += m.prints         || 0;
+        agg.costo       += m.cost           || 0;
+        agg.revenue_ad  += m.total_amount   || 0;
+        agg.unidades_ad += m.units_quantity || 0;
       });
       if (((data && data.results) || []).length < 50) break;
       offset += 50;
       if (offset > 2000) break;
     }
-    Object.values(map).forEach(m => {
-      m.ctr = m.impresiones > 0 ? parseFloat((m.clicks / m.impresiones * 100).toFixed(2)) : 0;
+
+    // Resolver nombres de campañas
+    const campaignMap = {};
+    try {
+      let off = 0;
+      while (true) {
+        const u = `${ML_API}/advertising/${siteId}/advertisers/${advId}/product_ads/campaigns/search?limit=50&offset=${off}`;
+        const d = await fetch(u, { headers: h2 }).then(r => r.json()).catch(() => ({}));
+        ((d && d.results) || []).forEach(c => { campaignMap[c.id] = c.name || `Campaña ${c.id}`; });
+        if (((d && d.results) || []).length < 50) break;
+        off += 50;
+        if (off > 500) break;
+      }
+    } catch(e) {}
+
+    // Calcular CTR y ACOS por item, completar campaign_name
+    Object.values(out.byItem).forEach(it => {
+      it.ctr = it.impresiones > 0 ? parseFloat((it.clicks / it.impresiones * 100).toFixed(2)) : 0;
+      it.acos = it.revenue_ad > 0 ? parseFloat((it.costo / it.revenue_ad * 100).toFixed(2)) : 0;
+      it.costo = Math.round(it.costo);
+      it.revenue_ad = Math.round(it.revenue_ad);
+      if (it.campaign_id && campaignMap[it.campaign_id]) it.campaign_name = campaignMap[it.campaign_id];
     });
-    return map;
+    return out;
   } catch(e) {
-    console.error('[fetchAdsByItem]', e.message);
-    return {};
+    console.error('[fetchAdsByItemFull]', e.message);
+    return out;
   }
+}
+
+// Wrapper liviano para retrocompatibilidad: solo clicks/impresiones/ctr.
+async function fetchAdsByItem(token, fromDate, toDate) {
+  const full = await fetchAdsByItemFull(token, fromDate, toDate);
+  const map = {};
+  Object.entries(full.byItem).forEach(([id, v]) => {
+    map[id] = { clicks: v.clicks, impresiones: v.impresiones, ctr: v.ctr };
+  });
+  return map;
 }
 
 // ── REPORTE VISITAS — endpoint para Eje 4 de Steve ───────────────────────────
@@ -4811,6 +4856,83 @@ app.get('/api/reporte/visitas', requireAuth, async (req, res) => {
     });
   } catch(e) {
     console.error('[/api/reporte/visitas]', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── REPORTE ADS — endpoint para Steve eje 6 (Publicidad) ─────────────────────
+// Schema fijo (lo consume scripts/eje_publicidad.py):
+//   items: [{mla_id, title, campaign_name, impresiones, clicks, ctr,
+//            costo, unidades_ad, revenue_ad, acos}]
+//   totales_cliente: {costo_total, revenue_total_ad, acos_global}
+// Si el cliente no tiene PADS activo, devuelve items:[] y totales en cero.
+app.get('/api/reporte/ads', requireAuth, async (req, res) => {
+  try {
+    const clientId = parseInt(req.query.client_id);
+    if (!clientId) return res.status(400).json({ error: 'client_id requerido' });
+
+    const today = new Date().toISOString().slice(0, 10);
+    const defaultFrom = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+    const dateFrom = req.query.date_from || defaultFrom;
+    const dateTo   = req.query.date_to   || today;
+
+    const token = await getClientToken(clientId);
+    if (!token) return res.status(403).json({ error: 'Cliente sin token ML' });
+
+    const adsFull = await fetchAdsByItemFull(token, dateFrom, dateTo);
+    const ids = Object.keys(adsFull.byItem);
+
+    // Traer títulos en batch (los ads no traen título — se enriquecen con /items)
+    const titleMap = {};
+    const headers = { Authorization: `Bearer ${token}` };
+    for (let i = 0; i < ids.length; i += 20) {
+      const batch = ids.slice(i, i + 20);
+      const data = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,title`, { headers })
+        .then(r => r.json()).catch(() => []);
+      (Array.isArray(data) ? data : []).forEach(r => {
+        if (r.code === 200 && r.body && r.body.id) titleMap[r.body.id] = r.body.title || r.body.id;
+      });
+    }
+
+    const items = ids.map(id => {
+      const a = adsFull.byItem[id];
+      return {
+        mla_id: id,
+        title: titleMap[id] || id,
+        campaign_name: a.campaign_name,
+        impresiones: a.impresiones,
+        clicks: a.clicks,
+        ctr: a.ctr,
+        costo: a.costo,
+        unidades_ad: a.unidades_ad,
+        revenue_ad: a.revenue_ad,
+        acos: a.acos,
+      };
+    }).sort((x, y) => (y.costo || 0) - (x.costo || 0));
+
+    const costoTotal      = items.reduce((s, i) => s + (i.costo || 0), 0);
+    const revenueTotalAd  = items.reduce((s, i) => s + (i.revenue_ad || 0), 0);
+    const acosGlobal      = revenueTotalAd > 0
+      ? parseFloat((costoTotal / revenueTotalAd * 100).toFixed(2))
+      : 0;
+
+    res.json({
+      items,
+      totales_cliente: {
+        costo_total: costoTotal,
+        revenue_total_ad: revenueTotalAd,
+        acos_global: acosGlobal,
+      },
+      metadatos: {
+        advertiser_found: adsFull.advertiser_found,
+        ads_consultados: adsFull.raw_count,
+        mlas_unicos: items.length,
+        date_from: dateFrom,
+        date_to: dateTo,
+      },
+    });
+  } catch(e) {
+    console.error('[/api/reporte/ads]', e.message);
     res.status(500).json({ error: e.message });
   }
 });
