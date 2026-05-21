@@ -880,6 +880,13 @@ tbody td {
           <input id="convSearch" type="text" placeholder="Buscar por título o MLA…"
             oninput="renderConversionTable()"
             style="flex:1;min-width:200px;padding:7px 12px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px;outline:none">
+          <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)">
+            Mín. visitas:
+            <input id="convMinVisitas" type="number" value="100" min="0" step="10"
+              oninput="renderConversionKpis();renderConversionTable()"
+              title="Filtro de ruido. Para análisis con Steve usá ≥100; para sellers chicos bajalo a 0."
+              style="width:70px;padding:5px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:12px;outline:none">
+          </label>
           <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);cursor:pointer">
             <input id="convOnlyRotos" type="checkbox" onchange="renderConversionTable()" style="margin:0"> Solo embudos rotos
           </label>
@@ -3990,9 +3997,15 @@ function _convSemaforo(conv) {
   return { color: '#ef4444', emoji: '🔴' };
 }
 
+function _convMinVisitas() {
+  const v = parseInt(document.getElementById('convMinVisitas')?.value);
+  return Number.isFinite(v) && v >= 0 ? v : 100;
+}
+
 function renderConversionKpis() {
   const kpis = document.getElementById('convKpis');
-  const items = (_convData.items || []).filter(i => i.visitas >= 100);
+  const minVis = _convMinVisitas();
+  const items = (_convData.items || []).filter(i => i.visitas >= minVis);
   const meta = _convData.metadatos || {};
   // Total visitas: usamos el agregado oficial del seller (matchea ML panel),
   // no la suma del breakdown (que puede estar capada a 1000 items).
@@ -4000,7 +4013,7 @@ function renderConversionKpis() {
   const sumBreakdown = meta.suma_visitas_breakdown || items.reduce((s, i) => s + i.visitas, 0);
 
   if (!items.length) {
-    kpis.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:20px">Sin items con >= 100 visitas en el rango.</div>';
+    kpis.innerHTML = `<div style="color:var(--muted);font-size:13px;padding:20px">Sin items con ≥ ${minVis} visitas en el rango. Bajá el mínimo a 0 para ver todo.</div>`;
     return;
   }
   const totalUni = items.reduce((s, i) => s + i.unidades_vendidas, 0);
@@ -4040,7 +4053,8 @@ function _convSortClick(col) {
 function renderConversionTable() {
   const wrap = document.getElementById('convTableWrap');
   const count = document.getElementById('convCount');
-  let items = (_convData.items || []).filter(i => i.visitas >= 100);
+  const minVis = _convMinVisitas();
+  let items = (_convData.items || []).filter(i => i.visitas >= minVis);
   const search = (document.getElementById('convSearch').value || '').trim().toLowerCase();
   if (search) items = items.filter(i => (i.title || '').toLowerCase().includes(search) || (i.mla_id || '').toLowerCase().includes(search));
   if (document.getElementById('convOnlyRotos').checked) {
@@ -4106,7 +4120,8 @@ function renderConversionTable() {
 
 // Excel — exporta los items visibles (filtrados+ordenados) con todas las cifras.
 function exportConversionExcel() {
-  const items = (_convData.items || []).filter(i => i.visitas >= 100);
+  const minVis = _convMinVisitas();
+  const items = (_convData.items || []).filter(i => i.visitas >= minVis);
   if (!items.length) { alert('No hay datos para exportar'); return; }
   // Re-aplicar filtros y orden actuales para que el Excel matchee la vista.
   const search = (document.getElementById('convSearch').value || '').trim().toLowerCase();
