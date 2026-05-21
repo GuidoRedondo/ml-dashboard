@@ -959,6 +959,14 @@ tbody td {
     <div class="page" id="page-rentabilidad">
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap">
         <h2 style="margin:0;font-family:var(--font-b);flex:1">📊 Rentabilidad</h2>
+        <div style="display:flex;align-items:center;gap:6px;padding:4px 10px;background:var(--surface);border:1px solid var(--border);border-radius:8px" title="Si el cliente es monotributista, todos los cálculos de IVA (ventas, crédito fiscal y neto a pagar) se ponen en 0.">
+          <span style="font-size:11px;color:var(--muted);white-space:nowrap">🧾 Condición fiscal:</span>
+          <select id="rent-condicion-iva" onchange="guardarCondicionIva('rent-condicion-iva')"
+            style="padding:3px 6px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:12px;font-family:var(--font)">
+            <option value="responsable_inscripto">Responsable Inscripto</option>
+            <option value="monotributista">Monotributista (sin IVA)</option>
+          </select>
+        </div>
         <div style="display:flex;gap:6px">
           <button id="rentTabAnalisis" onclick="switchRentTab('analisis')" class="sync-btn" style="background:var(--accent)">📊 Análisis</button>
           <button id="rentTabSimulador" onclick="switchRentTab('simulador')" class="sync-btn">🧮 Simulador</button>
@@ -1288,6 +1296,14 @@ tbody td {
     <div class="page" id="page-reporte">
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px;flex-wrap:wrap">
         <h2 style="margin:0;font-family:var(--font-b);flex:1">📊 Reporte Financiero</h2>
+        <div style="display:flex;align-items:center;gap:6px;padding:4px 10px;background:var(--surface);border:1px solid var(--border);border-radius:8px" title="Si el cliente es monotributista, el P&L no calcula IVA (ni ventas, ni crédito fiscal, ni neto a pagar).">
+          <span style="font-size:11px;color:var(--muted);white-space:nowrap">🧾 Condición fiscal:</span>
+          <select id="reporte-condicion-iva" onchange="guardarCondicionIva('reporte-condicion-iva')"
+            style="padding:3px 6px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:12px;font-family:var(--font)">
+            <option value="responsable_inscripto">Responsable Inscripto</option>
+            <option value="monotributista">Monotributista (sin IVA)</option>
+          </select>
+        </div>
       </div>
       <!-- Config bar -->
       <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:14px 18px;margin-bottom:16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap">
@@ -1525,15 +1541,6 @@ tbody td {
           <input type="number" id="dp-iibb-input" min="0" max="20" step="0.1" value="4"
             style="width:70px;padding:4px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px;font-family:var(--font)">
           <button onclick="guardarIibbTasa()" style="padding:4px 10px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:12px;cursor:pointer;font-family:var(--font)">Guardar</button>
-        </div>
-        <div style="display:flex;align-items:center;gap:8px" title="Si el cliente es monotributista, el P&L no calcula IVA (ni ventas ni crédito fiscal).">
-          <label style="font-size:12px;color:var(--muted);white-space:nowrap">Condición IVA:</label>
-          <select id="dp-condicion-iva-input"
-            style="padding:4px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:12px;font-family:var(--font)">
-            <option value="responsable_inscripto">Responsable Inscripto</option>
-            <option value="monotributista">Monotributista</option>
-          </select>
-          <button onclick="guardarCondicionIva()" style="padding:4px 10px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:12px;cursor:pointer;font-family:var(--font)">Guardar</button>
         </div>
         <div style="display:flex;align-items:center;gap:8px">
           <label style="font-size:12px;color:var(--muted)">Nivel:</label>
@@ -2055,6 +2062,7 @@ async function loadClients() {
   renderClientSelector();
   renderClientsList();
   checkTokenWarnings();
+  syncCondicionIvaSelectores();
 }
 
 function checkTokenWarnings() {
@@ -2147,6 +2155,7 @@ async function onAccountSelect(value) {
   window._abcFilter = 'todos';
   const syncBtn = document.getElementById('syncBtn');
   if (syncBtn) syncBtn.style.display = '';
+  syncCondicionIvaSelectores();
   await loadDashboardData();
 }
 
@@ -2159,6 +2168,7 @@ async function selectClient(clientId, el) {
   window._abcFilter = 'todos';
   document.querySelectorAll('#clientSelector .nav-item').forEach(n => n.classList.remove('active'));
   if (el) el.classList.add('active');
+  syncCondicionIvaSelectores();
   await loadDashboardData();
 }
 
@@ -4993,7 +5003,9 @@ function exportDescuentosExcel() {
     const com = precio * comPct/100, cargo = cargoFijoML(precio);
     const envio = precio >= 33000 ? envioUnit : 0;
     const iva21 = 0.21;
-    const ivaDif = Math.max(0, precio/(1+iva21)*iva21 - (p.costo+com+envio)/(1+iva21)*iva21);
+    const ivaDif = esMonotributistaActivo()
+      ? 0
+      : Math.max(0, precio/(1+iva21)*iva21 - (p.costo+com+envio)/(1+iva21)*iva21);
     return parseFloat(((precio - p.costo - com - cargo - envio - imp - tacos - cf - ivaDif) / precio * 100).toFixed(1));
   }
 
@@ -5441,7 +5453,9 @@ function renderDescuentos() {
     const cargo = cargoFijoML(precio);
     const envio = precio >= 33000 ? envioUnit : 0;
     const iva21 = 0.21;
-    const ivaDif = Math.max(0, precio/(1+iva21)*iva21 - (p.costo+com+envio)/(1+iva21)*iva21);
+    const ivaDif = esMonotributistaActivo()
+      ? 0
+      : Math.max(0, precio/(1+iva21)*iva21 - (p.costo+com+envio)/(1+iva21)*iva21);
     const costoTotal = p.costo + com + cargo + envio + imp + tacos + cf + ivaDif;
     const utilidad = precio - costoTotal;
     const margen = (utilidad / precio * 100);
@@ -5671,8 +5685,8 @@ function renderSimulador(items, client) {
             ${simInput('simTACOS',      'TACOS esperado %', '%', 'number', '0')}
             ${simInput('simCostoFijo',  'Costos fijos asignados %', '%', 'number', '0')}
             ${simInput('simDebCred',    'Débito/Crédito %', '%', 'number', '1.2')}
-            ${simInput('simIVAVentas',  'IVA ventas %', '%', 'number', '21')}
-            ${simInput('simIVACMV',     'IVA compras CMV %', '%', 'number', '21')}
+            ${simInput('simIVAVentas',  'IVA ventas %', '%', 'number', esMonotributistaActivo() ? '0' : '21')}
+            ${simInput('simIVACMV',     'IVA compras CMV %', '%', 'number', esMonotributistaActivo() ? '0' : '21')}
             ${simInput('simExtraCost',  'Otros costos por unidad', '$', 'number', '0')}
           </div>
         </div>
@@ -6450,13 +6464,12 @@ async function loadVentas() {
       }, 0);
       const hasCMV = cmvOrden > 0;
 
-      // IVA a pagar por esta orden
-      // IVA ventas: facturación / 1.21 * 0.21
-      // IVA compras acreditable: (comisión + costo envío + CMV) / 1.21 * 0.21
+      // IVA a pagar por esta orden — Monotributista no liquida IVA (queda en 0).
       const iva21 = 0.21;
-      const ivaVentas   = o.facturacion / (1 + iva21) * iva21;
-      const ivaCompras  = (o.comision + Math.max(0, o.envio_vendedor) + cmvOrden) / (1 + iva21) * iva21;
-      const ivaNeto     = Math.max(0, ivaVentas - ivaCompras);
+      const esMonotrib = esMonotributistaActivo();
+      const ivaVentas   = esMonotrib ? 0 : o.facturacion / (1 + iva21) * iva21;
+      const ivaCompras  = esMonotrib ? 0 : (o.comision + Math.max(0, o.envio_vendedor) + cmvOrden) / (1 + iva21) * iva21;
+      const ivaNeto     = esMonotrib ? 0 : Math.max(0, ivaVentas - ivaCompras);
 
       const utilidad = hasCMV ? o.neto - cmvOrden - ivaNeto : null;
       allOrders.push({ ...o, _account: acc.name, cmv: cmvOrden, hasCMV, ivaNeto, utilidad });
@@ -14045,7 +14058,6 @@ async function loadDecisionesPubli() {
     const found = (clients || []).find(c => c.id === client.id);
     if (found?.roas_target) document.getElementById('dp-roas-input').value = found.roas_target;
     if (found?.tasa_iibb_pct != null) document.getElementById('dp-iibb-input').value = found.tasa_iibb_pct;
-    if (found?.condicion_iva) document.getElementById('dp-condicion-iva-input').value = found.condicion_iva;
   }
 
   const estadoMap = { nuevas: 'nueva', aplicadas: 'aplicada', descartadas: 'descartada' };
@@ -14230,14 +14242,44 @@ async function guardarIibbTasa() {
   showToast(`✅ Tasa IIBB actualizada a ${val}%`);
 }
 
-async function guardarCondicionIva() {
+// Devuelve true si el cliente activo es monotributista (no liquida IVA)
+function esMonotributistaActivo() {
+  const c = getActiveClient();
+  return c?.condicion_iva === 'monotributista';
+}
+
+// Sincroniza ambos selectores (Rentabilidad y Reporte Financiero) con el valor del cliente activo
+function syncCondicionIvaSelectores() {
+  const c = getActiveClient();
+  const val = c?.condicion_iva || 'responsable_inscripto';
+  ['rent-condicion-iva','reporte-condicion-iva'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.value = val;
+  });
+}
+
+async function guardarCondicionIva(originId) {
   const client = getActiveClient();
   if (!client) { showToast('Seleccioná un cliente primero'); return; }
-  const val = document.getElementById('dp-condicion-iva-input').value;
+  const src = document.getElementById(originId);
+  const val = src?.value;
   if (!['responsable_inscripto','monotributista'].includes(val)) { showToast('❌ Condición IVA inválida'); return; }
   await apiCall('PATCH', `/api/clients/${client.id}/condicion-iva`, { condicion_iva: val });
-  const label = val === 'monotributista' ? 'Monotributista (IVA = 0)' : 'Responsable Inscripto';
-  showToast(`✅ Condición fiscal: ${label}`);
+  // Actualizar el cliente en memoria para que el resto del dashboard responda al cambio
+  const idx = allClients.findIndex(c => c.id === client.id);
+  if (idx >= 0) allClients[idx].condicion_iva = val;
+  syncCondicionIvaSelectores();
+  const label = val === 'monotributista' ? 'Monotributista — IVA = 0' : 'Responsable Inscripto';
+  showToast(`✅ Condición fiscal: ${label} — recargando datos...`);
+  // Refrescar las secciones que muestran IVA. loadRentabilidad/loadVentas re-pintan con la nueva condición;
+  // el P&L del Reporte Financiero requiere regenerar contra el backend (que ya respeta condicion_iva).
+  try { if (typeof loadRentabilidad === 'function') loadRentabilidad(); } catch(e) {}
+  try { if (typeof loadVentas === 'function') loadVentas(); } catch(e) {}
+  try {
+    const pylTab = document.getElementById('tab-pyl');
+    const pylPanel = document.getElementById('reporte-pyl-panel');
+    if (pylPanel && pylPanel.style.display !== 'none' && typeof generarPyL === 'function') generarPyL();
+  } catch(e) {}
 }
 
 async function resetearYAnalizar() {
