@@ -334,6 +334,8 @@ async function initDB() {
       ALTER TABLE clients ADD COLUMN IF NOT EXISTS roas_target NUMERIC DEFAULT 4;
       ALTER TABLE clients ADD COLUMN IF NOT EXISTS tasa_iibb_pct DECIMAL(5,2) DEFAULT 4.00;
       UPDATE clients SET tasa_iibb_pct = 4.00 WHERE tasa_iibb_pct IS NULL;
+      ALTER TABLE clients ADD COLUMN IF NOT EXISTS condicion_iva VARCHAR(30) DEFAULT 'responsable_inscripto';
+      UPDATE clients SET condicion_iva = 'responsable_inscripto' WHERE condicion_iva IS NULL;
     EXCEPTION WHEN OTHERS THEN NULL; END $$;
   `);
 
@@ -624,13 +626,13 @@ app.get('/api/clients', requireAuth, async (req, res) => {
     if (req.user.role === 'cliente' && req.user.client_id) {
       // Cliente solo ve su propia cuenta
       query = `SELECT id, name, ml_user_id, site_id, active, token_expires_at, updated_at,
-               roas_target, tasa_iibb_pct,
+               roas_target, tasa_iibb_pct, condicion_iva,
                (refresh_token IS NOT NULL AND refresh_token != '') AS has_refresh_token
                FROM clients WHERE id = $1`;
       params = [req.user.client_id];
     } else {
       query = `SELECT id, name, ml_user_id, site_id, active, token_expires_at, updated_at,
-               roas_target, tasa_iibb_pct,
+               roas_target, tasa_iibb_pct, condicion_iva,
                (refresh_token IS NOT NULL AND refresh_token != '') AS has_refresh_token
                FROM clients ORDER BY name`;
     }
@@ -2630,12 +2632,14 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
     const hasCMVDash = cmv_cubierto_dash > 0;
     const iva21 = 0.21;
     // IIBB estimado del cliente — egreso impositivo, mismo patrón que el P&L de /api/reporte/pyl
-    const iibbRowDash = await pool.query('SELECT tasa_iibb_pct FROM clients WHERE id=$1', [clientId]);
-    const tasaIibbDash = parseFloat(iibbRowDash.rows[0]?.tasa_iibb_pct) || 0;
+    const fiscalRowDash = await pool.query('SELECT tasa_iibb_pct, condicion_iva FROM clients WHERE id=$1', [clientId]);
+    const tasaIibbDash = parseFloat(fiscalRowDash.rows[0]?.tasa_iibb_pct) || 0;
+    const condicionIvaDash = fiscalRowDash.rows[0]?.condicion_iva || 'responsable_inscripto';
+    const esMonotribDash = condicionIvaDash === 'monotributista';
     const iibbEstimadoDash = totalFacturacion * (tasaIibbDash / 100);
-    const ivaVentasDash   = hasCMVDash ? curData.amount / (1+iva21) * iva21 : 0;
-    const ivaComprasDash  = hasCMVDash ? (totalSaleFee + totalSellerShip + cmv_total_dash) / (1+iva21) * iva21 : 0;
-    const ivaNetoDash     = hasCMVDash ? Math.max(0, ivaVentasDash - ivaComprasDash) : 0;
+    const ivaVentasDash   = (hasCMVDash && !esMonotribDash) ? curData.amount / (1+iva21) * iva21 : 0;
+    const ivaComprasDash  = (hasCMVDash && !esMonotribDash) ? (totalSaleFee + totalSellerShip + cmv_total_dash) / (1+iva21) * iva21 : 0;
+    const ivaNetoDash     = (hasCMVDash && !esMonotribDash) ? Math.max(0, ivaVentasDash - ivaComprasDash) : 0;
     const utilidadDash    = hasCMVDash ? netoML - cmv_total_dash - adsSpend - ivaNetoDash - iibbEstimadoDash : null;
     const margenDash      = hasCMVDash && curData.amount > 0 ? (utilidadDash / curData.amount * 100) : null;
 
@@ -2679,6 +2683,7 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
       iva_neto:         ivaNetoDash,
       iibb_estimado:    iibbEstimadoDash,
       iibb_tasa_pct:    tasaIibbDash,
+      condicion_iva:    condicionIvaDash,
       by_product:       byProduct,
     };
 
@@ -4099,9 +4104,11 @@ app.get('/api/reporte/pyl', requireAuth, async (req, res) => {
     if (!token) return res.status(403).json({ error: 'Sin token' });
     const headers = { 'Authorization': `Bearer ${token}` };
 
-    const clientRes = await pool.query('SELECT ml_user_id, name, tasa_iibb_pct FROM clients WHERE id=$1', [client_id]);
+    const clientRes = await pool.query('SELECT ml_user_id, name, tasa_iibb_pct, condicion_iva FROM clients WHERE id=$1', [client_id]);
     const { ml_user_id: uid, name: clientName } = clientRes.rows[0] || {};
     const tasaIibb = parseFloat(clientRes.rows[0]?.tasa_iibb_pct) || 0;
+    const condicionIva = clientRes.rows[0]?.condicion_iva || 'responsable_inscripto';
+    const esMonotributista = condicionIva === 'monotributista';
     if (!uid) return res.status(400).json({ error: 'Cliente sin ML User ID' });
 
     const fmt = d => new Date(d).toISOString().slice(0,19) + '.000-00:00';
@@ -4219,11 +4226,12 @@ app.get('/api/reporte/pyl', requireAuth, async (req, res) => {
 
     // ── P&L ───────────────────────────────────────────────────────────────────
     const total_ingresos   = facturacion + ingreso_envio_comprador;
-    // IVA neto a pagar: IVA ventas − IVA compras acreditable (CMV + comisión + envío vendedor)
+    // IVA neto a pagar: IVA ventas − IVA compras acreditable (CMV + comisión + envío vendedor).
+    // Monotributista no liquida IVA: no discrimina IVA en ventas ni puede tomarlo como crédito.
     const iva21 = 0.21;
-    const iva_ventas   = facturacion / (1 + iva21) * iva21;
-    const iva_compras  = (egreso_comision + egreso_envio_total + cmv_total) / (1 + iva21) * iva21;
-    const iva_neto     = Math.max(0, iva_ventas - iva_compras);
+    const iva_ventas   = esMonotributista ? 0 : facturacion / (1 + iva21) * iva21;
+    const iva_compras  = esMonotributista ? 0 : (egreso_comision + egreso_envio_total + cmv_total) / (1 + iva21) * iva21;
+    const iva_neto     = esMonotributista ? 0 : Math.max(0, iva_ventas - iva_compras);
 
     // IIBB estimado: facturación × tasa del cliente. Egreso impositivo provincial.
     const iibb_estimado = facturacion * (tasaIibb / 100);
@@ -4236,6 +4244,7 @@ app.get('/api/reporte/pyl', requireAuth, async (req, res) => {
 
     const pyl = {
       cliente: clientName, periodo: { from: date_from, to: date_to },
+      condicion_iva: condicionIva,
       ordenes: orders.length,
       ingresos: {
         facturacion,
@@ -8002,6 +8011,16 @@ app.patch('/api/clients/:id/iibb-tasa', requireAuth, async (req, res) => {
     // Una tasa de 0 es válida (cliente exento / monotributista), por eso no se rechaza el falsy
     if (tasa_iibb_pct == null || isNaN(parseFloat(tasa_iibb_pct))) return res.status(400).json({ error: 'tasa_iibb_pct inválido' });
     await pool.query('UPDATE clients SET tasa_iibb_pct=$1, updated_at=NOW() WHERE id=$2', [parseFloat(tasa_iibb_pct), req.params.id]);
+    res.json({ ok: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+app.patch('/api/clients/:id/condicion-iva', requireAuth, async (req, res) => {
+  try {
+    const { condicion_iva } = req.body;
+    const validas = ['responsable_inscripto', 'monotributista'];
+    if (!validas.includes(condicion_iva)) return res.status(400).json({ error: 'condicion_iva inválida (responsable_inscripto | monotributista)' });
+    await pool.query('UPDATE clients SET condicion_iva=$1, updated_at=NOW() WHERE id=$2', [condicion_iva, req.params.id]);
     res.json({ ok: true });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });

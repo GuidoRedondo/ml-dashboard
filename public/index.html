@@ -1526,6 +1526,15 @@ tbody td {
             style="width:70px;padding:4px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px;font-family:var(--font)">
           <button onclick="guardarIibbTasa()" style="padding:4px 10px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:12px;cursor:pointer;font-family:var(--font)">Guardar</button>
         </div>
+        <div style="display:flex;align-items:center;gap:8px" title="Si el cliente es monotributista, el P&L no calcula IVA (ni ventas ni crédito fiscal).">
+          <label style="font-size:12px;color:var(--muted);white-space:nowrap">Condición IVA:</label>
+          <select id="dp-condicion-iva-input"
+            style="padding:4px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:12px;font-family:var(--font)">
+            <option value="responsable_inscripto">Responsable Inscripto</option>
+            <option value="monotributista">Monotributista</option>
+          </select>
+          <button onclick="guardarCondicionIva()" style="padding:4px 10px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:12px;cursor:pointer;font-family:var(--font)">Guardar</button>
+        </div>
         <div style="display:flex;align-items:center;gap:8px">
           <label style="font-size:12px;color:var(--muted)">Nivel:</label>
           <select id="dp-filter-nivel" onchange="loadDecisionesPubli()"
@@ -14036,6 +14045,7 @@ async function loadDecisionesPubli() {
     const found = (clients || []).find(c => c.id === client.id);
     if (found?.roas_target) document.getElementById('dp-roas-input').value = found.roas_target;
     if (found?.tasa_iibb_pct != null) document.getElementById('dp-iibb-input').value = found.tasa_iibb_pct;
+    if (found?.condicion_iva) document.getElementById('dp-condicion-iva-input').value = found.condicion_iva;
   }
 
   const estadoMap = { nuevas: 'nueva', aplicadas: 'aplicada', descartadas: 'descartada' };
@@ -14218,6 +14228,16 @@ async function guardarIibbTasa() {
   if (isNaN(val) || val < 0) { showToast('❌ Tasa IIBB inválida'); return; }
   await apiCall('PATCH', `/api/clients/${client.id}/iibb-tasa`, { tasa_iibb_pct: val });
   showToast(`✅ Tasa IIBB actualizada a ${val}%`);
+}
+
+async function guardarCondicionIva() {
+  const client = getActiveClient();
+  if (!client) { showToast('Seleccioná un cliente primero'); return; }
+  const val = document.getElementById('dp-condicion-iva-input').value;
+  if (!['responsable_inscripto','monotributista'].includes(val)) { showToast('❌ Condición IVA inválida'); return; }
+  await apiCall('PATCH', `/api/clients/${client.id}/condicion-iva`, { condicion_iva: val });
+  const label = val === 'monotributista' ? 'Monotributista (IVA = 0)' : 'Responsable Inscripto';
+  showToast(`✅ Condición fiscal: ${label}`);
 }
 
 async function resetearYAnalizar() {
