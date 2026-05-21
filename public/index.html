@@ -4060,6 +4060,15 @@ function renderConversionTable() {
   const th = (label, col, align) => `<th onclick="_convSortClick('${col}')" style="padding:8px 10px;text-align:${align||'left'};cursor:pointer;user-select:none">${label}${arrow(col)}</th>`;
   const fmtMoney = n => '$' + Math.round(n||0).toLocaleString('es-AR');
   const esc = s => String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+  // Celda de precio: si hay original_price > price, muestra el precio actual
+  // con el original tachado debajo (mismo patrón que Promociones).
+  const renderPrecio = i => {
+    if (i.price == null) return '—';
+    const hasDiscount = i.original_price != null && i.original_price > i.price;
+    return hasDiscount
+      ? `${fmtMoney(i.price)}<div style="text-decoration:line-through;color:var(--muted);font-size:11px;font-weight:400">${fmtMoney(i.original_price)}</div>`
+      : fmtMoney(i.price);
+  };
   const rows = items.map(i => {
     const sem = _convSemaforo(i.conversion);
     const link = `https://articulo.mercadolibre.com.ar/${i.mla_id.replace('MLA','MLA-')}`;
@@ -4067,6 +4076,7 @@ function renderConversionTable() {
       <tr style="border-top:1px solid var(--border)">
         <td style="padding:8px 10px;max-width:380px"><a href="${link}" target="_blank" style="color:var(--text);text-decoration:none" title="Abrir en ML">${esc(i.title)}</a></td>
         <td style="padding:8px 10px;font-size:11px"><span style="color:var(--muted);cursor:pointer" title="Click para copiar" onclick="copyMLA(this,'${i.mla_id}')">${i.mla_id}</span></td>
+        <td style="padding:8px 10px;text-align:right;font-weight:600">${renderPrecio(i)}</td>
         <td style="padding:8px 10px;text-align:right">${(i.visitas||0).toLocaleString('es-AR')}</td>
         <td style="padding:8px 10px;text-align:right">${(i.ventas||0).toLocaleString('es-AR')}</td>
         <td style="padding:8px 10px;text-align:right;color:var(--yellow);font-weight:600">${(i.facturacion||0) > 0 ? fmtMoney(i.facturacion) : '—'}</td>
@@ -4081,6 +4091,7 @@ function renderConversionTable() {
           <tr style="color:var(--muted);font-size:10px;text-transform:uppercase">
             ${th('Título', 'title', 'left')}
             ${th('MLA', 'mla_id', 'left')}
+            ${th('Precio', 'price', 'right')}
             ${th('Visitas', 'visitas', 'right')}
             ${th('Ventas', 'ventas', 'right')}
             ${th('Facturación', 'facturacion', 'right')}
@@ -4114,6 +4125,8 @@ function exportConversionExcel() {
     'Título':         i.title || '',
     'MLA':            i.mla_id,
     'Link':           `https://articulo.mercadolibre.com.ar/${i.mla_id.replace('MLA','MLA-')}`,
+    'Precio':         i.price != null ? i.price : '',
+    'Precio lista':   (i.original_price != null && i.price != null && i.original_price > i.price) ? i.original_price : '',
     'Visitas':        i.visitas || 0,
     'Ventas':         i.ventas || 0,
     'Unidades':       i.unidades_vendidas || 0,
@@ -4123,7 +4136,7 @@ function exportConversionExcel() {
   }));
   const ws = XLSX.utils.json_to_sheet(rows);
   // Ancho aproximado por columna
-  ws['!cols'] = [{wch:60},{wch:14},{wch:50},{wch:10},{wch:8},{wch:10},{wch:14},{wch:11},{wch:9}];
+  ws['!cols'] = [{wch:60},{wch:14},{wch:50},{wch:11},{wch:12},{wch:10},{wch:8},{wch:10},{wch:14},{wch:11},{wch:9}];
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Conversión');
   const client = getActiveClient();

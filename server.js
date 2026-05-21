@@ -4687,29 +4687,46 @@ app.get('/api/reporte/visitas', requireAuth, async (req, res) => {
       }
     }
 
-    // 7. Resolver títulos faltantes (los que no tienen ventas no están en salesByMla).
-    const missingTitle = workingIds.filter(id => !salesByMla[id]);
+    // 7. Traer detalle (título + precios) para TODOS los workingIds.
+    // Necesitamos price + original_price para mostrar descuento tachado en UI.
+    // Estos datos NO se cachean (precios cambian seguido); fetch siempre fresco
+    // pero barato — 50 batches a concurrencia 10 corre en pocos segundos.
     const titleMap = {};
+    const priceMap = {};         // id -> price actual
+    const originalPriceMap = {}; // id -> precio lista (si hay descuento)
     Object.entries(salesByMla).forEach(([id, v]) => { titleMap[id] = v.title; });
-    for (let i = 0; i < missingTitle.length; i += 20) {
-      const batch = missingTitle.slice(i, i + 20);
-      const data = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,title`, { headers })
-        .then(r => r.json()).catch(() => []);
-      (Array.isArray(data) ? data : []).forEach(r => {
-        if (r.code === 200 && r.body && r.body.id) titleMap[r.body.id] = r.body.title || r.body.id;
+    const batches = [];
+    for (let i = 0; i < workingIds.length; i += 20) batches.push(workingIds.slice(i, i + 20));
+    const ITEMS_CONCURRENCY = 10;
+    for (let i = 0; i < batches.length; i += ITEMS_CONCURRENCY) {
+      const chunk = batches.slice(i, i + ITEMS_CONCURRENCY);
+      const results = await Promise.all(chunk.map(batch =>
+        fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,title,price,original_price`, { headers })
+          .then(r => r.json()).catch(() => [])
+      ));
+      results.forEach(data => {
+        (Array.isArray(data) ? data : []).forEach(r => {
+          if (r.code !== 200 || !r.body || !r.body.id) return;
+          const b = r.body;
+          titleMap[b.id] = b.title || titleMap[b.id] || b.id;
+          if (b.price != null) priceMap[b.id] = parseFloat(b.price);
+          if (b.original_price != null) originalPriceMap[b.id] = parseFloat(b.original_price);
+        });
       });
     }
 
     // 8. Construir respuesta con schema fijo (lo consume Steve).
     // conversion: ventas (órdenes) / visitas — métrica que pidió el usuario.
-    // ventas y facturacion son campos extras — Steve los ignora y sigue
-    // recalculando sobre unidades_vendidas (que se mantiene como antes).
+    // ventas, facturacion, price, original_price son campos extras — Steve los
+    // ignora y sigue recalculando sobre unidades_vendidas.
     const items = workingIds.map(id => {
       const visitas = visitsMap[id] || 0;
       const unidades = (salesByMla[id] && salesByMla[id].units) || 0;
       const ventas = (salesByMla[id] && salesByMla[id].ventas) || 0;
       const facturacion = (salesByMla[id] && salesByMla[id].revenue) || 0;
       const conversion = visitas > 0 ? parseFloat((ventas / visitas * 100).toFixed(2)) : 0;
+      const price = priceMap[id] != null ? priceMap[id] : null;
+      const original_price = originalPriceMap[id] != null ? originalPriceMap[id] : null;
       return {
         mla_id: id,
         title: titleMap[id] || id,
@@ -4718,6 +4735,8 @@ app.get('/api/reporte/visitas', requireAuth, async (req, res) => {
         unidades_vendidas: unidades,
         facturacion: Math.round(facturacion),
         conversion,
+        price,
+        original_price,
       };
     });
 
