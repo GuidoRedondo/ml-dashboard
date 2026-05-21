@@ -4083,10 +4083,13 @@ function renderConversionTable() {
       ? `${fmtMoney(i.price)}<div style="text-decoration:line-through;color:var(--muted);font-size:11px;font-weight:400">${fmtMoney(i.original_price)}</div>`
       : fmtMoney(i.price);
   };
+  // Mismo criterio de color que la tab Publicidad > Anuncios (line 8070).
+  const ctrColor = v => !v || v <= 0 ? 'var(--muted)' : v < 0.20 ? '#ff5252' : v < 0.30 ? '#ff9100' : '#00e676';
   const rows = items.map(i => {
     const sem = _convSemaforo(i.conversion);
     const link = `https://articulo.mercadolibre.com.ar/${i.mla_id.replace('MLA','MLA-')}`;
     const hasAds = (i.impresiones || 0) > 0;
+    const ctrCol = hasAds ? ctrColor(i.ctr) : 'var(--muted)';
     return `
       <tr style="border-top:1px solid var(--border)">
         <td style="padding:8px 10px;max-width:380px"><a href="${link}" target="_blank" style="color:var(--text);text-decoration:none" title="Abrir en ML">${esc(i.title)}</a></td>
@@ -4098,7 +4101,7 @@ function renderConversionTable() {
         <td style="padding:8px 10px;text-align:right;font-weight:600;color:${sem.color}">${(i.conversion||0).toFixed(2)}%</td>
         <td style="padding:8px 10px;text-align:right;color:${hasAds?'var(--text)':'var(--muted)'}">${hasAds ? (i.impresiones||0).toLocaleString('es-AR') : '—'}</td>
         <td style="padding:8px 10px;text-align:right;color:${hasAds?'var(--text)':'var(--muted)'}">${hasAds ? (i.clicks||0).toLocaleString('es-AR') : '—'}</td>
-        <td style="padding:8px 10px;text-align:right;color:${hasAds?'var(--text)':'var(--muted)'};font-weight:${hasAds?'600':'400'}">${hasAds ? (i.ctr||0).toFixed(2) + '%' : '—'}</td>
+        <td style="padding:8px 10px;text-align:right;font-weight:700;color:${ctrCol}">${hasAds ? (i.ctr||0).toFixed(2) + '%' : '—'}</td>
         <td style="padding:8px 10px;text-align:center;font-size:16px">${sem.emoji}</td>
       </tr>`;
   }).join('');
