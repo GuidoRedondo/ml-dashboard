@@ -4512,8 +4512,12 @@ app.get('/api/reporte/comparar', requireAuth, async (req, res) => {
 
 // ── REPORTE VISITAS — endpoint para Eje 4 de Steve ───────────────────────────
 // Visitas + conversión por MLA. Schema fijo (lo consume scripts/eje_conversion.py).
-// Cache 12h en ml_visitas_cache. Si hay >500 MLAs activos, rankea por revenue
-// últimos 90d y queda con los top 500 (proteger rate-limit de ML).
+// Cache 12h en ml_visitas_cache. Si hay >MAX_ITEMS MLAs activos+pausados,
+// rankea por revenue últimos 90d y queda con los top MAX_ITEMS.
+// Además devuelve total_visitas_seller en metadatos: el agregado oficial de ML
+// (vía /users/{uid}/items_visits) para que la KPI cuadre exacto con el panel,
+// aunque el breakdown per-item esté capado.
+const VISITAS_MAX_ITEMS = 1000;
 app.get('/api/reporte/visitas', requireAuth, async (req, res) => {
   try {
     const clientId = parseInt(req.query.client_id);
@@ -4533,19 +4537,31 @@ app.get('/api/reporte/visitas', requireAuth, async (req, res) => {
     const uid = cr.rows[0] && cr.rows[0].ml_user_id;
     if (!uid) return res.status(400).json({ error: 'Cliente sin ml_user_id' });
 
-    // 1. Items activos del cliente (paginado).
-    const activeIds = [];
-    let offset = 0;
-    while (true) {
-      const r = await fetch(`${ML_API}/users/${uid}/items/search?status=active&limit=100&offset=${offset}`, { headers })
-        .then(r => r.json()).catch(() => ({}));
-      const batch = r.results || [];
-      activeIds.push(...batch);
-      const total = (r.paging && r.paging.total) || 0;
-      if (batch.length < 100 || activeIds.length >= total) break;
-      offset += 100;
-      if (offset > 5000) break;
+    // 1. Items del cliente — activos Y pausados (ambos acumulan visitas en ML).
+    async function paginateItems(status) {
+      const ids = [];
+      let off = 0;
+      while (true) {
+        const r = await fetch(`${ML_API}/users/${uid}/items/search?status=${status}&limit=100&offset=${off}`, { headers })
+          .then(r => r.json()).catch(() => ({}));
+        const batch = r.results || [];
+        ids.push(...batch);
+        const total = (r.paging && r.paging.total) || 0;
+        if (batch.length < 100 || ids.length >= total) break;
+        off += 100;
+        if (off > 5000) break;
+      }
+      return ids;
     }
+    const [activeOnly, pausedOnly] = await Promise.all([
+      paginateItems('active'),
+      paginateItems('paused'),
+    ]);
+    const activeIds = [...new Set([...activeOnly, ...pausedOnly])];
+
+    // 1.5. Total agregado de visitas del seller (oficial — matchea panel ML).
+    // Hacemos esto en paralelo con todo lo demás abajo via fetchUserVisits.
+    const sellerVisitsP = fetchUserVisits(uid, dateFrom, dateTo, headers);
 
     // 2. Órdenes del período pedido — para unidades_vendidas por MLA.
     const fmt = d => new Date(d).toISOString().slice(0, 19) + '.000-00:00';
@@ -4561,9 +4577,11 @@ app.get('/api/reporte/visitas', requireAuth, async (req, res) => {
       });
     });
 
-    // 3. Si hay >500 activos, recortar a top 500 por revenue 90d.
+    // 3. Si hay >MAX_ITEMS activos/pausados, recortar a top MAX_ITEMS por revenue 90d.
     let workingIds = activeIds;
-    if (activeIds.length > 500) {
+    const totalItems = activeIds.length;
+    const truncated = totalItems > VISITAS_MAX_ITEMS;
+    if (truncated) {
       const from90 = new Date(Date.now() - 90 * 86400000).toISOString().slice(0, 10);
       const rev90 = {};
       // Si el período pedido cubre o excede 90d, reuso salesByMla. Si no, traigo aparte.
@@ -4582,7 +4600,7 @@ app.get('/api/reporte/visitas', requireAuth, async (req, res) => {
       const activeSet = new Set(activeIds);
       const ranked = Object.entries(rev90).filter(([id]) => activeSet.has(id)).sort((a, b) => b[1] - a[1]).map(([id]) => id);
       const noSales = activeIds.filter(id => !rev90[id]);
-      workingIds = [...ranked.slice(0, 500), ...noSales.slice(0, Math.max(0, 500 - ranked.length))].slice(0, 500);
+      workingIds = [...ranked.slice(0, VISITAS_MAX_ITEMS), ...noSales.slice(0, Math.max(0, VISITAS_MAX_ITEMS - ranked.length))].slice(0, VISITAS_MAX_ITEMS);
     }
 
     // 4. Decidir cache vs refetch.
@@ -4687,12 +4705,21 @@ app.get('/api/reporte/visitas', requireAuth, async (req, res) => {
       };
     });
 
+    // Total agregado oficial del seller (ground truth — matchea panel ML).
+    const sellerVisits = await sellerVisitsP;
+    const totalVisitasSeller = sellerVisits ? sellerVisits.total : 0;
+    const sumPerItem = items.reduce((s, i) => s + i.visitas, 0);
+
     const ageHours = (Date.now() - fetchedAt.getTime()) / 3600000;
     res.json({
       items,
       metadatos: {
         total_mlas_consultados: workingIds.length,
         total_mlas_con_visitas: items.filter(i => i.visitas > 0).length,
+        total_items_seller: totalItems,
+        truncated,
+        total_visitas_seller: totalVisitasSeller,
+        suma_visitas_breakdown: sumPerItem,
         fetched_at: fetchedAt.toISOString(),
         desde_cache: usarCache,
         cache_age_hours: parseFloat(ageHours.toFixed(2)),

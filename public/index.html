@@ -3992,24 +3992,40 @@ function _convSemaforo(conv) {
 function renderConversionKpis() {
   const kpis = document.getElementById('convKpis');
   const items = (_convData.items || []).filter(i => i.visitas >= 100);
+  const meta = _convData.metadatos || {};
+  // Total visitas: usamos el agregado oficial del seller (matchea ML panel),
+  // no la suma del breakdown (que puede estar capada a 1000 items).
+  const totalVisSeller = meta.total_visitas_seller || 0;
+  const sumBreakdown = meta.suma_visitas_breakdown || items.reduce((s, i) => s + i.visitas, 0);
+
   if (!items.length) {
     kpis.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:20px">Sin items con >= 100 visitas en el rango.</div>';
     return;
   }
-  const totalVis = items.reduce((s, i) => s + i.visitas, 0);
   const totalUni = items.reduce((s, i) => s + i.unidades_vendidas, 0);
-  const convProm = totalVis > 0 ? (totalUni / totalVis * 100) : 0;
+  // Conversión promedio: usamos sumBreakdown (los items analizables) para que
+  // sea coherente con la tabla — no diluye con visitas de items no medidos.
+  const convProm = sumBreakdown > 0 ? (totalUni / sumBreakdown * 100) : 0;
   const semProm  = _convSemaforo(convProm);
   const rotos    = items.filter(i => i.visitas > 500 && i.conversion < 2).length;
   const sinTraf  = items.filter(i => i.conversion > 5 && i.visitas < 500).length;
-  const card = (label, value, color) => `
+  const card = (label, value, color, sub) => `
     <div style="flex:1;min-width:170px;background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:14px 16px">
       <div style="font-size:11px;color:var(--muted);margin-bottom:4px">${label}</div>
       <div style="font-size:22px;font-weight:700;color:${color || 'var(--text)'};font-family:var(--font-b)">${value}</div>
+      ${sub ? `<div style="font-size:10px;color:var(--muted);margin-top:4px">${sub}</div>` : ''}
     </div>`;
+  // Sub-texto del total: mostrar gap si el breakdown captura menos del 95% del agregado.
+  let totalSub = '';
+  if (totalVisSeller > 0 && sumBreakdown / totalVisSeller < 0.95) {
+    const cobertura = ((sumBreakdown / totalVisSeller) * 100).toFixed(0);
+    totalSub = `Breakdown cubre ${cobertura}% (${sumBreakdown.toLocaleString('es-AR')} en tabla)`;
+  } else if (meta.truncated) {
+    totalSub = `Top ${meta.total_mlas_consultados} de ${meta.total_items_seller} items`;
+  }
   kpis.innerHTML =
     card(`${semProm.emoji} Conversión promedio`, convProm.toFixed(2) + '%', semProm.color) +
-    card('Total visitas', totalVis.toLocaleString('es-AR')) +
+    card('Total visitas (seller)', totalVisSeller.toLocaleString('es-AR'), null, totalSub) +
     card('🔴 Embudos rotos', rotos + (rotos === 1 ? ' producto' : ' productos'), rotos > 0 ? '#ef4444' : 'var(--text)') +
     card('💎 Buenos sin tráfico', sinTraf + (sinTraf === 1 ? ' producto' : ' productos'), sinTraf > 0 ? '#10b981' : 'var(--text)');
 }
