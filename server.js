@@ -4692,15 +4692,19 @@ app.get('/api/reporte/visitas', requireAuth, async (req, res) => {
     }
 
     // 8. Construir respuesta con schema fijo (lo consume Steve).
+    // facturacion es un campo extra del schema base — Steve lo ignora, el
+    // frontend lo usa para sortear.
     const items = workingIds.map(id => {
       const visitas = visitsMap[id] || 0;
       const unidades = (salesByMla[id] && salesByMla[id].units) || 0;
+      const facturacion = (salesByMla[id] && salesByMla[id].revenue) || 0;
       const conversion = visitas > 0 ? parseFloat((unidades / visitas * 100).toFixed(2)) : 0;
       return {
         mla_id: id,
         title: titleMap[id] || id,
         visitas,
         unidades_vendidas: unidades,
+        facturacion: Math.round(facturacion),
         conversion,
       };
     });

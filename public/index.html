@@ -4057,6 +4057,7 @@ function renderConversionTable() {
   }
   const arrow = col => _convSort.col === col ? (_convSort.dir < 0 ? ' ↓' : ' ↑') : '';
   const th = (label, col, align) => `<th onclick="_convSortClick('${col}')" style="padding:8px 10px;text-align:${align||'left'};cursor:pointer;user-select:none">${label}${arrow(col)}</th>`;
+  const fmtMoney = n => '$' + Math.round(n||0).toLocaleString('es-AR');
   const rows = items.map(i => {
     const sem = _convSemaforo(i.conversion);
     return `
@@ -4065,6 +4066,7 @@ function renderConversionTable() {
         <td style="padding:8px 10px;color:var(--muted)"><a href="https://articulo.mercadolibre.com.ar/${i.mla_id.replace('MLA','MLA-')}" target="_blank" style="color:var(--accent);text-decoration:none">${i.mla_id}</a></td>
         <td style="padding:8px 10px;text-align:right">${(i.visitas||0).toLocaleString('es-AR')}</td>
         <td style="padding:8px 10px;text-align:right">${(i.unidades_vendidas||0).toLocaleString('es-AR')}</td>
+        <td style="padding:8px 10px;text-align:right;color:var(--yellow);font-weight:600">${(i.facturacion||0) > 0 ? fmtMoney(i.facturacion) : '—'}</td>
         <td style="padding:8px 10px;text-align:right;font-weight:600;color:${sem.color}">${(i.conversion||0).toFixed(2)}%</td>
         <td style="padding:8px 10px;text-align:center;font-size:16px">${sem.emoji}</td>
       </tr>`;
@@ -4078,6 +4080,7 @@ function renderConversionTable() {
             ${th('MLA', 'mla_id', 'left')}
             ${th('Visitas', 'visitas', 'right')}
             ${th('Unidades', 'unidades_vendidas', 'right')}
+            ${th('Facturación', 'facturacion', 'right')}
             ${th('Conv. %', 'conversion', 'right')}
             <th style="padding:8px 10px;text-align:center">Semáforo</th>
           </tr>
