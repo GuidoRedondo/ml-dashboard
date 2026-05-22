@@ -5329,6 +5329,171 @@ app.get('/api/reporte/cupones', requireAuth, async (req, res) => {
   }
 });
 
+// ── /api/reporte/full ────────────────────────────────────────────────────────
+// Stock en FULL + días sin venta + valor inmovilizado por MLA.
+// Base del Eje 2 de Steve. Param days = ventana de análisis (default 90).
+app.get('/api/reporte/full', requireAuth, async (req, res) => {
+  try {
+    const clientId = parseInt(req.query.client_id);
+    if (!clientId) return res.status(400).json({ error: 'client_id requerido' });
+
+    const days = parseInt(req.query.days) || 90;
+
+    const token = await getClientToken(clientId);
+    if (!token) return res.status(403).json({ error: 'Cliente sin token ML' });
+    const headers = { Authorization: `Bearer ${token}` };
+
+    const clientRes = await pool.query('SELECT ml_user_id FROM clients WHERE id=$1', [clientId]);
+    const uid = clientRes.rows[0]?.ml_user_id;
+    if (!uid) return res.status(400).json({ error: 'Cliente sin ML User ID' });
+
+    // 1. Traer todos los items activos
+    let allItemIds = [];
+    let offset = 0;
+    while (true) {
+      const data = await fetch(`${ML_API}/users/${uid}/items/search?status=active&limit=100&offset=${offset}`, { headers })
+        .then(r => r.json()).catch(() => ({}));
+      const results = data.results || [];
+      allItemIds = allItemIds.concat(results);
+      if (results.length < 100) break;
+      offset += 100;
+      if (offset > 2000) break;
+    }
+
+    // 2. Detalle de items en batch — filtrar solo FULL
+    const fullItems = [];
+    for (let i = 0; i < allItemIds.length; i += 20) {
+      const batch = allItemIds.slice(i, i + 20);
+      const attrs = 'id,title,price,available_quantity,thumbnail,permalink,shipping,listing_type_id';
+      const data = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=${attrs}`, { headers })
+        .then(r => r.json()).catch(() => []);
+      (Array.isArray(data) ? data : []).forEach(r => {
+        if (r.code !== 200 || !r.body) return;
+        const b = r.body;
+        if (b.shipping?.logistic_type !== 'fulfillment') return;
+        fullItems.push({
+          mla_id: b.id,
+          title: b.title,
+          thumbnail: b.thumbnail,
+          permalink: b.permalink,
+          price: parseFloat(b.price) || 0,
+          stock: b.available_quantity || 0,
+          listing_type_id: b.listing_type_id,
+        });
+      });
+    }
+
+    // 3. Ventas en el período: necesitamos units + fecha de última venta por MLA
+    const now = new Date();
+    const fromDate = new Date(now.getTime() - days * 86400000);
+    const fmt = d => d.toISOString().slice(0, 19) + '.000-00:00';
+    const { orders } = await fetchAllOrders(uid, headers, fmt(fromDate), fmt(now)).catch(() => ({ orders: [] }));
+
+    const ventasPorMla = {};
+    orders.forEach(o => {
+      const fecha = o.date_created || o.date_closed;
+      (o.order_items || []).forEach(oi => {
+        const id = oi.item?.id; if (!id) return;
+        if (!ventasPorMla[id]) ventasPorMla[id] = { units: 0, revenue: 0, ultima_venta: null };
+        ventasPorMla[id].units += oi.quantity || 0;
+        ventasPorMla[id].revenue += (parseFloat(oi.unit_price) || 0) * (oi.quantity || 0);
+        if (fecha && (!ventasPorMla[id].ultima_venta || fecha > ventasPorMla[id].ultima_venta)) {
+          ventasPorMla[id].ultima_venta = fecha;
+        }
+      });
+    });
+
+    // 4. Costos guardados
+    const costsRes = await pool.query('SELECT mla_id, costo_unit FROM product_costs WHERE client_id=$1', [clientId]);
+    const costMap = {};
+    costsRes.rows.forEach(r => { costMap[r.mla_id] = parseFloat(r.costo_unit) || 0; });
+
+    // 5. Enriquecer items con métricas de rotación
+    const items = fullItems.map(it => {
+      const v = ventasPorMla[it.mla_id] || { units: 0, revenue: 0, ultima_venta: null };
+      const ultimaVenta = v.ultima_venta;
+      const diasSinVenta = ultimaVenta
+        ? Math.floor((now - new Date(ultimaVenta)) / 86400000)
+        : days;
+      const dailyRate = v.units / days;
+      const coberturaDias = dailyRate > 0 ? Math.round(it.stock / dailyRate) : null;
+      const costo = costMap[it.mla_id] || 0;
+      const valorInmovilizado = it.stock * costo;
+      const valorVenta = it.stock * it.price;
+
+      // Categoría de rotación (umbrales SKILL.md de Steve)
+      let categoria;
+      if (diasSinVenta < 30) categoria = 'buena_rotacion';
+      else if (diasSinVenta < 60) categoria = 'rotacion_lenta';
+      else categoria = 'durmiendo';
+
+      return {
+        ...it,
+        ventas_periodo_units: v.units,
+        ventas_periodo_revenue: v.revenue,
+        ultima_venta: ultimaVenta,
+        dias_sin_venta: diasSinVenta,
+        daily_rate: +dailyRate.toFixed(3),
+        cobertura_dias: coberturaDias,
+        costo_unit: costo > 0 ? costo : null,
+        valor_inmovilizado: costo > 0 ? +valorInmovilizado.toFixed(2) : null,
+        valor_venta_stock: +valorVenta.toFixed(2),
+        categoria,
+      };
+    }).sort((a, b) => b.dias_sin_venta - a.dias_sin_venta);
+
+    // 6. Resumen agregado
+    const n = items.length;
+    const stockTotal = items.reduce((s, i) => s + i.stock, 0);
+    const valorInmovilizadoTotal = items.reduce((s, i) => s + (i.valor_inmovilizado || 0), 0);
+    const valorVentaStockTotal = items.reduce((s, i) => s + i.valor_venta_stock, 0);
+
+    const durmiendo = items.filter(i => i.categoria === 'durmiendo');
+    const rotacionLenta = items.filter(i => i.categoria === 'rotacion_lenta');
+    const buenaRotacion = items.filter(i => i.categoria === 'buena_rotacion');
+
+    const valorDurmiendo = durmiendo.reduce((s, i) => s + (i.valor_inmovilizado || 0), 0);
+    const valorVentaDurmiendo = durmiendo.reduce((s, i) => s + i.valor_venta_stock, 0);
+
+    const completenessCostos = n > 0
+      ? Math.round(items.filter(i => i.costo_unit != null).length / n * 100) : 0;
+
+    res.json({
+      items,
+      resumen: {
+        total_items_full: n,
+        stock_total: stockTotal,
+        valor_inmovilizado_total: +valorInmovilizadoTotal.toFixed(2),
+        valor_venta_stock_total: +valorVentaStockTotal.toFixed(2),
+        durmiendo: {
+          count: durmiendo.length,
+          pct: n > 0 ? Math.round(durmiendo.length / n * 100) : 0,
+          valor_inmovilizado: +valorDurmiendo.toFixed(2),
+          valor_venta_stock: +valorVentaDurmiendo.toFixed(2),
+        },
+        rotacion_lenta: {
+          count: rotacionLenta.length,
+          pct: n > 0 ? Math.round(rotacionLenta.length / n * 100) : 0,
+        },
+        buena_rotacion: {
+          count: buenaRotacion.length,
+          pct: n > 0 ? Math.round(buenaRotacion.length / n * 100) : 0,
+        },
+        completeness_costos_pct: completenessCostos,
+      },
+      metadatos: {
+        days,
+        total_items_activos: allItemIds.length,
+        date_from: fromDate.toISOString().slice(0, 10),
+        date_to: now.toISOString().slice(0, 10),
+      },
+    });
+  } catch(e) {
+    console.error('[/api/reporte/full]', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ── DEBUG: inspect a specific order's shipment ───────────────────────────────
 app.get('/api/item-fees', requireAuth, async (req, res) => {
   try {
