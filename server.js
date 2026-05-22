@@ -5951,6 +5951,141 @@ app.get('/api/reporte/candidatos-clip', requireAuth, async (req, res) => {
   }
 });
 
+// ── /api/reporte/candidatos-fotos ────────────────────────────────────────────
+// Top SKUs por revenue con menos de N imágenes. Quick win del Eje 3 de Steve.
+// Umbrales del SKILL: ≥6 verde, 3-5 amarillo, <3 rojo. Default umbral=6.
+// Marca también si el item carece de video (doble palanca apagada).
+app.get('/api/reporte/candidatos-fotos', requireAuth, async (req, res) => {
+  try {
+    const clientId = parseInt(req.query.client_id);
+    if (!clientId) return res.status(400).json({ error: 'client_id requerido' });
+
+    const days = parseInt(req.query.days) || 30;
+    const topN = parseInt(req.query.top) || 20;
+    const minImagenes = parseInt(req.query.min_imagenes) || 6;
+    const candidatePool = Math.max(topN * 3, 50);
+
+    const token = await getClientToken(clientId);
+    if (!token) return res.status(403).json({ error: 'Cliente sin token ML' });
+    const headers = { Authorization: `Bearer ${token}` };
+
+    const clientRes = await pool.query('SELECT ml_user_id FROM clients WHERE id=$1', [clientId]);
+    const uid = clientRes.rows[0]?.ml_user_id;
+    if (!uid) return res.status(400).json({ error: 'Cliente sin ML User ID' });
+
+    // 1. Ventas del período → agregado por MLA
+    const now = new Date();
+    const fromDate = new Date(now.getTime() - days * 86400000);
+    const fmt = d => d.toISOString().slice(0, 19) + '.000-00:00';
+    const { orders } = await fetchAllOrders(uid, headers, fmt(fromDate), fmt(now))
+      .catch(() => ({ orders: [] }));
+
+    const byMla = {};
+    orders.forEach(o => (o.order_items || []).forEach(oi => {
+      const id = oi.item?.id;
+      if (!id) return;
+      if (!byMla[id]) byMla[id] = { mla_id: id, title: oi.item?.title || id, units: 0, revenue: 0 };
+      byMla[id].units += oi.quantity || 0;
+      byMla[id].revenue += (parseFloat(oi.unit_price) || 0) * (oi.quantity || 0);
+    }));
+
+    const ranked = Object.values(byMla).sort((a, b) => b.revenue - a.revenue);
+    const revenueTotal = ranked.reduce((s, i) => s + i.revenue, 0);
+    const pool_ = ranked.slice(0, candidatePool);
+
+    // 2. Fetch individual: necesitamos pictures, video_id, attributes, health
+    const enriched = [];
+    const PARALLEL = 20;
+    for (let i = 0; i < pool_.length; i += PARALLEL) {
+      const batch = pool_.slice(i, i + PARALLEL);
+      await Promise.all(batch.map(async row => {
+        try {
+          const b = await fetch(`${ML_API}/items/${row.mla_id}`, { headers })
+            .then(r => r.ok ? r.json() : null).catch(() => null);
+          if (!b || b.error || !b.id) return;
+
+          const pictures = Array.isArray(b.pictures) ? b.pictures : [];
+          const nImg = pictures.length;
+          const tieneVideo = !!b.video_id;
+          const attributes = Array.isArray(b.attributes) ? b.attributes : [];
+          const attrsCompletados = attributes.filter(a => a.value_name != null && a.value_name !== '').length;
+          const attrsTotales = attributes.length;
+
+          // Severidad por umbrales SKILL.md
+          let severidad;
+          if (nImg < 3) severidad = 'rojo';
+          else if (nImg < 6) severidad = 'amarillo';
+          else severidad = 'verde';
+
+          enriched.push({
+            mla_id: b.id,
+            title: b.title,
+            permalink: b.permalink,
+            thumbnail: b.thumbnail,
+            price: parseFloat(b.price) || 0,
+            stock: b.available_quantity || 0,
+            revenue_periodo: +row.revenue.toFixed(2),
+            units_periodo: row.units,
+            ticket_promedio: row.units > 0 ? +(row.revenue / row.units).toFixed(2) : 0,
+            participacion_revenue_pct: revenueTotal > 0
+              ? +(row.revenue / revenueTotal * 100).toFixed(2) : 0,
+            n_imagenes: nImg,
+            severidad,
+            tiene_video: tieneVideo,
+            doble_palanca_apagada: !tieneVideo && nImg < minImagenes,
+            atributos_pct: attrsTotales > 0
+              ? Math.round(attrsCompletados / attrsTotales * 100) : null,
+            health: typeof b.health === 'number' ? b.health : null,
+            listing_type_id: b.listing_type_id,
+          });
+        } catch(e) {}
+      }));
+    }
+
+    enriched.sort((a, b) => b.revenue_periodo - a.revenue_periodo);
+
+    // 3. Candidatos = pool con n_imagenes < minImagenes
+    const candidatos = enriched.filter(e => e.n_imagenes < minImagenes).slice(0, topN);
+    const yaTienenBuenasFotos = enriched.filter(e => e.n_imagenes >= minImagenes);
+
+    // 4. Resumen
+    const revenueCandidatos = candidatos.reduce((s, e) => s + e.revenue_periodo, 0);
+    const rojos = candidatos.filter(c => c.severidad === 'rojo');
+    const amarillos = candidatos.filter(c => c.severidad === 'amarillo');
+    const doblePalanca = candidatos.filter(c => c.doble_palanca_apagada);
+
+    res.json({
+      candidatos,
+      ya_tienen_buenas_fotos: yaTienenBuenasFotos.length,
+      resumen: {
+        total_sku_con_ventas: ranked.length,
+        pool_analizado: enriched.length,
+        candidatos_devueltos: candidatos.length,
+        umbral_min_imagenes: minImagenes,
+        en_rojo_count: rojos.length,
+        en_amarillo_count: amarillos.length,
+        doble_palanca_apagada_count: doblePalanca.length,
+        revenue_total_periodo: +revenueTotal.toFixed(2),
+        revenue_candidatos: +revenueCandidatos.toFixed(2),
+        candidatos_share_revenue_total_pct: revenueTotal > 0
+          ? +(revenueCandidatos / revenueTotal * 100).toFixed(2) : 0,
+      },
+      metadatos: {
+        days,
+        top: topN,
+        min_imagenes: minImagenes,
+        pool_size: candidatePool,
+        date_from: fromDate.toISOString().slice(0, 10),
+        date_to: now.toISOString().slice(0, 10),
+        nota: 'Candidatos = top SKUs por revenue con n_imagenes<umbral. Umbrales SKILL: ≥6 verde, 3-5 amarillo, <3 rojo. doble_palanca_apagada=true si también le falta video.',
+      },
+    });
+  } catch(e) {
+    console.error('[/api/reporte/candidatos-fotos]', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ── DEBUG: inspect a specific order's shipment ───────────────────────────────
 app.get('/api/item-fees', requireAuth, async (req, res) => {
   try {
