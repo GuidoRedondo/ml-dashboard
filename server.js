@@ -5265,13 +5265,25 @@ app.get('/api/reporte/cupones', requireAuth, async (req, res) => {
     for (const url of intentos) {
       try {
         const r = await fetch(url, { headers });
-        intentosLog.push({ url, status: r.status });
-        if (r.ok) {
-          const j = await r.json();
-          cupones = Array.isArray(j) ? j : (j.results || j.coupons || j.data || []);
+        const text = await r.text();
+        intentosLog.push({ url, status: r.status, body_empty: text.length === 0 });
+        if (!r.ok) continue;
+        // ML responde 200 con body vacío cuando no hay cupones cargados.
+        // Eso es "sin cupones" — no "endpoint no disponible".
+        if (text.trim().length === 0) {
+          cupones = [];
           intentoExitoso = url;
           break;
         }
+        let j;
+        try { j = JSON.parse(text); }
+        catch (e) {
+          intentosLog.push({ url, parse_error: e.message });
+          continue;
+        }
+        cupones = Array.isArray(j) ? j : (j.results || j.coupons || j.data || []);
+        intentoExitoso = url;
+        break;
       } catch(e) {
         intentosLog.push({ url, error: e.message });
       }
@@ -5563,9 +5575,33 @@ app.get('/api/reporte/campanas-historicas', requireAuth, async (req, res) => {
       });
     }
 
-    // 2. Para cada periodo: revenue/units del periodo vs baseline equivalente previo
+    // 2. Para cada periodo: traer items participantes (si la fuente es seller-promotions)
+    //    y filtrar revenue/units a esos MLAs durante el periodo vs baseline equivalente previo.
+    //    Sin filtro de items, el lift compara TODO el revenue del seller — sesgado.
     const fmt = d => d.toISOString().slice(0, 19) + '.000-00:00';
     const campanas = [];
+
+    async function fetchItemsDePromo(promoId, promoType) {
+      if (!promoId) return null;
+      try {
+        const qsType = promoType ? `&promotion_type=${encodeURIComponent(promoType)}` : '';
+        const url = `${ML_API}/seller-promotions/promotions/${promoId}/items?app_version=v2${qsType}&limit=50`;
+        const ids = new Set();
+        let offset = 0;
+        while (true) {
+          const r = await fetch(`${url}&offset=${offset}`, { headers });
+          if (!r.ok) break;
+          const j = await r.json().catch(() => ({}));
+          const list = j.results || [];
+          list.forEach(it => { const id = it.id || it.item_id; if (id) ids.add(id); });
+          const total = j.paging?.total ?? list.length;
+          if (list.length === 0 || ids.size >= total) break;
+          offset += 50;
+          if (offset > 1000) break;
+        }
+        return ids.size > 0 ? ids : null;
+      } catch(e) { return null; }
+    }
 
     for (const p of periodos) {
       const dFrom = new Date(p.from + 'T00:00:00');
@@ -5574,18 +5610,28 @@ app.get('/api/reporte/campanas-historicas', requireAuth, async (req, res) => {
       const dBaseTo   = new Date(dFrom.getTime() - 86400000);   // día previo
       const dBaseFrom = new Date(dBaseTo.getTime() - durMs);    // misma duración antes
 
-      const [campRes, baseRes] = await Promise.all([
+      const [campRes, baseRes, itemsSet] = await Promise.all([
         fetchAllOrders(uid, headers, fmt(dFrom), fmt(dTo)).catch(() => ({ orders: [] })),
         fetchAllOrders(uid, headers, fmt(dBaseFrom), fmt(dBaseTo)).catch(() => ({ orders: [] })),
+        fetchItemsDePromo(p.promo_id, p.promo_type),
       ]);
 
+      const filtroAplicado = itemsSet && itemsSet.size > 0;
+
       const agg = orders => {
-        let units = 0, revenue = 0;
-        orders.forEach(o => (o.order_items || []).forEach(oi => {
-          units += oi.quantity || 0;
-          revenue += (parseFloat(oi.unit_price) || 0) * (oi.quantity || 0);
-        }));
-        return { units, revenue, ordenes: orders.length };
+        let units = 0, revenue = 0, ordenesConItem = 0;
+        orders.forEach(o => {
+          let hit = false;
+          (o.order_items || []).forEach(oi => {
+            const mla = oi.item?.id;
+            if (filtroAplicado && (!mla || !itemsSet.has(mla))) return;
+            units += oi.quantity || 0;
+            revenue += (parseFloat(oi.unit_price) || 0) * (oi.quantity || 0);
+            hit = true;
+          });
+          if (hit) ordenesConItem++;
+        });
+        return { units, revenue, ordenes: ordenesConItem };
       };
 
       const camp = agg(campRes.orders);
@@ -5595,10 +5641,11 @@ app.get('/api/reporte/campanas-historicas', requireAuth, async (req, res) => {
 
       // Clasificación según SKILL.md de Steve (8.3)
       let veredicto;
-      if (liftRevenue == null) veredicto = 'sin_baseline';
-      else if (liftRevenue > 200) veredicto = 'ganador_repetir';
-      else if (liftRevenue < 50)  veredicto = 'perdedor_regalo_de_plata';
-      else veredicto = 'neutro';
+      if (!filtroAplicado)              veredicto = 'sin_filtro_items';
+      else if (liftRevenue == null)     veredicto = 'sin_baseline';
+      else if (liftRevenue > 200)       veredicto = 'ganador_repetir';
+      else if (liftRevenue < 50)        veredicto = 'perdedor_regalo_de_plata';
+      else                              veredicto = 'neutro';
 
       campanas.push({
         label: p.label,
@@ -5606,6 +5653,8 @@ app.get('/api/reporte/campanas-historicas', requireAuth, async (req, res) => {
         promo_type: p.promo_type || null,
         periodo: { from: p.from, to: p.to },
         baseline: { from: dBaseFrom.toISOString().slice(0, 10), to: dBaseTo.toISOString().slice(0, 10) },
+        items_en_campana: filtroAplicado ? itemsSet.size : null,
+        filtro_items_aplicado: filtroAplicado,
         campana: camp,
         baseline_data: base,
         lift_revenue_pct: liftRevenue,
@@ -5621,6 +5670,8 @@ app.get('/api/reporte/campanas-historicas', requireAuth, async (req, res) => {
       campanas,
       resumen: {
         total_analizadas: campanas.length,
+        con_filtro_items: campanas.filter(c => c.filtro_items_aplicado).length,
+        sin_filtro_items: campanas.filter(c => !c.filtro_items_aplicado).length,
         ganadoras: campanas.filter(c => c.veredicto === 'ganador_repetir').length,
         perdedoras: campanas.filter(c => c.veredicto === 'perdedor_regalo_de_plata').length,
         revenue_total_en_campanas: +campanas.reduce((s, c) => s + (c.campana.revenue || 0), 0).toFixed(2),
@@ -5669,49 +5720,60 @@ app.get('/api/reporte/promos-especiales', requireAuth, async (req, res) => {
       if (offset > 2000) break;
     }
 
-    // 2. Detalle por item
+    // 2. Detalle por item — fetch individual a /items/{id} en paralelo.
+    //    El batch /items?ids=... NO devuelve `installments` confiable, por eso
+    //    necesitamos llamar al endpoint singular. installments.rate === 0 ⇒
+    //    cuotas sin interés. Sin esto la heurística previa daba 0% en todos lados.
     const items = [];
-    for (let i = 0; i < allItemIds.length; i += 20) {
-      const batch = allItemIds.slice(i, i + 20);
-      const attrs = 'id,title,price,thumbnail,permalink,available_quantity,shipping,listing_type_id,accepts_mercadopago,tags,sale_terms,attributes';
-      const data = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=${attrs}`, { headers })
-        .then(r => r.json()).catch(() => []);
-      (Array.isArray(data) ? data : []).forEach(r => {
-        if (r.code !== 200 || !r.body) return;
-        const b = r.body;
-        const price = parseFloat(b.price) || 0;
-        const freeShipping = !!b.shipping?.free_shipping;
-        const sellerPaysShipping = freeShipping && price >= umbralEnvioARS;
-        // Detección heurística de cuotas sin interés.
-        // ML lo expone vía tags o sale_terms. No siempre está en /items, pero capturamos
-        // lo que haya disponible.
-        const tags = Array.isArray(b.tags) ? b.tags : [];
-        const cuotasSinInteresTag = tags.some(t => /installments_free|cft|sin_interes/i.test(t));
-        const saleTerms = Array.isArray(b.sale_terms) ? b.sale_terms : [];
-        const cuotasInfo = saleTerms.find(t => /installment/i.test(t.id || ''));
-        const tieneCuotasSinInteres = cuotasSinInteresTag || (cuotasInfo && /sin interés|free/i.test(cuotasInfo.value_name || ''));
+    const PARALLEL = 20;
+    for (let i = 0; i < allItemIds.length; i += PARALLEL) {
+      const batch = allItemIds.slice(i, i + PARALLEL);
+      await Promise.all(batch.map(async id => {
+        try {
+          const b = await fetch(`${ML_API}/items/${id}`, { headers })
+            .then(r => r.ok ? r.json() : null).catch(() => null);
+          if (!b || b.error || !b.id) return;
 
-        items.push({
-          mla_id: b.id,
-          title: b.title,
-          thumbnail: b.thumbnail,
-          permalink: b.permalink,
-          price,
-          stock: b.available_quantity || 0,
-          listing_type_id: b.listing_type_id,
-          logistic_type: b.shipping?.logistic_type || null,
-          free_shipping: freeShipping,
-          seller_pays_shipping_estimado: sellerPaysShipping,
-          cuotas_sin_interes_estimado: !!tieneCuotasSinInteres,
-          tags_relevantes: tags.filter(t => /free|installment|sin_interes|catalog/i.test(t)),
-        });
-      });
+          const price = parseFloat(b.price) || 0;
+          const freeShipping = !!b.shipping?.free_shipping;
+          const sellerPaysShipping = freeShipping && price >= umbralEnvioARS;
+
+          // Cuotas: installments.rate === 0 es la señal definitiva.
+          const installmentsObj = b.installments || null;
+          const installmentsQty = installmentsObj?.quantity ?? null;
+          const installmentsRate = installmentsObj?.rate ?? null;
+          const cuotasSinInteres = installmentsObj
+            ? (installmentsRate === 0 && installmentsQty > 1)
+            : false;
+
+          // Fallback con tags para robustez
+          const tags = Array.isArray(b.tags) ? b.tags : [];
+          const cuotasPorTag = tags.some(t => /installments_free|sin_interes/i.test(t));
+
+          items.push({
+            mla_id: b.id,
+            title: b.title,
+            thumbnail: b.thumbnail,
+            permalink: b.permalink,
+            price,
+            stock: b.available_quantity || 0,
+            listing_type_id: b.listing_type_id,
+            logistic_type: b.shipping?.logistic_type || null,
+            free_shipping: freeShipping,
+            seller_pays_shipping_estimado: sellerPaysShipping,
+            cuotas_sin_interes: cuotasSinInteres || cuotasPorTag,
+            cuotas_cantidad: installmentsQty,
+            cuotas_rate: installmentsRate,
+            tags_relevantes: tags.filter(t => /free|installment|sin_interes|catalog/i.test(t)),
+          });
+        } catch(e) {}
+      }));
     }
 
     // 3. Resumen agregado
     const n = items.length;
     const sellerEnvio = items.filter(i => i.seller_pays_shipping_estimado);
-    const conCuotas = items.filter(i => i.cuotas_sin_interes_estimado);
+    const conCuotas = items.filter(i => i.cuotas_sin_interes);
     const sumPrice = arr => arr.reduce((s, i) => s + (i.price || 0), 0);
 
     res.json({
@@ -5727,12 +5789,14 @@ app.get('/api/reporte/promos-especiales', requireAuth, async (req, res) => {
         cuotas_sin_interes: {
           count: conCuotas.length,
           pct: n > 0 ? Math.round(conCuotas.length / n * 100) : 0,
+          precio_promedio: conCuotas.length > 0 ? +(sumPrice(conCuotas) / conCuotas.length).toFixed(2) : 0,
         },
       },
       metadatos: {
         umbral_envio_ars: umbralEnvioARS,
         total_items_activos: allItemIds.length,
-        nota: 'Los flags son detección heurística desde /items. Para costo exacto cruzar con /api/item-fees por MLA.',
+        items_procesados: items.length,
+        nota: 'cuotas_sin_interes se lee de installments.rate===0 del item singular. Costo aprox de cuotas en MLA ~8.5% del precio. Envío bonificado por ML solo bajo umbral_envio_ars.',
       },
     });
   } catch(e) {
