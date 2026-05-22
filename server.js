@@ -5821,6 +5821,136 @@ app.get('/api/reporte/promos-especiales', requireAuth, async (req, res) => {
   }
 });
 
+// ── /api/reporte/candidatos-clip ─────────────────────────────────────────────
+// Cruza items-vendidos × publicaciones para devolver el top N de SKUs con
+// más revenue que NO tienen video todavía. Quick win clarísimo para Steve
+// (ML prioriza listados con clip — lift estimado 1.5–2x en visibilidad).
+app.get('/api/reporte/candidatos-clip', requireAuth, async (req, res) => {
+  try {
+    const clientId = parseInt(req.query.client_id);
+    if (!clientId) return res.status(400).json({ error: 'client_id requerido' });
+
+    const days = parseInt(req.query.days) || 30;
+    const topN = parseInt(req.query.top) || 20;
+    const candidatePool = Math.max(topN * 3, 50);  // analizamos un pool más grande
+
+    const token = await getClientToken(clientId);
+    if (!token) return res.status(403).json({ error: 'Cliente sin token ML' });
+    const headers = { Authorization: `Bearer ${token}` };
+
+    const clientRes = await pool.query('SELECT ml_user_id FROM clients WHERE id=$1', [clientId]);
+    const uid = clientRes.rows[0]?.ml_user_id;
+    if (!uid) return res.status(400).json({ error: 'Cliente sin ML User ID' });
+
+    // 1. Ventas del período → agregado por MLA
+    const now = new Date();
+    const fromDate = new Date(now.getTime() - days * 86400000);
+    const fmt = d => d.toISOString().slice(0, 19) + '.000-00:00';
+    const { orders } = await fetchAllOrders(uid, headers, fmt(fromDate), fmt(now))
+      .catch(() => ({ orders: [] }));
+
+    const byMla = {};
+    orders.forEach(o => (o.order_items || []).forEach(oi => {
+      const id = oi.item?.id;
+      if (!id) return;
+      if (!byMla[id]) byMla[id] = { mla_id: id, title: oi.item?.title || id, units: 0, revenue: 0 };
+      byMla[id].units += oi.quantity || 0;
+      byMla[id].revenue += (parseFloat(oi.unit_price) || 0) * (oi.quantity || 0);
+    }));
+
+    const ranked = Object.values(byMla).sort((a, b) => b.revenue - a.revenue);
+    const totalSkuConVentas = ranked.length;
+    const revenueTotal = ranked.reduce((s, i) => s + i.revenue, 0);
+
+    // 2. Pool a analizar: top candidatePool por revenue
+    const pool_ = ranked.slice(0, candidatePool);
+
+    // 3. Fetch individual para cada uno → leer video_id, pictures, attributes, health, stock
+    const enriched = [];
+    const PARALLEL = 20;
+    for (let i = 0; i < pool_.length; i += PARALLEL) {
+      const batch = pool_.slice(i, i + PARALLEL);
+      await Promise.all(batch.map(async row => {
+        try {
+          const b = await fetch(`${ML_API}/items/${row.mla_id}`, { headers })
+            .then(r => r.ok ? r.json() : null).catch(() => null);
+          if (!b || b.error || !b.id) return;
+
+          const tieneVideo = !!b.video_id;
+          const pictures = Array.isArray(b.pictures) ? b.pictures : [];
+          const attributes = Array.isArray(b.attributes) ? b.attributes : [];
+          const attrsCompletados = attributes.filter(a => a.value_name != null && a.value_name !== '').length;
+          const attrsTotales = attributes.length;
+
+          enriched.push({
+            mla_id: b.id,
+            title: b.title,
+            permalink: b.permalink,
+            thumbnail: b.thumbnail,
+            price: parseFloat(b.price) || 0,
+            stock: b.available_quantity || 0,
+            revenue_periodo: +row.revenue.toFixed(2),
+            units_periodo: row.units,
+            ticket_promedio: row.units > 0 ? +(row.revenue / row.units).toFixed(2) : 0,
+            participacion_revenue_pct: revenueTotal > 0
+              ? +(row.revenue / revenueTotal * 100).toFixed(2) : 0,
+            n_imagenes: pictures.length,
+            tiene_video: tieneVideo,
+            video_id: b.video_id || null,
+            atributos_pct: attrsTotales > 0
+              ? Math.round(attrsCompletados / attrsTotales * 100) : null,
+            health: typeof b.health === 'number' ? b.health : null,
+            listing_type_id: b.listing_type_id,
+          });
+        } catch(e) {}
+      }));
+    }
+
+    enriched.sort((a, b) => b.revenue_periodo - a.revenue_periodo);
+
+    // 4. Candidatos = los del pool que NO tienen video, top N
+    const candidatos = enriched.filter(e => !e.tiene_video).slice(0, topN);
+    const yaTienenVideo = enriched.filter(e => e.tiene_video);
+
+    // 5. Resumen
+    const revenuePoolTotal = enriched.reduce((s, e) => s + e.revenue_periodo, 0);
+    const revenueCandidatos = candidatos.reduce((s, e) => s + e.revenue_periodo, 0);
+    const revenueConVideo = yaTienenVideo.reduce((s, e) => s + e.revenue_periodo, 0);
+
+    res.json({
+      candidatos,
+      ya_tienen_video: yaTienenVideo.map(e => ({
+        mla_id: e.mla_id, title: e.title, revenue_periodo: e.revenue_periodo, video_id: e.video_id,
+      })),
+      resumen: {
+        total_sku_con_ventas: totalSkuConVentas,
+        pool_analizado: enriched.length,
+        candidatos_devueltos: candidatos.length,
+        pool_con_video: yaTienenVideo.length,
+        pool_con_video_pct: enriched.length > 0
+          ? Math.round(yaTienenVideo.length / enriched.length * 100) : 0,
+        revenue_total_periodo: +revenueTotal.toFixed(2),
+        revenue_pool_analizado: +revenuePoolTotal.toFixed(2),
+        revenue_candidatos: +revenueCandidatos.toFixed(2),
+        revenue_ya_con_video: +revenueConVideo.toFixed(2),
+        candidatos_share_revenue_total_pct: revenueTotal > 0
+          ? +(revenueCandidatos / revenueTotal * 100).toFixed(2) : 0,
+      },
+      metadatos: {
+        days,
+        top: topN,
+        pool_size: candidatePool,
+        date_from: fromDate.toISOString().slice(0, 10),
+        date_to: now.toISOString().slice(0, 10),
+        nota: 'Candidatos = top SKUs por revenue del período sin video_id. Para impacto cualitativo: ML prioriza listings con clip — lift de visibilidad estimado 1.5–2x según rubro.',
+      },
+    });
+  } catch(e) {
+    console.error('[/api/reporte/candidatos-clip]', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ── DEBUG: inspect a specific order's shipment ───────────────────────────────
 app.get('/api/item-fees', requireAuth, async (req, res) => {
   try {
