@@ -5494,6 +5494,253 @@ app.get('/api/reporte/full', requireAuth, async (req, res) => {
   }
 });
 
+// ── /api/reporte/campanas-historicas ─────────────────────────────────────────
+// Lift por campaña pasada. Dos modos:
+//   - auto: intenta /seller-promotions con status=finished
+//   - manual: ?periods=YYYY-MM-DD:YYYY-MM-DD,YYYY-MM-DD:YYYY-MM-DD&labels=Hotsale,Cyber
+// Para cada periodo calcula revenue/units durante la campaña vs ventana
+// equivalente previa, y devuelve el lift %.
+app.get('/api/reporte/campanas-historicas', requireAuth, async (req, res) => {
+  try {
+    const clientId = parseInt(req.query.client_id);
+    if (!clientId) return res.status(400).json({ error: 'client_id requerido' });
+
+    const token = await getClientToken(clientId);
+    if (!token) return res.status(403).json({ error: 'Cliente sin token ML' });
+    const headers = { Authorization: `Bearer ${token}` };
+
+    const clientRes = await pool.query('SELECT ml_user_id FROM clients WHERE id=$1', [clientId]);
+    const uid = clientRes.rows[0]?.ml_user_id;
+    if (!uid) return res.status(400).json({ error: 'Cliente sin ML User ID' });
+
+    // 1. Resolver lista de periodos a analizar
+    let periodos = [];
+    let fuente = null;
+    let warning = null;
+
+    if (req.query.periods) {
+      // Modo manual
+      const labels = (req.query.labels || '').split(',').map(s => s.trim());
+      periodos = req.query.periods.split(',').map((p, i) => {
+        const [from, to] = p.split(':');
+        return { from, to, label: labels[i] || `Periodo ${i + 1}` };
+      }).filter(p => p.from && p.to);
+      fuente = 'manual';
+    } else {
+      // Modo auto: intentar /seller-promotions con status=finished
+      try {
+        const url = `${ML_API}/seller-promotions/users/${uid}?app_version=v2&status=finished`;
+        const r = await fetch(url, { headers });
+        if (r.ok) {
+          const j = await r.json();
+          const list = Array.isArray(j) ? j : (j.results || []);
+          periodos = list
+            .filter(p => p.start_date && p.finish_date)
+            .map(p => ({
+              from: p.start_date.slice(0, 10),
+              to: p.finish_date.slice(0, 10),
+              label: p.name || p.alias || p.id,
+              promo_id: p.id,
+              promo_type: p.type || p.promotion_type,
+            }));
+          fuente = 'seller-promotions';
+        } else {
+          warning = `seller-promotions devolvió ${r.status}`;
+          fuente = 'no_disponible';
+        }
+      } catch(e) {
+        warning = `seller-promotions error: ${e.message}`;
+        fuente = 'no_disponible';
+      }
+    }
+
+    if (periodos.length === 0) {
+      return res.json({
+        disponible: false,
+        motivo: warning || 'Sin periodos para analizar. Usá ?periods=YYYY-MM-DD:YYYY-MM-DD,...',
+        campanas: [],
+        metadatos: { fuente, ml_user_id: uid },
+      });
+    }
+
+    // 2. Para cada periodo: revenue/units del periodo vs baseline equivalente previo
+    const fmt = d => d.toISOString().slice(0, 19) + '.000-00:00';
+    const campanas = [];
+
+    for (const p of periodos) {
+      const dFrom = new Date(p.from + 'T00:00:00');
+      const dTo   = new Date(p.to   + 'T23:59:59');
+      const durMs = dTo - dFrom;
+      const dBaseTo   = new Date(dFrom.getTime() - 86400000);   // día previo
+      const dBaseFrom = new Date(dBaseTo.getTime() - durMs);    // misma duración antes
+
+      const [campRes, baseRes] = await Promise.all([
+        fetchAllOrders(uid, headers, fmt(dFrom), fmt(dTo)).catch(() => ({ orders: [] })),
+        fetchAllOrders(uid, headers, fmt(dBaseFrom), fmt(dBaseTo)).catch(() => ({ orders: [] })),
+      ]);
+
+      const agg = orders => {
+        let units = 0, revenue = 0;
+        orders.forEach(o => (o.order_items || []).forEach(oi => {
+          units += oi.quantity || 0;
+          revenue += (parseFloat(oi.unit_price) || 0) * (oi.quantity || 0);
+        }));
+        return { units, revenue, ordenes: orders.length };
+      };
+
+      const camp = agg(campRes.orders);
+      const base = agg(baseRes.orders);
+      const liftRevenue = base.revenue > 0 ? Math.round((camp.revenue / base.revenue - 1) * 100) : null;
+      const liftUnits   = base.units   > 0 ? Math.round((camp.units   / base.units   - 1) * 100) : null;
+
+      // Clasificación según SKILL.md de Steve (8.3)
+      let veredicto;
+      if (liftRevenue == null) veredicto = 'sin_baseline';
+      else if (liftRevenue > 200) veredicto = 'ganador_repetir';
+      else if (liftRevenue < 50)  veredicto = 'perdedor_regalo_de_plata';
+      else veredicto = 'neutro';
+
+      campanas.push({
+        label: p.label,
+        promo_id: p.promo_id || null,
+        promo_type: p.promo_type || null,
+        periodo: { from: p.from, to: p.to },
+        baseline: { from: dBaseFrom.toISOString().slice(0, 10), to: dBaseTo.toISOString().slice(0, 10) },
+        campana: camp,
+        baseline_data: base,
+        lift_revenue_pct: liftRevenue,
+        lift_units_pct: liftUnits,
+        veredicto,
+      });
+    }
+
+    campanas.sort((a, b) => (b.campana.revenue || 0) - (a.campana.revenue || 0));
+
+    res.json({
+      disponible: true,
+      campanas,
+      resumen: {
+        total_analizadas: campanas.length,
+        ganadoras: campanas.filter(c => c.veredicto === 'ganador_repetir').length,
+        perdedoras: campanas.filter(c => c.veredicto === 'perdedor_regalo_de_plata').length,
+        revenue_total_en_campanas: +campanas.reduce((s, c) => s + (c.campana.revenue || 0), 0).toFixed(2),
+      },
+      metadatos: { fuente, warning, ml_user_id: uid },
+    });
+  } catch(e) {
+    console.error('[/api/reporte/campanas-historicas]', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── /api/reporte/promos-especiales ───────────────────────────────────────────
+// Costos ocultos por MLA: envío gratis a cargo del seller, cuotas sin interés.
+// Base del Eje 8.4. ML no expone el costo exacto en endpoints públicos para
+// apps no certificadas, así que entregamos los FLAGS y dejamos que Steve cruce
+// con /api/item-fees si necesita el monto.
+app.get('/api/reporte/promos-especiales', requireAuth, async (req, res) => {
+  try {
+    const clientId = parseInt(req.query.client_id);
+    if (!clientId) return res.status(400).json({ error: 'client_id requerido' });
+
+    const token = await getClientToken(clientId);
+    if (!token) return res.status(403).json({ error: 'Cliente sin token ML' });
+    const headers = { Authorization: `Bearer ${token}` };
+
+    const clientRes = await pool.query('SELECT ml_user_id FROM clients WHERE id=$1', [clientId]);
+    const uid = clientRes.rows[0]?.ml_user_id;
+    if (!uid) return res.status(400).json({ error: 'Cliente sin ML User ID' });
+
+    // Umbral aproximado de envío gratis bonificado por ML en MLA (ARS).
+    // Por debajo el costo lo asume ML; por encima lo paga el seller.
+    // Lo dejamos override-able por query.
+    const umbralEnvioARS = parseFloat(req.query.umbral_envio) || 8500;
+
+    // 1. Traer todos los items activos
+    let allItemIds = [];
+    let offset = 0;
+    while (true) {
+      const data = await fetch(`${ML_API}/users/${uid}/items/search?status=active&limit=100&offset=${offset}`, { headers })
+        .then(r => r.json()).catch(() => ({}));
+      const results = data.results || [];
+      allItemIds = allItemIds.concat(results);
+      if (results.length < 100) break;
+      offset += 100;
+      if (offset > 2000) break;
+    }
+
+    // 2. Detalle por item
+    const items = [];
+    for (let i = 0; i < allItemIds.length; i += 20) {
+      const batch = allItemIds.slice(i, i + 20);
+      const attrs = 'id,title,price,thumbnail,permalink,available_quantity,shipping,listing_type_id,accepts_mercadopago,tags,sale_terms,attributes';
+      const data = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=${attrs}`, { headers })
+        .then(r => r.json()).catch(() => []);
+      (Array.isArray(data) ? data : []).forEach(r => {
+        if (r.code !== 200 || !r.body) return;
+        const b = r.body;
+        const price = parseFloat(b.price) || 0;
+        const freeShipping = !!b.shipping?.free_shipping;
+        const sellerPaysShipping = freeShipping && price >= umbralEnvioARS;
+        // Detección heurística de cuotas sin interés.
+        // ML lo expone vía tags o sale_terms. No siempre está en /items, pero capturamos
+        // lo que haya disponible.
+        const tags = Array.isArray(b.tags) ? b.tags : [];
+        const cuotasSinInteresTag = tags.some(t => /installments_free|cft|sin_interes/i.test(t));
+        const saleTerms = Array.isArray(b.sale_terms) ? b.sale_terms : [];
+        const cuotasInfo = saleTerms.find(t => /installment/i.test(t.id || ''));
+        const tieneCuotasSinInteres = cuotasSinInteresTag || (cuotasInfo && /sin interés|free/i.test(cuotasInfo.value_name || ''));
+
+        items.push({
+          mla_id: b.id,
+          title: b.title,
+          thumbnail: b.thumbnail,
+          permalink: b.permalink,
+          price,
+          stock: b.available_quantity || 0,
+          listing_type_id: b.listing_type_id,
+          logistic_type: b.shipping?.logistic_type || null,
+          free_shipping: freeShipping,
+          seller_pays_shipping_estimado: sellerPaysShipping,
+          cuotas_sin_interes_estimado: !!tieneCuotasSinInteres,
+          tags_relevantes: tags.filter(t => /free|installment|sin_interes|catalog/i.test(t)),
+        });
+      });
+    }
+
+    // 3. Resumen agregado
+    const n = items.length;
+    const sellerEnvio = items.filter(i => i.seller_pays_shipping_estimado);
+    const conCuotas = items.filter(i => i.cuotas_sin_interes_estimado);
+    const sumPrice = arr => arr.reduce((s, i) => s + (i.price || 0), 0);
+
+    res.json({
+      items,
+      resumen: {
+        total_items: n,
+        free_shipping_total: items.filter(i => i.free_shipping).length,
+        seller_paga_envio: {
+          count: sellerEnvio.length,
+          pct: n > 0 ? Math.round(sellerEnvio.length / n * 100) : 0,
+          precio_promedio: sellerEnvio.length > 0 ? +(sumPrice(sellerEnvio) / sellerEnvio.length).toFixed(2) : 0,
+        },
+        cuotas_sin_interes: {
+          count: conCuotas.length,
+          pct: n > 0 ? Math.round(conCuotas.length / n * 100) : 0,
+        },
+      },
+      metadatos: {
+        umbral_envio_ars: umbralEnvioARS,
+        total_items_activos: allItemIds.length,
+        nota: 'Los flags son detección heurística desde /items. Para costo exacto cruzar con /api/item-fees por MLA.',
+      },
+    });
+  } catch(e) {
+    console.error('[/api/reporte/promos-especiales]', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ── DEBUG: inspect a specific order's shipment ───────────────────────────────
 app.get('/api/item-fees', requireAuth, async (req, res) => {
   try {
