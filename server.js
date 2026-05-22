@@ -5721,10 +5721,12 @@ app.get('/api/reporte/promos-especiales', requireAuth, async (req, res) => {
     }
 
     // 2. Detalle por item — fetch individual a /items/{id} en paralelo.
-    //    El batch /items?ids=... NO devuelve `installments` confiable, por eso
-    //    necesitamos llamar al endpoint singular. installments.rate === 0 ⇒
-    //    cuotas sin interés. Sin esto la heurística previa daba 0% en todos lados.
+    //    El batch /items?ids=... NO devuelve `installments`. ML expone el campo
+    //    SOLO para apps certificadas o ciertos sellers; en muchos casos viene
+    //    null aunque la página pública del item sí muestre cuotas. Trackeamos
+    //    cuántos vinieron con installments != null para reportar disponibilidad.
     const items = [];
+    let installmentsExpuestos = 0;
     const PARALLEL = 20;
     for (let i = 0; i < allItemIds.length; i += PARALLEL) {
       const batch = allItemIds.slice(i, i + PARALLEL);
@@ -5740,11 +5742,12 @@ app.get('/api/reporte/promos-especiales', requireAuth, async (req, res) => {
 
           // Cuotas: installments.rate === 0 es la señal definitiva.
           const installmentsObj = b.installments || null;
+          if (installmentsObj) installmentsExpuestos++;
           const installmentsQty = installmentsObj?.quantity ?? null;
           const installmentsRate = installmentsObj?.rate ?? null;
           const cuotasSinInteres = installmentsObj
             ? (installmentsRate === 0 && installmentsQty > 1)
-            : false;
+            : null;  // null = no se sabe (ML no expuso el dato)
 
           // Fallback con tags para robustez
           const tags = Array.isArray(b.tags) ? b.tags : [];
@@ -5761,7 +5764,8 @@ app.get('/api/reporte/promos-especiales', requireAuth, async (req, res) => {
             logistic_type: b.shipping?.logistic_type || null,
             free_shipping: freeShipping,
             seller_pays_shipping_estimado: sellerPaysShipping,
-            cuotas_sin_interes: cuotasSinInteres || cuotasPorTag,
+            cuotas_sin_interes: cuotasSinInteres === true || cuotasPorTag,
+            cuotas_dato_disponible: installmentsObj != null,
             cuotas_cantidad: installmentsQty,
             cuotas_rate: installmentsRate,
             tags_relevantes: tags.filter(t => /free|installment|sin_interes|catalog/i.test(t)),
@@ -5774,7 +5778,13 @@ app.get('/api/reporte/promos-especiales', requireAuth, async (req, res) => {
     const n = items.length;
     const sellerEnvio = items.filter(i => i.seller_pays_shipping_estimado);
     const conCuotas = items.filter(i => i.cuotas_sin_interes);
+    const conDatoCuotas = items.filter(i => i.cuotas_dato_disponible);
     const sumPrice = arr => arr.reduce((s, i) => s + (i.price || 0), 0);
+
+    const pctInstallmentsExpuestos = n > 0 ? Math.round(installmentsExpuestos / n * 100) : 0;
+    const cuotasDisponibilidad = installmentsExpuestos === 0
+      ? 'no_expuesto_por_ml'
+      : (pctInstallmentsExpuestos < 50 ? 'parcial' : 'completo');
 
     res.json({
       items,
@@ -5790,13 +5800,19 @@ app.get('/api/reporte/promos-especiales', requireAuth, async (req, res) => {
           count: conCuotas.length,
           pct: n > 0 ? Math.round(conCuotas.length / n * 100) : 0,
           precio_promedio: conCuotas.length > 0 ? +(sumPrice(conCuotas) / conCuotas.length).toFixed(2) : 0,
+          dato_disponible_count: conDatoCuotas.length,
+          dato_disponible_pct: pctInstallmentsExpuestos,
+          disponibilidad: cuotasDisponibilidad,
         },
       },
       metadatos: {
         umbral_envio_ars: umbralEnvioARS,
         total_items_activos: allItemIds.length,
         items_procesados: items.length,
-        nota: 'cuotas_sin_interes se lee de installments.rate===0 del item singular. Costo aprox de cuotas en MLA ~8.5% del precio. Envío bonificado por ML solo bajo umbral_envio_ars.',
+        installments_expuestos: installmentsExpuestos,
+        nota: cuotasDisponibilidad === 'no_expuesto_por_ml'
+          ? 'ML no expone installments en /items/{id} para esta app (limitación de scope). El dato de cuotas sin interés no se puede inferir del API. Para obtenerlo: escalar a app certificada o scraping del permalink.'
+          : 'cuotas_sin_interes se lee de installments.rate===0 del item singular. Costo aprox de cuotas en MLA ~8.5% del precio. Envío bonificado por ML solo bajo umbral_envio_ars.',
       },
     });
   } catch(e) {
