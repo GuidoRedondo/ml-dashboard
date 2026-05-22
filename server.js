@@ -5091,6 +5091,244 @@ app.get('/api/reporte/publicaciones', requireAuth, async (req, res) => {
   }
 });
 
+// ── /api/reporte/campanas-activas ────────────────────────────────────────────
+// Lista las promociones ofertadas por ML al seller y cuántos ítems suyos están
+// participando. Base del Eje 8.1 (campañas activas) y 8.4 (promos especiales).
+// Fallback: si /seller-promotions tira 403, deduce campañas activas mirando
+// items con original_price > price.
+app.get('/api/reporte/campanas-activas', requireAuth, async (req, res) => {
+  try {
+    const clientId = parseInt(req.query.client_id);
+    if (!clientId) return res.status(400).json({ error: 'client_id requerido' });
+
+    const token = await getClientToken(clientId);
+    if (!token) return res.status(403).json({ error: 'Cliente sin token ML' });
+    const headers = { Authorization: `Bearer ${token}` };
+
+    const clientRes = await pool.query('SELECT ml_user_id FROM clients WHERE id=$1', [clientId]);
+    const uid = clientRes.rows[0]?.ml_user_id;
+    if (!uid) return res.status(400).json({ error: 'Cliente sin ML User ID' });
+
+    // 1. Endpoint oficial: promociones ofertadas
+    let campanas = [];
+    let fuente = 'seller-promotions';
+    let warning = null;
+
+    try {
+      const offersUrl = `${ML_API}/seller-promotions/users/${uid}?app_version=v2`;
+      const r = await fetch(offersUrl, { headers });
+      if (r.ok) {
+        const offers = await r.json();
+        const list = Array.isArray(offers) ? offers : (offers.results || []);
+
+        // Enriquecer con cantidad de ítems del seller en cada promo
+        for (const promo of list) {
+          const promoId = promo.id;
+          const ptype   = promo.type || promo.promotion_type;
+          let itemsCount = null;
+          try {
+            const itemsUrl = `${ML_API}/seller-promotions/promotions/${promoId}/items?promotion_type=${ptype}&app_version=v2&limit=1`;
+            const ir = await fetch(itemsUrl, { headers });
+            if (ir.ok) {
+              const ij = await ir.json();
+              itemsCount = ij.paging?.total ?? (Array.isArray(ij.results) ? ij.results.length : null);
+            }
+          } catch(e) {}
+
+          campanas.push({
+            id: promoId,
+            type: ptype,
+            name: promo.name || promo.alias || promo.id,
+            status: promo.status,
+            start_date: promo.start_date,
+            finish_date: promo.finish_date,
+            deadline: promo.deadline,
+            offer_type: promo.offer_type,
+            discount_pct_offered: promo.benefits?.[0]?.percentage_off
+              ?? promo.percentage_off
+              ?? null,
+            items_participantes: itemsCount,
+            raw_meta: {
+              meli_percentage: promo.meli_percentage,
+              seller_percentage: promo.seller_percentage,
+            },
+          });
+        }
+      } else if (r.status === 403 || r.status === 401) {
+        warning = `seller-promotions devolvió ${r.status} — usando fallback por descuentos en items`;
+        fuente = 'fallback_items';
+      } else {
+        warning = `seller-promotions devolvió ${r.status}`;
+        fuente = 'fallback_items';
+      }
+    } catch(e) {
+      warning = `seller-promotions error: ${e.message}`;
+      fuente = 'fallback_items';
+    }
+
+    // 2. Fallback: deducir campañas mirando promotions[] de los items
+    if (fuente === 'fallback_items') {
+      const searchRes = await fetch(`${ML_API}/users/${uid}/items/search?status=active&limit=100`, { headers })
+        .then(r => r.json()).catch(() => ({}));
+      const ids = (searchRes.results || []).slice(0, 100);
+      const byPromo = {};
+      for (let i = 0; i < ids.length; i += 20) {
+        const batch = ids.slice(i, i + 20);
+        const data = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,promotions,price,original_price`, { headers })
+          .then(r => r.json()).catch(() => []);
+        (Array.isArray(data) ? data : []).forEach(r => {
+          if (r.code !== 200 || !r.body) return;
+          (r.body.promotions || []).forEach(p => {
+            const key = p.id || p.name || p.type || 'sin_id';
+            if (!byPromo[key]) {
+              byPromo[key] = {
+                id: p.id || null,
+                type: p.type || null,
+                name: p.name || p.type || key,
+                items_participantes: 0,
+                discount_pct_promedio: 0,
+                _suma_pct: 0,
+              };
+            }
+            byPromo[key].items_participantes++;
+            const pct = r.body.original_price && r.body.original_price > r.body.price
+              ? Math.round((r.body.original_price - r.body.price) / r.body.original_price * 100)
+              : 0;
+            byPromo[key]._suma_pct += pct;
+          });
+        });
+      }
+      campanas = Object.values(byPromo).map(p => ({
+        id: p.id,
+        type: p.type,
+        name: p.name,
+        items_participantes: p.items_participantes,
+        discount_pct_promedio: p.items_participantes > 0
+          ? Math.round(p._suma_pct / p.items_participantes) : 0,
+      }));
+    }
+
+    // 3. Resumen
+    const porTipo = {};
+    campanas.forEach(c => {
+      const t = c.type || 'sin_tipo';
+      porTipo[t] = (porTipo[t] || 0) + 1;
+    });
+    const itemsTotalesEnCampana = campanas.reduce((s, c) => s + (c.items_participantes || 0), 0);
+
+    res.json({
+      campanas,
+      resumen: {
+        total_campanas: campanas.length,
+        items_en_campana: itemsTotalesEnCampana,
+        por_tipo: porTipo,
+      },
+      metadatos: {
+        fuente,
+        warning,
+        ml_user_id: uid,
+      },
+    });
+  } catch(e) {
+    console.error('[/api/reporte/campanas-activas]', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── /api/reporte/cupones ─────────────────────────────────────────────────────
+// Cupones creados por el seller: descuento, usos, vigencia. Base del Eje 8.2.
+// Si el endpoint de ML no está disponible, devuelve { disponible:false, motivo }.
+app.get('/api/reporte/cupones', requireAuth, async (req, res) => {
+  try {
+    const clientId = parseInt(req.query.client_id);
+    if (!clientId) return res.status(400).json({ error: 'client_id requerido' });
+
+    const token = await getClientToken(clientId);
+    if (!token) return res.status(403).json({ error: 'Cliente sin token ML' });
+    const headers = { Authorization: `Bearer ${token}` };
+
+    const clientRes = await pool.query('SELECT ml_user_id FROM clients WHERE id=$1', [clientId]);
+    const uid = clientRes.rows[0]?.ml_user_id;
+    if (!uid) return res.status(400).json({ error: 'Cliente sin ML User ID' });
+
+    // Intentamos varios endpoints en orden — ML cambió la ubicación varias veces
+    const intentos = [
+      `${ML_API}/seller-coupons/users/${uid}/coupons`,
+      `${ML_API}/marketplace/coupons/users/${uid}`,
+      `${ML_API}/seller-promotions/users/${uid}/coupons?app_version=v2`,
+    ];
+
+    let cupones = null;
+    let intentoExitoso = null;
+    const intentosLog = [];
+
+    for (const url of intentos) {
+      try {
+        const r = await fetch(url, { headers });
+        intentosLog.push({ url, status: r.status });
+        if (r.ok) {
+          const j = await r.json();
+          cupones = Array.isArray(j) ? j : (j.results || j.coupons || j.data || []);
+          intentoExitoso = url;
+          break;
+        }
+      } catch(e) {
+        intentosLog.push({ url, error: e.message });
+      }
+    }
+
+    if (cupones === null) {
+      return res.json({
+        disponible: false,
+        motivo: 'Ninguno de los endpoints de cupones respondió 200 (app probablemente sin scope `seller-promotions` certificado)',
+        cupones: [],
+        resumen: { total: 0, activos: 0, usos_totales: 0 },
+        metadatos: { intentos: intentosLog, ml_user_id: uid },
+      });
+    }
+
+    // Normalizar campos comunes
+    const norm = cupones.map(c => ({
+      id: c.id || c.coupon_id || null,
+      code: c.code || c.coupon_code || null,
+      status: c.status || (c.active ? 'active' : null),
+      discount_type: c.discount_type || c.type || null,
+      discount_value: c.discount_value ?? c.value ?? c.amount ?? null,
+      min_purchase: c.min_purchase ?? c.minimum_purchase ?? null,
+      max_uses: c.max_uses ?? c.usage_limit ?? null,
+      used: c.used ?? c.usage_count ?? c.uses ?? 0,
+      start_date: c.start_date || c.valid_from || null,
+      end_date: c.end_date || c.valid_to || c.expiration_date || null,
+      raw: c,
+    }));
+
+    const now = new Date();
+    const activos = norm.filter(c => {
+      if (c.status && /active|started|enabled/i.test(c.status)) return true;
+      if (c.end_date && new Date(c.end_date) > now) return true;
+      return false;
+    });
+    const usosTotales = norm.reduce((s, c) => s + (parseInt(c.used) || 0), 0);
+
+    res.json({
+      disponible: true,
+      cupones: norm,
+      resumen: {
+        total: norm.length,
+        activos: activos.length,
+        usos_totales: usosTotales,
+      },
+      metadatos: {
+        fuente: intentoExitoso,
+        ml_user_id: uid,
+      },
+    });
+  } catch(e) {
+    console.error('[/api/reporte/cupones]', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ── DEBUG: inspect a specific order's shipment ───────────────────────────────
 app.get('/api/item-fees', requireAuth, async (req, res) => {
   try {
