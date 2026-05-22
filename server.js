@@ -4946,6 +4946,151 @@ app.get('/api/reporte/ads', requireAuth, async (req, res) => {
   }
 });
 
+// ── /api/reporte/publicaciones ───────────────────────────────────────────────
+// Calidad de publicaciones activas: imágenes, video, atributos, descripción,
+// health score y tags de ML. Base del Eje 3 de Steve (y del cruce del Eje 7).
+app.get('/api/reporte/publicaciones', requireAuth, async (req, res) => {
+  try {
+    const clientId = parseInt(req.query.client_id);
+    if (!clientId) return res.status(400).json({ error: 'client_id requerido' });
+
+    const includeDescription = req.query.include_description !== '0';
+
+    const token = await getClientToken(clientId);
+    if (!token) return res.status(403).json({ error: 'Cliente sin token ML' });
+    const headers = { Authorization: `Bearer ${token}` };
+
+    const clientRes = await pool.query('SELECT ml_user_id FROM clients WHERE id=$1', [clientId]);
+    const uid = clientRes.rows[0]?.ml_user_id;
+    if (!uid) return res.status(400).json({ error: 'Cliente sin ML User ID' });
+
+    // 1. Traer todos los IDs activos
+    let allItemIds = [];
+    let offset = 0;
+    while (true) {
+      const data = await fetch(`${ML_API}/users/${uid}/items/search?status=active&limit=100&offset=${offset}`, { headers })
+        .then(r => r.json()).catch(() => ({}));
+      const results = data.results || [];
+      allItemIds = allItemIds.concat(results);
+      if (results.length < 100) break;
+      offset += 100;
+      if (offset > 2000) break;
+    }
+
+    // Tags que indican problemas de calidad (no exhaustivo — los más comunes en MLA)
+    const TAGS_PROBLEMA = new Set([
+      'incomplete_technical_specs',
+      'poor_quality_picture',
+      'poor_quality_thumbnail',
+      'catalog_forewarning',
+      'low_quality_description',
+    ]);
+    const TAGS_POSITIVOS = new Set([
+      'good_quality_picture',
+      'good_quality_thumbnail',
+      'catalog_boost',
+      'extended_warranty_eligible',
+      'best_seller_candidate',
+    ]);
+
+    // 2. Fetch detalle + descripción (opcional) en paralelo, en lotes
+    const items = [];
+    const PARALLEL = 20;
+    for (let i = 0; i < allItemIds.length; i += PARALLEL) {
+      const batch = allItemIds.slice(i, i + PARALLEL);
+      await Promise.all(batch.map(async itemId => {
+        try {
+          const fetchItem = fetch(`${ML_API}/items/${itemId}`, { headers }).then(r => r.json());
+          const fetchDesc = includeDescription
+            ? fetch(`${ML_API}/items/${itemId}/description`, { headers })
+                .then(r => r.ok ? r.json() : null).catch(() => null)
+            : Promise.resolve(null);
+          const [b, desc] = await Promise.all([fetchItem, fetchDesc]);
+          if (!b || b.error || !b.id) return;
+
+          const pictures = Array.isArray(b.pictures) ? b.pictures : [];
+          const attributes = Array.isArray(b.attributes) ? b.attributes : [];
+          const attrsCompletados = attributes.filter(a => a.value_name != null && a.value_name !== '').length;
+          const attrsTotales = attributes.length;
+          const tags = Array.isArray(b.tags) ? b.tags : [];
+          const warnings = tags.filter(t => TAGS_PROBLEMA.has(t));
+          const positivos = tags.filter(t => TAGS_POSITIVOS.has(t));
+
+          const plainText = desc && (desc.plain_text || desc.text) || '';
+          const descChars = plainText.length;
+
+          items.push({
+            mla_id: b.id,
+            title: b.title,
+            permalink: b.permalink,
+            thumbnail: b.thumbnail,
+            price: parseFloat(b.price) || 0,
+            stock: b.available_quantity || 0,
+            listing_type_id: b.listing_type_id,
+            category_id: b.category_id,
+            catalog_listing: !!b.catalog_listing,
+            n_imagenes: pictures.length,
+            tiene_video: !!b.video_id,
+            video_id: b.video_id || null,
+            atributos_completados: attrsCompletados,
+            atributos_totales: attrsTotales,
+            atributos_pct: attrsTotales > 0 ? Math.round(attrsCompletados / attrsTotales * 100) : null,
+            descripcion_chars: descChars,
+            tiene_descripcion: descChars > 0,
+            health: typeof b.health === 'number' ? b.health : null,
+            tags,
+            warnings_calidad: warnings,
+            flags_positivos: positivos,
+          });
+        } catch(e) {}
+      }));
+    }
+
+    items.sort((a, b) => (b.price * b.stock) - (a.price * a.stock));
+
+    // 3. Resumen agregado
+    const n = items.length;
+    const conVideo = items.filter(i => i.tiene_video).length;
+    const con3oMenosImg = items.filter(i => i.n_imagenes <= 3).length;
+    const fichaIncompleta = items.filter(i => i.atributos_pct != null && i.atributos_pct < 70).length;
+    const sinDescripcion = includeDescription ? items.filter(i => !i.tiene_descripcion).length : null;
+    const conWarnings = items.filter(i => i.warnings_calidad.length > 0).length;
+    const healthValues = items.map(i => i.health).filter(h => typeof h === 'number');
+    const healthProm = healthValues.length > 0
+      ? +(healthValues.reduce((s, h) => s + h, 0) / healthValues.length).toFixed(3)
+      : null;
+    const bajaSalud = items.filter(i => typeof i.health === 'number' && i.health < 0.7).length;
+
+    const resumen = {
+      total_publicaciones: n,
+      con_video: conVideo,
+      pct_con_video: n > 0 ? Math.round(conVideo / n * 100) : 0,
+      con_3_o_menos_imagenes: con3oMenosImg,
+      pct_3_o_menos_imagenes: n > 0 ? Math.round(con3oMenosImg / n * 100) : 0,
+      ficha_incompleta: fichaIncompleta,
+      pct_ficha_incompleta: n > 0 ? Math.round(fichaIncompleta / n * 100) : 0,
+      sin_descripcion: sinDescripcion,
+      con_warnings: conWarnings,
+      pct_con_warnings: n > 0 ? Math.round(conWarnings / n * 100) : 0,
+      health_promedio: healthProm,
+      baja_salud: bajaSalud,
+    };
+
+    res.json({
+      items,
+      resumen,
+      metadatos: {
+        total_ids: allItemIds.length,
+        items_procesados: items.length,
+        include_description: includeDescription,
+      },
+    });
+  } catch(e) {
+    console.error('[/api/reporte/publicaciones]', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ── DEBUG: inspect a specific order's shipment ───────────────────────────────
 app.get('/api/item-fees', requireAuth, async (req, res) => {
   try {
