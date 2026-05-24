@@ -9756,6 +9756,345 @@ app.post('/api/analisis/umbrales/accion', requireAuth, async (req, res) => {
   }
 });
 
+// =========================================================================
+// PLAN DE TRABAJO — Endpoints
+// Negocio Redondo / Método Redondo™
+// Tablas: plan_acciones_master, plan_acciones_cliente,
+//         plan_diagnostico_cliente, plan_acciones_historial
+// Migración: migrations/plan-trabajo.sql
+// Seed:      seed-plan-master.js  (npm run seed:plan)
+// =========================================================================
+
+const PLAN_PALANCAS = {
+  1: 'Tráfico',
+  2: 'Conversión',
+  3: 'Rentabilidad',
+  4: 'Publicidad',
+  5: 'Promos y cupones',
+  6: 'Full y Flex'
+};
+
+// ----- MASTER -----
+app.get('/api/plan/master', requireAuth, async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT id, palanca, palanca_nombre, accion, cuadrante, responsable_default, cadencia, orden
+       FROM plan_acciones_master
+       ORDER BY palanca, orden`
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error('GET /api/plan/master:', err);
+    res.status(500).json({ error: 'Error obteniendo master' });
+  }
+});
+
+// ----- SEED por cliente (idempotente) -----
+app.post('/api/plan/seed/:clientId', requireAuth, async (req, res) => {
+  const clientId = parseInt(req.params.clientId, 10);
+  if (!clientId) return res.status(400).json({ error: 'clientId inválido' });
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const { rows: existing } = await client.query(
+      `SELECT COUNT(*)::int AS n FROM plan_acciones_cliente
+       WHERE client_id = $1 AND es_custom = FALSE AND deleted_at IS NULL`,
+      [clientId]
+    );
+
+    if (existing[0].n > 0) {
+      await client.query('ROLLBACK');
+      return res.json({ ok: true, seeded: 0, message: 'Ya tiene acciones sembradas' });
+    }
+
+    const result = await client.query(
+      `INSERT INTO plan_acciones_cliente
+        (client_id, master_id, palanca, accion, cuadrante, responsable, cadencia, orden, es_custom)
+       SELECT $1, id, palanca, accion, cuadrante, responsable_default, cadencia, orden, FALSE
+       FROM plan_acciones_master
+       ORDER BY palanca, orden
+       RETURNING id`,
+      [clientId]
+    );
+
+    await client.query(
+      `INSERT INTO plan_diagnostico_cliente (client_id, palanca, semaforo)
+       SELECT $1, p, 'gris'
+       FROM generate_series(1, 6) AS p
+       ON CONFLICT (client_id, palanca) DO NOTHING`,
+      [clientId]
+    );
+
+    await client.query('COMMIT');
+    res.json({ ok: true, seeded: result.rowCount });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('POST /api/plan/seed:', err);
+    res.status(500).json({ error: 'Error sembrando plan' });
+  } finally {
+    client.release();
+  }
+});
+
+// ----- DIAGNÓSTICO -----
+app.get('/api/plan/diagnostico/:clientId', requireAuth, async (req, res) => {
+  const clientId = parseInt(req.params.clientId, 10);
+  if (!clientId) return res.status(400).json({ error: 'clientId inválido' });
+
+  try {
+    await pool.query(
+      `INSERT INTO plan_diagnostico_cliente (client_id, palanca, semaforo)
+       SELECT $1, p, 'gris'
+       FROM generate_series(1, 6) AS p
+       ON CONFLICT (client_id, palanca) DO NOTHING`,
+      [clientId]
+    );
+
+    const { rows } = await pool.query(
+      `SELECT palanca, semaforo, comentario, updated_at
+       FROM plan_diagnostico_cliente
+       WHERE client_id = $1
+       ORDER BY palanca`,
+      [clientId]
+    );
+
+    const { rows: conteos } = await pool.query(
+      `SELECT palanca, estado, COUNT(*)::int AS n
+       FROM plan_acciones_cliente
+       WHERE client_id = $1 AND deleted_at IS NULL
+       GROUP BY palanca, estado`,
+      [clientId]
+    );
+
+    const byPalanca = {};
+    for (let p = 1; p <= 6; p++) byPalanca[p] = { no_iniciada: 0, en_progreso: 0, bloqueada: 0, hecha: 0 };
+    for (const c of conteos) byPalanca[c.palanca][c.estado] = c.n;
+
+    const out = rows.map(r => ({
+      ...r,
+      palanca_nombre: PLAN_PALANCAS[r.palanca],
+      conteos: byPalanca[r.palanca]
+    }));
+
+    res.json(out);
+  } catch (err) {
+    console.error('GET /api/plan/diagnostico:', err);
+    res.status(500).json({ error: 'Error obteniendo diagnóstico' });
+  }
+});
+
+app.put('/api/plan/diagnostico/:clientId/:palanca', requireAuth, async (req, res) => {
+  const clientId = parseInt(req.params.clientId, 10);
+  const palanca = parseInt(req.params.palanca, 10);
+  if (!clientId || !palanca || palanca < 1 || palanca > 6) {
+    return res.status(400).json({ error: 'Parámetros inválidos' });
+  }
+  const { semaforo, comentario } = req.body || {};
+  if (semaforo && !['verde', 'amarillo', 'rojo', 'gris'].includes(semaforo)) {
+    return res.status(400).json({ error: 'Semáforo inválido' });
+  }
+
+  try {
+    await pool.query(
+      `INSERT INTO plan_diagnostico_cliente (client_id, palanca, semaforo, comentario, updated_at)
+       VALUES ($1, $2, COALESCE($3, 'gris'), $4, NOW())
+       ON CONFLICT (client_id, palanca) DO UPDATE
+         SET semaforo   = COALESCE(EXCLUDED.semaforo, plan_diagnostico_cliente.semaforo),
+             comentario = COALESCE(EXCLUDED.comentario, plan_diagnostico_cliente.comentario),
+             updated_at = NOW()`,
+      [clientId, palanca, semaforo || null, comentario === undefined ? null : comentario]
+    );
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('PUT /api/plan/diagnostico:', err);
+    res.status(500).json({ error: 'Error actualizando diagnóstico' });
+  }
+});
+
+// ----- ACCIONES (CRUD) -----
+app.get('/api/plan/acciones/:clientId', requireAuth, async (req, res) => {
+  const clientId = parseInt(req.params.clientId, 10);
+  if (!clientId) return res.status(400).json({ error: 'clientId inválido' });
+
+  const { palanca, estado, responsable, prioridad, incluir_eliminadas } = req.query;
+  const where = ['client_id = $1'];
+  const params = [clientId];
+  let idx = 2;
+
+  if (!incluir_eliminadas || incluir_eliminadas === 'false') {
+    where.push('deleted_at IS NULL');
+  }
+  if (palanca) { where.push(`palanca = $${idx++}`); params.push(parseInt(palanca, 10)); }
+  if (estado) { where.push(`estado = $${idx++}`); params.push(estado); }
+  if (responsable) { where.push(`responsable = $${idx++}`); params.push(responsable); }
+  if (prioridad) { where.push(`prioridad = $${idx++}`); params.push(prioridad); }
+
+  try {
+    const { rows } = await pool.query(
+      `SELECT id, master_id, palanca, accion, cuadrante, prioridad, responsable, cadencia,
+              estado, fecha_objetivo, notas, es_custom, orden,
+              deleted_at, created_at, updated_at, completada_at
+       FROM plan_acciones_cliente
+       WHERE ${where.join(' AND ')}
+       ORDER BY
+         CASE prioridad WHEN 'alta' THEN 1 WHEN 'media' THEN 2 WHEN 'baja' THEN 3 END,
+         CASE estado WHEN 'en_progreso' THEN 1 WHEN 'no_iniciada' THEN 2 WHEN 'bloqueada' THEN 3 WHEN 'hecha' THEN 4 END,
+         palanca, orden`,
+      params
+    );
+    const out = rows.map(r => ({ ...r, palanca_nombre: PLAN_PALANCAS[r.palanca] }));
+    res.json(out);
+  } catch (err) {
+    console.error('GET /api/plan/acciones:', err);
+    res.status(500).json({ error: 'Error obteniendo acciones' });
+  }
+});
+
+app.post('/api/plan/acciones/:clientId', requireAuth, async (req, res) => {
+  const clientId = parseInt(req.params.clientId, 10);
+  if (!clientId) return res.status(400).json({ error: 'clientId inválido' });
+
+  const { palanca, accion, cuadrante, prioridad, responsable, cadencia, fecha_objetivo, notas } = req.body || {};
+
+  if (!palanca || palanca < 1 || palanca > 6) return res.status(400).json({ error: 'palanca inválida' });
+  if (!accion || !accion.trim()) return res.status(400).json({ error: 'accion requerida' });
+
+  try {
+    const { rows } = await pool.query(
+      `INSERT INTO plan_acciones_cliente
+        (client_id, master_id, palanca, accion, cuadrante, prioridad, responsable, cadencia,
+         estado, fecha_objetivo, notas, es_custom)
+       VALUES ($1, NULL, $2, $3, $4, COALESCE($5, 'media'), $6, $7,
+               'no_iniciada', $8, $9, TRUE)
+       RETURNING id`,
+      [clientId, palanca, accion.trim(),
+       cuadrante || null, prioridad || null, responsable || null, cadencia || null,
+       fecha_objetivo || null, notas || null]
+    );
+    res.json({ ok: true, id: rows[0].id });
+  } catch (err) {
+    console.error('POST /api/plan/acciones:', err);
+    res.status(500).json({ error: 'Error creando acción' });
+  }
+});
+
+app.put('/api/plan/acciones/:clientId/:accionId', requireAuth, async (req, res) => {
+  const clientId = parseInt(req.params.clientId, 10);
+  const accionId = parseInt(req.params.accionId, 10);
+  if (!clientId || !accionId) return res.status(400).json({ error: 'Parámetros inválidos' });
+
+  const allowed = ['accion','prioridad','responsable','cadencia','estado','fecha_objetivo','notas','cuadrante','palanca'];
+  const updates = [];
+  const params = [];
+  let idx = 1;
+
+  for (const k of allowed) {
+    if (req.body && k in req.body) {
+      updates.push(`${k} = $${idx++}`);
+      params.push(req.body[k]);
+    }
+  }
+
+  if (!updates.length) return res.status(400).json({ error: 'Nada que actualizar' });
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    let estadoAnterior = null;
+    if (req.body.estado !== undefined) {
+      const { rows } = await client.query(
+        `SELECT estado FROM plan_acciones_cliente WHERE id = $1 AND client_id = $2`,
+        [accionId, clientId]
+      );
+      if (!rows.length) {
+        await client.query('ROLLBACK');
+        return res.status(404).json({ error: 'Acción no encontrada' });
+      }
+      estadoAnterior = rows[0].estado;
+    }
+
+    let extraSet = '';
+    if (req.body.estado === 'hecha') {
+      extraSet = `, completada_at = NOW()`;
+    } else if (req.body.estado && req.body.estado !== 'hecha') {
+      extraSet = `, completada_at = NULL`;
+    }
+
+    params.push(accionId, clientId);
+    const result = await client.query(
+      `UPDATE plan_acciones_cliente
+       SET ${updates.join(', ')}, updated_at = NOW() ${extraSet}
+       WHERE id = $${idx++} AND client_id = $${idx++}`,
+      params
+    );
+
+    if (!result.rowCount) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Acción no encontrada' });
+    }
+
+    if (req.body.estado !== undefined && estadoAnterior !== req.body.estado) {
+      await client.query(
+        `INSERT INTO plan_acciones_historial (accion_id, client_id, estado_anterior, estado_nuevo)
+         VALUES ($1, $2, $3, $4)`,
+        [accionId, clientId, estadoAnterior, req.body.estado]
+      );
+    }
+
+    await client.query('COMMIT');
+    res.json({ ok: true });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('PUT /api/plan/acciones:', err);
+    res.status(500).json({ error: 'Error actualizando acción' });
+  } finally {
+    client.release();
+  }
+});
+
+app.delete('/api/plan/acciones/:clientId/:accionId', requireAuth, async (req, res) => {
+  const clientId = parseInt(req.params.clientId, 10);
+  const accionId = parseInt(req.params.accionId, 10);
+  if (!clientId || !accionId) return res.status(400).json({ error: 'Parámetros inválidos' });
+
+  try {
+    const result = await pool.query(
+      `UPDATE plan_acciones_cliente
+       SET deleted_at = NOW(), updated_at = NOW()
+       WHERE id = $1 AND client_id = $2 AND deleted_at IS NULL`,
+      [accionId, clientId]
+    );
+    if (!result.rowCount) return res.status(404).json({ error: 'Acción no encontrada' });
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('DELETE /api/plan/acciones:', err);
+    res.status(500).json({ error: 'Error eliminando acción' });
+  }
+});
+
+app.post('/api/plan/acciones/:clientId/:accionId/restore', requireAuth, async (req, res) => {
+  const clientId = parseInt(req.params.clientId, 10);
+  const accionId = parseInt(req.params.accionId, 10);
+  if (!clientId || !accionId) return res.status(400).json({ error: 'Parámetros inválidos' });
+
+  try {
+    const result = await pool.query(
+      `UPDATE plan_acciones_cliente
+       SET deleted_at = NULL, updated_at = NOW()
+       WHERE id = $1 AND client_id = $2 AND deleted_at IS NOT NULL`,
+      [accionId, clientId]
+    );
+    if (!result.rowCount) return res.status(404).json({ error: 'Acción no encontrada o no eliminada' });
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('POST restore:', err);
+    res.status(500).json({ error: 'Error restaurando' });
+  }
+});
+
 initDB().then(() => {
   app.listen(PORT, () => console.log(`Puerto ${PORT}`));
 

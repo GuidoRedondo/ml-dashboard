@@ -508,6 +508,190 @@ tbody td {
   #informe-print-content { display: block !important; }
   * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
 }
+
+/* ===== PLAN DE TRABAJO ===== */
+.plan-wrap { padding: 0; }
+.plan-tabs { display: flex; gap: 0; border-bottom: 2px solid #e5e5e5; margin-bottom: 24px; }
+.plan-tab {
+  padding: 12px 22px; cursor: pointer; border: none; background: transparent;
+  font-family: var(--font); font-size: 15px; font-weight: 600;
+  color: #888; border-bottom: 3px solid transparent; margin-bottom: -2px;
+  transition: all 0.15s;
+}
+.plan-tab:hover { color: #292929; }
+.plan-tab.active { color: #292929; border-bottom-color: #fff952; }
+
+.plan-panel { display: none; }
+.plan-panel.active { display: block; }
+
+.plan-diag-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 16px;
+}
+.plan-diag-card {
+  background: #fff; border: 1px solid #e5e5e5; border-radius: 10px;
+  padding: 18px; transition: box-shadow 0.15s;
+}
+.plan-diag-card:hover { box-shadow: 0 2px 12px rgba(0,0,0,0.06); }
+.plan-diag-card.semaforo-verde    { border-left: 5px solid #3B6D11; }
+.plan-diag-card.semaforo-amarillo { border-left: 5px solid #BA7517; }
+.plan-diag-card.semaforo-rojo     { border-left: 5px solid #C04828; }
+.plan-diag-card.semaforo-gris     { border-left: 5px solid #c5c5c5; }
+
+.plan-diag-head {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 12px;
+}
+.plan-diag-title { font-size: 17px; font-weight: 700; color: #292929; margin: 0; }
+.plan-diag-num   { font-size: 11px; color: #888; letter-spacing: 1px; font-weight: 600; }
+
+.plan-semaforo-row { display: flex; gap: 6px; margin-bottom: 12px; }
+.plan-semaforo-btn {
+  flex: 1; padding: 6px 8px; border: 1px solid #e5e5e5; border-radius: 6px;
+  cursor: pointer; font-size: 12px; font-weight: 600; background: #fff;
+  transition: all 0.12s; font-family: inherit;
+}
+.plan-semaforo-btn:hover { background: #f7f7f7; }
+.plan-semaforo-btn.active.verde    { background: #3B6D11; color: #fff; border-color: #3B6D11; }
+.plan-semaforo-btn.active.amarillo { background: #BA7517; color: #fff; border-color: #BA7517; }
+.plan-semaforo-btn.active.rojo     { background: #C04828; color: #fff; border-color: #C04828; }
+.plan-semaforo-btn.active.gris     { background: #888; color: #fff; border-color: #888; }
+
+.plan-diag-conteos {
+  display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 12px;
+  font-size: 12px; color: #5f5e5a;
+}
+.plan-diag-conteos b { color: #292929; font-weight: 700; }
+
+.plan-diag-comentario {
+  width: 100%; min-height: 70px; padding: 8px 10px; border: 1px solid #e5e5e5;
+  border-radius: 6px; font-family: inherit; font-size: 13px; color: #292929;
+  resize: vertical; box-sizing: border-box;
+}
+.plan-diag-comentario:focus { outline: none; border-color: #fff952; }
+.plan-diag-foot {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-top: 10px; font-size: 11px; color: #888;
+}
+.plan-diag-foot button {
+  padding: 5px 12px; background: #292929; color: #fff; border: none;
+  border-radius: 5px; font-size: 11px; font-weight: 600; cursor: pointer;
+  font-family: inherit;
+}
+.plan-diag-foot button:hover { background: #000; }
+
+.plan-acc-toolbar {
+  display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 16px;
+  align-items: center;
+}
+.plan-acc-toolbar select, .plan-acc-toolbar input[type="text"] {
+  padding: 7px 10px; border: 1px solid #e5e5e5; border-radius: 6px;
+  font-family: inherit; font-size: 13px;
+}
+.plan-acc-toolbar select:focus, .plan-acc-toolbar input:focus { outline: none; border-color: #292929; }
+.plan-acc-btn-new {
+  margin-left: auto; padding: 8px 16px; background: #fff952; color: #292929;
+  border: 1px solid #292929; border-radius: 6px; font-weight: 700; cursor: pointer;
+  font-family: inherit; font-size: 13px;
+}
+.plan-acc-btn-new:hover { background: #292929; color: #fff952; }
+
+.plan-acc-table {
+  width: 100%; border-collapse: collapse; background: #fff;
+  border: 1px solid #e5e5e5; border-radius: 8px; overflow: hidden;
+}
+.plan-acc-table th {
+  background: #292929; color: #fff; padding: 11px 12px; text-align: left;
+  font-weight: 600; font-size: 12px; letter-spacing: 0.3px;
+}
+.plan-acc-table td {
+  padding: 11px 12px; border-top: 1px solid #f0f0f0; font-size: 13px;
+  vertical-align: middle;
+}
+.plan-acc-table tr { cursor: pointer; transition: background 0.1s; }
+.plan-acc-table tr:hover { background: #fafafa; }
+.plan-acc-table tr.estado-hecha { opacity: 0.55; }
+.plan-acc-table tr.estado-bloqueada td:nth-child(2) { color: #C04828; }
+
+.plan-badge {
+  display: inline-block; padding: 3px 8px; border-radius: 4px;
+  font-size: 11px; font-weight: 600; white-space: nowrap;
+}
+.plan-badge-palanca-1 { background: #ffe5d6; color: #b34d10; }
+.plan-badge-palanca-2 { background: #d8e8ff; color: #1850a8; }
+.plan-badge-palanca-3 { background: #fff4a8; color: #826200; }
+.plan-badge-palanca-4 { background: #e8d8ff; color: #6020c0; }
+.plan-badge-palanca-5 { background: #ffdbe5; color: #c02050; }
+.plan-badge-palanca-6 { background: #d6f5d6; color: #1e7020; }
+
+.plan-badge-prioridad-alta   { background: #C04828; color: #fff; }
+.plan-badge-prioridad-media  { background: #BA7517; color: #fff; }
+.plan-badge-prioridad-baja   { background: #888; color: #fff; }
+
+.plan-badge-estado-no_iniciada { background: #f0f0f0; color: #555; }
+.plan-badge-estado-en_progreso { background: #fff952; color: #292929; }
+.plan-badge-estado-bloqueada   { background: #C04828; color: #fff; }
+.plan-badge-estado-hecha       { background: #3B6D11; color: #fff; }
+
+.plan-empty {
+  text-align: center; padding: 40px 20px; color: #888;
+  background: #fff; border: 1px dashed #e5e5e5; border-radius: 8px;
+}
+
+.plan-cal-list { background: #fff; border-radius: 8px; overflow: hidden; }
+.plan-cal-item {
+  display: grid; grid-template-columns: 100px 1fr auto; gap: 14px;
+  padding: 14px 16px; border-bottom: 1px solid #f0f0f0; align-items: center;
+}
+.plan-cal-item:last-child { border-bottom: none; }
+.plan-cal-fecha { font-weight: 700; color: #292929; font-size: 13px; }
+.plan-cal-fecha.vencida { color: #C04828; }
+.plan-cal-fecha.proxima { color: #BA7517; }
+.plan-cal-titulo { color: #292929; font-size: 13px; }
+.plan-cal-meta { display: flex; gap: 8px; align-items: center; }
+
+.plan-modal-overlay {
+  position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0,0,0,0.5); display: none; align-items: center; justify-content: center;
+  z-index: 9999;
+}
+.plan-modal-overlay.active { display: flex; }
+.plan-modal {
+  background: #fff; border-radius: 10px; padding: 24px; width: 90%; max-width: 600px;
+  max-height: 90vh; overflow-y: auto; box-shadow: 0 8px 32px rgba(0,0,0,0.2);
+}
+.plan-modal h3 {
+  margin: 0 0 18px 0; font-size: 18px; font-weight: 700; color: #292929;
+}
+.plan-modal-field { margin-bottom: 14px; }
+.plan-modal-field label {
+  display: block; font-size: 12px; font-weight: 600; color: #5f5e5a;
+  margin-bottom: 5px; text-transform: uppercase; letter-spacing: 0.5px;
+}
+.plan-modal-field input, .plan-modal-field select, .plan-modal-field textarea {
+  width: 100%; padding: 8px 10px; border: 1px solid #e5e5e5; border-radius: 6px;
+  font-family: inherit; font-size: 13px; box-sizing: border-box;
+}
+.plan-modal-field textarea { min-height: 70px; resize: vertical; }
+.plan-modal-field input:focus, .plan-modal-field select:focus, .plan-modal-field textarea:focus {
+  outline: none; border-color: #292929;
+}
+.plan-modal-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.plan-modal-foot {
+  display: flex; gap: 10px; justify-content: space-between; margin-top: 20px;
+  padding-top: 16px; border-top: 1px solid #f0f0f0;
+}
+.plan-modal-foot-right { display: flex; gap: 10px; }
+.plan-modal-foot button {
+  padding: 8px 18px; border-radius: 6px; font-family: inherit; font-size: 13px;
+  font-weight: 600; cursor: pointer; border: 1px solid transparent;
+}
+.plan-btn-primary  { background: #292929; color: #fff952; border-color: #292929; }
+.plan-btn-primary:hover  { background: #000; }
+.plan-btn-secondary { background: #fff; color: #292929; border-color: #e5e5e5; }
+.plan-btn-secondary:hover { background: #f5f5f5; }
+.plan-btn-danger   { background: #fff; color: #C04828; border-color: #C04828; }
+.plan-btn-danger:hover { background: #C04828; color: #fff; }
 </style>
 </head>
 <body>
@@ -605,6 +789,9 @@ tbody td {
       </div>
       <div class="nav-item" data-page="promociones" onclick="showPage('promociones',this);loadPromociones()">
         <span class="nav-icon">🏷️</span> Promociones
+      </div>
+      <div class="nav-item" data-page="plan" onclick="showPage('plan',this);renderPlan(getActiveClient()?.id)">
+        <span class="nav-icon">🎯</span> Plan de Trabajo
       </div>
 
       <div style="height:1px;background:var(--border);margin:12px 0"></div>
@@ -1895,6 +2082,162 @@ tbody td {
 
       </div><!-- fin informe-form-container -->
     </div><!-- fin page-informe-mensual -->
+
+    <!-- PLAN DE TRABAJO -->
+    <div class="page" id="page-plan">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;">
+        <h2 id="plan-title" style="margin:0;">Plan de Trabajo</h2>
+        <div id="plan-cliente-name" style="color:#5f5e5a;font-size:14px;"></div>
+      </div>
+
+      <div class="plan-wrap">
+        <div class="plan-tabs">
+          <button class="plan-tab active" data-plan-tab="diag">Diagnóstico</button>
+          <button class="plan-tab" data-plan-tab="acc">Acciones</button>
+          <button class="plan-tab" data-plan-tab="cal">Calendario</button>
+          <button class="plan-tab" data-plan-tab="prog" disabled style="opacity:0.4;cursor:not-allowed;">
+            Progreso (próximamente)
+          </button>
+        </div>
+
+        <div id="plan-panel-diag" class="plan-panel active">
+          <div id="plan-diag-grid" class="plan-diag-grid"></div>
+        </div>
+
+        <div id="plan-panel-acc" class="plan-panel">
+          <div class="plan-acc-toolbar">
+            <select id="plan-filter-palanca">
+              <option value="">Todas las palancas</option>
+              <option value="1">1. Tráfico</option>
+              <option value="2">2. Conversión</option>
+              <option value="3">3. Rentabilidad</option>
+              <option value="4">4. Publicidad</option>
+              <option value="5">5. Promos y cupones</option>
+              <option value="6">6. Full y Flex</option>
+            </select>
+            <select id="plan-filter-estado">
+              <option value="">Todos los estados</option>
+              <option value="no_iniciada">No iniciada</option>
+              <option value="en_progreso">En progreso</option>
+              <option value="bloqueada">Bloqueada</option>
+              <option value="hecha">Hecha</option>
+            </select>
+            <select id="plan-filter-responsable">
+              <option value="">Todos los responsables</option>
+              <option value="guido">Guido</option>
+              <option value="consultor">Consultor</option>
+              <option value="cliente">Cliente</option>
+              <option value="equipo_ads">Equipo Ads</option>
+            </select>
+            <select id="plan-filter-prioridad">
+              <option value="">Todas las prioridades</option>
+              <option value="alta">Alta</option>
+              <option value="media">Media</option>
+              <option value="baja">Baja</option>
+            </select>
+            <input type="text" id="plan-filter-search" placeholder="Buscar..." style="min-width:200px;">
+            <button class="plan-acc-btn-new" onclick="planOpenModalNueva()">+ Nueva acción</button>
+          </div>
+          <div id="plan-acc-container"></div>
+        </div>
+
+        <div id="plan-panel-cal" class="plan-panel">
+          <div id="plan-cal-container"></div>
+        </div>
+      </div>
+    </div><!-- fin page-plan -->
+
+    <!-- Modal de edición/creación de acción del plan -->
+    <div id="plan-modal-overlay" class="plan-modal-overlay" onclick="if(event.target===this)planCloseModal()">
+      <div class="plan-modal">
+        <h3 id="plan-modal-title">Editar acción</h3>
+        <input type="hidden" id="plan-modal-id">
+
+        <div class="plan-modal-field">
+          <label>Acción</label>
+          <textarea id="plan-modal-accion" placeholder="Qué hay que hacer..."></textarea>
+        </div>
+
+        <div class="plan-modal-row">
+          <div class="plan-modal-field">
+            <label>Palanca</label>
+            <select id="plan-modal-palanca">
+              <option value="1">1. Tráfico</option>
+              <option value="2">2. Conversión</option>
+              <option value="3">3. Rentabilidad</option>
+              <option value="4">4. Publicidad</option>
+              <option value="5">5. Promos y cupones</option>
+              <option value="6">6. Full y Flex</option>
+            </select>
+          </div>
+          <div class="plan-modal-field">
+            <label>Prioridad</label>
+            <select id="plan-modal-prioridad">
+              <option value="alta">Alta</option>
+              <option value="media" selected>Media</option>
+              <option value="baja">Baja</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="plan-modal-row">
+          <div class="plan-modal-field">
+            <label>Estado</label>
+            <select id="plan-modal-estado">
+              <option value="no_iniciada">No iniciada</option>
+              <option value="en_progreso">En progreso</option>
+              <option value="bloqueada">Bloqueada</option>
+              <option value="hecha">Hecha</option>
+            </select>
+          </div>
+          <div class="plan-modal-field">
+            <label>Responsable</label>
+            <select id="plan-modal-responsable">
+              <option value="">— Sin asignar —</option>
+              <option value="guido">Guido</option>
+              <option value="consultor">Consultor</option>
+              <option value="cliente">Cliente</option>
+              <option value="equipo_ads">Equipo Ads</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="plan-modal-row">
+          <div class="plan-modal-field">
+            <label>Cadencia</label>
+            <select id="plan-modal-cadencia">
+              <option value="">—</option>
+              <option value="unica">Única</option>
+              <option value="semanal">Semanal</option>
+              <option value="quincenal">Quincenal</option>
+              <option value="mensual">Mensual</option>
+              <option value="trimestral">Trimestral</option>
+              <option value="semestral">Semestral</option>
+              <option value="anual">Anual</option>
+              <option value="continua">Continua</option>
+              <option value="a_demanda">A demanda</option>
+            </select>
+          </div>
+          <div class="plan-modal-field">
+            <label>Fecha objetivo</label>
+            <input type="date" id="plan-modal-fecha">
+          </div>
+        </div>
+
+        <div class="plan-modal-field">
+          <label>Notas</label>
+          <textarea id="plan-modal-notas" placeholder="Notas, contexto, links..."></textarea>
+        </div>
+
+        <div class="plan-modal-foot">
+          <button class="plan-btn-danger" id="plan-modal-btn-delete" onclick="planDeleteAccion()">Eliminar</button>
+          <div class="plan-modal-foot-right">
+            <button class="plan-btn-secondary" onclick="planCloseModal()">Cancelar</button>
+            <button class="plan-btn-primary" onclick="planSaveAccion()">Guardar</button>
+          </div>
+        </div>
+      </div>
+    </div>
 
     <!-- PROMOCIONES -->
     <!-- MODAL VISTA PREVIA INFORME -->
@@ -14920,6 +15263,354 @@ function toggleSection(id) {
     el.style.display = 'none';
     if (icon) icon.textContent = '▶';
   }
+}
+
+// ============================================================
+// PLAN DE TRABAJO — Frontend
+// ============================================================
+let _planState = {
+  clientId: null,
+  diagnostico: [],
+  acciones: [],
+  filtros: { palanca: '', estado: '', responsable: '', prioridad: '', search: '' }
+};
+
+// Wrapper sobre el apiCall global del dashboard
+async function _planApi(url, opts) {
+  opts = opts || {};
+  const method = opts.method || 'GET';
+  let body = null;
+  if (opts.body) {
+    try { body = typeof opts.body === 'string' ? JSON.parse(opts.body) : opts.body; }
+    catch (e) { body = opts.body; }
+  }
+  const data = await apiCall(method, url, body);
+  if (data === null) throw new Error('Sin sesión o sin permisos');
+  return data;
+}
+
+async function renderPlan(clientId) {
+  if (!clientId) {
+    document.getElementById('plan-cliente-name').textContent = 'Seleccioná un cliente';
+    return;
+  }
+  _planState.clientId = clientId;
+
+  try {
+    const nombreCliente = (getActiveClient()?.name || '');
+    document.getElementById('plan-cliente-name').textContent = nombreCliente;
+  } catch (e) {}
+
+  try {
+    await _planApi(`/api/plan/seed/${clientId}`, { method: 'POST' });
+  } catch (err) {
+    console.warn('Seed falló o ya estaba sembrado:', err);
+  }
+
+  await Promise.all([_planLoadDiagnostico(), _planLoadAcciones()]);
+  _planSwitchTab('diag');
+}
+
+function _planSwitchTab(tab) {
+  document.querySelectorAll('.plan-tab').forEach(b => {
+    b.classList.toggle('active', b.dataset.planTab === tab);
+  });
+  document.querySelectorAll('.plan-panel').forEach(p => p.classList.remove('active'));
+  document.getElementById(`plan-panel-${tab}`).classList.add('active');
+  if (tab === 'cal') _planRenderCalendario();
+}
+
+document.querySelectorAll('.plan-tab').forEach(btn => {
+  if (!btn.disabled) {
+    btn.addEventListener('click', () => _planSwitchTab(btn.dataset.planTab));
+  }
+});
+
+async function _planLoadDiagnostico() {
+  const data = await _planApi(`/api/plan/diagnostico/${_planState.clientId}`);
+  _planState.diagnostico = data;
+  _planRenderDiagnostico();
+}
+
+function _planRenderDiagnostico() {
+  const grid = document.getElementById('plan-diag-grid');
+  grid.innerHTML = '';
+
+  for (const d of _planState.diagnostico) {
+    const card = document.createElement('div');
+    card.className = `plan-diag-card semaforo-${d.semaforo}`;
+
+    const total = d.conteos.no_iniciada + d.conteos.en_progreso + d.conteos.bloqueada + d.conteos.hecha;
+
+    card.innerHTML = `
+      <div class="plan-diag-head">
+        <h3 class="plan-diag-title">${d.palanca}. ${d.palanca_nombre}</h3>
+        <span class="plan-diag-num">PALANCA ${String(d.palanca).padStart(2,'0')}</span>
+      </div>
+      <div class="plan-semaforo-row">
+        <button class="plan-semaforo-btn verde ${d.semaforo==='verde'?'active':''}"       data-sem="verde">Verde</button>
+        <button class="plan-semaforo-btn amarillo ${d.semaforo==='amarillo'?'active':''}" data-sem="amarillo">Amarillo</button>
+        <button class="plan-semaforo-btn rojo ${d.semaforo==='rojo'?'active':''}"         data-sem="rojo">Rojo</button>
+        <button class="plan-semaforo-btn gris ${d.semaforo==='gris'?'active':''}"         data-sem="gris">Sin evaluar</button>
+      </div>
+      <div class="plan-diag-conteos">
+        <span>Total <b>${total}</b></span>
+        <span>•</span>
+        <span>Hechas <b>${d.conteos.hecha}</b></span>
+        <span>En progreso <b>${d.conteos.en_progreso}</b></span>
+        <span>Pendientes <b>${d.conteos.no_iniciada}</b></span>
+        ${d.conteos.bloqueada ? `<span style="color:#C04828;">Bloqueadas <b>${d.conteos.bloqueada}</b></span>` : ''}
+      </div>
+      <textarea class="plan-diag-comentario" placeholder="Comentario sobre el estado de la palanca...">${d.comentario || ''}</textarea>
+      <div class="plan-diag-foot">
+        <span>${d.updated_at ? 'Actualizado: ' + new Date(d.updated_at).toLocaleDateString('es-AR') : ''}</span>
+        <button onclick="_planGoToAcciones(${d.palanca})">Ver acciones →</button>
+      </div>
+    `;
+
+    card.querySelectorAll('.plan-semaforo-btn').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const newSem = btn.dataset.sem;
+        await _planApi(
+          `/api/plan/diagnostico/${_planState.clientId}/${d.palanca}`,
+          { method: 'PUT', body: JSON.stringify({ semaforo: newSem }) }
+        );
+        await _planLoadDiagnostico();
+      });
+    });
+
+    const ta = card.querySelector('.plan-diag-comentario');
+    ta.addEventListener('blur', async () => {
+      if (ta.value === (d.comentario || '')) return;
+      await _planApi(
+        `/api/plan/diagnostico/${_planState.clientId}/${d.palanca}`,
+        { method: 'PUT', body: JSON.stringify({ comentario: ta.value }) }
+      );
+      d.comentario = ta.value;
+    });
+
+    grid.appendChild(card);
+  }
+}
+
+function _planGoToAcciones(palanca) {
+  document.getElementById('plan-filter-palanca').value = palanca;
+  _planState.filtros.palanca = String(palanca);
+  _planSwitchTab('acc');
+  _planRenderAcciones();
+}
+
+async function _planLoadAcciones() {
+  const data = await _planApi(`/api/plan/acciones/${_planState.clientId}`);
+  _planState.acciones = data;
+  _planRenderAcciones();
+}
+
+function _planRenderAcciones() {
+  const f = _planState.filtros;
+  let rows = _planState.acciones.filter(a => {
+    if (f.palanca && String(a.palanca) !== f.palanca) return false;
+    if (f.estado && a.estado !== f.estado) return false;
+    if (f.responsable && a.responsable !== f.responsable) return false;
+    if (f.prioridad && a.prioridad !== f.prioridad) return false;
+    if (f.search) {
+      const q = f.search.toLowerCase();
+      if (!a.accion.toLowerCase().includes(q) && !(a.notas || '').toLowerCase().includes(q)) return false;
+    }
+    return true;
+  });
+
+  const cont = document.getElementById('plan-acc-container');
+  if (!rows.length) {
+    cont.innerHTML = `<div class="plan-empty">No hay acciones con esos filtros.</div>`;
+    return;
+  }
+
+  const cadenciaLabel = {
+    unica: 'Única', semanal: 'Semanal', quincenal: 'Quincenal', mensual: 'Mensual',
+    trimestral: 'Trimestral', semestral: 'Semestral', anual: 'Anual',
+    continua: 'Continua', a_demanda: 'A demanda'
+  };
+  const estadoLabel = {
+    no_iniciada: 'No iniciada', en_progreso: 'En progreso',
+    bloqueada: 'Bloqueada', hecha: 'Hecha'
+  };
+  const responsableLabel = {
+    guido: 'Guido', consultor: 'Consultor', cliente: 'Cliente', equipo_ads: 'Equipo Ads'
+  };
+
+  const html = `
+    <table class="plan-acc-table">
+      <thead>
+        <tr>
+          <th style="width:120px;">Palanca</th>
+          <th>Acción</th>
+          <th style="width:90px;">Prioridad</th>
+          <th style="width:120px;">Responsable</th>
+          <th style="width:110px;">Estado</th>
+          <th style="width:100px;">Cadencia</th>
+          <th style="width:110px;">Fecha</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${rows.map(a => `
+          <tr class="estado-${a.estado}" onclick="planOpenModalEdit(${a.id})">
+            <td><span class="plan-badge plan-badge-palanca-${a.palanca}">${a.palanca}. ${a.palanca_nombre}</span></td>
+            <td>${_planEscape(a.accion)}${a.es_custom ? ' <span style="color:#888;font-size:11px;">(custom)</span>' : ''}</td>
+            <td><span class="plan-badge plan-badge-prioridad-${a.prioridad}">${a.prioridad}</span></td>
+            <td>${responsableLabel[a.responsable] || '—'}</td>
+            <td><span class="plan-badge plan-badge-estado-${a.estado}">${estadoLabel[a.estado]}</span></td>
+            <td>${cadenciaLabel[a.cadencia] || '—'}</td>
+            <td>${a.fecha_objetivo ? new Date(a.fecha_objetivo).toLocaleDateString('es-AR') : '—'}</td>
+          </tr>
+        `).join('')}
+      </tbody>
+    </table>
+  `;
+  cont.innerHTML = html;
+}
+
+function _planEscape(s) {
+  return String(s||'').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+}
+
+['palanca','estado','responsable','prioridad'].forEach(k => {
+  const el = document.getElementById(`plan-filter-${k}`);
+  if (el) el.addEventListener('change', () => {
+    _planState.filtros[k] = el.value;
+    _planRenderAcciones();
+  });
+});
+(function() {
+  const searchEl = document.getElementById('plan-filter-search');
+  if (!searchEl) return;
+  let _t;
+  searchEl.addEventListener('input', () => {
+    clearTimeout(_t);
+    _t = setTimeout(() => {
+      _planState.filtros.search = searchEl.value;
+      _planRenderAcciones();
+    }, 200);
+  });
+})();
+
+function planOpenModalNueva() {
+  document.getElementById('plan-modal-title').textContent = 'Nueva acción';
+  document.getElementById('plan-modal-id').value = '';
+  document.getElementById('plan-modal-accion').value = '';
+  document.getElementById('plan-modal-palanca').value = _planState.filtros.palanca || '1';
+  document.getElementById('plan-modal-prioridad').value = 'media';
+  document.getElementById('plan-modal-estado').value = 'no_iniciada';
+  document.getElementById('plan-modal-responsable').value = '';
+  document.getElementById('plan-modal-cadencia').value = '';
+  document.getElementById('plan-modal-fecha').value = '';
+  document.getElementById('plan-modal-notas').value = '';
+  document.getElementById('plan-modal-btn-delete').style.display = 'none';
+  document.getElementById('plan-modal-overlay').classList.add('active');
+}
+
+function planOpenModalEdit(id) {
+  const a = _planState.acciones.find(x => x.id === id);
+  if (!a) return;
+  document.getElementById('plan-modal-title').textContent = a.es_custom ? 'Editar acción (custom)' : 'Editar acción';
+  document.getElementById('plan-modal-id').value = a.id;
+  document.getElementById('plan-modal-accion').value = a.accion;
+  document.getElementById('plan-modal-palanca').value = a.palanca;
+  document.getElementById('plan-modal-prioridad').value = a.prioridad;
+  document.getElementById('plan-modal-estado').value = a.estado;
+  document.getElementById('plan-modal-responsable').value = a.responsable || '';
+  document.getElementById('plan-modal-cadencia').value = a.cadencia || '';
+  document.getElementById('plan-modal-fecha').value = a.fecha_objetivo ? String(a.fecha_objetivo).slice(0,10) : '';
+  document.getElementById('plan-modal-notas').value = a.notas || '';
+  document.getElementById('plan-modal-btn-delete').style.display = 'inline-block';
+  document.getElementById('plan-modal-overlay').classList.add('active');
+}
+
+function planCloseModal() {
+  document.getElementById('plan-modal-overlay').classList.remove('active');
+}
+
+async function planSaveAccion() {
+  const id = document.getElementById('plan-modal-id').value;
+  const payload = {
+    accion: document.getElementById('plan-modal-accion').value.trim(),
+    palanca: parseInt(document.getElementById('plan-modal-palanca').value, 10),
+    prioridad: document.getElementById('plan-modal-prioridad').value,
+    estado: document.getElementById('plan-modal-estado').value,
+    responsable: document.getElementById('plan-modal-responsable').value || null,
+    cadencia: document.getElementById('plan-modal-cadencia').value || null,
+    fecha_objetivo: document.getElementById('plan-modal-fecha').value || null,
+    notas: document.getElementById('plan-modal-notas').value || null
+  };
+
+  if (!payload.accion) { alert('La acción no puede estar vacía'); return; }
+
+  try {
+    if (id) {
+      await _planApi(`/api/plan/acciones/${_planState.clientId}/${id}`, {
+        method: 'PUT', body: JSON.stringify(payload)
+      });
+    } else {
+      await _planApi(`/api/plan/acciones/${_planState.clientId}`, {
+        method: 'POST', body: JSON.stringify(payload)
+      });
+    }
+    planCloseModal();
+    await Promise.all([_planLoadDiagnostico(), _planLoadAcciones()]);
+  } catch (err) {
+    alert('Error guardando: ' + err.message);
+  }
+}
+
+async function planDeleteAccion() {
+  const id = document.getElementById('plan-modal-id').value;
+  if (!id) return;
+  if (!confirm('¿Eliminar esta acción? Queda recuperable pero no se mostrará.')) return;
+  try {
+    await _planApi(`/api/plan/acciones/${_planState.clientId}/${id}`, { method: 'DELETE' });
+    planCloseModal();
+    await Promise.all([_planLoadDiagnostico(), _planLoadAcciones()]);
+  } catch (err) {
+    alert('Error eliminando: ' + err.message);
+  }
+}
+
+function _planRenderCalendario() {
+  const cont = document.getElementById('plan-cal-container');
+  const conFecha = _planState.acciones
+    .filter(a => a.fecha_objetivo && a.estado !== 'hecha')
+    .sort((a, b) => new Date(a.fecha_objetivo) - new Date(b.fecha_objetivo));
+
+  if (!conFecha.length) {
+    cont.innerHTML = `<div class="plan-empty">No hay acciones con fecha programada. Asigná fechas en las acciones para verlas acá.</div>`;
+    return;
+  }
+
+  const hoy = new Date(); hoy.setHours(0,0,0,0);
+  const en7dias = new Date(hoy); en7dias.setDate(en7dias.getDate() + 7);
+
+  const html = `
+    <div class="plan-cal-list">
+      ${conFecha.map(a => {
+        const fecha = new Date(a.fecha_objetivo);
+        const vencida = fecha < hoy;
+        const proxima = !vencida && fecha < en7dias;
+        const claseFecha = vencida ? 'vencida' : (proxima ? 'proxima' : '');
+        const dateStr = fecha.toLocaleDateString('es-AR', { day: '2-digit', month: 'short', year: 'numeric' });
+        return `
+          <div class="plan-cal-item" onclick="planOpenModalEdit(${a.id})" style="cursor:pointer;">
+            <div class="plan-cal-fecha ${claseFecha}">${dateStr}</div>
+            <div class="plan-cal-titulo">${_planEscape(a.accion)}</div>
+            <div class="plan-cal-meta">
+              <span class="plan-badge plan-badge-palanca-${a.palanca}">${a.palanca_nombre}</span>
+              <span class="plan-badge plan-badge-estado-${a.estado}">${a.estado.replace('_',' ')}</span>
+            </div>
+          </div>
+        `;
+      }).join('')}
+    </div>
+  `;
+  cont.innerHTML = html;
 }
 </script>
 </body>
