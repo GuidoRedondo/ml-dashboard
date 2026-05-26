@@ -8186,9 +8186,9 @@ function applyPermissions() {
     });
   }
 
-  // Motor de Publicidad, Informe Mensual y Promociones: solo admins y consultores
+  // Motor de Publicidad, Informe Mensual, Promociones, Preguntas y Plan de Trabajo: solo admins y consultores
   const soloConsultores = role === 'admin' || role === 'consultant' || role === 'colaborador';
-  ['decisiones-publi','informe-mensual','promociones','preguntas'].forEach(p => {
+  ['decisiones-publi','informe-mensual','promociones','preguntas','plan'].forEach(p => {
     const el = document.querySelector(`[data-page="${p}"]`);
     if (el) el.style.display = soloConsultores ? '' : 'none';
   });

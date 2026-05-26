@@ -512,6 +512,11 @@ const requireAdmin = (req, res, next) => {
   next();
 };
 
+const requireConsultor = (req, res, next) => {
+  if (req.user?.role === 'cliente') return res.status(403).json({ error: 'Sección solo para consultores' });
+  next();
+};
+
 // Listar usuarios
 app.get('/api/users', requireAuth, requireAdmin, async (req, res) => {
   try {
@@ -9775,7 +9780,7 @@ const PLAN_PALANCAS = {
 };
 
 // ----- MASTER -----
-app.get('/api/plan/master', requireAuth, async (req, res) => {
+app.get('/api/plan/master', requireAuth, requireConsultor, async (req, res) => {
   try {
     const { rows } = await pool.query(
       `SELECT id, palanca, palanca_nombre, accion, cuadrante, responsable_default, cadencia, orden
@@ -9790,7 +9795,7 @@ app.get('/api/plan/master', requireAuth, async (req, res) => {
 });
 
 // ----- SEED por cliente (idempotente) -----
-app.post('/api/plan/seed/:clientId', requireAuth, async (req, res) => {
+app.post('/api/plan/seed/:clientId', requireAuth, requireConsultor, async (req, res) => {
   const clientId = parseInt(req.params.clientId, 10);
   if (!clientId) return res.status(400).json({ error: 'clientId inválido' });
 
@@ -9839,7 +9844,7 @@ app.post('/api/plan/seed/:clientId', requireAuth, async (req, res) => {
 });
 
 // ----- DIAGNÓSTICO -----
-app.get('/api/plan/diagnostico/:clientId', requireAuth, async (req, res) => {
+app.get('/api/plan/diagnostico/:clientId', requireAuth, requireConsultor, async (req, res) => {
   const clientId = parseInt(req.params.clientId, 10);
   if (!clientId) return res.status(400).json({ error: 'clientId inválido' });
 
@@ -9885,7 +9890,7 @@ app.get('/api/plan/diagnostico/:clientId', requireAuth, async (req, res) => {
   }
 });
 
-app.put('/api/plan/diagnostico/:clientId/:palanca', requireAuth, async (req, res) => {
+app.put('/api/plan/diagnostico/:clientId/:palanca', requireAuth, requireConsultor, async (req, res) => {
   const clientId = parseInt(req.params.clientId, 10);
   const palanca = parseInt(req.params.palanca, 10);
   if (!clientId || !palanca || palanca < 1 || palanca > 6) {
@@ -9914,7 +9919,7 @@ app.put('/api/plan/diagnostico/:clientId/:palanca', requireAuth, async (req, res
 });
 
 // ----- ACCIONES (CRUD) -----
-app.get('/api/plan/acciones/:clientId', requireAuth, async (req, res) => {
+app.get('/api/plan/acciones/:clientId', requireAuth, requireConsultor, async (req, res) => {
   const clientId = parseInt(req.params.clientId, 10);
   if (!clientId) return res.status(400).json({ error: 'clientId inválido' });
 
@@ -9952,7 +9957,7 @@ app.get('/api/plan/acciones/:clientId', requireAuth, async (req, res) => {
   }
 });
 
-app.post('/api/plan/acciones/:clientId', requireAuth, async (req, res) => {
+app.post('/api/plan/acciones/:clientId', requireAuth, requireConsultor, async (req, res) => {
   const clientId = parseInt(req.params.clientId, 10);
   if (!clientId) return res.status(400).json({ error: 'clientId inválido' });
 
@@ -9980,7 +9985,7 @@ app.post('/api/plan/acciones/:clientId', requireAuth, async (req, res) => {
   }
 });
 
-app.put('/api/plan/acciones/:clientId/:accionId', requireAuth, async (req, res) => {
+app.put('/api/plan/acciones/:clientId/:accionId', requireAuth, requireConsultor, async (req, res) => {
   const clientId = parseInt(req.params.clientId, 10);
   const accionId = parseInt(req.params.accionId, 10);
   if (!clientId || !accionId) return res.status(400).json({ error: 'Parámetros inválidos' });
@@ -10055,7 +10060,7 @@ app.put('/api/plan/acciones/:clientId/:accionId', requireAuth, async (req, res) 
   }
 });
 
-app.delete('/api/plan/acciones/:clientId/:accionId', requireAuth, async (req, res) => {
+app.delete('/api/plan/acciones/:clientId/:accionId', requireAuth, requireConsultor, async (req, res) => {
   const clientId = parseInt(req.params.clientId, 10);
   const accionId = parseInt(req.params.accionId, 10);
   if (!clientId || !accionId) return res.status(400).json({ error: 'Parámetros inválidos' });
@@ -10075,7 +10080,7 @@ app.delete('/api/plan/acciones/:clientId/:accionId', requireAuth, async (req, re
   }
 });
 
-app.post('/api/plan/acciones/:clientId/:accionId/restore', requireAuth, async (req, res) => {
+app.post('/api/plan/acciones/:clientId/:accionId/restore', requireAuth, requireConsultor, async (req, res) => {
   const clientId = parseInt(req.params.clientId, 10);
   const accionId = parseInt(req.params.accionId, 10);
   if (!clientId || !accionId) return res.status(400).json({ error: 'Parámetros inválidos' });
