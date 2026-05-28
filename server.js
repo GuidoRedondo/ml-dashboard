@@ -4790,31 +4790,45 @@ app.get('/api/reporte/visitas', requireAuth, async (req, res) => {
     }
 
     // 7. Traer detalle (título + precios) para TODOS los workingIds.
-    // Necesitamos price + original_price para mostrar descuento tachado en UI.
-    // Estos datos NO se cachean (precios cambian seguido); fetch siempre fresco
-    // pero barato — 50 batches a concurrencia 10 corre en pocos segundos.
+    // Necesitamos el precio que REALMENTE ve el comprador para mostrar el descuento
+    // tachado en UI. El multiget /items?ids=...&attributes=price,original_price NO
+    // refleja descuentos por promoción/campaña (DEAL, oferta, etc.) — esos viven en
+    // sale_price y /items/{id}/prices. Por eso vamos por ítem (mismo patrón que
+    // Umbrales/Rentabilidad). Estos datos NO se cachean (los precios cambian seguido).
     const titleMap = {};
-    const priceMap = {};         // id -> price actual
-    const originalPriceMap = {}; // id -> precio lista (si hay descuento)
+    const priceMap = {};         // id -> price actual (con descuento aplicado)
+    const originalPriceMap = {}; // id -> precio lista tachado (si hay descuento)
     Object.entries(salesByMla).forEach(([id, v]) => { titleMap[id] = v.title; });
-    const batches = [];
-    for (let i = 0; i < workingIds.length; i += 20) batches.push(workingIds.slice(i, i + 20));
-    const ITEMS_CONCURRENCY = 10;
-    for (let i = 0; i < batches.length; i += ITEMS_CONCURRENCY) {
-      const chunk = batches.slice(i, i + ITEMS_CONCURRENCY);
-      const results = await Promise.all(chunk.map(batch =>
-        fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,title,price,original_price`, { headers })
-          .then(r => r.json()).catch(() => [])
-      ));
-      results.forEach(data => {
-        (Array.isArray(data) ? data : []).forEach(r => {
-          if (r.code !== 200 || !r.body || !r.body.id) return;
-          const b = r.body;
-          titleMap[b.id] = b.title || titleMap[b.id] || b.id;
-          if (b.price != null) priceMap[b.id] = parseFloat(b.price);
-          if (b.original_price != null) originalPriceMap[b.id] = parseFloat(b.original_price);
-        });
-      });
+    const PRICE_CONCURRENCY = 12;
+    for (let i = 0; i < workingIds.length; i += PRICE_CONCURRENCY) {
+      const chunk = workingIds.slice(i, i + PRICE_CONCURRENCY);
+      await Promise.all(chunk.map(async id => {
+        try {
+          const [b, pricesResp] = await Promise.all([
+            fetch(`${ML_API}/items/${id}`, { headers }).then(r => r.json()).catch(() => null),
+            fetch(`${ML_API}/items/${id}/prices`, { headers }).then(r => r.json()).catch(() => null),
+          ]);
+          if (!b || b.error || !b.id) return;
+          titleMap[id] = b.title || titleMap[id] || id;
+          const basePrice  = parseFloat(b.price) || 0;
+          const origPrice  = b.original_price ? parseFloat(b.original_price) : null;
+          const saleRaw    = b.sale_price;
+          const salePrice  = saleRaw != null
+            ? (typeof saleRaw === 'object' ? parseFloat(saleRaw.amount || saleRaw.regular_amount || 0) : parseFloat(saleRaw))
+            : null;
+          const promoPrice = b.promotions?.[0]?.price ? parseFloat(b.promotions[0].price) : null;
+          const pricesPromo = pricesResp?.prices?.filter(p => p.type !== 'standard')
+            .map(p => parseFloat(p.amount)).filter(v => v > 0);
+          const minPricesPromo = pricesPromo?.length ? Math.min(...pricesPromo) : null;
+          const candidates = [basePrice, salePrice, promoPrice, minPricesPromo].filter(v => v && v > 0);
+          const price = candidates.length ? Math.min(...candidates) : null;
+          const precioLista = origPrice && origPrice > price
+            ? origPrice
+            : (price != null && price < basePrice ? basePrice : null);
+          if (price != null) priceMap[id] = price;
+          if (precioLista != null) originalPriceMap[id] = precioLista;
+        } catch(e) {}
+      }));
     }
 
     // 8. Construir respuesta con schema fijo (lo consume Steve).
