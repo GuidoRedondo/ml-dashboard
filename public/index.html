@@ -7400,10 +7400,14 @@ function loadPerformance() {
   const totalOrders = Object.values(byMode).reduce((a,b)=>a+b,0) || 1;
 
   // ── Tráfico orgánico vs pago ─────────────────────────────────────────────
-  const totalTraffic  = totVisits + adsClicks;
+  // OJO: total_visits de ML YA incluye las visitas que llegaron por un click de
+  // publicidad (un click de ad aterriza en la publicación = cuenta como visita).
+  // Por eso NO se suman los clicks (sería contar doble). Las visitas totales son
+  // las reales (matchea el panel de ML); las orgánicas = totales − clicks de ads.
+  const organicVisits = Math.max(0, totVisits - adsClicks);
   const organicOrders = Math.max(0, totalOrders - adsUnits);
-  const organicConv   = totVisits    > 0 ? organicOrders / totVisits    * 100 : 0;
-  const totalConv     = totalTraffic > 0 ? totalOrders   / totalTraffic * 100 : 0;
+  const organicConv   = organicVisits > 0 ? organicOrders / organicVisits * 100 : 0;
+  const totalConv     = totVisits     > 0 ? totalOrders   / totVisits     * 100 : 0;
   const paidCTR       = adsImpr      > 0 ? adsClicks     / adsImpr      * 100 : 0;
   const paidConv      = adsClicks    > 0 ? adsUnits      / adsClicks    * 100 : 0;
   const pctOrganic    = totalOrders  > 0 ? organicOrders / totalOrders  * 100 : 0;
@@ -7660,9 +7664,9 @@ function loadPerformance() {
 
         <!-- TOTAL -->
         <div>
-          <div style="font-size:12px;font-weight:700;color:#3b82f6;text-align:center;margin-bottom:10px">📊 Tráfico total</div>
+          <div style="font-size:12px;font-weight:700;color:#3b82f6;text-align:center;margin-bottom:10px">📊 Total</div>
           ${svgFunnel([
-            { label: 'Visitas + clicks ads', value: totalTraffic,  valueStr: fmtK(totalTraffic)                       },
+            { label: 'Visitas totales',  value: totVisits,     valueStr: fmtK(totVisits)                           },
             { label: 'Pedidos',          value: totalOrders,   valueStr: totalOrders.toLocaleString('es-AR')       },
           ], '#3b82f6')}
         </div>
@@ -7671,7 +7675,7 @@ function loadPerformance() {
         <div>
           <div style="font-size:12px;font-weight:700;color:#22c55e;text-align:center;margin-bottom:10px">🌱 Orgánico</div>
           ${svgFunnel([
-            { label: 'Visitas',          value: totVisits,     valueStr: fmtK(totVisits)                           },
+            { label: 'Visitas orgánicas', value: organicVisits, valueStr: fmtK(organicVisits)                      },
             { label: 'Pedidos org.',     value: organicOrders, valueStr: organicOrders.toLocaleString('es-AR')     },
           ], '#22c55e')}
         </div>
