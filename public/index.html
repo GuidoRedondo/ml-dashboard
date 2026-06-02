@@ -3648,125 +3648,194 @@ Sem. anterior: ${_evoFmtMoney(prevFac)}` : '');
   wrap.innerHTML = html;
 }
 
+// Paleta vistosa por métrica: [color base, color claro del degradado]
+const _EVO_METRIC_STYLE = {
+  facturacion:     { label: 'Facturación',    top: '#FFD700', bot: '#FF8A00', money: true  },
+  unidades:        { label: 'Unidades',       top: '#34e89e', bot: '#0bab64', money: false },
+  ordenes:         { label: 'Órdenes',        top: '#5ea9ff', bot: '#1565c0', money: false },
+  ticket_promedio: { label: 'Ticket prom.',   top: '#c08bff', bot: '#7c4dff', money: true  },
+};
+const _EVO_PUBLI_COLOR = '#ff5d8f';
+
+// Plugin: dibuja el valor arriba de cada barra (etiquetas siempre visibles)
+const _evoBarLabels = {
+  id: 'evoBarLabels',
+  afterDatasetsDraw(chart) {
+    const { ctx } = chart;
+    const meta = chart.getDatasetMeta(0);
+    if (!meta || meta.hidden) return;
+    const ds = chart.data.datasets[0];
+    const isMoney = chart.$evoMoney;
+    ctx.save();
+    ctx.font = '700 10px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'bottom';
+    meta.data.forEach((bar, i) => {
+      const v = ds.data[i];
+      if (v == null || v === 0) return;
+      const txt = isMoney ? _evoFmtMoney(v) : _evoFmtNum(v);
+      const y = bar.y - 5;
+      ctx.fillStyle = 'rgba(0,0,0,.55)';
+      ctx.fillText(txt, bar.x + 0.5, y + 0.5);
+      ctx.fillStyle = '#fff';
+      ctx.fillText(txt, bar.x, y);
+    });
+    ctx.restore();
+  }
+};
+
 function renderEvoChart() {
   const data = window._evoState.data;
   const chartEl = document.getElementById('evoChart');
   const legendEl = document.getElementById('evoLegend');
   if (!chartEl || !data || !data.length) return;
+  if (!window.Chart) { console.warn('[EVO] Chart.js no disponible aún'); return; }
 
   const metric = window._evoState.metric;
   const showPubli = window._evoState.showPubli;
-  const isMoney = (metric === 'facturacion' || metric === 'ticket_promedio');
+  const style = _EVO_METRIC_STYLE[metric] || _EVO_METRIC_STYLE.facturacion;
+  const isMoney = style.money;
 
-  const W = chartEl.clientWidth || 900;
-  const H = 240;
-  const padL = 50, padR = 50, padT = 20, padB = 50;
-  const innerW = W - padL - padR;
-  const innerH = H - padT - padB;
-  const n = data.length;
-  const stepX = n > 1 ? innerW / (n - 1) : 0;
+  // reset del canvas
+  if (window._evoChart) { try { window._evoChart.destroy(); } catch(e){} window._evoChart = null; }
+  chartEl.innerHTML = '<canvas></canvas>';
+  const canvas = chartEl.querySelector('canvas');
 
-  const vals = data.map(w => w[metric] || 0);
-  const maxVal = Math.max(...vals, 1);
-  const publiVals = data.map(w => w.inversion_publi || 0);
-  const maxPubli = Math.max(...publiVals, 1);
-
-  let grid = '';
-  for (let g = 0; g <= 4; g++) {
-    const y = padT + (g / 4) * innerH;
-    grid += `<line x1="${padL}" y1="${y.toFixed(1)}" x2="${padL + innerW}" y2="${y.toFixed(1)}" stroke="rgba(255,255,255,.05)" stroke-width="1"/>`;
-    const v = maxVal * (1 - g / 4);
-    const lbl = isMoney ? _evoFmtMoney(v) : _evoFmtNum(v);
-    grid += `<text x="${padL - 6}" y="${(y + 3).toFixed(1)}" text-anchor="end" font-size="9" fill="rgba(255,255,255,.45)" font-family="sans-serif">${lbl}</text>`;
-    if (showPubli) {
-      const vp = maxPubli * (1 - g / 4);
-      grid += `<text x="${padL + innerW + 6}" y="${(y + 3).toFixed(1)}" text-anchor="start" font-size="9" fill="rgba(99,102,241,.7)" font-family="sans-serif">${_evoFmtMoney(vp)}</text>`;
-    }
-  }
-
-  let publiPath = '', publiArea = '', publiDots = '';
-  if (showPubli && publiVals.some(v => v > 0)) {
-    const pts = publiVals.map((v, i) => {
-      const x = padL + i * stepX;
-      const y = padT + innerH - (v / maxPubli) * innerH;
-      return `${x.toFixed(1)},${y.toFixed(1)}`;
-    });
-    publiPath = `<polyline points="${pts.join(' ')}" fill="none" stroke="#6366f1" stroke-width="2" stroke-dasharray="5 4" stroke-linejoin="round"/>`;
-    publiArea = `<polygon points="${padL},${padT + innerH} ${pts.join(' ')} ${padL + (n-1) * stepX},${padT + innerH}" fill="#6366f1" opacity="0.06"/>`;
-    publiVals.forEach((v, i) => {
-      if (v <= 0) return;
-      const x = padL + i * stepX;
-      const y = padT + innerH - (v / maxPubli) * innerH;
-      publiDots += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="3" fill="#6366f1" stroke="rgba(0,0,0,.4)" stroke-width="1"/>`;
-    });
-  }
-
-  let mainPath = '', mainArea = '', mainDots = '', mainLabels = '';
-  const pts = vals.map((v, i) => {
-    const x = padL + i * stepX;
-    const y = padT + innerH - (v / maxVal) * innerH;
-    return { x, y, v };
-  });
-  if (vals.some(v => v > 0)) {
-    const ptsStr = pts.map(p => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ');
-    mainPath = `<polyline points="${ptsStr}" fill="none" stroke="#FFD700" stroke-width="2.5" stroke-linejoin="round"/>`;
-    mainArea = `<polygon points="${padL},${padT + innerH} ${ptsStr} ${padL + (n-1) * stepX},${padT + innerH}" fill="#FFD700" opacity="0.08"/>`;
-    pts.forEach(p => {
-      mainDots += `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="3.5" fill="#FFD700" stroke="rgba(0,0,0,.5)" stroke-width="1"/>`;
-    });
-    const last = pts[pts.length - 1];
-    const lblTxt = isMoney ? _evoFmtMoney(last.v) : _evoFmtNum(last.v);
-    const lblY = Math.max(last.y - 8, 12);
-    mainLabels += `<rect x="${(last.x - 28).toFixed(1)}" y="${(lblY - 11).toFixed(1)}" width="56" height="14" rx="3" fill="rgba(0,0,0,.7)"/>`;
-    mainLabels += `<text x="${last.x.toFixed(1)}" y="${(lblY - 1).toFixed(1)}" text-anchor="middle" font-size="10" fill="#FFD700" font-family="sans-serif" font-weight="700">${lblTxt}</text>`;
-  }
-
-  let xLabels = '';
-  data.forEach((w, i) => {
-    const x = padL + i * stepX;
+  const labels = data.map(w => {
     const d = new Date(w.week_start + 'T12:00:00');
-    const lbl = d.toLocaleDateString('es-AR', { day: '2-digit', month: 'short' }).replace('.', '');
-    xLabels += `<text x="${x.toFixed(1)}" y="${(H - 26).toFixed(1)}" text-anchor="middle" font-size="10" fill="rgba(255,255,255,.55)" font-family="sans-serif">${lbl}</text>`;
-    if (showPubli && w.tacos != null) {
-      xLabels += `<text x="${x.toFixed(1)}" y="${(H - 12).toFixed(1)}" text-anchor="middle" font-size="9" fill="#6366f1" font-family="sans-serif" font-weight="600">TACOS ${w.tacos.toFixed(1)}%</text>`;
-    }
+    return d.toLocaleDateString('es-AR', { day: '2-digit', month: 'short' }).replace('.', '');
   });
+  const vals = data.map(w => w[metric] || 0);
+  const publiVals = data.map(w => w.inversion_publi || 0);
+  const hasPubli = showPubli && publiVals.some(v => v > 0);
 
-  let hoverZones = '';
-  data.forEach((w, i) => {
-    const x = padL + i * stepX;
-    const zoneW = stepX || innerW;
-    const tip = [
-      `Semana ${i+1} · ${w.week_start} a ${w.week_end}`,
-      `Facturación: ${_evoFmtMoney(w.facturacion)}`,
-      `Unidades: ${_evoFmtNum(w.unidades)}`,
-      `Órdenes: ${_evoFmtNum(w.ordenes)}`,
-      `Ticket prom.: ${_evoFmtMoney(w.ticket_promedio)}`,
-      `Inv. publi: ${_evoFmtMoney(w.inversion_publi)}`,
-      w.tacos != null ? `TACOS: ${w.tacos.toFixed(1)}%` : 'TACOS: —',
-      w.roas != null ? `ROAS: ${w.roas.toFixed(2)}` : 'ROAS: —',
-    ].join('\n');
-    hoverZones += `<rect x="${(x - zoneW/2).toFixed(1)}" y="${padT}" width="${zoneW.toFixed(1)}" height="${innerH}" fill="transparent"><title>${tip}</title></rect>`;
+  const datasets = [{
+    type: 'bar',
+    label: style.label,
+    data: vals,
+    yAxisID: 'y',
+    borderRadius: 6,
+    borderSkipped: false,
+    maxBarThickness: 46,
+    order: 2,
+    backgroundColor(ctx) {
+      const { chart } = ctx;
+      const { ctx: c, chartArea } = chart;
+      if (!chartArea) return style.top;
+      const g = c.createLinearGradient(0, chartArea.bottom, 0, chartArea.top);
+      g.addColorStop(0, style.bot);
+      g.addColorStop(1, style.top);
+      return g;
+    },
+    hoverBackgroundColor: style.top,
+  }];
+
+  if (hasPubli) {
+    datasets.push({
+      type: 'line',
+      label: 'Inv. publi',
+      data: publiVals,
+      yAxisID: 'yPubli',
+      borderColor: _EVO_PUBLI_COLOR,
+      backgroundColor: _EVO_PUBLI_COLOR,
+      borderWidth: 2.5,
+      tension: 0.35,
+      pointRadius: 3,
+      pointHoverRadius: 5,
+      pointBackgroundColor: _EVO_PUBLI_COLOR,
+      pointBorderColor: 'rgba(0,0,0,.4)',
+      order: 1,
+    });
+  }
+
+  window._evoChart = new Chart(canvas, {
+    data: { labels, datasets },
+    plugins: [_evoBarLabels],
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      layout: { padding: { top: 18 } },
+      animation: { duration: 650, easing: 'easeOutQuart' },
+      interaction: { mode: 'index', intersect: false },
+      scales: {
+        x: {
+          grid: { display: false },
+          ticks: {
+            color: 'rgba(255,255,255,.6)',
+            font: { size: 10 },
+            callback(val, i) {
+              const w = data[i];
+              const base = labels[i] || '';
+              if (showPubli && w && w.tacos != null) return [base, `TACOS ${w.tacos.toFixed(1)}%`];
+              return base;
+            },
+          },
+        },
+        y: {
+          beginAtZero: true,
+          grid: { color: 'rgba(255,255,255,.06)' },
+          border: { display: false },
+          ticks: {
+            color: 'rgba(255,255,255,.45)',
+            font: { size: 9 },
+            maxTicksLimit: 5,
+            callback: (v) => isMoney ? _evoFmtMoney(v) : _evoFmtNum(v),
+          },
+        },
+        yPubli: {
+          display: hasPubli,
+          position: 'right',
+          beginAtZero: true,
+          grid: { display: false },
+          border: { display: false },
+          ticks: {
+            color: 'rgba(255,93,143,.75)',
+            font: { size: 9 },
+            maxTicksLimit: 5,
+            callback: (v) => _evoFmtMoney(v),
+          },
+        },
+      },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: 'rgba(18,18,28,.95)',
+          borderColor: 'rgba(255,255,255,.12)',
+          borderWidth: 1,
+          padding: 12,
+          titleColor: '#fff',
+          bodyColor: 'rgba(255,255,255,.85)',
+          bodySpacing: 4,
+          callbacks: {
+            title(items) {
+              const w = data[items[0].dataIndex];
+              return w ? `${w.week_start} → ${w.week_end}` : '';
+            },
+            label() { return null; },
+            afterBody(items) {
+              const w = data[items[0].dataIndex];
+              if (!w) return [];
+              return [
+                `🧾 Facturación: ${_evoFmtMoney(w.facturacion)}`,
+                `📦 Unidades: ${_evoFmtNum(w.unidades)}`,
+                `🛒 Órdenes: ${_evoFmtNum(w.ordenes)}`,
+                `🎯 Ticket prom.: ${_evoFmtMoney(w.ticket_promedio)}`,
+                `💸 Inv. publi: ${_evoFmtMoney(w.inversion_publi)}`,
+                w.tacos != null ? `📣 TACOS: ${w.tacos.toFixed(1)}%` : '📣 TACOS: —',
+                w.roas  != null ? `🔄 ROAS: ${w.roas.toFixed(2)}`   : '🔄 ROAS: —',
+              ];
+            },
+          },
+        },
+      },
+    },
   });
+  window._evoChart.$evoMoney = isMoney;
 
-  chartEl.innerHTML = `
-    <svg viewBox="0 0 ${W} ${H}" width="100%" height="100%" preserveAspectRatio="none" style="overflow:visible">
-      ${grid}
-      ${publiArea}${publiPath}${publiDots}
-      ${mainArea}${mainPath}${mainDots}${mainLabels}
-      ${xLabels}
-      ${hoverZones}
-    </svg>
-  `;
-
-  const metricLabels = {
-    facturacion: 'Facturación', unidades: 'Unidades',
-    ordenes: 'Órdenes', ticket_promedio: 'Ticket promedio',
-  };
   legendEl.innerHTML = `
-    <span style="display:inline-flex;align-items:center;gap:6px"><span style="width:14px;height:3px;background:#FFD700;border-radius:2px"></span>${metricLabels[metric]}</span>
-    ${showPubli ? '<span style="display:inline-flex;align-items:center;gap:6px"><span style="width:14px;height:3px;background:#6366f1;border-radius:2px"></span>Inv. publi (eje derecho)</span>' : ''}
-    <span style="margin-left:auto;color:rgba(255,255,255,.4);font-size:10px">Hover sobre el gráfico para ver detalle</span>
+    <span style="display:inline-flex;align-items:center;gap:6px"><span style="width:14px;height:10px;background:linear-gradient(${style.top},${style.bot});border-radius:3px"></span>${style.label}</span>
+    ${hasPubli ? `<span style="display:inline-flex;align-items:center;gap:6px"><span style="width:14px;height:3px;background:${_EVO_PUBLI_COLOR};border-radius:2px"></span>Inv. publi (eje derecho)</span>` : ''}
+    <span style="margin-left:auto;color:rgba(255,255,255,.4);font-size:10px">Pasá el mouse por el gráfico para ver el detalle</span>
   `;
 }
 
