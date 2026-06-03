@@ -6921,19 +6921,27 @@ app.get('/api/logistica/full-stock', requireAuth, async (req, res) => {
       if (i + 10 < fullItemsToQuery.length) await delay(150);
     }
 
-    // ── 4. Ventas por SKU ────────────────────────────────────────────────────
-    const now      = new Date();
-    const dateFrom = new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
-    const fmt      = d => d.toISOString().slice(0, 19) + '.000-00:00';
+    // ── 4. Ventas por SKU. Ventana ampliada (máx días, 120) para medir ANTIGÜEDAD
+    //     (días sin vender) además de la rotación del período seleccionado.
+    const now        = new Date();
+    const ANTIG_DAYS = Math.max(days, 120);
+    const dateFrom   = new Date(now.getTime() - ANTIG_DAYS * 86400000);
+    const periodFrom = new Date(now.getTime() - days * 86400000);
+    const fmt        = d => d.toISOString().slice(0, 19) + '.000-00:00';
     const { orders } = await fetchAllOrders(uid, headers, fmt(dateFrom), fmt(now));
-    const salesByKey = {};
+    const salesByKey    = {};  // unidades en el período (rotación)
+    const lastSaleByKey = {};  // fecha de última venta en toda la ventana (antigüedad)
     orders.forEach(order => {
+      const fecha = order.date_closed || order.date_created;
       (order.order_items || []).forEach(oi => {
         const id  = oi.item?.id;
         const vid = oi.item?.variation_id;
         if (!id) return;
         const key = vid ? `${id}_${vid}` : id;
-        salesByKey[key] = (salesByKey[key] || 0) + (oi.quantity || 0);
+        if (fecha && (!lastSaleByKey[key] || fecha > lastSaleByKey[key])) lastSaleByKey[key] = fecha;
+        if (fecha && new Date(fecha) >= periodFrom) {
+          salesByKey[key] = (salesByKey[key] || 0) + (oi.quantity || 0);
+        }
       });
     });
 
@@ -6959,6 +6967,13 @@ app.get('/api/logistica/full-stock', requireAuth, async (req, res) => {
       const suggested  = dailyRate > 0
         ? Math.max(0, Math.round(dailyRate * targetDays - stock.stock_full))
         : 0;
+      // Exceso vs proyección: stock por encima de lo que la rotación necesita para
+      // los días objetivo. Si no rota (dailyRate 0) todo el stock es excedente.
+      const projNeed = Math.round(dailyRate * targetDays);
+      const exceso   = item.is_full ? Math.max(0, stock.stock_full - projNeed) : 0;
+      // Antigüedad: días desde la última venta en la ventana ampliada.
+      const ultima        = lastSaleByKey[salesKey] || null;
+      const diasSinVenta  = ultima ? Math.floor((now - new Date(ultima)) / 86400000) : null;
       return {
         id:                item.id,
         title:             item.title,
@@ -6974,6 +6989,10 @@ app.get('/api/logistica/full-stock', requireAuth, async (req, res) => {
         coverage_days:     coverage,
         coverage_days_target: targetDays,
         suggested_quantity: suggested,
+        exceso_unidades:   exceso,
+        ultima_venta:      ultima,
+        dias_sin_venta:    diasSinVenta,
+        antiguedad_ventana: ANTIG_DAYS,
       };
     });
 

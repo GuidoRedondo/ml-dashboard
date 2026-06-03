@@ -9472,6 +9472,13 @@ function renderFullStock(data, client) {
 
   const enFull    = items.filter(i => i.is_full).length;
   const sinFull   = items.filter(i => !i.is_full).length;
+
+  // Ejes de stock parado / excedente (plata dormida en FULL)
+  const ANEJO_DIAS = 60;
+  const sinVentas  = items.filter(i => i.is_full && i.stock_full > 0 && i.units_sold_period === 0).length;
+  const sobrestock = items.filter(i => i.exceso_unidades > 0).length;
+  const anejo      = items.filter(i => i.is_full && i.stock_full > 0 && (i.dias_sin_venta == null || i.dias_sin_venta >= ANEJO_DIAS)).length;
+
   const kpiDefs = [
     { key: 'todos',   label: 'Todos',            value: items.length,     color: 'var(--text)', bg: 'var(--surface)', border: 'var(--border)' },
     { key: 'full',    label: '📦 En FULL',        value: enFull,           color: '#6366f1',     bg: 'var(--surface)', border: 'var(--border)' },
@@ -9479,6 +9486,9 @@ function renderFullStock(data, client) {
     { key: 'critico', label: '🔴 Crítico <7d',    value: critico,          color: '#dc2626',     bg: critico > 0 ? '#fef2f2' : 'var(--surface)', border: critico > 0 ? '#fca5a5' : 'var(--border)' },
     { key: 'bajo',    label: '🟠 Bajo 7–14d',     value: bajo,             color: '#d97706',     bg: bajo    > 0 ? '#fffbeb' : 'var(--surface)', border: bajo    > 0 ? '#fcd34d' : 'var(--border)' },
     { key: 'ok',      label: '🟢 OK ≥15d',        value: ok,               color: '#16a34a',     bg: 'var(--surface)', border: 'var(--border)' },
+    { key: 'sinventas',  label: '🐢 Sin ventas',  value: sinVentas,  color: '#dc2626', bg: sinVentas  > 0 ? '#fef2f2' : 'var(--surface)', border: sinVentas  > 0 ? '#fca5a5' : 'var(--border)' },
+    { key: 'sobrestock', label: '📦 Sobrestock',  value: sobrestock, color: '#7c3aed', bg: sobrestock > 0 ? '#f5f3ff' : 'var(--surface)', border: sobrestock > 0 ? '#c4b5fd' : 'var(--border)' },
+    { key: 'anejo',      label: `🕸️ Añejo +${ANEJO_DIAS}d`, value: anejo, color: '#b45309', bg: anejo > 0 ? '#fffbeb' : 'var(--surface)', border: anejo > 0 ? '#fcd34d' : 'var(--border)' },
   ];
 
   const kpis = `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:12px;margin-bottom:16px" id="fsKpiRow">
@@ -9532,7 +9542,7 @@ function renderFullStock(data, client) {
 function setFsFilter(key) {
   _fsFilter = key;
   // Actualizar bordes de KPIs sin re-renderizar todo
-  ['todos','full','nofull','critico','bajo','ok'].forEach(k => {
+  ['todos','full','nofull','critico','bajo','ok','sinventas','sobrestock','anejo'].forEach(k => {
     const el = document.getElementById(`fskpi-${k}`);
     if (el) el.style.borderColor = k === key ? 'var(--accent)' : '';
   });
@@ -9557,6 +9567,9 @@ function renderFsTable() {
   else if (_fsFilter === 'critico') filtered = items.filter(i => i.coverage_days != null && i.coverage_days < 7);
   else if (_fsFilter === 'bajo')    filtered = items.filter(i => i.coverage_days != null && i.coverage_days >= 7 && i.coverage_days < 15);
   else if (_fsFilter === 'ok')      filtered = items.filter(i => i.coverage_days == null || i.coverage_days >= 15);
+  else if (_fsFilter === 'sinventas')  filtered = items.filter(i => i.is_full && i.stock_full > 0 && i.units_sold_period === 0);
+  else if (_fsFilter === 'sobrestock') filtered = items.filter(i => i.exceso_unidades > 0);
+  else if (_fsFilter === 'anejo')      filtered = items.filter(i => i.is_full && i.stock_full > 0 && (i.dias_sin_venta == null || i.dias_sin_venta >= 60));
 
   // ── Filtro búsqueda ────────────────────────────────────────────────────────
   if (_fsSearch && _fsSearch.trim()) {
@@ -9594,6 +9607,8 @@ function renderFsTable() {
     sold:      i => i.units_sold_period ?? -1,
     ritmo:     i => i.daily_rate      ?? -1,
     coverage:  i => i.coverage_days   ?? 9999,
+    sinvender: i => i.dias_sin_venta == null ? 99999 : i.dias_sin_venta,
+    exceso:    i => i.exceso_unidades ?? -1,
     suggested: i => i.suggested_quantity ?? -1,
   };
   if (_fsSort.col && colMap[_fsSort.col]) {
@@ -9613,6 +9628,13 @@ function renderFsTable() {
     const covColor  = coverageColor(cov);
     const ritmo     = item.daily_rate || 0;
     const ritmoText = ritmo > 0 ? ritmo.toFixed(2) : '—';
+    // Días sin vender (antigüedad). null = sin ventas en toda la ventana → muy añejo.
+    const antigVentana = item.antiguedad_ventana || 120;
+    const dsv       = item.dias_sin_venta;
+    const sinVendText = !item.is_full ? '—'
+      : (dsv == null ? `+${antigVentana}d` : (dsv === 0 ? 'hoy' : `${dsv}d`));
+    const sinVendColor = !item.is_full ? 'var(--muted)'
+      : (dsv == null || dsv >= 60) ? '#b45309' : (dsv >= 30 ? '#d97706' : 'var(--muted)');
     // autoSug: siempre calculado en vivo con liveTarget
     // ritmo=0 → 0; ritmo>0 → max(0, ritmo × días_objetivo − stock_full)
     const autoSug = ritmo > 0
@@ -9644,6 +9666,8 @@ function renderFsTable() {
       <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;text-align:center">${item.units_sold_period}</td>
       <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:13px;text-align:center;font-weight:600;color:var(--text)">${ritmoText}</td>
       <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:13px;text-align:center;font-weight:700;color:${covColor}">${cov != null ? cov+'d' : '—'}</td>
+      <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;text-align:center;font-weight:600;color:${sinVendColor}">${sinVendText}</td>
+      <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:13px;text-align:center;font-weight:700;color:${(item.exceso_unidades||0) > 0 ? '#7c3aed' : 'var(--muted)'}">${(item.exceso_unidades||0) > 0 ? item.exceso_unidades : '—'}</td>
       <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:14px;text-align:center;font-weight:700;color:${autoSug > 0 ? 'var(--accent)' : 'var(--muted)'}">
         ${autoSug}
       </td>
@@ -9660,14 +9684,18 @@ function renderFsTable() {
         ${thLabel('sold',      'Ventas ' + pd + 'd')}
         ${thLabel('ritmo',     'Ritmo/día')}
         ${thLabel('coverage',  'Cobertura')}
+        ${thLabel('sinvender', 'Sin vender')}
+        ${thLabel('exceso',    'Exceso')}
         ${thLabel('suggested', 'Sugerido a enviar')}
       </tr></thead>
-      <tbody>${rows || '<tr><td colspan="9" style="padding:30px;text-align:center;color:var(--muted)">Sin ítems para el filtro seleccionado</td></tr>'}</tbody>
+      <tbody>${rows || '<tr><td colspan="10" style="padding:30px;text-align:center;color:var(--muted)">Sin ítems para el filtro seleccionado</td></tr>'}</tbody>
     </table>
   </div>
   <div style="font-size:11px;color:var(--muted);margin-top:10px;padding:0 2px">
     🟢 Cobertura ≥30d &nbsp;|&nbsp; 🟡 15–29d &nbsp;|&nbsp; 🟠 7–14d &nbsp;|&nbsp; 🔴 &lt;7d &nbsp;·&nbsp;
-    Sugerido = ritmo/día × días objetivo − stock FULL (0 si sin ventas) &nbsp;·&nbsp; Editá para override manual
+    <b>Sin vender</b> = días desde la última venta (ventana ${(_fullStockData?.items?.[0]?.antiguedad_ventana)||120}d) &nbsp;·&nbsp;
+    <b>Exceso</b> = stock FULL por encima de la proyección (ritmo × días objetivo) &nbsp;·&nbsp;
+    Sugerido = ritmo/día × días objetivo − stock FULL (0 si sin ventas)
   </div>`;
 }
 async function setFsDays(days) {
@@ -9709,6 +9737,9 @@ function exportFullStockExcel() {
   else if (_fsFilter === 'critico') items = items.filter(i => i.coverage_days != null && i.coverage_days < 7);
   else if (_fsFilter === 'bajo')    items = items.filter(i => i.coverage_days != null && i.coverage_days >= 7 && i.coverage_days < 15);
   else if (_fsFilter === 'ok')      items = items.filter(i => i.coverage_days == null || i.coverage_days >= 15);
+  else if (_fsFilter === 'sinventas')  items = items.filter(i => i.is_full && i.stock_full > 0 && i.units_sold_period === 0);
+  else if (_fsFilter === 'sobrestock') items = items.filter(i => i.exceso_unidades > 0);
+  else if (_fsFilter === 'anejo')      items = items.filter(i => i.is_full && i.stock_full > 0 && (i.dias_sin_venta == null || i.dias_sin_venta >= 60));
   if (_fsSearch && _fsSearch.trim()) {
     const q = _fsSearch.trim().toLowerCase();
     items = items.filter(i => {
@@ -9737,6 +9768,9 @@ function exportFullStockExcel() {
       ['Ventas ' + period_days + 'd']: i.units_sold_period,
       'Ritmo/día':         ritmo > 0 ? parseFloat(ritmo.toFixed(2)) : 0,
       'Cobertura (días)':  i.coverage_days ?? '',
+      'Días sin vender':   i.dias_sin_venta == null ? `+${i.antiguedad_ventana||120}` : i.dias_sin_venta,
+      'Última venta':      i.ultima_venta ? i.ultima_venta.slice(0,10) : '',
+      'Exceso (u. sobre proyección)': i.exceso_unidades ?? 0,
       'Días objetivo':     targetDays,
       'Sugerido a enviar': autoSug,
     };
@@ -9744,7 +9778,7 @@ function exportFullStockExcel() {
 
   const wb = XLSX.utils.book_new();
   const ws = XLSX.utils.json_to_sheet(rows);
-  ws['!cols'] = [18,40,22,16,12,11,12,13,11,16,13,16].map(w => ({ wch: w }));
+  ws['!cols'] = [18,40,22,16,12,11,12,13,11,16,14,13,20,13,16].map(w => ({ wch: w }));
   XLSX.utils.book_append_sheet(wb, ws, 'Stock FULL');
   const fecha = new Date().toISOString().slice(0,10);
   XLSX.writeFile(wb, `StockFULL_${clientName.replace(/\s+/g,'_')}_${fecha}.xlsx`);
