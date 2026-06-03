@@ -6482,7 +6482,7 @@ function calcularSimulador() {
     const ivaNetoM    = Math.max(0, ivaVentasM - ivaComprasM);
     const utilidad    = precio - comisionM - cf - iibbM - tacosM - costoFijoM - debCredM - ivaNetoM - cmv - envio - extra;
     const margenReal  = precio > 0 ? utilidad / precio * 100 : 0;
-    return { cf, comisionM, iibbM, tacosM, debCredM, ivaVentasM, ivaComprasM, ivaNetoM, utilidad, margenReal };
+    return { cf, comisionM, iibbM, tacosM, debCredM, costoFijoM, ivaVentasM, ivaComprasM, ivaNetoM, utilidad, margenReal };
   }
 
   function calcPrecioDesdeMargen(margen) {
@@ -6509,18 +6509,25 @@ function calcularSimulador() {
       { label: 'CMV',                        monto: cmv,            color: '#ff5252' },
       { label: 'Otros costos',              monto: extra,          color: '#ff5252' },
       { label: 'IVA ventas',               monto: d.ivaVentasM,   color: '#8b5cf6' },
-      { label: 'IVA compras (acreditable)', monto: -d.ivaComprasM, color: '#059669' },
+      { label: 'IVA compras (acreditable)', monto: -d.ivaComprasM, color: '#059669', credito: true },
       { label: 'IVA neto a pagar',          monto: d.ivaNetoM,     color: '#8b5cf6' },
-      { label: 'Utilidad neta',            monto: d.utilidad,     color: '#00e676' },
+      { label: 'Utilidad neta',            monto: d.utilidad,     color: '#00e676', utilidad: true },
     ].filter(x => Math.abs(x.monto) > 0.5);
-    return items.map(x => `
+    return items.map(x => {
+      // El "+" verde es solo para créditos (IVA compras acreditable). La utilidad
+      // muestra su signo real: roja con "−" si es pérdida, verde si es ganancia.
+      let sign = '', color = x.color;
+      if (x.credito)        { sign = '+'; }
+      else if (x.utilidad)  { color = x.monto >= 0 ? '#00e676' : '#ff5252'; sign = x.monto < 0 ? '−' : ''; }
+      return `
       <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--border)">
         <span style="font-size:12px;color:var(--muted)">${x.label}</span>
         <div>
-          <span style="font-size:12px;font-weight:600;color:${x.color}">${x.monto < 0 ? '+' : ''}${fmt(Math.abs(x.monto))}</span>
+          <span style="font-size:12px;font-weight:600;color:${color}">${sign}${fmt(Math.abs(x.monto))}</span>
           <span style="font-size:10px;color:var(--muted);margin-left:4px">${precio > 0 ? fmtPn(Math.abs(x.monto) / precio * 100) : ''}</span>
         </div>
-      </div>`).join('');
+      </div>`;
+    }).join('');
   }
 
   const el = document.getElementById('simResultados');
@@ -6564,7 +6571,7 @@ function calcularSimulador() {
         <td style="padding:7px 10px;text-align:right;font-size:13px;${isBase ? 'font-weight:700;' : ''}">${fmt(Math.round(p2))}</td>
         <td style="padding:7px 10px;text-align:right;font-size:13px;font-weight:700;color:${mc}">${d2.margenReal.toFixed(1)}%</td>
         <td style="padding:7px 10px;text-align:right;font-size:12px;color:${d2.utilidad>=0?'#00e676':'#ff5252'}">${cmv > 0 ? (d2.utilidad/cmv*100).toFixed(1)+'%' : '—'}</td>
-        <td style="padding:7px 10px;text-align:right;font-size:12px;color:#00e676">${fmt(Math.round(d2.utilidad))}</td>
+        <td style="padding:7px 10px;text-align:right;font-size:12px;color:${d2.utilidad>=0?'#00e676':'#ff5252'}">${fmt(Math.round(d2.utilidad))}</td>
       </tr>`;
     }).join('');
 
@@ -6588,7 +6595,7 @@ function calcularSimulador() {
           </div>
           <div>
             <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">Utilidad / ud.</div>
-            <div style="font-size:20px;font-weight:700;color:#00e676">${fmt(d.utilidad)}</div>
+            <div style="font-size:20px;font-weight:700;color:${d.utilidad>=0?'#00e676':'#ff5252'}">${fmt(d.utilidad)}</div>
           </div>
           ${cmv > 0 ? `<div style="width:1px;height:44px;background:var(--border)"></div>
           <div>
