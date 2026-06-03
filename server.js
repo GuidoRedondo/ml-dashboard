@@ -6813,6 +6813,26 @@ app.get('/api/logistica', requireAuth, async (req, res) => {
 });
 
 // ── STOCK FULL ────────────────────────────────────────────────────────────────
+// Trae TODOS los ítems activos de un seller usando search_type=scan (scroll).
+// La paginación por offset de ML corta en offset 1000 (400 Bad Request), así que
+// para cuentas con +1000 publicaciones (ej. White Salud: 2321) hay que usar scan.
+async function fetchAllActiveItemIds(uid, headers) {
+  const ids = [];
+  let scrollId = null;
+  for (let guard = 0; guard < 300; guard++) { // tope de seguridad: 30.000 ítems
+    const url = scrollId
+      ? `${ML_API}/users/${uid}/items/search?search_type=scan&status=active&limit=100&scroll_id=${encodeURIComponent(scrollId)}`
+      : `${ML_API}/users/${uid}/items/search?search_type=scan&status=active&limit=100`;
+    const r = await fetch(url, { headers }).then(r => r.json()).catch(() => ({}));
+    const results = r.results || [];
+    if (r.scroll_id) scrollId = r.scroll_id;
+    if (!results.length) break;
+    ids.push(...results);
+    if (!scrollId) break;
+  }
+  return ids;
+}
+
 app.get('/api/logistica/full-stock', requireAuth, async (req, res) => {
   try {
     const clientId = parseInt(req.query.client_id);
@@ -6822,21 +6842,18 @@ app.get('/api/logistica/full-stock', requireAuth, async (req, res) => {
     if (!token) return res.status(403).json({ error: 'Sin token' });
     const headers  = { 'Authorization': `Bearer ${token}` };
 
-    // ── 1. Todos los ítems activos ───────────────────────────────────────────
-    let allIds = [], offset = 0;
-    while (true) {
-      const r = await fetch(`${ML_API}/users/${uid}/items/search?status=active&limit=100&offset=${offset}`, { headers }).then(r => r.json());
-      const ids = r.results || [];
-      allIds = allIds.concat(ids);
-      if (ids.length < 100 || allIds.length >= (r.paging?.total || 0)) break;
-      offset += 100;
-      if (offset > 5000) break;
-    }
+    // ── 1. Todos los ítems activos (scan: soporta +1000 publicaciones) ───────
+    const allIds = await fetchAllActiveItemIds(uid, headers);
 
     // ── 2. Datos de cada ítem (todos, no solo FULL) ──────────────────────────
+    //     Batches de 20 procesados con concurrencia (cuentas grandes: 2300+ ítems).
     const allItems = [];
-    for (let i = 0; i < allIds.length; i += 20) {
-      const batch = allIds.slice(i, i + 20);
+    const detailBatches = [];
+    for (let i = 0; i < allIds.length; i += 20) detailBatches.push(allIds.slice(i, i + 20));
+    const DETAIL_CONCURRENCY = 8;
+    for (let g = 0; g < detailBatches.length; g += DETAIL_CONCURRENCY) {
+      const group = detailBatches.slice(g, g + DETAIL_CONCURRENCY);
+      await Promise.all(group.map(async batch => {
       try {
         const data = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,title,price,available_quantity,shipping,inventory_id,seller_custom_field,variations`, { headers }).then(r => r.json());
         (Array.isArray(data) ? data : []).forEach(r => {
@@ -6881,6 +6898,7 @@ app.get('/api/logistica/full-stock', requireAuth, async (req, res) => {
           }
         });
       } catch(e) {}
+      }));
     }
 
     // ── 3. Stock FULL para los que tienen inventory_id ───────────────────────
