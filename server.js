@@ -7397,15 +7397,45 @@ app.get('/api/promociones', requireAuth, async (req, res) => {
     const searchRes = await mlGet(`/users/${uid}/items/search?status=active&limit=100`, token);
     const ids = searchRes.results || [];
 
-    // 2. Detalles de ítems en batches de 20
-    const attrs = 'id,title,price,original_price,available_quantity,thumbnail,permalink,listing_type_id,promotions';
-    const batchResults = await Promise.all(
-      Array.from({ length: Math.ceil(ids.length / 20) }, (_, i) => ids.slice(i*20, i*20+20))
-        .map(batch => mlGet(`/items?ids=${batch.join(',')}&attributes=${attrs}`, token).catch(() => []))
-    );
-    const allItems = batchResults.flat()
-      .filter(it => it && it.code === 200 && it.body)
-      .map(it => it.body);
+    // 2. Detalle POR ÍTEM (título + precios). El multiget /items?ids=...&attributes=price,original_price
+    //    NO refleja descuentos por promoción/campaña (DEAL, oferta, etc.) — esos viven en
+    //    sale_price y /items/{id}/prices. Por ítem es el único modo de ver el precio real que ve
+    //    el comprador (mismo patrón que Rentabilidad/Conversión, que sí muestran el descuento bien).
+    const allItems = [];
+    const PRICE_CONCURRENCY = 12;
+    for (let i = 0; i < ids.length; i += PRICE_CONCURRENCY) {
+      const chunk = ids.slice(i, i + PRICE_CONCURRENCY);
+      await Promise.all(chunk.map(async id => {
+        try {
+          const [b, pricesResp] = await Promise.all([
+            fetch(`${ML_API}/items/${id}`, { headers }).then(r => r.json()).catch(() => null),
+            fetch(`${ML_API}/items/${id}/prices`, { headers }).then(r => r.json()).catch(() => null),
+          ]);
+          if (!b || b.error || !b.id) return;
+          const basePrice  = parseFloat(b.price) || 0;
+          const origPrice  = b.original_price ? parseFloat(b.original_price) : null;
+          const saleRaw    = b.sale_price;
+          const salePrice  = saleRaw != null
+            ? (typeof saleRaw === 'object' ? parseFloat(saleRaw.amount || saleRaw.regular_amount || 0) : parseFloat(saleRaw))
+            : null;
+          const promoPrice = b.promotions?.[0]?.price ? parseFloat(b.promotions[0].price) : null;
+          const pricesPromo = pricesResp?.prices?.filter(p => p.type !== 'standard')
+            .map(p => parseFloat(p.amount)).filter(v => v > 0);
+          const minPricesPromo = pricesPromo?.length ? Math.min(...pricesPromo) : null;
+          const candidates = [basePrice, salePrice, promoPrice, minPricesPromo].filter(v => v && v > 0);
+          const price = candidates.length ? Math.min(...candidates) : basePrice;
+          // precio lista tachado: original_price si supera al precio real, si no el price base cuando hubo descuento
+          const precioLista = origPrice && origPrice > price
+            ? origPrice
+            : (price < basePrice ? basePrice : null);
+          allItems.push({
+            id: b.id, title: b.title, thumbnail: b.thumbnail, permalink: b.permalink,
+            available_quantity: b.available_quantity, promotions: b.promotions || [],
+            _price: price, _precioLista: precioLista,
+          });
+        } catch(e) {}
+      }));
+    }
 
     // 3. Costos desde product_costs
     const costsRes = await pool.query('SELECT mla_id, costo_unit FROM product_costs WHERE client_id=$1', [clientId]);
@@ -7425,10 +7455,11 @@ app.get('/api/promociones', requireAuth, async (req, res) => {
 
     // 5. Filtrar con descuento y enriquecer
     const itemsConDescuento = allItems
-      .filter(it => it.original_price && it.original_price > it.price)
+      .filter(it => it._precioLista && it._precioLista > it._price)
       .map(it => {
         const costo   = costMap[it.id] || 0;
-        const precio  = it.price;
+        const precio  = it._price;
+        const original = it._precioLista;
         const rentPct = costo > 0 ? +((precio - costo) / precio * 100).toFixed(1) : null;
         const stock   = it.available_quantity || 0;
         const sold30  = unitsSold30[it.id] || 0;
@@ -7441,8 +7472,8 @@ app.get('/api/promociones', requireAuth, async (req, res) => {
           thumbnail: it.thumbnail,
           permalink: it.permalink,
           price: precio,
-          original_price: it.original_price,
-          discount_pct: Math.round((it.original_price - precio) / it.original_price * 100),
+          original_price: original,
+          discount_pct: Math.round((original - precio) / original * 100),
           costo,
           rentabilidad_pct: rentPct,
           stock,
