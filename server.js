@@ -7409,44 +7409,42 @@ async function estimarComisionML(headers, { category_id, listing_type_id, logist
   return obj?.sale_fee_amount != null ? parseFloat(obj.sale_fee_amount) : null;
 }
 
-// Mapa item_id -> { name, type, meli_pct, seller_pct } usando seller-promotions
-// (cruce campañas del seller × ítems participantes). Es la fuente correcta del
-// NOMBRE real de campaña + cuánto banca ML. Si el endpoint da 403 (app no
-// certificada) devuelve {} y el caller cae al fallback por tipo del item.
-async function fetchCampaignMap(headers, uid) {
-  const map = {};
+// Campaña ACTIVA de un ítem vía /seller-promotions/items/{id}?app_version=v2.
+// Ese endpoint devuelve un array con todas las promos del ítem (candidatas,
+// started, pending...). La que está APLICANDO el descuento es la de status
+// "started". Devuelve su nombre real + cuánto banca ML (meli_percentage) y el
+// vendedor (seller_percentage). Si no hay activa o el endpoint falla → null.
+async function fetchItemCampaign(headers, itemId, expectedPrice = null) {
   try {
-    const r = await fetch(`${ML_API}/seller-promotions/users/${uid}?app_version=v2`, { headers });
-    if (!r.ok) return map;
-    const offers = await r.json();
-    const list = Array.isArray(offers) ? offers : (offers.results || []);
-    for (const promo of list) {
-      const promoId = promo.id;
-      const ptype = promo.type || promo.promotion_type;
-      const info = {
-        name: promo.name || promo.alias || labelCampania(ptype, null) || ptype || 'Campaña',
-        type: ptype || null,
-        meli_pct: promo.meli_percentage ?? promo.benefits?.meli_percent ?? null,
-        seller_pct: promo.seller_percentage ?? promo.benefits?.seller_percent ?? null,
-      };
-      try {
-        let offset = 0;
-        for (let page = 0; page < 10; page++) {
-          const ir = await fetch(`${ML_API}/seller-promotions/promotions/${promoId}/items?promotion_type=${ptype}&app_version=v2&limit=50&offset=${offset}`, { headers });
-          if (!ir.ok) break;
-          const ij = await ir.json();
-          const items = ij.results || [];
-          items.forEach(it => {
-            const iid = it.id || it.item_id;
-            if (iid && !map[iid]) map[iid] = info;
-          });
-          if (items.length < 50) break;
-          offset += 50;
-        }
-      } catch(_) {}
+    const r = await fetch(`${ML_API}/seller-promotions/items/${itemId}?app_version=v2`, { headers });
+    if (!r.ok) return null;
+    const arr = await r.json();
+    if (!Array.isArray(arr) || !arr.length) return null;
+    const started = arr.filter(p => p.status === 'started');
+    let pick = null;
+    if (started.length <= 1) {
+      pick = started[0] || null;
+    } else if (expectedPrice) {
+      // varias activas: elegir la cuyo precio coincide con el descuento detectado
+      pick = started.reduce((best, p) => {
+        if (p.price == null) return best;
+        if (!best) return p;
+        return Math.abs(p.price - expectedPrice) < Math.abs(best.price - expectedPrice) ? p : best;
+      }, null) || started[0];
+    } else {
+      pick = started[0];
     }
-  } catch(_) {}
-  return map;
+    if (!pick) return null;
+    const num = v => (v != null && !isNaN(parseFloat(v))) ? parseFloat(v) : null;
+    return {
+      name: pick.name || labelCampania(pick.type, null) || pick.type || 'Campaña',
+      type: pick.type || null,
+      meli_pct: num(pick.meli_percentage),
+      seller_pct: num(pick.seller_percentage),
+      price: pick.price ?? null,
+      status: pick.status,
+    };
+  } catch(_) { return null; }
 }
 
 // Mapa item_id -> inversión PADS (cost) en el rango. Mismo patrón que /api/dashboard.
@@ -7567,21 +7565,21 @@ app.get('/api/promociones', requireAuth, async (req, res) => {
     // 5. Filtrar con descuento
     const descontados = allItems.filter(it => it._precioLista && it._precioLista > it._price);
 
-    // 5b. Mapa de campañas reales (nombre + financiación ML) vía seller-promotions.
-    //     Acotado a 8s: si seller-promotions cuelga, seguimos con {} (fallback por tipo).
-    const campMap = await Promise.race([
-      fetchCampaignMap(headers, uid),
-      new Promise(resolve => setTimeout(() => resolve({}), 8000)),
-    ]);
-
-    // 6. Pasada 2 (solo descontados): estimar comisión ML al precio con descuento y
-    //    calcular RENTABILIDAD NETA = precio − comisión − IVA neto − costo (sin envío
-    //    ni publicidad, que se agregan en el desglose on-demand).
+    // 6. Pasada 2 (solo descontados): comisión ML al precio con descuento + campaña
+    //    ACTIVA real (seller-promotions por ítem). RENTABILIDAD NETA = precio −
+    //    comisión − IVA neto − costo (sin envío ni publicidad, que se agregan en el
+    //    desglose on-demand).
     const comisionMap = {};
+    const campMetaMap = {};
     for (let i = 0; i < descontados.length; i += PRICE_CONCURRENCY) {
       const chunk = descontados.slice(i, i + PRICE_CONCURRENCY);
       await Promise.all(chunk.map(async it => {
-        comisionMap[it.id] = await estimarComisionML(headers, it, it._price).catch(() => null);
+        const [com, camp] = await Promise.all([
+          estimarComisionML(headers, it, it._price).catch(() => null),
+          fetchItemCampaign(headers, it.id, it._price).catch(() => null),
+        ]);
+        comisionMap[it.id] = com;
+        campMetaMap[it.id] = camp;
       }));
     }
 
@@ -7596,7 +7594,7 @@ app.get('/api/promociones', requireAuth, async (req, res) => {
         const sold30   = unitsSold30[it.id] || 0;
         const dailyRate = sold30 / 30;
         const coverage  = dailyRate > 0 ? Math.round(stock / dailyRate) : null;
-        const campMeta = campMap[it.id] || null;
+        const campMeta = campMetaMap[it.id] || null;
         const campana = campMeta?.name || labelCampania(it.promotions?.[0]?.type, it.promotions?.[0]?.name);
 
         // Rentabilidad bruta (precio − costo) — referencia rápida
@@ -7660,11 +7658,10 @@ app.get('/api/promociones/desglose', requireAuth, async (req, res) => {
     const esMonotrib = (clientRow.rows[0]?.condicion_iva || 'responsable_inscripto') === 'monotributista';
     const IVA = 0.21;
 
-    // 1. Ítem + precios + promociones (nombre real de campaña + financiación)
-    const [b, pricesResp, promoList] = await Promise.all([
+    // 1. Ítem + precios
+    const [b, pricesResp] = await Promise.all([
       fetch(`${ML_API}/items/${itemId}`, { headers }).then(r => r.json()).catch(() => null),
       fetch(`${ML_API}/items/${itemId}/prices`, { headers }).then(r => r.json()).catch(() => null),
-      fetch(`${ML_API}/items/${itemId}/promotions`, { headers }).then(r => r.json()).catch(() => null),
     ]);
     if (!b || b.error || !b.id) return res.json({ error: 'Ítem no encontrado' });
 
@@ -7683,28 +7680,12 @@ app.get('/api/promociones/desglose', requireAuth, async (req, res) => {
     const precio = candidates.length ? Math.min(...candidates) : basePrice;
     const precioLista = origPrice && origPrice > precio ? origPrice : (precio < basePrice ? basePrice : null);
 
-    // 2. Campaña real + financiación ML / vendedor.
-    //    Fuente principal: seller-promotions (nombre real). Fallback: /items/{id}/promotions.
-    const campMap = await fetchCampaignMap(headers, uid);
-    const campMeta = campMap[itemId] || null;
-    let campania = campMeta?.name || labelCampania(b.promotions?.[0]?.type, b.promotions?.[0]?.name);
-    let campaniaTipo = campMeta?.type || b.promotions?.[0]?.type || null;
-    let mlBancaPct = (campMeta?.meli_pct != null && !isNaN(parseFloat(campMeta.meli_pct))) ? parseFloat(campMeta.meli_pct) : null;
-    let vendedorBancaPct = mlBancaPct != null ? +(100 - mlBancaPct).toFixed(1) : null;
-    if (Array.isArray(promoList) && promoList.length) {
-      const active = promoList.find(p => p.status === 'started' || p.price != null || p.deal_price != null) || promoList[0];
-      if (active) {
-        if (!campania) campania = labelCampania(active.type, active.name);
-        if (!campaniaTipo) campaniaTipo = active.type || null;
-        if (mlBancaPct == null) {
-          const meli = active.meli_percentage ?? active.benefits?.meli_percent ?? active.rebate_meli_percent ?? null;
-          if (meli != null && !isNaN(parseFloat(meli))) {
-            mlBancaPct = parseFloat(meli);
-            vendedorBancaPct = +(100 - mlBancaPct).toFixed(1);
-          }
-        }
-      }
-    }
+    // 2. Campaña ACTIVA real (status started) + financiación ML / vendedor.
+    const campMeta = await fetchItemCampaign(headers, itemId, precio).catch(() => null);
+    const campania = campMeta?.name || labelCampania(b.promotions?.[0]?.type, b.promotions?.[0]?.name);
+    const campaniaTipo = campMeta?.type || b.promotions?.[0]?.type || null;
+    const mlBancaPct = campMeta?.meli_pct ?? null;
+    const vendedorBancaPct = campMeta?.seller_pct ?? null;
 
     // 3. Comisión ML estimada al precio con descuento
     const comision = await estimarComisionML(headers, {
