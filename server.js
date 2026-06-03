@@ -6843,22 +6843,26 @@ app.get('/api/logistica/full-stock', requireAuth, async (req, res) => {
           if (r.code !== 200 || !r.body) return;
           const b = r.body;
           const lt       = b.shipping?.logistic_type || '';
-          const isFull   = lt === 'fulfillment';
           const itemSku  = b.seller_custom_field || null;
+          // FULL se determina por la presencia de inventory_id (el inventario de
+          // fulfillment), NO por el logistic_type del nivel ítem: un ítem puede tener
+          // logistic_type 'cross_docking' arriba y variaciones SÍ en FULL (cada
+          // variante con su propio inventory_id). El inventory_id es el indicador real.
 
           if (b.variations?.length) {
             // Ítem con variaciones → una fila por variante
             b.variations.forEach(v => {
               const varName = (v.attribute_combinations || []).map(a => a.value_name).join(' / ') || `Var ${v.id}`;
               const varSku  = v.attributes?.find(a => a.id === 'SELLER_SKU')?.value_name || itemSku || null;
+              const varInv  = v.inventory_id || null;
               allItems.push({
                 id:           b.id,
                 title:        `${b.title} — ${varName}`,
                 price:        v.price || b.price,
                 variation_id: v.id,
-                inventory_id: v.inventory_id || null,
-                is_full:      isFull && !!v.inventory_id,
-                logistic_type: lt,
+                inventory_id: varInv,
+                is_full:      !!varInv,
+                logistic_type: varInv ? 'fulfillment' : lt,
                 sku:          varSku,
               });
             });
@@ -6870,8 +6874,8 @@ app.get('/api/logistica/full-stock', requireAuth, async (req, res) => {
               price:        b.price,
               variation_id: null,
               inventory_id: b.inventory_id || null,
-              is_full:      isFull && !!b.inventory_id,
-              logistic_type: lt,
+              is_full:      !!b.inventory_id,
+              logistic_type: b.inventory_id ? 'fulfillment' : lt,
               sku:          itemSku,
             });
           }
