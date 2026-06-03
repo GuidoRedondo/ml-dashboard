@@ -6050,11 +6050,18 @@ async function loadSimulador() {
     });
   });
 
-  // Cargar costos guardados para prellenar CMV
+  // Cargar costos guardados para prellenar CMV.
+  // Fuente: items-activos (TODOS los costos guardados, sin atar al rango de fechas)
+  // + items-vendidos (por si hay ítems vendidos que ya no están activos). El costo
+  // vive en product_costs, no depende de si el ítem vendió en el rango seleccionado.
   const range = getDateRange();
-  const costsData = await apiCall('GET', `/api/reporte/items-vendidos?client_id=${client.id}&date_from=${range.date_from}&date_to=${range.date_to}`).catch(() => null);
+  const [activosData, vendidosData] = await Promise.all([
+    apiCall('GET', `/api/reporte/items-activos?client_id=${client.id}`).catch(() => null),
+    apiCall('GET', `/api/reporte/items-vendidos?client_id=${client.id}&date_from=${range.date_from}&date_to=${range.date_to}`).catch(() => null),
+  ]);
   const costsMap = {};
-  (costsData?.items || []).forEach(i => { if (i.costo_unit) costsMap[i.mla_id] = parseFloat(i.costo_unit)||0; });
+  (vendidosData?.items || []).forEach(i => { if (i.costo_unit) costsMap[i.mla_id] = parseFloat(i.costo_unit)||0; });
+  (activosData?.items || []).forEach(i => { if (i.costo_unit) costsMap[i.mla_id] = parseFloat(i.costo_unit)||0; });
 
   // Agregar costo_unit a cada producto
   Object.values(allProducts).forEach(p => { p.costo_unit = costsMap[p.id] || 0; });
@@ -6310,29 +6317,25 @@ async function onSimMLAChange(id) {
 
   try {
     const feesData = await apiCall('GET', `/api/item-fees?item_id=${id}&client_id=${client.id}`);
-    // Buscar sale_fee (comisión variable %) y fixed_fee (cargo fijo)
-    const saleFeeLine = (feesData?.sale_fee_details || feesData?.fees || []).find(f => 
-      f.type === 'sale_fee' || f.id === 'sale_fee' || f.type === 'mercadolibre_fee'
-    );
-    const pctComision = saleFeeLine?.fee_amount_pct || saleFeeLine?.percentage || null;
+    // La comisión real vive en feesData.listing_prices.sale_fee_details (objeto),
+    // NO en el nivel top. percentage_fee = % variable; fixed_fee = cargo fijo.
+    const lp  = feesData?.listing_prices || {};
+    const det = lp.sale_fee_details || {};
+    const pctComision = det.percentage_fee ?? det.meli_percentage_fee ?? det.percentage ?? null;
+    const fixedFee    = det.fixed_fee ?? null;
 
-    if (pctComision) {
+    if (pctComision != null && pctComision > 0) {
       document.getElementById('simComision').value = parseFloat(pctComision).toFixed(1);
-      comisionDetalle.innerHTML = `<span style="color:#00e676">✓ Comisión real ML: ${parseFloat(pctComision).toFixed(1)}%</span>`;
-    } else if (feesData && !feesData.error) {
-      // Intentar calcular del total si no viene el % directo
-      const precioItem = item.price || 0;
-      const totalFee = feesData.sale_fee_amount || feesData.total_fee_amount || 0;
-      if (totalFee > 0 && precioItem > 0) {
-        const pct = (totalFee / precioItem * 100).toFixed(1);
-        document.getElementById('simComision').value = pct;
-        comisionDetalle.innerHTML = `<span style="color:#00e676">✓ Comisión calculada: ${pct}%</span>`;
-      } else {
-        // Fallback al historial
-        throw new Error('Sin datos de fees');
-      }
+      const fijoTxt = fixedFee ? ` + cargo fijo $${Math.round(fixedFee).toLocaleString('es-AR')}` : '';
+      comisionDetalle.innerHTML = `<span style="color:#00e676">✓ Comisión real ML: ${parseFloat(pctComision).toFixed(1)}%${fijoTxt}</span>`;
+    } else if (lp.sale_fee_amount > 0 && (feesData?.effective_price || item.price) > 0) {
+      // Fallback: derivar el % del monto total (incluye cargo fijo, aproximado)
+      const base = feesData.effective_price || item.price;
+      const pct = (lp.sale_fee_amount / base * 100).toFixed(1);
+      document.getElementById('simComision').value = pct;
+      comisionDetalle.innerHTML = `<span style="color:#ff9100">≈ Comisión total/precio: ${pct}% (incluye cargo fijo)</span>`;
     } else {
-      throw new Error(feesData?.error || 'Sin respuesta');
+      throw new Error(feesData?.error || 'Sin datos de fees');
     }
   } catch(e) {
     // Fallback: calcular del historial descontando cargo fijo
@@ -6447,7 +6450,14 @@ function calcularSimulador() {
   const extra      = get('simExtraCost');
   const envio      = get('simEnvio');
   const comisionPct= get('simComision') / 100;
-  if (cmv <= 0 && envio <= 0) return;
+  // En modo precio el desglose se calcula aunque falte CMV/envío (la mayoría de los
+  // gastos son % del precio). Solo el modo margen necesita una base de costo para
+  // despejar el precio objetivo.
+  if (modo === 'margen' && cmv <= 0 && envio <= 0 && extra <= 0) {
+    const elM = document.getElementById('simResultados');
+    if (elM) elM.innerHTML = `<div class="kpi-card" style="padding:30px;text-align:center;color:var(--muted)">Cargá el CMV (costo) del producto para calcular el precio objetivo por margen.</div>`;
+    return;
+  }
 
   const fmt  = n => '$' + Math.round(n).toLocaleString('es-AR');
   const fmtPn= n => parseFloat(n).toFixed(1) + '%';
