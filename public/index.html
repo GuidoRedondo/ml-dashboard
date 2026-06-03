@@ -13382,15 +13382,15 @@ function renderPromociones(data) {
 
   const fmt  = n => '$' + Math.round(n).toLocaleString('es-AR');
   const avgDesc = Math.round(items.reduce((s,i) => s + i.discount_pct, 0) / items.length);
-  const rentOk  = items.filter(i => i.rentabilidad_pct !== null);
-  const avgRent = rentOk.length ? (rentOk.reduce((s,i) => s + i.rentabilidad_pct, 0) / rentOk.length).toFixed(1) : null;
+  const rentOk  = items.filter(i => i.rentabilidad_neta_pct !== null && i.rentabilidad_neta_pct !== undefined);
+  const avgRent = rentOk.length ? (rentOk.reduce((s,i) => s + i.rentabilidad_neta_pct, 0) / rentOk.length).toFixed(1) : null;
 
   el.innerHTML = `
     <div style="display:flex;gap:12px;margin-bottom:20px;flex-wrap:wrap">
       ${[['Ítems revisados', data.total||0, ''],
          ['Con descuento',   items.length,  '#22c55e'],
          ['Desc. promedio',  avgDesc+'%',   'var(--accent)'],
-         avgRent !== null ? ['Rent. promedio', avgRent+'%', avgRent >= 20 ? '#22c55e' : avgRent >= 10 ? '#ff9100' : '#ff5252'] : null
+         avgRent !== null ? ['Rent. neta prom.', avgRent+'%', avgRent >= 20 ? '#22c55e' : avgRent >= 10 ? '#ff9100' : '#ff5252'] : null
         ].filter(Boolean)
         .map(([l,v,c]) => `<div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px 18px">
           <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em">${l}</div>
@@ -13405,14 +13405,16 @@ function renderPromociones(data) {
         <th style="padding:8px 12px;text-align:right;font-size:11px;color:var(--muted);border-bottom:1px solid var(--border)">Precio orig.</th>
         <th style="padding:8px 12px;text-align:right;font-size:11px;color:var(--muted);border-bottom:1px solid var(--border)">Con desc.</th>
         <th style="padding:8px 12px;text-align:center;font-size:11px;color:var(--muted);border-bottom:1px solid var(--border)">% Desc.</th>
-        <th style="padding:8px 12px;text-align:center;font-size:11px;color:var(--muted);border-bottom:1px solid var(--border)">Rentabilidad</th>
+        <th style="padding:8px 12px;text-align:center;font-size:11px;color:var(--muted);border-bottom:1px solid var(--border)" title="Precio − comisión ML − IVA neto − costo (sin envío). El envío se suma en el desglose.">Rent. neta*</th>
         <th style="padding:8px 12px;text-align:center;font-size:11px;color:var(--muted);border-bottom:1px solid var(--border)">Stock</th>
         <th style="padding:8px 12px;text-align:center;font-size:11px;color:var(--muted);border-bottom:1px solid var(--border)">Cobertura</th>
+        <th style="padding:8px 12px;text-align:center;font-size:11px;color:var(--muted);border-bottom:1px solid var(--border)">Desglose</th>
       </tr></thead>
       <tbody>
         ${items.map(it => {
-          const rentColor = it.rentabilidad_pct === null ? 'var(--muted)'
-            : it.rentabilidad_pct >= 20 ? '#22c55e' : it.rentabilidad_pct >= 10 ? '#ff9100' : '#ff5252';
+          const rentN = it.rentabilidad_neta_pct;
+          const rentColor = (rentN === null || rentN === undefined) ? 'var(--muted)'
+            : rentN >= 20 ? '#22c55e' : rentN >= 10 ? '#ff9100' : '#ff5252';
           const covColor = it.cobertura_dias === null ? 'var(--muted)'
             : it.cobertura_dias >= 30 ? '#22c55e' : it.cobertura_dias >= 15 ? '#ff9100' : '#ff5252';
           return `<tr style="border-bottom:1px solid var(--border)">
@@ -13429,16 +13431,95 @@ function renderPromociones(data) {
               <span style="background:#00e67622;color:#00e676;padding:2px 8px;border-radius:10px;font-size:12px;font-weight:700">-${it.discount_pct}%</span>
             </td>
             <td style="padding:10px 12px;text-align:center;font-size:13px;font-weight:700;color:${rentColor}">
-              ${it.rentabilidad_pct !== null ? it.rentabilidad_pct + '%' : '<span style="color:var(--muted);font-size:11px">Sin costo</span>'}
+              ${(rentN !== null && rentN !== undefined) ? rentN + '%'
+                : (it.costo === 0 || it.costo == null) ? '<span style="color:var(--muted);font-size:11px">Sin costo</span>'
+                : '<span style="color:var(--muted);font-size:11px">—</span>'}
             </td>
             <td style="padding:10px 12px;text-align:center;font-size:13px;font-weight:600">${it.stock}</td>
             <td style="padding:10px 12px;text-align:center;font-size:13px;font-weight:700;color:${covColor}">
               ${it.cobertura_dias !== null ? it.cobertura_dias + ' días' : '<span style="color:var(--muted);font-size:11px">Sin ventas</span>'}
             </td>
+            <td style="padding:10px 12px;text-align:center">
+              <button onclick="togglePromoDesglose('${it.item_id}', this)" style="background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px;padding:4px 10px;cursor:pointer">🔍</button>
+            </td>
           </tr>`;
         }).join('')}
       </tbody>
-    </table></div>`;
+    </table></div>
+    <div style="margin-top:10px;font-size:11px;color:var(--muted)">* Rent. neta = precio con descuento − comisión ML − IVA neto − costo (sin envío). Tocá 🔍 para el desglose completo con envío real.</div>`;
+}
+
+// Expande/colapsa el desglose NETO de un ítem en promo (incluye envío real + campaña).
+async function togglePromoDesglose(itemId, btn) {
+  const existing = document.getElementById('promo-det-' + itemId);
+  if (existing) { existing.remove(); btn.textContent = '🔍'; return; }
+  const client = getActiveClient();
+  if (!client) return;
+  const tr = btn.closest('tr');
+  const nd = document.createElement('tr');
+  nd.id = 'promo-det-' + itemId;
+  nd.innerHTML = `<td colspan="9" style="padding:0"><div style="padding:14px 22px;background:var(--surface2);color:var(--muted);font-size:12px">⏳ Calculando desglose neto (comisión, IVA y envío real)…</div></td>`;
+  tr.after(nd);
+  btn.textContent = '⏳';
+  try {
+    const d = await apiCall('GET', `/api/promociones/desglose?client_id=${client.id}&item_id=${itemId}`);
+    btn.textContent = '✖';
+    const cell = nd.querySelector('td');
+    if (!d || d.error) {
+      cell.innerHTML = `<div style="padding:14px 22px;background:var(--surface2);color:#ff5252;font-size:12px">No se pudo calcular: ${(d && d.error) || 'sin datos'}</div>`;
+      return;
+    }
+    cell.innerHTML = renderPromoDesglose(d);
+  } catch(e) {
+    btn.textContent = '✖';
+    nd.querySelector('td').innerHTML = `<div style="padding:14px 22px;background:var(--surface2);color:#ff5252;font-size:12px">Error: ${e.message}</div>`;
+  }
+}
+
+function renderPromoDesglose(d) {
+  const fmt = n => (n == null ? '—' : '$' + Math.round(n).toLocaleString('es-AR'));
+  const line = (label, value, color, neg) => `
+    <div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px dashed var(--border)">
+      <span style="color:var(--muted)">${label}</span>
+      <span style="font-weight:600;color:${color || 'var(--text)'};font-variant-numeric:tabular-nums">${neg && value != null ? '−' : ''}${fmt(value)}</span>
+    </div>`;
+
+  const rentColor = d.rentabilidad_neta_pct == null ? 'var(--muted)'
+    : d.rentabilidad_neta_pct >= 20 ? '#22c55e' : d.rentabilidad_neta_pct >= 10 ? '#ff9100' : '#ff5252';
+
+  // Avisos de datos faltantes
+  const avisos = [];
+  if (!d.costo_cargado) avisos.push('⚠️ Sin costo cargado en Rentabilidad → no se puede cerrar el margen neto.');
+  if (!d.comision_disponible) avisos.push('⚠️ ML no devolvió la comisión estimada para este ítem.');
+  if (d.envio == null) avisos.push('ℹ️ Sin muestra de envío reciente (sin ventas en 180 días) → envío asumido $0.');
+  else if (d.envio_fuente) avisos.push(`ℹ️ Envío tomado de: ${d.envio_fuente}.`);
+  if (d.condicion_iva === 'monotributista') avisos.push('ℹ️ Cliente monotributista → IVA neto = $0.');
+
+  const financ = (d.ml_banca_pct != null)
+    ? `<span style="color:#22c55e;font-weight:600">ML banca ${d.ml_banca_pct}%</span> · vos bancás ${d.vendedor_banca_pct}%`
+    : `<span style="color:var(--muted)">financiación no informada por ML</span>`;
+
+  return `
+  <div style="padding:16px 22px;background:var(--surface2)">
+    <div style="display:flex;flex-wrap:wrap;gap:8px 18px;align-items:center;margin-bottom:12px">
+      <div style="font-size:13px;font-weight:700">🏷️ ${d.campania || 'Sin campaña identificada'}</div>
+      ${d.campania_tipo ? `<span style="font-size:11px;color:var(--muted);background:var(--surface);padding:2px 8px;border-radius:8px">${d.campania_tipo}</span>` : ''}
+      <span style="font-size:12px">${financ}</span>
+    </div>
+    <div style="max-width:460px">
+      ${line('Precio de lista', d.precio_lista, 'var(--muted)')}
+      ${line('Precio con descuento', d.precio, 'var(--text)')}
+      ${line('Comisión ML', d.comision, '#ff9100', true)}
+      ${line('IVA neto', d.iva_neto, '#ff9100', true)}
+      ${line('Envío (vendedor)', d.envio, '#ff9100', true)}
+      ${line('Costo (CMV)', d.costo, '#ff9100', true)}
+      <div style="display:flex;justify-content:space-between;padding:9px 0;margin-top:2px;border-top:2px solid var(--border)">
+        <span style="font-weight:700">Margen neto / unidad</span>
+        <span style="font-weight:800;font-size:15px;color:${rentColor};font-variant-numeric:tabular-nums">${fmt(d.margen_neto)}${d.rentabilidad_neta_pct != null ? ` &nbsp;(${d.rentabilidad_neta_pct}%)` : ''}</span>
+      </div>
+    </div>
+    ${avisos.length ? `<div style="margin-top:10px;font-size:11px;color:var(--muted);line-height:1.7">${avisos.join('<br>')}</div>` : ''}
+  </div>`;
 }
 
 

@@ -7376,6 +7376,39 @@ app.get('/api/competencia', requireAuth, async (req, res) => {
 });
 
 // ── PROMOCIONES ───────────────────────────────────────────────────────────────
+// Traduce el `type` de promoción de ML a una etiqueta legible en español.
+// Si la promo trae nombre propio (campañas con nombre, ej. "Hot Sale"), se prioriza.
+function labelCampania(type, name) {
+  if (name && String(name).trim()) return String(name).trim();
+  const map = {
+    DEAL: 'Oferta del día', DOD: 'Oferta del día', LIGHTNING: 'Oferta relámpago',
+    MARKETPLACE_CAMPAIGN: 'Campaña ML', SELLER_CAMPAIGN: 'Campaña propia',
+    PRICE_DISCOUNT: 'Descuento del vendedor', SMART: 'Promoción inteligente',
+    PRICE_MATCHING: 'Igualación de precio', VOLUME: 'Descuento por cantidad',
+    MULTIBUY: 'Descuento por cantidad', UNHEALTHY_STOCK: 'Liquidación de stock',
+    PRE_NEGOTIATED: 'Precio preacordado',
+  };
+  if (!type) return null;
+  return map[type] || type;
+}
+
+// Estima la comisión de venta de ML a un precio dado vía /sites/MLA/listing_prices.
+// Devuelve sale_fee_amount (number) o null si ML no respondió.
+async function estimarComisionML(headers, { category_id, listing_type_id, logistic_type, shipping_mode, billable_weight }, price) {
+  if (!category_id || !price) return null;
+  const params = new URLSearchParams({
+    category_id, price, currency_id: 'ARS',
+    listing_type_id: listing_type_id || 'gold_special',
+    logistic_type:   logistic_type || 'cross_docking',
+    shipping_modes:  shipping_mode || 'me2',
+    billable_weight: billable_weight || 500,
+  });
+  const lp = await fetch(`${ML_API}/sites/MLA/listing_prices?${params}`, { headers }).then(r => r.json()).catch(() => null);
+  if (!lp) return null;
+  const obj = Array.isArray(lp) ? (lp.find(x => x.listing_type_id === listing_type_id) || lp[0]) : lp;
+  return obj?.sale_fee_amount != null ? parseFloat(obj.sale_fee_amount) : null;
+}
+
 app.get('/api/promociones', requireAuth, async (req, res) => {
   // Hard timeout: si algo cuelga, responder igual a los 9 segundos
   const hardTimeout = setTimeout(() => {
@@ -7432,15 +7465,26 @@ app.get('/api/promociones', requireAuth, async (req, res) => {
             id: b.id, title: b.title, thumbnail: b.thumbnail, permalink: b.permalink,
             available_quantity: b.available_quantity, promotions: b.promotions || [],
             _price: price, _precioLista: precioLista,
+            // datos para estimar comisión vía listing_prices (pasada 2, solo descontados)
+            category_id: b.category_id,
+            listing_type_id: b.listing_type_id,
+            logistic_type: b.shipping?.logistic_type || 'cross_docking',
+            shipping_mode: b.shipping?.mode || 'me2',
+            billable_weight: b.shipping?.dimensions?.weight || 500,
           });
         } catch(e) {}
       }));
     }
 
-    // 3. Costos desde product_costs
-    const costsRes = await pool.query('SELECT mla_id, costo_unit FROM product_costs WHERE client_id=$1', [clientId]);
+    // 3. Costos desde product_costs + condición IVA del cliente
+    const [costsRes, ivaRes] = await Promise.all([
+      pool.query('SELECT mla_id, costo_unit FROM product_costs WHERE client_id=$1', [clientId]),
+      pool.query('SELECT condicion_iva FROM clients WHERE id=$1', [clientId]),
+    ]);
     const costMap = {};
     costsRes.rows.forEach(r => { costMap[r.mla_id] = parseFloat(r.costo_unit) || 0; });
+    const esMonotrib = (ivaRes.rows[0]?.condicion_iva || 'responsable_inscripto') === 'monotributista';
+    const IVA = 0.21;
 
     // 4. Ventas últimos 30 días para cobertura
     const now = new Date();
@@ -7453,19 +7497,46 @@ app.get('/api/promociones', requireAuth, async (req, res) => {
       unitsSold30[id] = (unitsSold30[id] || 0) + (oi.quantity || 0);
     }));
 
-    // 5. Filtrar con descuento y enriquecer
-    const itemsConDescuento = allItems
-      .filter(it => it._precioLista && it._precioLista > it._price)
+    // 5. Filtrar con descuento
+    const descontados = allItems.filter(it => it._precioLista && it._precioLista > it._price);
+
+    // 6. Pasada 2 (solo descontados): estimar comisión ML al precio con descuento y
+    //    calcular RENTABILIDAD NETA = precio − comisión − IVA neto − costo (sin envío,
+    //    que se agrega en el desglose on-demand porque requiere mirar shipments reales).
+    const comisionMap = {};
+    for (let i = 0; i < descontados.length; i += PRICE_CONCURRENCY) {
+      const chunk = descontados.slice(i, i + PRICE_CONCURRENCY);
+      await Promise.all(chunk.map(async it => {
+        comisionMap[it.id] = await estimarComisionML(headers, it, it._price).catch(() => null);
+      }));
+    }
+
+    // 7. Enriquecer
+    const itemsConDescuento = descontados
       .map(it => {
-        const costo   = costMap[it.id] || 0;
-        const precio  = it._price;
+        const costo    = costMap[it.id] || 0;
+        const precio   = it._price;
         const original = it._precioLista;
-        const rentPct = costo > 0 ? +((precio - costo) / precio * 100).toFixed(1) : null;
-        const stock   = it.available_quantity || 0;
-        const sold30  = unitsSold30[it.id] || 0;
+        const comision = comisionMap[it.id] != null ? comisionMap[it.id] : null;
+        const stock    = it.available_quantity || 0;
+        const sold30   = unitsSold30[it.id] || 0;
         const dailyRate = sold30 / 30;
         const coverage  = dailyRate > 0 ? Math.round(stock / dailyRate) : null;
-        const campana = it.promotions?.[0]?.name || it.promotions?.[0]?.type || null;
+        const campana = labelCampania(it.promotions?.[0]?.type, it.promotions?.[0]?.name);
+
+        // Rentabilidad bruta (precio − costo) — referencia rápida
+        const rentBrutaPct = costo > 0 ? +((precio - costo) / precio * 100).toFixed(1) : null;
+
+        // Rentabilidad neta sin envío: requiere costo Y comisión
+        let ivaNeto = null, margenNeto = null, rentNetaPct = null;
+        if (costo > 0 && comision != null) {
+          const ivaVentas  = esMonotrib ? 0 : precio / (1 + IVA) * IVA;
+          const ivaCompras = esMonotrib ? 0 : (comision + costo) / (1 + IVA) * IVA;
+          ivaNeto    = Math.max(0, ivaVentas - ivaCompras);
+          margenNeto = precio - comision - ivaNeto - costo;
+          rentNetaPct = +(margenNeto / precio * 100).toFixed(1);
+        }
+
         return {
           item_id: it.id,
           title: it.title,
@@ -7475,7 +7546,11 @@ app.get('/api/promociones', requireAuth, async (req, res) => {
           original_price: original,
           discount_pct: Math.round((original - precio) / original * 100),
           costo,
-          rentabilidad_pct: rentPct,
+          comision,
+          iva_neto: ivaNeto != null ? Math.round(ivaNeto) : null,
+          margen_neto: margenNeto != null ? Math.round(margenNeto) : null,
+          rentabilidad_pct: rentBrutaPct,        // bruta (compat)
+          rentabilidad_neta_pct: rentNetaPct,    // neta sin envío
           stock,
           ventas_30d: sold30,
           cobertura_dias: coverage,
@@ -7485,11 +7560,140 @@ app.get('/api/promociones', requireAuth, async (req, res) => {
       .sort((a, b) => b.discount_pct - a.discount_pct);
 
     clearTimeout(hardTimeout);
-    if (!res.headersSent) res.json({ items: itemsConDescuento, total: ids.length, con_descuento: itemsConDescuento.length });
+    if (!res.headersSent) res.json({ items: itemsConDescuento, total: ids.length, con_descuento: itemsConDescuento.length, condicion_iva: esMonotrib ? 'monotributista' : 'responsable_inscripto' });
   } catch(e) {
     console.error('[PROMOS]', e.message);
     clearTimeout(hardTimeout);
     if (!res.headersSent) res.status(500).json({ error: e.message });
+  }
+});
+
+// Desglose NETO on-demand de un ítem en promo (se dispara al expandir una fila).
+// Suma sobre la tabla el ENVÍO real del vendedor (muestra de shipments) + el nombre
+// real de la campaña y cuánto banca ML vs el vendedor del descuento.
+app.get('/api/promociones/desglose', requireAuth, async (req, res) => {
+  try {
+    const clientId = parseInt(req.query.client_id);
+    const itemId   = req.query.item_id;
+    if (!itemId) return res.status(400).json({ error: 'Falta item_id' });
+    const token = await getClientToken(clientId);
+    if (!token) return res.status(403).json({ error: 'Sin token' });
+    const headers = { Authorization: `Bearer ${token}` };
+
+    const clientRow = await pool.query('SELECT ml_user_id, condicion_iva FROM clients WHERE id=$1', [clientId]);
+    const uid = clientRow.rows[0]?.ml_user_id;
+    const esMonotrib = (clientRow.rows[0]?.condicion_iva || 'responsable_inscripto') === 'monotributista';
+    const IVA = 0.21;
+
+    // 1. Ítem + precios + promociones (nombre real de campaña + financiación)
+    const [b, pricesResp, promoList] = await Promise.all([
+      fetch(`${ML_API}/items/${itemId}`, { headers }).then(r => r.json()).catch(() => null),
+      fetch(`${ML_API}/items/${itemId}/prices`, { headers }).then(r => r.json()).catch(() => null),
+      fetch(`${ML_API}/items/${itemId}/promotions`, { headers }).then(r => r.json()).catch(() => null),
+    ]);
+    if (!b || b.error || !b.id) return res.json({ error: 'Ítem no encontrado' });
+
+    // Precio real con descuento (misma lógica que la lista)
+    const basePrice = parseFloat(b.price) || 0;
+    const origPrice = b.original_price ? parseFloat(b.original_price) : null;
+    const saleRaw   = b.sale_price;
+    const salePrice = saleRaw != null
+      ? (typeof saleRaw === 'object' ? parseFloat(saleRaw.amount || saleRaw.regular_amount || 0) : parseFloat(saleRaw))
+      : null;
+    const promoPrice = b.promotions?.[0]?.price ? parseFloat(b.promotions[0].price) : null;
+    const pricesPromo = pricesResp?.prices?.filter(p => p.type !== 'standard')
+      .map(p => parseFloat(p.amount)).filter(v => v > 0);
+    const minPricesPromo = pricesPromo?.length ? Math.min(...pricesPromo) : null;
+    const candidates = [basePrice, salePrice, promoPrice, minPricesPromo].filter(v => v && v > 0);
+    const precio = candidates.length ? Math.min(...candidates) : basePrice;
+    const precioLista = origPrice && origPrice > precio ? origPrice : (precio < basePrice ? basePrice : null);
+
+    // 2. Campaña real + financiación ML / vendedor
+    let campania = labelCampania(b.promotions?.[0]?.type, b.promotions?.[0]?.name);
+    let campaniaTipo = b.promotions?.[0]?.type || null;
+    let mlBancaPct = null, vendedorBancaPct = null;
+    if (Array.isArray(promoList) && promoList.length) {
+      const active = promoList.find(p => p.status === 'started' || p.price != null || p.deal_price != null) || promoList[0];
+      if (active) {
+        campania = labelCampania(active.type, active.name);
+        campaniaTipo = active.type || campaniaTipo;
+        const meli = active.meli_percentage ?? active.benefits?.meli_percent ?? active.rebate_meli_percent ?? null;
+        if (meli != null && !isNaN(parseFloat(meli))) {
+          mlBancaPct = parseFloat(meli);
+          vendedorBancaPct = +(100 - mlBancaPct).toFixed(1);
+        }
+      }
+    }
+
+    // 3. Comisión ML estimada al precio con descuento
+    const comision = await estimarComisionML(headers, {
+      category_id: b.category_id,
+      listing_type_id: b.listing_type_id,
+      logistic_type: b.shipping?.logistic_type || 'cross_docking',
+      shipping_mode: b.shipping?.mode || 'me2',
+      billable_weight: b.shipping?.dimensions?.weight || 500,
+    }, precio).catch(() => null);
+
+    // 4. Envío del vendedor: muestra real de shipments de los últimos 180 días
+    let envioSeller = null, envioFuente = null;
+    if (uid) {
+      try {
+        const from = new Date(Date.now() - 180 * 86400000).toISOString().slice(0,10) + 'T00:00:00.000-00:00';
+        const ord = await fetch(
+          `${ML_API}/orders/search?seller=${uid}&item.id=${itemId}&order.date_created.from=${encodeURIComponent(from)}&sort=date_desc&limit=10`,
+          { headers }
+        ).then(r => r.json());
+        const orders = ord.results || [];
+        const seen = new Set();
+        for (const o of orders) {
+          const shipId = o.shipping?.id;
+          if (!shipId || seen.has(shipId)) continue;
+          seen.add(shipId);
+          const costs = await fetch(`${ML_API}/shipments/${shipId}/costs`, { headers }).then(r => r.json()).catch(() => null);
+          const c = costs?.senders?.[0]?.cost ?? costs?.sender?.cost ?? null;
+          if (c != null) {
+            const v = parseFloat(c);
+            if (v > 0) { envioSeller = v; envioFuente = 'shipment real'; break; }
+            if (envioSeller == null) { envioSeller = 0; envioFuente = 'shipment real (sin costo / a cargo del comprador)'; }
+          }
+        }
+      } catch(_) {}
+    }
+
+    // 5. Costo unitario
+    const costRow = await pool.query('SELECT costo_unit FROM product_costs WHERE client_id=$1 AND mla_id=$2', [clientId, itemId]);
+    const costo = parseFloat(costRow.rows[0]?.costo_unit) || 0;
+
+    // 6. P&L neto por unidad (con envío)
+    const com = comision || 0;
+    const env = envioSeller || 0;
+    const ivaVentas  = esMonotrib ? 0 : precio / (1 + IVA) * IVA;
+    const ivaCompras = esMonotrib ? 0 : (com + env + costo) / (1 + IVA) * IVA;
+    const ivaNeto    = Math.max(0, ivaVentas - ivaCompras);
+    const margenNeto = costo > 0 ? precio - com - ivaNeto - env - costo : null;
+    const rentNetaPct = margenNeto != null && precio > 0 ? +(margenNeto / precio * 100).toFixed(1) : null;
+
+    res.json({
+      item_id: itemId,
+      title: b.title,
+      campania, campania_tipo: campaniaTipo,
+      ml_banca_pct: mlBancaPct, vendedor_banca_pct: vendedorBancaPct,
+      precio_lista: precioLista != null ? Math.round(precioLista) : null,
+      precio,
+      comision: comision != null ? Math.round(comision) : null,
+      comision_disponible: comision != null,
+      iva_neto: Math.round(ivaNeto),
+      envio: envioSeller != null ? Math.round(envioSeller) : null,
+      envio_fuente: envioFuente,
+      costo: Math.round(costo),
+      costo_cargado: costo > 0,
+      margen_neto: margenNeto != null ? Math.round(margenNeto) : null,
+      rentabilidad_neta_pct: rentNetaPct,
+      condicion_iva: esMonotrib ? 'monotributista' : 'responsable_inscripto',
+    });
+  } catch(e) {
+    console.error('[PROMO_DESGLOSE]', e.message);
+    res.status(500).json({ error: e.message });
   }
 });
 
