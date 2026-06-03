@@ -7409,6 +7409,73 @@ async function estimarComisionML(headers, { category_id, listing_type_id, logist
   return obj?.sale_fee_amount != null ? parseFloat(obj.sale_fee_amount) : null;
 }
 
+// Mapa item_id -> { name, type, meli_pct, seller_pct } usando seller-promotions
+// (cruce campañas del seller × ítems participantes). Es la fuente correcta del
+// NOMBRE real de campaña + cuánto banca ML. Si el endpoint da 403 (app no
+// certificada) devuelve {} y el caller cae al fallback por tipo del item.
+async function fetchCampaignMap(headers, uid) {
+  const map = {};
+  try {
+    const r = await fetch(`${ML_API}/seller-promotions/users/${uid}?app_version=v2`, { headers });
+    if (!r.ok) return map;
+    const offers = await r.json();
+    const list = Array.isArray(offers) ? offers : (offers.results || []);
+    for (const promo of list) {
+      const promoId = promo.id;
+      const ptype = promo.type || promo.promotion_type;
+      const info = {
+        name: promo.name || promo.alias || labelCampania(ptype, null) || ptype || 'Campaña',
+        type: ptype || null,
+        meli_pct: promo.meli_percentage ?? promo.benefits?.meli_percent ?? null,
+        seller_pct: promo.seller_percentage ?? promo.benefits?.seller_percent ?? null,
+      };
+      try {
+        let offset = 0;
+        for (let page = 0; page < 10; page++) {
+          const ir = await fetch(`${ML_API}/seller-promotions/promotions/${promoId}/items?promotion_type=${ptype}&app_version=v2&limit=50&offset=${offset}`, { headers });
+          if (!ir.ok) break;
+          const ij = await ir.json();
+          const items = ij.results || [];
+          items.forEach(it => {
+            const iid = it.id || it.item_id;
+            if (iid && !map[iid]) map[iid] = info;
+          });
+          if (items.length < 50) break;
+          offset += 50;
+        }
+      } catch(_) {}
+    }
+  } catch(_) {}
+  return map;
+}
+
+// Mapa item_id -> inversión PADS (cost) en el rango. Mismo patrón que /api/dashboard.
+async function fetchAdsByItemMap(headers, fromDate, toDate, siteId = 'MLA') {
+  const map = {};
+  try {
+    const advData = await fetch(`${ML_API}/advertising/advertisers?product_id=PADS`, {
+      headers: { ...headers, 'Content-Type': 'application/json', 'Api-Version': '1' }
+    }).then(r => r.json());
+    const advertisers = advData.advertisers || [];
+    if (!advertisers.length) return map;
+    const adv = advertisers.find(a => a.site_id === siteId) || advertisers[0];
+    let offset = 0, limit = 50, total = 999;
+    while (offset < total) {
+      const url = `${ML_API}/advertising/${siteId}/advertisers/${adv.advertiser_id}/product_ads/ads/search?date_from=${fromDate}&date_to=${toDate}&metrics=cost&limit=${limit}&offset=${offset}`;
+      const data = await fetch(url, { headers: { ...headers, 'api-version': '2' } }).then(r => r.json()).catch(() => ({}));
+      total = data.paging?.total || 0;
+      (data.results || []).forEach(ad => {
+        if (ad.item_id && ad.metrics?.cost > 0) {
+          map[ad.item_id] = (map[ad.item_id] || 0) + parseFloat(ad.metrics.cost);
+        }
+      });
+      offset += limit;
+      if ((data.results || []).length < limit) break;
+    }
+  } catch(_) {}
+  return map;
+}
+
 app.get('/api/promociones', requireAuth, async (req, res) => {
   // Hard timeout: si algo cuelga, responder igual a los 9 segundos
   const hardTimeout = setTimeout(() => {
@@ -7500,9 +7567,16 @@ app.get('/api/promociones', requireAuth, async (req, res) => {
     // 5. Filtrar con descuento
     const descontados = allItems.filter(it => it._precioLista && it._precioLista > it._price);
 
+    // 5b. Mapa de campañas reales (nombre + financiación ML) vía seller-promotions.
+    //     Acotado a 8s: si seller-promotions cuelga, seguimos con {} (fallback por tipo).
+    const campMap = await Promise.race([
+      fetchCampaignMap(headers, uid),
+      new Promise(resolve => setTimeout(() => resolve({}), 8000)),
+    ]);
+
     // 6. Pasada 2 (solo descontados): estimar comisión ML al precio con descuento y
-    //    calcular RENTABILIDAD NETA = precio − comisión − IVA neto − costo (sin envío,
-    //    que se agrega en el desglose on-demand porque requiere mirar shipments reales).
+    //    calcular RENTABILIDAD NETA = precio − comisión − IVA neto − costo (sin envío
+    //    ni publicidad, que se agregan en el desglose on-demand).
     const comisionMap = {};
     for (let i = 0; i < descontados.length; i += PRICE_CONCURRENCY) {
       const chunk = descontados.slice(i, i + PRICE_CONCURRENCY);
@@ -7522,7 +7596,8 @@ app.get('/api/promociones', requireAuth, async (req, res) => {
         const sold30   = unitsSold30[it.id] || 0;
         const dailyRate = sold30 / 30;
         const coverage  = dailyRate > 0 ? Math.round(stock / dailyRate) : null;
-        const campana = labelCampania(it.promotions?.[0]?.type, it.promotions?.[0]?.name);
+        const campMeta = campMap[it.id] || null;
+        const campana = campMeta?.name || labelCampania(it.promotions?.[0]?.type, it.promotions?.[0]?.name);
 
         // Rentabilidad bruta (precio − costo) — referencia rápida
         const rentBrutaPct = costo > 0 ? +((precio - costo) / precio * 100).toFixed(1) : null;
@@ -7608,19 +7683,25 @@ app.get('/api/promociones/desglose', requireAuth, async (req, res) => {
     const precio = candidates.length ? Math.min(...candidates) : basePrice;
     const precioLista = origPrice && origPrice > precio ? origPrice : (precio < basePrice ? basePrice : null);
 
-    // 2. Campaña real + financiación ML / vendedor
-    let campania = labelCampania(b.promotions?.[0]?.type, b.promotions?.[0]?.name);
-    let campaniaTipo = b.promotions?.[0]?.type || null;
-    let mlBancaPct = null, vendedorBancaPct = null;
+    // 2. Campaña real + financiación ML / vendedor.
+    //    Fuente principal: seller-promotions (nombre real). Fallback: /items/{id}/promotions.
+    const campMap = await fetchCampaignMap(headers, uid);
+    const campMeta = campMap[itemId] || null;
+    let campania = campMeta?.name || labelCampania(b.promotions?.[0]?.type, b.promotions?.[0]?.name);
+    let campaniaTipo = campMeta?.type || b.promotions?.[0]?.type || null;
+    let mlBancaPct = (campMeta?.meli_pct != null && !isNaN(parseFloat(campMeta.meli_pct))) ? parseFloat(campMeta.meli_pct) : null;
+    let vendedorBancaPct = mlBancaPct != null ? +(100 - mlBancaPct).toFixed(1) : null;
     if (Array.isArray(promoList) && promoList.length) {
       const active = promoList.find(p => p.status === 'started' || p.price != null || p.deal_price != null) || promoList[0];
       if (active) {
-        campania = labelCampania(active.type, active.name);
-        campaniaTipo = active.type || campaniaTipo;
-        const meli = active.meli_percentage ?? active.benefits?.meli_percent ?? active.rebate_meli_percent ?? null;
-        if (meli != null && !isNaN(parseFloat(meli))) {
-          mlBancaPct = parseFloat(meli);
-          vendedorBancaPct = +(100 - mlBancaPct).toFixed(1);
+        if (!campania) campania = labelCampania(active.type, active.name);
+        if (!campaniaTipo) campaniaTipo = active.type || null;
+        if (mlBancaPct == null) {
+          const meli = active.meli_percentage ?? active.benefits?.meli_percent ?? active.rebate_meli_percent ?? null;
+          if (meli != null && !isNaN(parseFloat(meli))) {
+            mlBancaPct = parseFloat(meli);
+            vendedorBancaPct = +(100 - mlBancaPct).toFixed(1);
+          }
         }
       }
     }
@@ -7633,6 +7714,24 @@ app.get('/api/promociones/desglose', requireAuth, async (req, res) => {
       shipping_mode: b.shipping?.mode || 'me2',
       billable_weight: b.shipping?.dimensions?.weight || 500,
     }, precio).catch(() => null);
+
+    // 3b. Publicidad imputada: inversión PADS del ítem (30d) / unidades vendidas (30d)
+    const from30Str = new Date(Date.now() - 30 * 86400000).toISOString().slice(0,10);
+    const toStr     = new Date().toISOString().slice(0,10);
+    const adsMap    = await fetchAdsByItemMap(headers, from30Str, toStr);
+    const adSpend30 = adsMap[itemId] || 0;
+    let units30 = 0;
+    if (adSpend30 > 0 && uid) {
+      try {
+        const from30iso = from30Str + 'T00:00:00.000-00:00';
+        const ord30 = await fetch(`${ML_API}/orders/search?seller=${uid}&item.id=${itemId}&order.date_created.from=${encodeURIComponent(from30iso)}&limit=50`, { headers }).then(r => r.json());
+        (ord30.results || []).forEach(o => (o.order_items || []).forEach(oi => { if (oi.item?.id === itemId) units30 += (oi.quantity || 0); }));
+      } catch(_) {}
+    }
+    const publiUnit = (adSpend30 > 0 && units30 > 0) ? adSpend30 / units30 : 0;
+    const publiFuente = adSpend30 > 0
+      ? (units30 > 0 ? `$${Math.round(adSpend30)} en 30d ÷ ${units30} u. vendidas` : `$${Math.round(adSpend30)} en 30d pero 0 ventas → no imputado`)
+      : 'sin inversión publicitaria en 30d';
 
     // 4. Envío del vendedor: muestra real de shipments de los últimos 180 días
     let envioSeller = null, envioFuente = null;
@@ -7664,13 +7763,15 @@ app.get('/api/promociones/desglose', requireAuth, async (req, res) => {
     const costRow = await pool.query('SELECT costo_unit FROM product_costs WHERE client_id=$1 AND mla_id=$2', [clientId, itemId]);
     const costo = parseFloat(costRow.rows[0]?.costo_unit) || 0;
 
-    // 6. P&L neto por unidad (con envío)
+    // 6. P&L neto por unidad (con envío y publicidad).
+    //    IVA crédito: comisión+envío+costo (la publi se trata como el dashboard: se
+    //    resta del margen sin computar su IVA por separado).
     const com = comision || 0;
     const env = envioSeller || 0;
     const ivaVentas  = esMonotrib ? 0 : precio / (1 + IVA) * IVA;
     const ivaCompras = esMonotrib ? 0 : (com + env + costo) / (1 + IVA) * IVA;
     const ivaNeto    = Math.max(0, ivaVentas - ivaCompras);
-    const margenNeto = costo > 0 ? precio - com - ivaNeto - env - costo : null;
+    const margenNeto = costo > 0 ? precio - com - ivaNeto - env - publiUnit - costo : null;
     const rentNetaPct = margenNeto != null && precio > 0 ? +(margenNeto / precio * 100).toFixed(1) : null;
 
     res.json({
@@ -7685,6 +7786,8 @@ app.get('/api/promociones/desglose', requireAuth, async (req, res) => {
       iva_neto: Math.round(ivaNeto),
       envio: envioSeller != null ? Math.round(envioSeller) : null,
       envio_fuente: envioFuente,
+      publicidad: Math.round(publiUnit),
+      publicidad_fuente: publiFuente,
       costo: Math.round(costo),
       costo_cargado: costo > 0,
       margen_neto: margenNeto != null ? Math.round(margenNeto) : null,
@@ -7693,6 +7796,42 @@ app.get('/api/promociones/desglose', requireAuth, async (req, res) => {
     });
   } catch(e) {
     console.error('[PROMO_DESGLOSE]', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// DEBUG: inspecciona crudo qué devuelve ML sobre las promociones de un ítem.
+// Uso (logueado en el navegador): /api/debug/promos?client_id=X&item_id=MLAxxxx
+app.get('/api/debug/promos', requireAuth, async (req, res) => {
+  try {
+    const clientId = parseInt(req.query.client_id);
+    const itemId   = req.query.item_id;
+    const token = await getClientToken(clientId);
+    if (!token) return res.status(403).json({ error: 'Sin token' });
+    const headers = { Authorization: `Bearer ${token}` };
+    const clientRow = await pool.query('SELECT ml_user_id FROM clients WHERE id=$1', [clientId]);
+    const uid = clientRow.rows[0]?.ml_user_id;
+
+    const safe = async (label, url) => {
+      try {
+        const r = await fetch(url, { headers });
+        let body; try { body = await r.json(); } catch { body = await r.text(); }
+        return { label, url: url.replace(ML_API, ''), status: r.status, body };
+      } catch(e) { return { label, url: url.replace(ML_API, ''), error: e.message }; }
+    };
+
+    const out = {};
+    out.item_promotions_field = await safe('item.promotions (de /items/{id})',
+      `${ML_API}/items/${itemId}?attributes=id,promotions,price,original_price,sale_price`);
+    out.items_promotions_endpoint = await safe('/items/{id}/promotions',
+      `${ML_API}/items/${itemId}/promotions`);
+    out.seller_promotions_item = await safe('/seller-promotions/items/{id}?app_version=v2',
+      `${ML_API}/seller-promotions/items/${itemId}?app_version=v2`);
+    out.seller_promotions_user = await safe('/seller-promotions/users/{uid}?app_version=v2',
+      `${ML_API}/seller-promotions/users/${uid}?app_version=v2`);
+
+    res.json(out);
+  } catch(e) {
     res.status(500).json({ error: e.message });
   }
 });

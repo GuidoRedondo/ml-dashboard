@@ -840,7 +840,7 @@ tbody td {
       <!-- DATE RANGE PICKER — global, visible en todas las secciones -->
       <div style="position:relative" id="globalRangePicker">
         <div style="display:flex;align-items:center;gap:3px;flex-wrap:wrap;background:var(--surface2);border:1px solid var(--border);border-radius:12px;padding:5px 8px">
-          <button class="range-btn active" id="qr-7"  onclick="setQuickRange(7)"  style="padding:3px 9px;font-size:11px">7d</button>
+          <button class="range-btn" id="qr-7"  onclick="setQuickRange(7)"  style="padding:3px 9px;font-size:11px">7d</button>
           <button class="range-btn"        id="qr-15" onclick="setQuickRange(15)" style="padding:3px 9px;font-size:11px">15d</button>
           <button class="range-btn"        id="qr-30" onclick="setQuickRange(30)" style="padding:3px 9px;font-size:11px">30d</button>
           <button class="range-btn"        id="qr-60" onclick="setQuickRange(60)" style="padding:3px 9px;font-size:11px">60d</button>
@@ -8346,7 +8346,11 @@ function initApp() {
   if (hsFrom) hsFrom.value = artToday;
   if (hsTo)   hsTo.value   = artToday;
 
-  // Mark active quick range button
+  // Mark active quick range button (limpiar TODOS primero para que no queden dos pintados)
+  ['7','15','30','60','90'].forEach(d => {
+    const b = document.getElementById('qr-'+d);
+    if (b) b.classList.remove('active');
+  });
   const btn = document.getElementById('qr-'+days);
   if (btn) btn.classList.add('active');
   updateRangeLabel();
@@ -13502,7 +13506,7 @@ function renderPromociones(data) {
         }).join('')}
       </tbody>
     </table></div>
-    <div style="margin-top:10px;font-size:11px;color:var(--muted)">* Rent. neta = precio con descuento − comisión ML − IVA neto − costo (sin envío). Tocá 🔍 para el desglose completo con envío real.</div>`;
+    <div style="margin-top:10px;font-size:11px;color:var(--muted)">* Rent. neta = precio con descuento − comisión ML − IVA neto − costo (sin envío ni publicidad). Tocá 🔍 para el desglose completo con envío real y publicidad imputada.</div>`;
 }
 
 function exportarPromocionesExcel() {
@@ -13586,6 +13590,7 @@ function renderPromoDesglose(d) {
   if (!d.comision_disponible) avisos.push('⚠️ ML no devolvió la comisión estimada para este ítem.');
   if (d.envio == null) avisos.push('ℹ️ Sin muestra de envío reciente (sin ventas en 180 días) → envío asumido $0.');
   else if (d.envio_fuente) avisos.push(`ℹ️ Envío tomado de: ${d.envio_fuente}.`);
+  if (d.publicidad_fuente) avisos.push(`ℹ️ Publicidad: ${d.publicidad_fuente}.`);
   if (d.condicion_iva === 'monotributista') avisos.push('ℹ️ Cliente monotributista → IVA neto = $0.');
 
   const financ = (d.ml_banca_pct != null)
@@ -13605,6 +13610,7 @@ function renderPromoDesglose(d) {
       ${line('Comisión ML', d.comision, '#ff9100', true)}
       ${line('IVA neto', d.iva_neto, '#ff9100', true)}
       ${line('Envío (vendedor)', d.envio, '#ff9100', true)}
+      ${line('Publicidad (imputada)', d.publicidad, '#ff9100', true)}
       ${line('Costo (CMV)', d.costo, '#ff9100', true)}
       <div style="display:flex;justify-content:space-between;padding:9px 0;margin-top:2px;border-top:2px solid var(--border)">
         <span style="font-weight:700">Margen neto / unidad</span>
