@@ -3201,6 +3201,82 @@ app.get('/api/ads-items', requireAuth, async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
+// ── Conversión diaria por ítem: visitas + unidades + conversión % por día ──────
+// Conversión = unidades vendidas / visitas del día. Las visitas de ML ya incluyen
+// los clicks de pauta (ver memoria project_visitas_incluyen_clicks_ads).
+// OJO: usamos /items/{id}/visits/time_window?last=N (NO date_from/date_to) porque
+// el endpoint de visitas con rango tiene un bug en ML que ignora el date_from.
+app.get('/api/item/conversion-diaria', requireAuth, async (req, res) => {
+  try {
+    const clientId = parseInt(req.query.client_id);
+    const itemId   = (req.query.item_id || '').trim().toUpperCase();
+    if (!itemId) return res.status(400).json({ error: 'Falta item_id' });
+    const token = await getClientToken(clientId);
+    if (!token) return res.status(403).json({ error: 'Cliente no conectado' });
+    const headers = { 'Authorization': `Bearer ${token}` };
+    const user = await fetch(`${ML_API}/users/me`, { headers }).then(r => r.json());
+    const uid = user.id;
+
+    const today    = new Date();
+    const toDate   = req.query.date_to   || today.toISOString().slice(0,10);
+    const fromDate = req.query.date_from || new Date(today.getTime() - 30*24*60*60*1000).toISOString().slice(0,10);
+    const from = new Date(fromDate + 'T00:00:00');
+    const to   = new Date(toDate   + 'T23:59:59');
+
+    // Lista de días del rango (YYYY-MM-DD)
+    const dayKeys = [];
+    for (let d = new Date(from); d <= to; d.setDate(d.getDate() + 1)) dayKeys.push(d.toISOString().slice(0,10));
+
+    // ── Visitas por día (last=N, ML ignora date_from en este endpoint) ──
+    const daysSinceFrom = Math.max(1, Math.ceil((today - from) / (24*60*60*1000)) + 1);
+    const visByDay = {};
+    try {
+      const v = await fetch(`${ML_API}/items/${itemId}/visits/time_window?last=${Math.min(daysSinceFrom, 150)}&unit=day`, { headers }).then(r => r.json());
+      if (v && Array.isArray(v.results)) {
+        v.results.forEach(x => { if (x && x.date) visByDay[x.date.slice(0,10)] = x.total || x.visits || 0; });
+      }
+    } catch(e) {}
+
+    // ── Unidades vendidas por día ──
+    const fmt = d => d.toISOString().slice(0,19) + '.000-00:00';
+    const unitsByDay = {};
+    try {
+      const { orders } = await fetchAllOrders(uid, headers, fmt(from), fmt(to));
+      orders.forEach(o => {
+        const day = (o.date_created || o.date_closed || '').slice(0,10);
+        if (!day) return;
+        (o.order_items || []).forEach(oi => {
+          if (oi.item && oi.item.id === itemId) unitsByDay[day] = (unitsByDay[day] || 0) + (oi.quantity || 0);
+        });
+      });
+    } catch(e) {}
+
+    // ── Título del ítem ──
+    let title = itemId;
+    try {
+      const it = await fetch(`${ML_API}/items/${itemId}?attributes=id,title`, { headers }).then(r => r.json());
+      if (it && it.title) title = it.title;
+    } catch(e) {}
+
+    const days = dayKeys.map(k => {
+      const visits = visByDay[k] || 0;
+      const units  = unitsByDay[k] || 0;
+      const conversion = visits > 0 ? Math.round((units / visits * 100) * 100) / 100 : 0;
+      return { date: k, visits, units, conversion };
+    });
+
+    const totVis = days.reduce((s, d) => s + d.visits, 0);
+    const totUni = days.reduce((s, d) => s + d.units, 0);
+    res.json({
+      item_id: itemId, title, from: fromDate, to: toDate, days,
+      totals: { visits: totVis, units: totUni, conversion: totVis > 0 ? Math.round(totUni / totVis * 10000) / 100 : 0 }
+    });
+  } catch(e) {
+    console.error('[CONVERSION_DIARIA]', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.get('/api/items-full', requireAuth, async (req, res) => {
   try {
     const clientId = parseInt(req.query.client_id);

@@ -8604,6 +8604,7 @@ function renderAdsAnuncios(data) {
       <td style="padding:7px 4px;text-align:center;cursor:pointer;font-size:16px;color:${starColorA}" onclick="toggleSeguimiento('${i.item_id}','${(i.title||'').replace(/'/g,"\\'").slice(0,80)}',${clientIdA})" title="${segA?'Quitar seguimiento':'Seguir publicación'}">${starA}</td>
       <td style="padding:7px 10px;font-size:12px;white-space:nowrap">
         <span onclick="navigator.clipboard.writeText('${i.item_id}');showToast('📋 ${i.item_id} copiado')" style="color:var(--accent);font-weight:600;cursor:pointer" title="Copiar MLA">${i.item_id}</span>
+        <span onclick="openConversionChart('${i.item_id}')" style="cursor:pointer;margin-left:6px" title="Ver conversión diaria">📈</span>
       </td>
       <td style="padding:7px 10px;font-size:12px;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${i.title}">
         <a href="https://articulo.mercadolibre.com.ar/${i.item_id.replace('MLA','MLA-')}" target="_blank" style="color:var(--text);text-decoration:none">${i.title}</a>
@@ -8641,6 +8642,14 @@ function renderAdsAnuncios(data) {
       <div style="font-size:12px;color:var(--muted)" id="adsAnunciosCount">${items.length} anuncios · ${from} → ${to}</div>
       <button onclick="exportAdsAnunciosExcel()" style="padding:6px 14px;border:none;border-radius:8px;background:#16a34a;color:#fff;font-size:12px;font-weight:600;cursor:pointer">📥 Exportar Excel</button>
     </div>
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;flex-wrap:wrap;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:8px 12px">
+      <span style="font-size:12px;color:var(--muted)">📈 Conversión diaria de cualquier ítem:</span>
+      <input id="convChartMlaInput" type="text" placeholder="Pegá un MLA (ej: MLA1234567890)"
+        onkeydown="if(event.key==='Enter')openConversionChart(this.value)"
+        style="flex:1;min-width:200px;padding:6px 10px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:12px;outline:none">
+      <button onclick="openConversionChart(document.getElementById('convChartMlaInput').value)"
+        style="padding:6px 14px;border:none;border-radius:6px;background:var(--accent);color:#fff;font-size:12px;font-weight:600;cursor:pointer">Ver gráfico</button>
+    </div>
     <div style="overflow-x:auto;max-height:520px;overflow-y:auto">
       <table style="width:100%;border-collapse:collapse">
         <thead><tr style="background:var(--surface2);position:sticky;top:0;z-index:2">
@@ -8666,8 +8675,102 @@ function renderAdsAnuncios(data) {
       </table>
     </div>
     <div style="font-size:11px;color:var(--muted);margin-top:10px">
-      TACOS = Inversión / Ingresos · ROAS = Ingresos / Inversión · CTR = Clics / Impresiones · Conversión = Ventas / Clics · Cobertura = Stock / (Ventas/días período) · Click en columnas para ordenar
+      TACOS = Inversión / Ingresos · ROAS = Ingresos / Inversión · CTR = Clics / Impresiones · Conversión = Ventas / Clics · Cobertura = Stock / (Ventas/días período) · Click en columnas para ordenar · 📈 junto al MLA abre la conversión diaria
     </div>`;
+}
+
+// ── Conversión diaria por ítem (modal + gráfico) ───────────────────────────────
+let _convChart = null;
+async function openConversionChart(itemId) {
+  itemId = (itemId || '').trim().toUpperCase();
+  if (!itemId) { showToast('Ingresá un MLA'); return; }
+  const client = getActiveClient();
+  if (!client) { showToast('Sin cuenta conectada'); return; }
+  const range = getDateRange();
+
+  let ov = document.getElementById('convChartOverlay');
+  if (!ov) {
+    ov = document.createElement('div');
+    ov.id = 'convChartOverlay';
+    ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:2000;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(4px);padding:20px';
+    ov.onclick = (e) => { if (e.target === ov) closeConversionChart(); };
+    document.body.appendChild(ov);
+  }
+  ov.innerHTML = `<div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;width:min(920px,95vw);max-height:90vh;overflow-y:auto;padding:22px;box-shadow:0 12px 48px rgba(0,0,0,.5)">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">
+        <h3 id="convChartTitle" style="margin:0;font-family:var(--font-b);font-size:16px;flex:1">📈 Conversión diaria</h3>
+        <button onclick="closeConversionChart()" style="background:none;border:none;color:var(--muted);font-size:24px;cursor:pointer;line-height:1">×</button>
+      </div>
+      <div id="convChartSub" style="font-size:12px;color:var(--muted);margin-bottom:16px">⏳ Cargando ${itemId}...</div>
+      <div style="position:relative;height:340px"><canvas id="convChartCanvas"></canvas></div>
+      <div id="convChartStats" style="display:flex;gap:14px;flex-wrap:wrap;margin-top:16px"></div>
+      <div style="font-size:11px;color:var(--muted);margin-top:12px">Conversión = unidades vendidas / visitas del día · Las visitas de ML ya incluyen los clicks de pauta</div>
+    </div>`;
+  ov.style.display = 'flex';
+
+  try {
+    const data = await apiCall('GET', `/api/item/conversion-diaria?client_id=${client.id}&item_id=${encodeURIComponent(itemId)}&date_from=${range.date_from}&date_to=${range.date_to}`);
+    if (!data || data.error) {
+      const sub = document.getElementById('convChartSub');
+      if (sub) sub.textContent = 'Error: ' + (data?.error || 'sin datos');
+      return;
+    }
+    renderConversionChart(data);
+  } catch(e) {
+    const sub = document.getElementById('convChartSub');
+    if (sub) sub.textContent = 'Error: ' + e.message;
+  }
+}
+
+function closeConversionChart() {
+  if (_convChart) { _convChart.destroy(); _convChart = null; }
+  const ov = document.getElementById('convChartOverlay');
+  if (ov) ov.style.display = 'none';
+}
+
+function renderConversionChart(data) {
+  document.getElementById('convChartTitle').textContent = '📈 ' + (data.title || data.item_id);
+  document.getElementById('convChartSub').innerHTML =
+    `<a href="https://articulo.mercadolibre.com.ar/${data.item_id.replace('MLA','MLA-')}" target="_blank" style="color:var(--accent);text-decoration:none">${data.item_id}</a> · ${data.from} → ${data.to}`;
+
+  const labels = data.days.map(d => d.date.slice(5));
+  const visits = data.days.map(d => d.visits);
+  const units  = data.days.map(d => d.units);
+  const conv   = data.days.map(d => d.conversion);
+
+  const canvas = document.getElementById('convChartCanvas');
+  if (_convChart) { _convChart.destroy(); _convChart = null; }
+  if (!window.Chart) { document.getElementById('convChartSub').textContent = 'Chart.js no disponible'; return; }
+  _convChart = new Chart(canvas, {
+    data: {
+      labels,
+      datasets: [
+        { type:'bar',  label:'Visitas',      data:visits, yAxisID:'y',  backgroundColor:'rgba(59,130,246,.45)', borderColor:'rgba(59,130,246,.9)',  borderWidth:1, order:3 },
+        { type:'bar',  label:'Unidades',     data:units,  yAxisID:'y',  backgroundColor:'rgba(0,230,118,.55)',  borderColor:'rgba(0,230,118,.95)', borderWidth:1, order:2 },
+        { type:'line', label:'Conversión %', data:conv,   yAxisID:'y1', borderColor:'#ff9100', backgroundColor:'#ff9100', borderWidth:2, tension:.3, pointRadius:3, pointHoverRadius:5, order:1 },
+      ]
+    },
+    options: {
+      responsive:true, maintainAspectRatio:false,
+      interaction:{ mode:'index', intersect:false },
+      plugins:{
+        legend:{ labels:{ color:'#bbb', usePointStyle:true, font:{size:12} } },
+        tooltip:{ callbacks:{ label:(ctx)=> ctx.dataset.label==='Conversión %' ? `Conversión: ${ctx.parsed.y}%` : `${ctx.dataset.label}: ${ctx.parsed.y.toLocaleString('es-AR')}` } }
+      },
+      scales:{
+        x:{ ticks:{ color:'#888', maxRotation:0, autoSkip:true, maxTicksLimit:15 }, grid:{ color:'rgba(255,255,255,.05)' } },
+        y:{ position:'left', beginAtZero:true, title:{display:true,text:'Visitas / Unidades',color:'#888'}, ticks:{ color:'#888' }, grid:{ color:'rgba(255,255,255,.05)' } },
+        y1:{ position:'right', beginAtZero:true, title:{display:true,text:'Conversión %',color:'#ff9100'}, ticks:{ color:'#ff9100', callback:v=>v+'%' }, grid:{ drawOnChartArea:false } }
+      }
+    }
+  });
+
+  const t = data.totals || {};
+  const stat = (label, val, color) => `<div style="background:var(--surface2);border-radius:10px;padding:10px 16px;flex:1;min-width:120px"><div style="font-size:11px;color:var(--muted)">${label}</div><div style="font-size:18px;font-weight:700;color:${color||'var(--text)'}">${val}</div></div>`;
+  document.getElementById('convChartStats').innerHTML =
+    stat('Visitas totales',     (t.visits||0).toLocaleString('es-AR'), '#3b82f6') +
+    stat('Unidades vendidas',   (t.units||0).toLocaleString('es-AR'),  '#00e676') +
+    stat('Conversión promedio', (t.conversion||0) + '%',               '#ff9100');
 }
 
 async function loadAds() {
