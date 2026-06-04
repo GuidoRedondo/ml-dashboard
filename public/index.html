@@ -4537,7 +4537,7 @@ function renderConversionTable() {
     return `
       <tr style="border-top:1px solid var(--border)">
         <td style="padding:8px 10px;max-width:380px"><a href="${link}" target="_blank" style="color:var(--text);text-decoration:none" title="Abrir en ML">${esc(i.title)}</a></td>
-        <td style="padding:8px 10px;font-size:11px"><span style="color:var(--muted);cursor:pointer" title="Click para copiar" onclick="copyMLA(this,'${i.mla_id}')">${i.mla_id}</span></td>
+        <td style="padding:8px 10px;font-size:11px;white-space:nowrap"><span style="color:var(--muted);cursor:pointer" title="Click para copiar" onclick="copyMLA(this,'${i.mla_id}')">${i.mla_id}</span><span onclick="openConversionChartFromTab('${i.mla_id}')" style="cursor:pointer;margin-left:6px" title="Ver conversión diaria">📈</span></td>
         <td style="padding:8px 10px;text-align:right;font-weight:600">${renderPrecio(i)}</td>
         <td style="padding:8px 10px;text-align:right">${(i.visitas||0).toLocaleString('es-AR')}</td>
         <td style="padding:8px 10px;text-align:right">${(i.ventas||0).toLocaleString('es-AR')}</td>
@@ -8604,7 +8604,6 @@ function renderAdsAnuncios(data) {
       <td style="padding:7px 4px;text-align:center;cursor:pointer;font-size:16px;color:${starColorA}" onclick="toggleSeguimiento('${i.item_id}','${(i.title||'').replace(/'/g,"\\'").slice(0,80)}',${clientIdA})" title="${segA?'Quitar seguimiento':'Seguir publicación'}">${starA}</td>
       <td style="padding:7px 10px;font-size:12px;white-space:nowrap">
         <span onclick="navigator.clipboard.writeText('${i.item_id}');showToast('📋 ${i.item_id} copiado')" style="color:var(--accent);font-weight:600;cursor:pointer" title="Copiar MLA">${i.item_id}</span>
-        <span onclick="openConversionChart('${i.item_id}')" style="cursor:pointer;margin-left:6px" title="Ver conversión diaria">📈</span>
       </td>
       <td style="padding:7px 10px;font-size:12px;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${i.title}">
         <a href="https://articulo.mercadolibre.com.ar/${i.item_id.replace('MLA','MLA-')}" target="_blank" style="color:var(--text);text-decoration:none">${i.title}</a>
@@ -8642,14 +8641,6 @@ function renderAdsAnuncios(data) {
       <div style="font-size:12px;color:var(--muted)" id="adsAnunciosCount">${items.length} anuncios · ${from} → ${to}</div>
       <button onclick="exportAdsAnunciosExcel()" style="padding:6px 14px;border:none;border-radius:8px;background:#16a34a;color:#fff;font-size:12px;font-weight:600;cursor:pointer">📥 Exportar Excel</button>
     </div>
-    <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;flex-wrap:wrap;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:8px 12px">
-      <span style="font-size:12px;color:var(--muted)">📈 Conversión diaria de cualquier ítem:</span>
-      <input id="convChartMlaInput" type="text" placeholder="Pegá un MLA (ej: MLA1234567890)"
-        onkeydown="if(event.key==='Enter')openConversionChart(this.value)"
-        style="flex:1;min-width:200px;padding:6px 10px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:12px;outline:none">
-      <button onclick="openConversionChart(document.getElementById('convChartMlaInput').value)"
-        style="padding:6px 14px;border:none;border-radius:6px;background:var(--accent);color:#fff;font-size:12px;font-weight:600;cursor:pointer">Ver gráfico</button>
-    </div>
     <div style="overflow-x:auto;max-height:520px;overflow-y:auto">
       <table style="width:100%;border-collapse:collapse">
         <thead><tr style="background:var(--surface2);position:sticky;top:0;z-index:2">
@@ -8675,18 +8666,26 @@ function renderAdsAnuncios(data) {
       </table>
     </div>
     <div style="font-size:11px;color:var(--muted);margin-top:10px">
-      TACOS = Inversión / Ingresos · ROAS = Ingresos / Inversión · CTR = Clics / Impresiones · Conversión = Ventas / Clics · Cobertura = Stock / (Ventas/días período) · Click en columnas para ordenar · 📈 junto al MLA abre la conversión diaria
+      TACOS = Inversión / Ingresos · ROAS = Ingresos / Inversión · CTR = Clics / Impresiones · Conversión = Ventas / Clics · Cobertura = Stock / (Ventas/días período) · Click en columnas para ordenar
     </div>`;
 }
 
 // ── Conversión diaria por ítem (modal + gráfico) ───────────────────────────────
 let _convChart = null;
-async function openConversionChart(itemId) {
+
+// Abre el gráfico usando el rango de fechas de la pestaña Conversión.
+function openConversionChartFromTab(itemId) {
+  const from = document.getElementById('convDateFrom')?.value;
+  const to   = document.getElementById('convDateTo')?.value;
+  openConversionChart(itemId, from, to);
+}
+
+async function openConversionChart(itemId, dateFrom, dateTo) {
   itemId = (itemId || '').trim().toUpperCase();
   if (!itemId) { showToast('Ingresá un MLA'); return; }
   const client = getActiveClient();
   if (!client) { showToast('Sin cuenta conectada'); return; }
-  const range = getDateRange();
+  const range = (dateFrom && dateTo) ? { date_from: dateFrom, date_to: dateTo } : getDateRange();
 
   let ov = document.getElementById('convChartOverlay');
   if (!ov) {
