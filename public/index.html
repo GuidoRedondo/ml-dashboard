@@ -4441,6 +4441,14 @@ function _convSemaforo(conv) {
   return { color: '#ef4444', emoji: '🔴' };
 }
 
+// Estado de pauta del ítem según publicidad_status del backend.
+// 'active' → en pauta activa; 'paused' → en campaña pero pausada; null → sin pauta.
+function _convPubBadge(status) {
+  if (status === 'active') return { txt: 'Activa',    color: '#10b981',    cell: '<span style="color:#10b981;font-weight:600">● Activa</span>' };
+  if (status === 'paused') return { txt: 'Pausada',   color: '#f59e0b',    cell: '<span style="color:#f59e0b;font-weight:600">⏸ Pausada</span>' };
+  return                          { txt: 'Sin pauta', color: 'var(--muted)', cell: '<span style="color:var(--muted)">—</span>' };
+}
+
 function _convMinVisitas() {
   const v = parseInt(document.getElementById('convMinVisitas')?.value);
   return Number.isFinite(v) && v >= 0 ? v : 100;
@@ -4534,6 +4542,7 @@ function renderConversionTable() {
     const link = `https://articulo.mercadolibre.com.ar/${i.mla_id.replace('MLA','MLA-')}`;
     const hasAds = (i.impresiones || 0) > 0;
     const ctrCol = hasAds ? ctrColor(i.ctr) : 'var(--muted)';
+    const pub = _convPubBadge(i.publicidad_status);
     return `
       <tr style="border-top:1px solid var(--border)">
         <td style="padding:8px 10px;max-width:380px"><a href="${link}" target="_blank" style="color:var(--text);text-decoration:none" title="Abrir en ML">${esc(i.title)}</a></td>
@@ -4546,6 +4555,7 @@ function renderConversionTable() {
         <td style="padding:8px 10px;text-align:right;color:${hasAds?'var(--text)':'var(--muted)'}">${hasAds ? (i.impresiones||0).toLocaleString('es-AR') : '—'}</td>
         <td style="padding:8px 10px;text-align:right;color:${hasAds?'var(--text)':'var(--muted)'}">${hasAds ? (i.clicks||0).toLocaleString('es-AR') : '—'}</td>
         <td style="padding:8px 10px;text-align:right;font-weight:700;color:${ctrCol}">${hasAds ? (i.ctr||0).toFixed(2) + '%' : '—'}</td>
+        <td style="padding:8px 10px;text-align:center;font-size:12px">${pub.cell}</td>
         <td style="padding:8px 10px;text-align:center;font-size:16px">${sem.emoji}</td>
       </tr>`;
   }).join('');
@@ -4564,6 +4574,7 @@ function renderConversionTable() {
             ${th('Impresiones', 'impresiones', 'right')}
             ${th('Clicks', 'clicks', 'right')}
             ${th('CTR %', 'ctr', 'right')}
+            ${th('Publicidad', 'publicidad_status', 'center')}
             <th style="padding:8px 10px;text-align:center">Semáforo</th>
           </tr>
         </thead>
@@ -4604,11 +4615,12 @@ function exportConversionExcel() {
     'Impresiones':    i.impresiones || 0,
     'Clicks':         i.clicks || 0,
     'CTR %':          i.ctr || 0,
+    'Publicidad':     _convPubBadge(i.publicidad_status).txt,
     'Semáforo':       _convSemaforo(i.conversion).emoji,
   }));
   const ws = XLSX.utils.json_to_sheet(rows);
   // Ancho aproximado por columna
-  ws['!cols'] = [{wch:60},{wch:14},{wch:50},{wch:11},{wch:12},{wch:10},{wch:8},{wch:10},{wch:14},{wch:11},{wch:12},{wch:9},{wch:9},{wch:9}];
+  ws['!cols'] = [{wch:60},{wch:14},{wch:50},{wch:11},{wch:12},{wch:10},{wch:8},{wch:10},{wch:14},{wch:11},{wch:12},{wch:9},{wch:9},{wch:11},{wch:9}];
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Conversión');
   const client = getActiveClient();

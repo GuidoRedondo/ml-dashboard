@@ -4634,9 +4634,16 @@ async function fetchAdsByItemFull(token, fromDate, toDate) {
           out.byItem[ad.item_id] = {
             clicks: 0, impresiones: 0, costo: 0, revenue_ad: 0, unidades_ad: 0,
             campaign_id: ad.campaign_id || null, campaign_name: null,
+            status: ad.status || null,
           };
         }
         const agg = out.byItem[ad.item_id];
+        // Un ítem puede tener varios anuncios (varias campañas). Prioridad de
+        // estado: active > paused > resto. Si alguno está activo, el ítem está
+        // en pauta activa.
+        if (ad.status === 'active') agg.status = 'active';
+        else if (ad.status === 'paused' && agg.status !== 'active') agg.status = 'paused';
+        else if (!agg.status) agg.status = ad.status || null;
         agg.clicks      += m.clicks         || 0;
         agg.impresiones += m.prints         || 0;
         agg.costo       += m.cost           || 0;
@@ -4682,7 +4689,7 @@ async function fetchAdsByItem(token, fromDate, toDate) {
   const full = await fetchAdsByItemFull(token, fromDate, toDate);
   const map = {};
   Object.entries(full.byItem).forEach(([id, v]) => {
-    map[id] = { clicks: v.clicks, impresiones: v.impresiones, ctr: v.ctr };
+    map[id] = { clicks: v.clicks, impresiones: v.impresiones, ctr: v.ctr, status: v.status || null };
   });
   return map;
 }
@@ -4921,7 +4928,12 @@ app.get('/api/reporte/visitas', requireAuth, async (req, res) => {
       const conversion = visitas > 0 ? parseFloat((ventas / visitas * 100).toFixed(2)) : 0;
       const price = priceMap[id] != null ? priceMap[id] : null;
       const original_price = originalPriceMap[id] != null ? originalPriceMap[id] : null;
-      const ads = adsByItem[id] || { clicks: 0, impresiones: 0, ctr: 0 };
+      const ads = adsByItem[id] || { clicks: 0, impresiones: 0, ctr: 0, status: null };
+      // publicidad_status: 'active' | 'paused' | null (sin pauta / no está en
+      // ninguna campaña PADS). Si no aparece en ads pero registró impresiones,
+      // inferimos que estuvo en pauta durante el rango (fallback defensivo).
+      let publicidad_status = ads.status || null;
+      if (!publicidad_status && ads.impresiones > 0) publicidad_status = 'paused';
       return {
         mla_id: id,
         title: titleMap[id] || id,
@@ -4935,6 +4947,7 @@ app.get('/api/reporte/visitas', requireAuth, async (req, res) => {
         impresiones: ads.impresiones,
         clicks: ads.clicks,
         ctr: ads.ctr,
+        publicidad_status,
       };
     });
 
