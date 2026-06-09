@@ -6696,6 +6696,60 @@ function calcularSimulador() {
     </div>`;
 }
 
+function calcularMargenReal() {
+  const cont = document.getElementById('margenRealContainer');
+  if (!cont) return;
+  const client = getActiveClient();
+  if (!client) { cont.innerHTML = '<div style="color:var(--muted);padding:14px">Seleccioná una cuenta</div>'; return; }
+  const r = getDateRange();
+  cont.innerHTML = '<div style="padding:16px;margin:16px 0;text-align:center;color:#f59e0b;font-size:13px;border:1px dashed rgba(245,158,11,.4);border-radius:8px">🚚 Calculando envío real por producto… puede tardar 1-2 min (hace llamadas extra a ML por cada envío)</div>';
+  apiCall('GET', `/api/reporte/margen-real-producto?client_id=${client.id}&date_from=${r.date_from}&date_to=${r.date_to}`)
+    .then(data => renderMargenReal(data))
+    .catch(e => { cont.innerHTML = '<div style="color:#ff5252;padding:14px">Error calculando envío real: ' + (e?.message || e) + '</div>'; });
+}
+
+function renderMargenReal(data) {
+  const cont = document.getElementById('margenRealContainer');
+  if (!cont) return;
+  const items = data?.items || [];
+  const m = data?.meta || {};
+  const f = n => '$' + Math.round(n || 0).toLocaleString('es-AR');
+  const rows = items.map((p, i) => {
+    const neg = p.margen_real < 0;
+    return `<tr style="border-bottom:1px solid rgba(255,255,255,.05);${neg ? 'background:rgba(255,82,82,.08)' : ''}">
+      <td style="padding:6px;color:var(--muted)">${i + 1}</td>
+      <td style="padding:6px;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${(p.title || '').replace(/"/g, '&quot;')}">${p.title || ''}</td>
+      <td style="text-align:center;padding:6px">${p.units}</td>
+      <td style="text-align:right;padding:6px">${f(p.revenue)}</td>
+      <td style="text-align:right;padding:6px">${f(p.sale_fee)}</td>
+      <td style="text-align:right;padding:6px">${f(p.cmv_total)}</td>
+      <td style="text-align:right;padding:6px">${f(p.envio_real)}</td>
+      <td style="text-align:right;padding:6px">${f(p.flex_imp)}</td>
+      <td style="text-align:right;padding:6px">${f(p.publi_real)}</td>
+      <td style="text-align:right;padding:6px">${f(p.iva_dif)}</td>
+      <td style="text-align:right;padding:6px">${f(p.iibb)}</td>
+      <td style="text-align:right;padding:6px;font-weight:700;color:${neg ? '#ff5252' : '#4ade80'}">${f(p.margen_real)}</td>
+      <td style="text-align:right;padding:6px;color:${neg ? '#ff5252' : 'var(--muted)'}">${p.margen_real_pct}%</td>
+    </tr>`;
+  }).join('');
+  cont.innerHTML = `<div class="kpi-card" style="padding:16px;margin:16px 0;border:1px solid rgba(245,158,11,.35)">
+    <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:10px">
+      <div class="kpi-label">🚚 MARGEN REAL POR PRODUCTO (envío real por MLA)</div>
+      <span style="font-size:11px;color:var(--muted)">${items.length} productos · ${m.skus_que_pierden || 0} pierden · Flex ${f(m.flex_por_unidad_ff)}/u s/FULL-FLEX${m.es_monotributista ? ' · monotributo (sin IVA)' : ''}</span>
+    </div>
+    <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:11px">
+      <thead><tr style="border-bottom:2px solid rgba(255,255,255,.1);color:var(--muted)">
+        <th style="padding:6px">#</th><th style="text-align:left;padding:6px">Producto</th><th style="padding:6px">U</th>
+        <th style="text-align:right;padding:6px">Facturación</th><th style="text-align:right;padding:6px">Comisión</th>
+        <th style="text-align:right;padding:6px">CMV</th><th style="text-align:right;padding:6px">Envío real</th>
+        <th style="text-align:right;padding:6px">Flex</th><th style="text-align:right;padding:6px">Publicidad</th>
+        <th style="text-align:right;padding:6px">IVA dif</th><th style="text-align:right;padding:6px">IIBB</th>
+        <th style="text-align:right;padding:6px">Margen real</th><th style="text-align:right;padding:6px">%</th>
+      </tr></thead><tbody>${rows}</tbody></table></div>
+    <div style="font-size:10px;color:var(--muted);margin-top:8px;font-style:italic">Envío vendedor REAL atribuido por MLA (no prorrateado). Flex/FULL prorrateado solo sobre unidades FULL/FLEX. Publicidad real (PADS). No incluye gastos fijos (no atribuibles a un producto).</div>
+  </div>`;
+}
+
 function loadRentabilidad() {
   const el = document.getElementById('rentabilidadContent');
   if (!el) return;
@@ -6822,6 +6876,7 @@ function renderRentabilidad(R, allProducts, costsMap) {
         <div class="kpi-label">📋 DESGLOSE POR PRODUCTO</div>
         <div style="display:flex;align-items:center;gap:8px">
           <span style="font-size:11px;color:var(--muted)">${products.length} productos · ${Object.keys(costsMap).length} con CMV</span>
+          <button onclick="calcularMargenReal()" title="Calcula el envío vendedor REAL por producto (no prorrateado) + Flex sobre FULL/FLEX + IVA + IIBB. Es lento: hace llamadas extra a ML." style="padding:5px 12px;border:none;border-radius:6px;background:#f59e0b;color:#fff;font-size:12px;font-weight:600;cursor:pointer">🚚 Calcular envío real</button>
           <button onclick="descargarTablaRentabilidad()" style="padding:5px 12px;border:none;border-radius:6px;background:#0ea5e9;color:#fff;font-size:12px;font-weight:600;cursor:pointer">📊 Excel tabla</button>
           <button onclick="descargarCMVRentabilidad()" style="padding:5px 12px;border:none;border-radius:6px;background:#6366f1;color:#fff;font-size:12px;font-weight:600;cursor:pointer">📥 Excel CMV</button>
           <label style="padding:5px 12px;border:none;border-radius:6px;background:#16a34a;color:#fff;font-size:12px;font-weight:600;cursor:pointer">
@@ -6830,6 +6885,7 @@ function renderRentabilidad(R, allProducts, costsMap) {
           </label>
         </div>
       </div>
+      <div id="margenRealContainer"></div>
       <div style="overflow-x:auto">
         <table style="width:100%;border-collapse:collapse;font-size:12px">
           <thead>
