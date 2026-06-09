@@ -3977,6 +3977,12 @@ app.post('/api/diagnostico/manuales', requireAuth, async (req, res) => {
 // ── REPORTE FINANCIERO ────────────────────────────────────────────────────────
 
 // GET /api/reporte/items-vendidos — MLAs vendidos del período con costos guardados
+// Param opcional ?incluir_envio=1 → agrega por MLA: envio_vendedor (costo real de envío
+//   atribuido desde /shipments/{id}/costs, repartido por unidades cuando la orden tiene
+//   varios ítems) y el desglose units_full / units_flex / units_correo / units_otro.
+//   Esto permite imputar el envío vendedor REAL por producto y prorratear el bolo manual
+//   Flex/FULL (que ML no expone) solo sobre las unidades FULL/FLEX. Es opt-in porque suma
+//   ~2 llamadas a la API de ML por envío y encarece el endpoint.
 app.get('/api/reporte/items-vendidos', requireAuth, async (req, res) => {
   try {
     const { client_id, date_from, date_to } = req.query;
@@ -4032,6 +4038,35 @@ app.get('/api/reporte/items-vendidos', requireAuth, async (req, res) => {
     const costsMap = {};
     costsRes.rows.forEach(r => { costsMap[r.mla_id] = { costo_unit: parseFloat(r.costo_unit)||0, notas: r.notas }; });
 
+    // ── Envío vendedor REAL por MLA (opt-in) ──────────────────────────────────
+    // Atribuye el senderCost de cada envío a sus ítems (repartido por unidades si la
+    // orden tiene varios) y cuenta unidades por modo logístico, para que el consumidor
+    // pueda prorratear el bolo manual Flex/FULL solo sobre las unidades FULL/FLEX.
+    const incluirEnvio = req.query.incluir_envio === '1' || req.query.incluir_envio === 'true';
+    if (incluirEnvio) {
+      const shipCostMap = await fetchShippingCosts(orders, headers);
+      Object.values(byMla).forEach(m => {
+        m.envio_vendedor = 0; m.units_full = 0; m.units_flex = 0; m.units_correo = 0; m.units_otro = 0;
+      });
+      orders.forEach(o => {
+        const shipId = o.shipping?.id;
+        const sc = shipId ? shipCostMap[shipId] : null;
+        const ois = (o.order_items||[]).filter(oi => oi.item?.id);
+        const totalUnits = ois.reduce((s,oi) => s + (oi.quantity||0), 0) || 1;
+        const sellerCost = sc?.sellerCost || 0;
+        const mode = sc?.mode || 'Otro';
+        ois.forEach(oi => {
+          const id = oi.item.id, q = oi.quantity || 0;
+          if (!byMla[id]) return;
+          byMla[id].envio_vendedor += sellerCost * (q / totalUnits);
+          if (mode === 'FULL')        byMla[id].units_full   += q;
+          else if (mode === 'FLEX')   byMla[id].units_flex   += q;
+          else if (mode === 'Correo') byMla[id].units_correo += q;
+          else                        byMla[id].units_otro   += q;
+        });
+      });
+    }
+
     const items = Object.values(byMla)
       .sort((a,b) => b.revenue - a.revenue)
       .map(i => ({
@@ -4042,6 +4077,13 @@ app.get('/api/reporte/items-vendidos', requireAuth, async (req, res) => {
         cmv_total: costsMap[i.mla_id]?.costo_unit != null
           ? costsMap[i.mla_id].costo_unit * i.units : null,
         has_cost: costsMap[i.mla_id] != null,
+        ...(incluirEnvio ? {
+          envio_vendedor: Math.round(i.envio_vendedor || 0),
+          units_full: i.units_full || 0,
+          units_flex: i.units_flex || 0,
+          units_correo: i.units_correo || 0,
+          units_otro: i.units_otro || 0,
+        } : {}),
       }));
 
     const total_orders = orders.length;
