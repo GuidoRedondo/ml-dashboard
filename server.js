@@ -4148,11 +4148,25 @@ app.get('/api/reporte/margen-real-producto', requireAuth, async (req, res) => {
     const costsRes = await pool.query('SELECT mla_id, costo_unit FROM product_costs WHERE client_id=$1', [client_id]);
     const costsMap = {}; costsRes.rows.forEach(r => { costsMap[r.mla_id] = parseFloat(r.costo_unit)||0; });
 
-    // Flex/FULL manual del mes → prorrateo solo sobre unidades FULL/FLEX
-    const mesStr = date_from.slice(0,7) + '-01';
-    const gRes = await pool.query(
-      "SELECT monto FROM gastos_fijos WHERE client_id=$1 AND mes=$2 AND categoria='envios_flex'", [client_id, mesStr]);
-    const flexManual = gRes.rows.reduce((s,g)=>s+(parseFloat(g.monto)||0),0);
+    // Flex/FULL manual: sumar el de cada mes que toca el rango, escalado por los días
+    // del rango que caen en ese mes (el bolo se carga mensual; si el rango es parcial,
+    // se prorratea para no inflar el Flex). Luego se reparte sobre las unidades FULL/FLEX.
+    const dFrom = new Date(date_from + 'T00:00:00'), dTo = new Date(date_to + 'T00:00:00');
+    let flexManual = 0;
+    for (let cur = new Date(dFrom.getFullYear(), dFrom.getMonth(), 1); cur <= dTo;
+         cur = new Date(cur.getFullYear(), cur.getMonth() + 1, 1)) {
+      const y = cur.getFullYear(), mo = cur.getMonth();
+      const diasMes = new Date(y, mo + 1, 0).getDate();
+      const inicioMes = new Date(y, mo, 1), finMes = new Date(y, mo, diasMes);
+      const desde = dFrom > inicioMes ? dFrom : inicioMes;
+      const hasta = dTo < finMes ? dTo : finMes;
+      const diasRango = Math.round((hasta - desde) / (24 * 3600 * 1000)) + 1;
+      const mesStr = `${y}-${String(mo + 1).padStart(2, '0')}-01`;
+      const gQ = await pool.query(
+        "SELECT monto FROM gastos_fijos WHERE client_id=$1 AND mes=$2 AND categoria='envios_flex'", [client_id, mesStr]);
+      const flexMes = gQ.rows.reduce((s, g) => s + (parseFloat(g.monto) || 0), 0);
+      flexManual += flexMes * (diasRango / diasMes);
+    }
     const totFF = Object.values(byMla).reduce((s,m)=>s+m.units_full+m.units_flex,0);
     const flexU = totFF ? flexManual/totFF : 0;
 
