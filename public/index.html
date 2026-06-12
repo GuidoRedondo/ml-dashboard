@@ -4847,196 +4847,82 @@ async function loadSeguimiento(forceRefresh) {
   } catch(e) { el.innerHTML = `<div style="color:#c62828;padding:20px">Error: ${e.message}</div>`; }
 }
 
+// Mapa de instancias Chart.js por fila de seguimiento (para destruir al colapsar)
+window._segCharts = window._segCharts || {};
+
 function renderSeguimiento(data) {
   const el = document.getElementById('seguimientoContent');
-  const { items, curFrom, curTo, prevFrom, prevTo } = data;
-  const fmt  = n => n == null ? '—' : '$' + Math.round(n).toLocaleString('es-AR');
-  const fmtN = n => n == null ? '—' : Math.round(n).toLocaleString('es-AR');
-  const fmtD = d => { if (!d) return '—'; const dt = new Date(d + 'T12:00:00Z'); return dt.toLocaleDateString('es-AR', {day:'2-digit',month:'short'}); };
+  const { items } = data;
 
-  const deltaCell = (delta, key, invert, isMoney, isPct) => {
-    if (!delta || delta[key] == null) return '<td style="padding:6px 8px;text-align:right;font-size:11px;color:var(--muted)">s/d</td>';
-    const { abs, pct } = delta[key];
-    const positive = invert ? abs < 0 : abs > 0;
-    const color = abs === 0 ? 'var(--muted)' : positive ? '#00e676' : '#ff5252';
-    const sign = abs >= 0 ? '+' : '';
-    const valStr = isPct ? `${sign}${abs.toFixed(1)}pp` : isMoney ? (sign + '$' + Math.abs(Math.round(abs)).toLocaleString('es-AR') + (abs < 0 ? ' ↓' : ' ↑')) : `${sign}${Math.round(abs)}`;
-    const pctStr = pct != null && !isPct ? `<div style="font-size:10px;color:${color}">${sign}${pct.toFixed(0)}%</div>` : '';
-    return `<td style="padding:6px 8px;text-align:right;font-size:12px;font-weight:700;color:${color}">${valStr}${pctStr}</td>`;
-  };
-
-  const metricVal = (m, key, isMoney, isPct) => {
-    if (!m) return '<td style="padding:6px 8px;text-align:right;font-size:12px;color:var(--muted)">s/d</td>';
-    const v = m[key];
-    if (v == null) return '<td style="padding:6px 8px;text-align:right;font-size:12px;color:var(--muted)">—</td>';
-    const str = isPct ? v.toFixed(1) + '%' : isMoney ? fmt(v) : fmtN(v);
-    return `<td style="padding:6px 8px;text-align:right;font-size:12px">${str}</td>`;
-  };
-
-  const thead = `<tr style="font-size:11px;color:var(--muted);background:var(--surface2);border-bottom:2px solid var(--border)">
-    <th style="padding:8px 10px;text-align:left;position:sticky;top:0;background:var(--surface2)">Publicación</th>
-    <th style="padding:8px 10px;text-align:left;position:sticky;top:0;background:var(--surface2)" colspan="2">Visitas</th>
-    <th style="padding:8px 10px;text-align:center;position:sticky;top:0;background:var(--surface2)">Δ</th>
-    <th style="padding:8px 10px;text-align:left;position:sticky;top:0;background:var(--surface2)" colspan="2">Órdenes</th>
-    <th style="padding:8px 10px;text-align:center;position:sticky;top:0;background:var(--surface2)">Δ</th>
-    <th style="padding:8px 10px;text-align:left;position:sticky;top:0;background:var(--surface2)" colspan="2">Conversión</th>
-    <th style="padding:8px 10px;text-align:center;position:sticky;top:0;background:var(--surface2)">Δ</th>
-    <th style="padding:8px 10px;text-align:left;position:sticky;top:0;background:var(--surface2)" colspan="2">Ritmo/día</th>
-    <th style="padding:8px 10px;text-align:center;position:sticky;top:0;background:var(--surface2)">Δ</th>
-    <th style="padding:8px 10px;text-align:left;position:sticky;top:0;background:var(--surface2)" colspan="2">Precio</th>
-    <th style="padding:8px 10px;text-align:center;position:sticky;top:0;background:var(--surface2)">Δ</th>
-    <th style="padding:8px 10px;text-align:center;position:sticky;top:0;background:var(--surface2)">Evolución</th>
-    <th style="padding:8px 10px;text-align:center;position:sticky;top:0;background:var(--surface2)">Acción</th>
-  </tr>
-  <tr style="font-size:10px;color:var(--muted);background:var(--surface2)">
-    <td></td>
-    <td style="padding:2px 8px;text-align:right">${fmtD(prevFrom)}–${fmtD(prevTo)}</td>
-    <td style="padding:2px 8px;text-align:right">${fmtD(curFrom)}–${fmtD(curTo)}</td>
-    <td></td>
-    <td style="padding:2px 8px;text-align:right">${fmtD(prevFrom)}–${fmtD(prevTo)}</td>
-    <td style="padding:2px 8px;text-align:right">${fmtD(curFrom)}–${fmtD(curTo)}</td>
-    <td></td>
-    <td style="padding:2px 8px;text-align:right">${fmtD(prevFrom)}–${fmtD(prevTo)}</td>
-    <td style="padding:2px 8px;text-align:right">${fmtD(curFrom)}–${fmtD(curTo)}</td>
-    <td></td>
-    <td style="padding:2px 8px;text-align:right">${fmtD(prevFrom)}–${fmtD(prevTo)}</td>
-    <td style="padding:2px 8px;text-align:right">${fmtD(curFrom)}–${fmtD(curTo)}</td>
-    <td></td>
-    <td style="padding:2px 8px;text-align:right">${fmtD(prevFrom)}–${fmtD(prevTo)}</td>
-    <td style="padding:2px 8px;text-align:right">${fmtD(curFrom)}–${fmtD(curTo)}</td>
-    <td></td>
-    <td></td>
-    <td></td>
-  </tr>`;
-
-  let tbody = '';
+  let rows = '';
   items.forEach(item => {
     const marcadaDate = new Date(item.marcada_at).toLocaleDateString('es-AR', {day:'2-digit',month:'short',year:'2-digit'});
-    tbody += `<tr id="seg-row-${item.id}" style="border-bottom:1px solid var(--border);cursor:pointer" onclick="toggleSegEvolucion(${item.id}, this)">
-      <td style="padding:8px 10px;min-width:180px">
-        <div style="font-size:12px;font-weight:700;color:var(--text)">${item.titulo || item.mla}</div>
-        <div style="font-size:10px;color:var(--muted)">${item.mla} · marcado ${marcadaDate}${item.nota ? ' · <em>' + item.nota + '</em>' : ''}</div>
-        ${item.snapshots_count < 2 ? '<div style="font-size:10px;color:#d97706">⚠ Pocos snapshots aún</div>' : ''}
-      </td>
-      ${metricVal(item.prev, 'visitas', false, false)}
-      ${metricVal(item.cur,  'visitas', false, false)}
-      ${deltaCell(item.delta, 'visitas', false, false, false)}
-      ${metricVal(item.prev, 'ordenes', false, false)}
-      ${metricVal(item.cur,  'ordenes', false, false)}
-      ${deltaCell(item.delta, 'ordenes', false, false, false)}
-      ${metricVal(item.prev, 'conversion', false, true)}
-      ${metricVal(item.cur,  'conversion', false, true)}
-      ${deltaCell(item.delta, 'conversion', false, false, true)}
-      ${metricVal(item.prev, 'ritmo_dia', false, false)}
-      ${metricVal(item.cur,  'ritmo_dia', false, false)}
-      ${deltaCell(item.delta, 'ritmo_dia', false, false, false)}
-      ${metricVal(item.prev, 'precio', true, false)}
-      ${metricVal(item.cur,  'precio', true, false)}
-      ${deltaCell(item.delta, 'precio', false, true, false)}
-      <td style="padding:8px;text-align:center;font-size:12px;color:var(--accent)">📈</td>
-      <td style="padding:8px;text-align:center">
-        <button onclick="event.stopPropagation();quitarSeguimiento(${item.id},'${(item.titulo||item.mla).replace(/'/g,"\\'")}',this)" style="padding:3px 8px;border:1px solid var(--border);border-radius:6px;background:none;color:var(--muted);font-size:11px;cursor:pointer">✕</button>
-      </td>
-    </tr>
-    <tr id="seg-evo-${item.id}" style="display:none">
-      <td colspan="18" style="padding:0">
-        <div style="padding:16px 20px;background:var(--surface)">
-          <div id="seg-chart-${item.id}" style="width:100%;height:160px">
-            <div style="color:var(--muted);font-size:12px">Cargando evolución…</div>
-          </div>
+    const titulo = (item.titulo || item.mla);
+    rows += `
+    <div style="border:1px solid var(--border);border-radius:10px;margin-bottom:10px;overflow:hidden;background:var(--surface)">
+      <div style="display:flex;align-items:center;gap:12px;padding:12px 16px;cursor:pointer" onclick="toggleSegEvolucion(${item.id}, '${item.mla}', this)">
+        <span id="seg-caret-${item.id}" style="font-size:12px;color:var(--muted);transition:transform .15s">▶</span>
+        <div style="flex:1;min-width:0">
+          <div style="font-size:13px;font-weight:700;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${titulo}</div>
+          <div style="font-size:11px;color:var(--muted)">${item.mla} · marcado ${marcadaDate}${item.nota ? ' · <em>' + item.nota + '</em>' : ''}</div>
         </div>
-      </td>
-    </tr>`;
+        <span style="font-size:13px;color:var(--accent)">📈</span>
+        <button onclick="event.stopPropagation();quitarSeguimiento(${item.id},'${titulo.replace(/'/g,"\\'")}',this)" style="padding:4px 10px;border:1px solid var(--border);border-radius:6px;background:none;color:var(--muted);font-size:11px;cursor:pointer">✕ Quitar</button>
+      </div>
+      <div id="seg-evo-${item.id}" style="display:none;border-top:1px solid var(--border);padding:16px 18px;background:var(--surface2)">
+        <div id="seg-sub-${item.id}" style="font-size:12px;color:var(--muted);margin-bottom:10px">⏳ Cargando ${item.mla}…</div>
+        <div style="position:relative;height:300px"><canvas id="seg-canvas-${item.id}"></canvas></div>
+        <div id="seg-stats-${item.id}" style="display:flex;gap:12px;flex-wrap:wrap;margin-top:14px"></div>
+      </div>
+    </div>`;
   });
 
   el.innerHTML = `
-    <div style="font-size:12px;color:var(--muted);margin-bottom:10px">${items.length} publicación${items.length !== 1 ? 'es' : ''} en seguimiento · Click en una fila para ver evolución</div>
-    <div style="overflow-x:auto;border-radius:10px;border:1px solid var(--border)">
-      <table style="width:100%;border-collapse:collapse;font-size:13px">
-        <thead>${thead}</thead>
-        <tbody>${tbody}</tbody>
-      </table>
-    </div>`;
+    <div style="font-size:12px;color:var(--muted);margin-bottom:12px">${items.length} publicación${items.length !== 1 ? 'es' : ''} en seguimiento · Click en una para ver su conversión diaria</div>
+    ${rows}`;
 }
 
-async function toggleSegEvolucion(id, row) {
-  const evoRow = document.getElementById(`seg-evo-${id}`);
-  if (!evoRow) return;
-  const isOpen = evoRow.style.display !== 'none';
-  evoRow.style.display = isOpen ? 'none' : '';
-  if (!isOpen) {
-    const chartEl = document.getElementById(`seg-chart-${id}`);
-    if (!chartEl || chartEl.dataset.loaded) return;
-    chartEl.dataset.loaded = '1';
-    try {
-      const data = await apiCall('GET', `/api/seguimiento/${id}/evolucion`);
-      renderSegChart(chartEl, data.series || []);
-    } catch(e) { if (chartEl) chartEl.innerHTML = '<div style="color:#c62828;font-size:12px">Error al cargar evolución.</div>'; }
-  }
-}
+async function toggleSegEvolucion(id, mla, row) {
+  const evoEl  = document.getElementById(`seg-evo-${id}`);
+  const caret  = document.getElementById(`seg-caret-${id}`);
+  if (!evoEl) return;
+  const isOpen = evoEl.style.display !== 'none';
+  evoEl.style.display = isOpen ? 'none' : '';
+  if (caret) caret.style.transform = isOpen ? '' : 'rotate(90deg)';
+  if (isOpen || evoEl.dataset.loaded) return;
+  evoEl.dataset.loaded = '1';
 
-function renderSegChart(el, series) {
-  if (!series.length) { el.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:20px">Sin datos de evolución aún.</div>'; return; }
-  const W = el.clientWidth || 700, H = 150;
-  const padL = 45, padR = 20, padT = 15, padB = 35;
-  const innerW = W - padL - padR, innerH = H - padT - padB;
-  const n = series.length;
-  const stepX = n > 1 ? innerW / (n - 1) : innerW;
+  const client = getActiveClient();
+  if (!client) return;
+  const days = parseInt(document.getElementById('segDaysSelect')?.value || 14);
+  const now  = new Date();
+  const from = new Date(now.getTime() - days * 24*60*60*1000);
+  const dateFrom = from.toISOString().slice(0,10);
+  const dateTo   = now.toISOString().slice(0,10);
 
-  const metrics = [
-    { key: 'visitas', color: '#6366f1', label: 'Visitas' },
-    { key: 'ordenes', color: '#00e676', label: 'Órdenes' },
-  ];
-
-  const fmtDate = d => { const dt = new Date(d + 'T12:00:00Z'); return dt.toLocaleDateString('es-AR', {day:'2-digit',month:'short'}); };
-
-  let svg = '';
-  // Grid
-  for (let g = 0; g <= 3; g++) {
-    const y = padT + (g / 3) * innerH;
-    svg += `<line x1="${padL}" y1="${y.toFixed(1)}" x2="${padL+innerW}" y2="${y.toFixed(1)}" stroke="rgba(255,255,255,.06)" stroke-width="1"/>`;
-  }
-
-  metrics.forEach(({ key, color }) => {
-    const vals = series.map(s => parseInt(s[key]) || 0);
-    const maxV = Math.max(...vals, 1);
-    const pts  = vals.map((v, i) => ({ x: padL + i * stepX, y: padT + innerH - (v / maxV) * innerH, v }));
-    if (!vals.some(v => v > 0)) return;
-    const pStr = pts.map(p => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ');
-    svg += `<polyline points="${pStr}" fill="none" stroke="${color}" stroke-width="2" stroke-linejoin="round"/>`;
-    pts.forEach(p => {
-      const tip = `${key === 'visitas' ? 'Visitas' : 'Órdenes'}: ${p.v}`;
-      svg += `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="3" fill="${color}" stroke="rgba(0,0,0,.4)" stroke-width="1"><title>${tip}</title></circle>`;
-    });
-  });
-
-  // Precio como línea secundaria
-  const precios = series.map(s => parseFloat(s.precio) || 0).filter(v => v > 0);
-  if (precios.length > 0) {
-    const maxP = Math.max(...precios, 1);
-    const pricePts = series.map((s, i) => {
-      const v = parseFloat(s.precio) || 0;
-      return { x: padL + i * stepX, y: padT + innerH - (v / maxP) * innerH, v };
-    }).filter(p => p.v > 0);
-    if (pricePts.length > 1) {
-      const pStr = pricePts.map(p => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ');
-      svg += `<polyline points="${pStr}" fill="none" stroke="#FFD700" stroke-width="1.5" stroke-dasharray="4 3" stroke-linejoin="round"/>`;
+  const sub   = document.getElementById(`seg-sub-${id}`);
+  const canvas = document.getElementById(`seg-canvas-${id}`);
+  try {
+    const data = await apiCall('GET', `/api/item/conversion-diaria?client_id=${client.id}&item_id=${encodeURIComponent(mla)}&date_from=${dateFrom}&date_to=${dateTo}`);
+    if (!data || data.error || !data.days?.length) {
+      if (sub) sub.textContent = data?.error ? 'Error: ' + data.error : 'Sin datos de conversión en el período.';
+      return;
     }
+    if (sub) sub.innerHTML = `<a href="https://articulo.mercadolibre.com.ar/${data.item_id.replace('MLA','MLA-')}" target="_blank" style="color:var(--accent);text-decoration:none">${data.item_id}</a> · ${data.from} → ${data.to}`;
+    if (!window.Chart) { if (sub) sub.textContent = 'Chart.js no disponible'; return; }
+    if (window._segCharts[id]) { window._segCharts[id].destroy(); }
+    window._segCharts[id] = new Chart(canvas, convChartConfig(data));
+
+    const t = data.totals || {};
+    const stat = (label, val, color) => `<div style="background:var(--surface);border-radius:10px;padding:8px 14px;flex:1;min-width:110px"><div style="font-size:11px;color:var(--muted)">${label}</div><div style="font-size:16px;font-weight:700;color:${color||'var(--text)'}">${val}</div></div>`;
+    const statsEl = document.getElementById(`seg-stats-${id}`);
+    if (statsEl) statsEl.innerHTML =
+      stat('Visitas totales',     (t.visits||0).toLocaleString('es-AR'), '#3b82f6') +
+      stat('Unidades vendidas',   (t.units||0).toLocaleString('es-AR'),  '#00e676') +
+      stat('Conversión promedio', (t.conversion||0) + '%',               '#ff9100');
+  } catch(e) {
+    if (sub) sub.textContent = 'Error al cargar: ' + e.message;
   }
-
-  // X labels (cada 3 días)
-  series.forEach((s, i) => {
-    if (i % Math.max(1, Math.floor(n / 5)) !== 0 && i !== n - 1) return;
-    const x = padL + i * stepX;
-    svg += `<text x="${x.toFixed(1)}" y="${H - 8}" text-anchor="middle" font-size="9" fill="rgba(255,255,255,.45)" font-family="sans-serif">${fmtDate(s.dia)}</text>`;
-  });
-
-  // Leyenda
-  svg += `<text x="${padL}" y="${padT - 4}" font-size="9" fill="#6366f1" font-family="sans-serif">─ Visitas</text>`;
-  svg += `<text x="${padL+60}" y="${padT - 4}" font-size="9" fill="#00e676" font-family="sans-serif">─ Órdenes</text>`;
-  svg += `<text x="${padL+120}" y="${padT - 4}" font-size="9" fill="#FFD700" font-family="sans-serif">- - Precio</text>`;
-
-  el.innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="100%" height="100%" style="overflow:visible">${svg}</svg>`;
 }
 
 async function backfillSeguimiento() {
@@ -8795,20 +8681,13 @@ function closeConversionChart() {
   if (ov) ov.style.display = 'none';
 }
 
-function renderConversionChart(data) {
-  document.getElementById('convChartTitle').textContent = '📈 ' + (data.title || data.item_id);
-  document.getElementById('convChartSub').innerHTML =
-    `<a href="https://articulo.mercadolibre.com.ar/${data.item_id.replace('MLA','MLA-')}" target="_blank" style="color:var(--accent);text-decoration:none">${data.item_id}</a> · ${data.from} → ${data.to}`;
-
+// Config compartida del gráfico de conversión diaria (modal + inline en Seguimiento)
+function convChartConfig(data) {
   const labels = data.days.map(d => d.date.slice(5));
   const visits = data.days.map(d => d.visits);
   const units  = data.days.map(d => d.units);
   const conv   = data.days.map(d => d.conversion);
-
-  const canvas = document.getElementById('convChartCanvas');
-  if (_convChart) { _convChart.destroy(); _convChart = null; }
-  if (!window.Chart) { document.getElementById('convChartSub').textContent = 'Chart.js no disponible'; return; }
-  _convChart = new Chart(canvas, {
+  return {
     data: {
       labels,
       datasets: [
@@ -8830,7 +8709,18 @@ function renderConversionChart(data) {
         y1:{ position:'right', beginAtZero:true, title:{display:true,text:'Conversión %',color:'#ff9100'}, ticks:{ color:'#ff9100', callback:v=>v+'%' }, grid:{ drawOnChartArea:false } }
       }
     }
-  });
+  };
+}
+
+function renderConversionChart(data) {
+  document.getElementById('convChartTitle').textContent = '📈 ' + (data.title || data.item_id);
+  document.getElementById('convChartSub').innerHTML =
+    `<a href="https://articulo.mercadolibre.com.ar/${data.item_id.replace('MLA','MLA-')}" target="_blank" style="color:var(--accent);text-decoration:none">${data.item_id}</a> · ${data.from} → ${data.to}`;
+
+  const canvas = document.getElementById('convChartCanvas');
+  if (_convChart) { _convChart.destroy(); _convChart = null; }
+  if (!window.Chart) { document.getElementById('convChartSub').textContent = 'Chart.js no disponible'; return; }
+  _convChart = new Chart(canvas, convChartConfig(data));
 
   const t = data.totals || {};
   const stat = (label, val, color) => `<div style="background:var(--surface2);border-radius:10px;padding:10px 16px;flex:1;min-width:120px"><div style="font-size:11px;color:var(--muted)">${label}</div><div style="font-size:18px;font-weight:700;color:${color||'var(--text)'}">${val}</div></div>`;
