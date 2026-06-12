@@ -1397,6 +1397,7 @@ const REGLAS_DEFAULT = {
   stock_critico_pareto:  { habilitada: true, umbral: { dias_cobertura: 7, pareto_pct: 0.20 } },
   preguntas_pendientes:  { habilitada: true, umbral: { cantidad: 5, horas: 12 } },
   tacos_alto:            { habilitada: true, umbral: { warning_pct: 15, critical_pct: 25, dias: 30 } },
+  tacos_producto_alto:   { habilitada: true, umbral: { warning_pct: 20, critical_pct: 30, dias: 30, min_spend: 5000, max_items: 8 } },
   reputacion_bajando:    { habilitada: true, umbral: {} },
   producto_sin_ventas:   { habilitada: true, umbral: { dias_publicado: 14 } },
   anuncio_sangrando:     { habilitada: true, umbral: { acos_min: 50, dias: 5 } },
@@ -1749,6 +1750,107 @@ async function evalRuleTacosAlto(client) {
   } catch(e) { console.error(`[ALERTA tacos_alto] ${client.name}:`, e.message); return null; }
 }
 
+// Regla 7b — TACOS alto POR PRODUCTO (detecta SKUs puntuales sobre objetivo,
+// aunque el TACOS de la cuenta esté sano). TACOS de ítem = gasto pauta del ítem /
+// facturación total del ítem (orgánico + ads), no el ACOS.
+async function evalRuleTacosProductoAlto(client) {
+  const regla = await getRegla(client.id, 'tacos_producto_alto');
+  if (!regla.habilitada) return null;
+  const token = await getClientToken(client.id);
+  if (!token) return null;
+  try {
+    const { warning_pct = 20, critical_pct = 30, dias = 30, min_spend = 5000, max_items = 8 } = regla.umbral || {};
+    const h1 = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'Api-Version': '1' };
+    const h2 = { 'Authorization': `Bearer ${token}`, 'api-version': '2' };
+    const authHeaders = { 'Authorization': `Bearer ${token}` };
+
+    const user = await fetch(`${ML_API}/users/me`, { headers: authHeaders }).then(r => r.json());
+    if (user.error) return null;
+    const uid = user.id;
+    const siteId = user.site_id || 'MLA';
+
+    const advData = await fetch(`${ML_API}/advertising/advertisers?product_id=PADS`, { headers: h1 }).then(r => r.json());
+    const advertisers = advData.advertisers || [];
+    if (!advertisers.length) return null;
+    const adv = advertisers.find(a => a.site_id === siteId) || advertisers[0];
+    const advId = adv.advertiser_id;
+
+    const now = new Date();
+    const fromDate = new Date(now.getTime() - dias*24*60*60*1000);
+    const fromStr = fromDate.toISOString().slice(0,10);
+    const toStr   = now.toISOString().slice(0,10);
+
+    // 1. Gasto de pauta por ítem
+    const spendByItem = {};
+    let offset = 0, total = 999;
+    while (offset < total) {
+      const url = `${ML_API}/advertising/${siteId}/advertisers/${advId}/product_ads/ads/search?date_from=${fromStr}&date_to=${toStr}&metrics=cost&limit=50&offset=${offset}`;
+      const data = await fetch(url, { headers: h2 }).then(r => r.json()).catch(() => ({}));
+      total = data.paging?.total || 0;
+      (data.results || []).forEach(ad => {
+        if (!ad.item_id) return;
+        spendByItem[ad.item_id] = (spendByItem[ad.item_id] || 0) + ((ad.metrics || {}).cost || 0);
+      });
+      if ((data.results || []).length < 50) break;
+      offset += 50;
+      if (offset > 2000) break;
+    }
+    // Solo ítems que superan el piso de gasto
+    const candidatos = Object.keys(spendByItem).filter(id => spendByItem[id] >= min_spend);
+    if (!candidatos.length) { await resolveAlerta(client.id, 'tacos_producto_alto'); return null; }
+
+    // 2. Facturación total por ítem (orgánico + ads)
+    const fmt = d => d.toISOString().slice(0,19) + '.000-00:00';
+    const revenueByItem = {};
+    const { orders } = await fetchAllOrders(uid, authHeaders, fmt(fromDate), fmt(now));
+    orders.forEach(order => {
+      (order.order_items || []).forEach(oi => {
+        const id = oi.item?.id;
+        if (!id) return;
+        revenueByItem[id] = (revenueByItem[id] || 0) + (parseFloat(oi.unit_price)||0) * (oi.quantity||0);
+      });
+    });
+
+    // 3. TACOS por ítem y clasificación
+    const sobre = [];
+    candidatos.forEach(id => {
+      const spend = spendByItem[id];
+      const rev = revenueByItem[id] || 0;
+      const tacos = rev > 0 ? (spend / rev * 100) : 999; // sin facturación = gasto puro, lo peor
+      if (tacos >= warning_pct) {
+        sobre.push({ item_id: id, spend, revenue: rev, tacos, sev: tacos >= critical_pct ? 'critical' : 'warning' });
+      }
+    });
+    if (!sobre.length) { await resolveAlerta(client.id, 'tacos_producto_alto'); return null; }
+    sobre.sort((a,b) => b.tacos - a.tacos);
+
+    // 4. Títulos de los ítems involucrados (batch)
+    const titleMap = {};
+    const ids = sobre.map(s => s.item_id);
+    for (let i = 0; i < ids.length; i += 20) {
+      const batch = ids.slice(i, i + 20);
+      const data = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,title`, { headers: authHeaders }).then(r => r.json()).catch(() => []);
+      (Array.isArray(data) ? data : []).forEach(r => { if (r.code === 200 && r.body) titleMap[r.body.id] = r.body.title; });
+    }
+    sobre.forEach(s => { s.title = titleMap[s.item_id] || s.item_id; });
+
+    const criticos = sobre.filter(s => s.sev === 'critical');
+    const severidad = criticos.length ? 'critical' : 'warning';
+    const fmtARS = v => '$' + Math.round(v).toLocaleString('es-AR');
+    const lista = sobre.slice(0, max_items).map(s =>
+      `• ${s.title.slice(0,55)} — TACOS ${s.tacos.toFixed(0)}% (pauta ${fmtARS(s.spend)} / fact ${fmtARS(s.revenue)})`
+    ).join('\n');
+    const extra = sobre.length > max_items ? `\n…y ${sobre.length - max_items} más.` : '';
+    const titulo = `${sobre.length} producto${sobre.length!==1?'s':''} sobre TACOS objetivo (umbral ${warning_pct}%, últimos ${dias}d)`;
+    const mensaje = `${criticos.length} crítico${criticos.length!==1?'s':''} (≥${critical_pct}%), ${sobre.length-criticos.length} en alerta (≥${warning_pct}%):\n${lista}${extra}`;
+
+    return upsertAlerta(client.id, 'tacos_producto_alto', severidad, titulo, mensaje, {
+      warning_pct, critical_pct, dias, min_spend,
+      productos: sobre.map(s => ({ item_id: s.item_id, title: s.title, tacos: +s.tacos.toFixed(1), spend: Math.round(s.spend), revenue: Math.round(s.revenue), sev: s.sev })),
+    });
+  } catch(e) { console.error(`[ALERTA tacos_producto_alto] ${client.name}:`, e.message); return null; }
+}
+
 // Regla 8 — Reputación bajando
 async function evalRuleReputacionBajando(client) {
   const regla = await getRegla(client.id, 'reputacion_bajando');
@@ -1995,6 +2097,7 @@ async function runAlertEngine({ forceNotify = false, tipo = 'auto' } = {}) {
       evalRuleCaidaVentas,
       evalRuleRoasBajo,
       evalRuleTacosAlto,
+      evalRuleTacosProductoAlto,
       evalRuleMargenErosionado,
       evalRuleStockPareto,
       evalRulePreguntasPendientes,
@@ -2043,6 +2146,11 @@ const SLACK_TIPO_CONFIG = {
   caida_ventas:         { emoji: '📉', label: 'Caída de facturación',       short: (a) => a.titulo },
   roas_bajo:            { emoji: '📣', label: 'ROAS bajo (publicidad)',      short: (a) => a.titulo },
   tacos_alto:           { emoji: '💰', label: 'TACOS alto',                  short: (a) => a.titulo },
+  tacos_producto_alto:  { emoji: '🎯', label: 'TACOS alto por producto',     short: (a) => {
+                            const p = a.datos?.productos || [];
+                            const peor = p[0];
+                            return `${p.length} producto${p.length!==1?'s':''} sobre objetivo` + (peor ? ` · peor: ${(peor.title||'').slice(0,40)} ${peor.tacos}%` : '');
+                          } },
   margen_erosionado:    { emoji: '💸', label: 'Margen erosionado',           short: (a) => a.titulo },
   preguntas_pendientes: { emoji: '❓', label: 'Preguntas sin responder',     short: (a) => a.titulo },
   reputacion_bajando:   { emoji: '⭐', label: 'Reputación bajando',           short: (a) => a.titulo },
@@ -2063,7 +2171,7 @@ async function sendSlackAlert(newAlerts) {
   });
 
   // Ordenar: críticas primero, luego warnings
-  const orden = ['reputacion_bajando','stock_critico_pareto','caida_ventas','tacos_alto','margen_erosionado','roas_bajo','preguntas_pendientes','producto_sin_ventas'];
+  const orden = ['reputacion_bajando','stock_critico_pareto','caida_ventas','tacos_alto','tacos_producto_alto','margen_erosionado','roas_bajo','preguntas_pendientes','producto_sin_ventas'];
   const tiposOrdenados = [
     ...orden.filter(k => byTipo[k]),
     ...Object.keys(byTipo).filter(k => !orden.includes(k))
@@ -7137,8 +7245,8 @@ app.get('/api/logistica/full-stock', requireAuth, async (req, res) => {
                 price:        v.price || b.price,
                 variation_id: v.id,
                 inventory_id: varInv,
-                is_full:      !!varInv,
-                logistic_type: varInv ? 'fulfillment' : lt,
+                is_full:      !!varInv,   // tentativo: se confirma en paso 6 con stock real
+                logistic_type: lt,         // logistic_type real del envío (no se pisa)
                 sku:          varSku,
               });
             });
@@ -7150,8 +7258,8 @@ app.get('/api/logistica/full-stock', requireAuth, async (req, res) => {
               price:        b.price,
               variation_id: null,
               inventory_id: b.inventory_id || null,
-              is_full:      !!b.inventory_id,
-              logistic_type: b.inventory_id ? 'fulfillment' : lt,
+              is_full:      !!b.inventory_id,   // tentativo: se confirma en paso 6 con stock real
+              logistic_type: lt,                 // logistic_type real del envío (no se pisa)
               sku:          itemSku,
             });
           }
@@ -7218,9 +7326,17 @@ app.get('/api/logistica/full-stock', requireAuth, async (req, res) => {
       const salesKey  = item.variation_id ? `${item.id}_${item.variation_id}` : item.id;
       const stockKey  = salesKey;
       const stock     = stockMap[stockKey] || { stock_full: 0, stock_reserved: 0, stock_in_transit: 0 };
+      // ── FULL real ────────────────────────────────────────────────────────────
+      // ML deja el inventory_id pegado al ítem aunque retires TODO el stock de
+      // fulfillment. Confirmamos "en FULL" solo si hay stock real en el inventario
+      // (disponible + reservado + en tránsito). Si todo es 0, es un inventory_id
+      // fantasma → el ítem ya no está en FULL (opera por Flex/Colecta).
+      const stockFullReal = (stock.stock_full || 0) + (stock.stock_reserved || 0) + (stock.stock_in_transit || 0);
+      const isFull        = !!item.inventory_id && stockFullReal > 0;
+      const logisticType  = isFull ? 'fulfillment' : item.logistic_type;
       const unitsSold = salesByKey[salesKey] || 0;
       const dailyRate = unitsSold / days;
-      const coverage  = (dailyRate > 0 && item.is_full) ? Math.round(stock.stock_full / dailyRate) : (item.is_full ? null : 0);
+      const coverage  = (dailyRate > 0 && isFull) ? Math.round(stock.stock_full / dailyRate) : (isFull ? null : 0);
       const cfg       = configMap[item.id] || {};
       const targetDays = cfg.coverage_days_target || globalTargetDays;
       const suggested  = dailyRate > 0
@@ -7229,7 +7345,7 @@ app.get('/api/logistica/full-stock', requireAuth, async (req, res) => {
       // Exceso vs proyección: stock por encima de lo que la rotación necesita para
       // los días objetivo. Si no rota (dailyRate 0) todo el stock es excedente.
       const projNeed = Math.round(dailyRate * targetDays);
-      const exceso   = item.is_full ? Math.max(0, stock.stock_full - projNeed) : 0;
+      const exceso   = isFull ? Math.max(0, stock.stock_full - projNeed) : 0;
       // Antigüedad: días desde la última venta en la ventana ampliada.
       const ultima        = lastSaleByKey[salesKey] || null;
       const diasSinVenta  = ultima ? Math.floor((now - new Date(ultima)) / 86400000) : null;
@@ -7238,8 +7354,8 @@ app.get('/api/logistica/full-stock', requireAuth, async (req, res) => {
         title:             item.title,
         variation_id:      item.variation_id,
         sku:               item.sku,
-        is_full:           item.is_full,
-        logistic_type:     item.logistic_type,
+        is_full:           isFull,
+        logistic_type:     logisticType,
         stock_full:        stock.stock_full,
         stock_reserved:    stock.stock_reserved,
         stock_in_transit:  stock.stock_in_transit,
