@@ -8714,6 +8714,11 @@ function convChartConfig(data) {
   const visits = data.days.map(d => d.visits);
   const units  = data.days.map(d => d.units);
   const conv   = data.days.map(d => d.conversion);
+  // Media de conversión del período: la conversión global (units/visits) que ya se muestra
+  // como "Conversión promedio" en los stats; fallback al promedio de los puntos diarios.
+  const convAvg = (data.totals && data.totals.conversion != null)
+    ? data.totals.conversion
+    : (conv.length ? +(conv.reduce((s, v) => s + (v || 0), 0) / conv.length).toFixed(2) : 0);
   return {
     data: {
       labels,
@@ -8721,6 +8726,7 @@ function convChartConfig(data) {
         { type:'bar',  label:'Visitas',      data:visits, yAxisID:'y',  backgroundColor:'rgba(59,130,246,.45)', borderColor:'rgba(59,130,246,.9)',  borderWidth:1, order:3 },
         { type:'bar',  label:'Unidades',     data:units,  yAxisID:'y',  backgroundColor:'rgba(0,230,118,.55)',  borderColor:'rgba(0,230,118,.95)', borderWidth:1, order:2 },
         { type:'line', label:'Conversión %', data:conv,   yAxisID:'y1', borderColor:'#ff9100', backgroundColor:'#ff9100', borderWidth:2, tension:.3, pointRadius:3, pointHoverRadius:5, order:1 },
+        { type:'line', label:`Media (${convAvg}%)`, data:labels.map(() => convAvg), yAxisID:'y1', borderColor:'#fcd34d', backgroundColor:'#fcd34d', borderWidth:1.5, borderDash:[6,4], pointRadius:0, pointHoverRadius:0, tension:0, fill:false, order:0 },
       ]
     },
     options: {
@@ -8728,7 +8734,7 @@ function convChartConfig(data) {
       interaction:{ mode:'index', intersect:false },
       plugins:{
         legend:{ labels:{ color:'#bbb', usePointStyle:true, font:{size:12} } },
-        tooltip:{ callbacks:{ label:(ctx)=> ctx.dataset.label==='Conversión %' ? `Conversión: ${ctx.parsed.y}%` : `${ctx.dataset.label}: ${ctx.parsed.y.toLocaleString('es-AR')}` } }
+        tooltip:{ callbacks:{ label:(ctx)=>{ if(ctx.dataset.yAxisID==='y1'){ const name = ctx.dataset.label==='Conversión %' ? 'Conversión' : ctx.dataset.label; return `${name}: ${ctx.parsed.y}%`; } return `${ctx.dataset.label}: ${ctx.parsed.y.toLocaleString('es-AR')}`; } } }
       },
       scales:{
         x:{ ticks:{ color:'#888', maxRotation:0, autoSkip:true, maxTicksLimit:15 }, grid:{ color:'rgba(255,255,255,.05)' } },
