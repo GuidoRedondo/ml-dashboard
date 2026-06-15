@@ -10033,7 +10033,9 @@ async function saveMetricasPubli(clientId, { campaigns, items }) {
 async function runPubliAnalyzer({ tipo = 'auto' } = {}) {
   console.log('[PUBLI] Iniciando análisis —', new Date().toISOString());
   try {
-    const clients = await pool.query(`SELECT * FROM clients WHERE active=true AND access_token IS NOT NULL ORDER BY name`);
+    // Gate opt-in: solo clientes con publi_activa=true (default false). Arranca apagado para todos
+    // hasta que se prenda cliente por cliente vía PATCH /api/clients/:id/publi-activa.
+    const clients = await pool.query(`SELECT * FROM clients WHERE active=true AND access_token IS NOT NULL AND publi_activa = true ORDER BY name`);
     let totalDecisiones = 0;
     for (const client of clients.rows) {
       console.log(`[PUBLI] Analizando ${client.name}...`);
@@ -10080,6 +10082,9 @@ app.get('/api/decisiones-publi/stats', requireAuth, async (req, res) => {
         COUNT(*) FILTER (WHERE estado='nueva') AS pendientes,
         COUNT(*) FILTER (WHERE estado='aplicada') AS aplicadas,
         COUNT(*) FILTER (WHERE estado='descartada') AS descartadas,
+        COUNT(*) FILTER (WHERE estado='ejecutada') AS ejecutadas,
+        COUNT(*) FILTER (WHERE estado='error') AS errores,
+        COUNT(*) FILTER (WHERE estado='obsoleta') AS obsoletas,
         COUNT(*) FILTER (WHERE estado='aplicada' AND resultado_7d->>'mejoro'='true') AS mejoraron
       FROM decisiones_publi GROUP BY tipo_decision ORDER BY tipo_decision`);
     res.json(r.rows);
@@ -10156,6 +10161,17 @@ app.patch('/api/clients/:id/roas-target', requireAuth, async (req, res) => {
     if (!roas_target || isNaN(parseFloat(roas_target))) return res.status(400).json({ error: 'roas_target inválido' });
     await pool.query('UPDATE clients SET roas_target=$1, updated_at=NOW() WHERE id=$2', [parseFloat(roas_target), req.params.id]);
     res.json({ ok: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// Gate del motor de publi: prende/apaga la generación para un cliente (opt-in, default false).
+// No toca ML — solo escribe el flag que lee runPubliAnalyzer.
+app.patch('/api/clients/:id/publi-activa', requireAuth, async (req, res) => {
+  try {
+    const { publi_activa } = req.body;
+    if (typeof publi_activa !== 'boolean') return res.status(400).json({ error: 'publi_activa debe ser boolean (true|false)' });
+    await pool.query('UPDATE clients SET publi_activa=$1, updated_at=NOW() WHERE id=$2', [publi_activa, req.params.id]);
+    res.json({ ok: true, publi_activa });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
