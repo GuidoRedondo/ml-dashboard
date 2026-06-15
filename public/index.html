@@ -14608,6 +14608,17 @@ const DP_SEV_COLORS = {
   opportunity: { bg: '#f0fdf4', border: '#86efac', badge: '#16a34a' },
 };
 
+// Mapeo de acción → color neubrutalist (v1: 🟢 escalar / 🔴 frenar / ⚫ pausar; 🟡 ajuste queda para v2).
+const DP_NB_ACCION = {
+  escalar_campania:    { emoji: '🟢', label: 'ESCALAR', color: '#16a34a' },
+  subir_puja_headroom: { emoji: '🟢', label: 'ESCALAR', color: '#16a34a' },
+  reducir_campania:    { emoji: '🔴', label: 'FRENAR',  color: '#dc2626' },
+  pausar_sangrado:     { emoji: '⚫', label: 'PAUSAR',  color: '#292929' },
+  stockout_protector:  { emoji: '⚫', label: 'PAUSAR',  color: '#292929' },
+  discontinuar_muerta: { emoji: '⚫', label: 'PAUSAR',  color: '#292929' },
+};
+let _dpDryRun = null;   // se completa con GET /api/publi/modo en la primera carga
+
 function toggleDPReglas() {
   const panel = document.getElementById('dp-reglas-panel');
   if (panel) panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
@@ -14846,7 +14857,11 @@ async function loadDecisionesPubli() {
   }
 
   if (_dpActiveTab === 'nuevas') {
-    el.innerHTML = dpRenderTabla(decisiones, true);
+    if (_dpDryRun === null) {
+      const m = await apiCall('GET', '/api/publi/modo').catch(() => null);
+      _dpDryRun = m ? !!m.dry_run : true;   // ante la duda, asumir dry-run (lo seguro)
+    }
+    el.innerHTML = dpRenderCards(decisiones);
   } else if (_dpActiveTab === 'aplicadas') {
     el.innerHTML = dpRenderTabla(decisiones, false);
   } else {
@@ -14913,6 +14928,111 @@ function dpRenderTabla(decisiones, conAcciones) {
   html += '</tbody></table></div>';
   return html;
 }
+
+// ── Vista de aprobación neubrutalist (tab "nuevas") — tarjetas agrupadas por cliente ──
+function dpRenderCards(decisiones) {
+  const fmtARS = v => (v != null && v !== '') ? '$' + Math.round(v).toLocaleString('es-AR') : '—';
+  const esc = s => String(s ?? '').replace(/[<>&]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]));
+
+  const grupos = {};
+  decisiones.forEach(d => { (grupos[d.client_name] = grupos[d.client_name] || []).push(d); });
+
+  const banner = _dpDryRun
+    ? `<div class="dp-nb-banner">🧪 MODO PRUEBA (dry-run) — el sistema NO escribe en Mercado Libre. Aprobar solo simula el cambio.</div>`
+    : `<div class="dp-nb-banner dp-nb-banner-live">🔴 MODO REAL — aprobar ESCRIBE en Mercado Libre.</div>`;
+
+  let html = `<style>
+    @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@800&display=swap');
+    .dp-nb-wrap{font-family:'Plus Jakarta Sans',var(--font-b),sans-serif}
+    .dp-nb-banner{background:#fff952;color:#292929;border:3px solid #292929;box-shadow:6px 6px 0 #292929;padding:14px 18px;font-weight:800;margin-bottom:22px;font-size:14px;line-height:1.35}
+    .dp-nb-banner-live{background:#292929;color:#fff952}
+    .dp-nb-count{display:inline-block;background:#292929;color:#fff952;font-weight:800;font-size:22px;padding:8px 16px;border:3px solid #292929;box-shadow:5px 5px 0 #fff952;margin-bottom:18px}
+    .dp-nb-cli{background:#292929;color:#fff952;font-weight:800;font-size:15px;padding:8px 14px;margin:22px 0 12px;display:inline-block;letter-spacing:.5px}
+    .dp-nb-card{background:#fff;border:3px solid #292929;box-shadow:5px 5px 0 #292929;padding:16px;margin-bottom:16px;color:#292929}
+    .dp-nb-chip{display:inline-block;font-weight:800;font-size:11px;padding:3px 10px;border:2px solid #292929;margin-right:6px}
+    .dp-nb-arrow{font-size:24px;font-weight:800;color:#292929;margin:10px 0;line-height:1.25}
+    .dp-nb-arrow .old{color:#999;text-decoration:line-through;text-decoration-thickness:2px}
+    .dp-nb-just{font-size:13px;color:#292929;line-height:1.45;margin:8px 0;font-weight:500}
+    .dp-nb-roas{font-size:12px;font-weight:700;color:#292929;margin:8px 0}
+    .dp-nb-btn{font-family:inherit;font-weight:800;font-size:13px;padding:9px 16px;border:3px solid #292929;cursor:pointer;box-shadow:3px 3px 0 #292929;margin-right:8px;margin-top:4px}
+    .dp-nb-btn:active{transform:translate(2px,2px);box-shadow:1px 1px 0 #292929}
+    .dp-nb-aprob{background:#16a34a;color:#fff}
+    .dp-nb-hecha{background:#fff952;color:#292929}
+    .dp-nb-rech{background:#fff;color:#292929}
+    .dp-nb-res{margin-top:10px;font-weight:700;font-size:13px}
+    .dp-nb-res .prueba{background:#fff952;border:3px solid #292929;padding:10px 12px;color:#292929;line-height:1.4}
+    .dp-nb-res .ok{background:#16a34a;color:#fff;border:3px solid #292929;padding:10px 12px}
+    .dp-nb-res .warn{background:#f59e0b;color:#292929;border:3px solid #292929;padding:10px 12px;line-height:1.4}
+    .dp-nb-res .err{background:#dc2626;color:#fff;border:3px solid #292929;padding:10px 12px}
+  </style><div class="dp-nb-wrap">`;
+
+  html += `<div class="dp-nb-count">${decisiones.length} sugerencia${decisiones.length === 1 ? '' : 's'} esperando</div>`;
+  html += banner;
+
+  for (const [cli, lista] of Object.entries(grupos)) {
+    html += `<div><span class="dp-nb-cli">${esc(cli)} · ${lista.length}</span></div>`;
+    lista.forEach(d => {
+      const acc = DP_NB_ACCION[d.tipo_decision] || { emoji: '🔹', label: String(d.tipo_decision || '').toUpperCase(), color: '#292929' };
+      const esCampania = d.nivel === 'campania' && d.valor_propuesto && d.valor_propuesto.budget != null;
+      const m = d.metricas_snapshot || {};
+      const roasAct = m.roas != null ? parseFloat(m.roas).toFixed(2) : '—';
+      const roasObj = d.roas_target != null ? parseFloat(d.roas_target).toFixed(2) : '—';
+
+      // Campaña: antes → después grande. Ítem: texto de acción (sin antes→después falso).
+      const cuerpo = esCampania
+        ? `<div class="dp-nb-arrow">Budget <span class="old">${fmtARS(d.valor_actual && d.valor_actual.budget)}</span> → ${fmtARS(d.valor_propuesto.budget)}</div>`
+        : `<div class="dp-nb-arrow" style="font-size:15px">${esc(d.accion_sugerida)}</div>`;
+
+      // Campaña ejecutable: APROBAR (/ejecutar). Ítem: MARCAR HECHA (/aplicar manual). Sin APROBAR que mentiría.
+      const botones = esCampania
+        ? `<button class="dp-nb-btn dp-nb-aprob" onclick="dpAprobarEjecutar(${d.id})">APROBAR</button>
+           <button class="dp-nb-btn dp-nb-rech" onclick="dpDescartar(${d.id})">RECHAZAR</button>`
+        : `<button class="dp-nb-btn dp-nb-hecha" onclick="dpAplicar(${d.id})">MARCAR HECHA</button>
+           <button class="dp-nb-btn dp-nb-rech" onclick="dpDescartar(${d.id})">RECHAZAR</button>`;
+
+      html += `<div class="dp-nb-card" id="dp-card-${d.id}">
+        <div style="margin-bottom:8px">
+          <span class="dp-nb-chip" style="background:${acc.color};color:#fff">${acc.emoji} ${acc.label}</span>
+          <span class="dp-nb-chip" style="background:#fff">${d.nivel === 'campania' ? 'CAMPAÑA' : 'ANUNCIO'}</span>
+        </div>
+        <div style="font-weight:800;font-size:14px;margin-bottom:2px">${esc(d.objeto_nombre || d.objeto_id)}</div>
+        <div style="font-size:11px;color:#777;font-weight:600">${esc(d.objeto_id)}</div>
+        ${cuerpo}
+        <div class="dp-nb-just">${esc(d.justificacion)}</div>
+        <div class="dp-nb-roas">ROAS actual <b>${roasAct}</b> · objetivo <b>${roasObj}</b></div>
+        <div>${botones}</div>
+        <div class="dp-nb-res" id="dp-result-${d.id}"></div>
+      </div>`;
+    });
+  }
+  html += `</div>`;
+  return html;
+}
+
+// APROBAR de campaña → POST /ejecutar (dry-run aware). NUNCA muestra "ejecutado" en falso.
+async function dpAprobarEjecutar(id) {
+  const box = document.getElementById(`dp-result-${id}`);
+  if (box) box.innerHTML = `<div class="prueba">Procesando…</div>`;
+  const r = await apiCall('POST', `/api/decisiones-publi/${id}/ejecutar`).catch(() => null);
+  if (!r) { if (box) box.innerHTML = `<div class="err">⚠️ Error de red</div>`; return; }
+  const res = r.resultado || {};
+  if (r.dry_run) {
+    const payload = (res.habria_hecho && res.habria_hecho.payload) ? JSON.stringify(res.habria_hecho.payload) : '(sin payload)';
+    if (box) box.innerHTML = `<div class="prueba">🧪 MODO PRUEBA — esto es lo que haría:<br><b>${payload}</b><br><span style="font-weight:600;font-size:11px">No se ejecutó nada. La sugerencia sigue pendiente.</span></div>`;
+    // sin reload: en dry-run el backend no cambia el estado, la tarjeta queda en la cola
+  } else if (r.estado === 'ejecutada') {
+    if (box) box.innerHTML = `<div class="ok">✅ Ejecutada — cambio aplicado en Mercado Libre.</div>`;
+    setTimeout(loadDecisionesPubli, 1400);
+  } else if (r.estado === 'obsoleta') {
+    if (box) box.innerHTML = `<div class="warn">⚠️ El budget cambió ($${res.valor_registrado} → $${res.valor_actual_fresco}) desde que se generó la sugerencia. NO se aplicó — revisá a mano.</div>`;
+    setTimeout(loadDecisionesPubli, 3200);
+  } else {
+    const det = res.detalle || res.motivo || 'error desconocido';
+    if (box) box.innerHTML = `<div class="err">⚠️ Error: ${esc2(det)}${res.status ? ` (HTTP ${res.status})` : ''}</div>`;
+    setTimeout(loadDecisionesPubli, 3200);
+  }
+}
+function esc2(s){ return String(s ?? '').replace(/[<>&]/g, c => ({ '<':'&lt;','>':'&gt;','&':'&amp;' }[c])); }
 
 async function dpVerDetalle(id) {
   const d = await apiCall('GET', `/api/decisiones-publi/${id}`);

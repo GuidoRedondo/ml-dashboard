@@ -10062,7 +10062,7 @@ async function runPubliAnalyzer({ tipo = 'auto' } = {}) {
 app.get('/api/decisiones-publi', requireAuth, async (req, res) => {
   try {
     const { estado = 'nueva', client_id, tipo, nivel } = req.query;
-    let q = `SELECT d.*, c.name as client_name FROM decisiones_publi d
+    let q = `SELECT d.*, c.name as client_name, c.roas_target FROM decisiones_publi d
              JOIN clients c ON c.id = d.client_id WHERE 1=1`;
     const params = [];
     if (estado) { params.push(estado); q += ` AND d.estado=$${params.length}`; }
@@ -10073,6 +10073,11 @@ app.get('/api/decisiones-publi', requireAuth, async (req, res) => {
     const r = await pool.query(q, params);
     res.json(r.rows);
   } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// Modo del motor: dry-run (default) vs ejecución real. Solo lectura, para el cartel de la UI.
+app.get('/api/publi/modo', requireAuth, async (req, res) => {
+  res.json({ dry_run: process.env.PUBLI_DRY_RUN !== 'false' });
 });
 
 app.get('/api/decisiones-publi/stats', requireAuth, async (req, res) => {
