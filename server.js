@@ -59,6 +59,15 @@ const PORT = process.env.PORT || 3000;
 const ML_API = 'https://api.mercadolibre.com';
 const ART = 'America/Argentina/Buenos_Aires';
 
+// IVA contenido en un monto bruto (precio final con IVA) dada una alícuota en %.
+// Ej: ivaContenido(1210, 21) = 210. Default 21% si no se especifica.
+// El IVA de los servicios de ML (comisión, envío, publicidad) siempre va a 21%.
+const IVA_SERVICIOS_PCT = 21;
+function ivaContenido(montoBruto, alicuotaPct = 21) {
+  const a = (parseFloat(alicuotaPct) || 0) / 100;
+  return (parseFloat(montoBruto) || 0) / (1 + a) * a;
+}
+
 // ── CLIFF FINDER — escalas de cargo fijo ML ──────────────────────────────────
 const CARGO_FIJO_ESCALAS = [
   { desde: 0,     hasta: 15999, cargo: 1255 },
@@ -217,6 +226,7 @@ async function initDB() {
       mla_id      VARCHAR(20) NOT NULL,
       title       TEXT,
       costo_unit  NUMERIC(14,2) NOT NULL DEFAULT 0,
+      alicuota_iva NUMERIC(5,2) DEFAULT 21,
       notas       TEXT,
       updated_at  TIMESTAMP DEFAULT NOW(),
       UNIQUE(client_id, mla_id)
@@ -336,6 +346,10 @@ async function initDB() {
       UPDATE clients SET tasa_iibb_pct = 4.00 WHERE tasa_iibb_pct IS NULL;
       ALTER TABLE clients ADD COLUMN IF NOT EXISTS condicion_iva VARCHAR(30) DEFAULT 'responsable_inscripto';
       UPDATE clients SET condicion_iva = 'responsable_inscripto' WHERE condicion_iva IS NULL;
+      -- Alícuota de IVA por producto (10.5 / 21 / 27 / etc). El producto factura y compra
+      -- a esta alícuota; los servicios de ML (comisión, envío, publi) siguen a 21%.
+      ALTER TABLE product_costs ADD COLUMN IF NOT EXISTS alicuota_iva NUMERIC(5,2) DEFAULT 21;
+      UPDATE product_costs SET alicuota_iva = 21 WHERE alicuota_iva IS NULL;
     EXCEPTION WHEN OTHERS THEN NULL; END $$;
   `);
 
@@ -2705,9 +2719,10 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
 
     // Calcular CMV desde product_costs
     let cmv_total_dash = 0, cmv_cubierto_dash = 0;
-    const costsResDash = await pool.query('SELECT mla_id, costo_unit FROM product_costs WHERE client_id=$1', [clientId]);
+    const costsResDash = await pool.query('SELECT mla_id, costo_unit, alicuota_iva FROM product_costs WHERE client_id=$1', [clientId]);
     const costsMapDash = {};
-    costsResDash.rows.forEach(r => { costsMapDash[r.mla_id] = parseFloat(r.costo_unit)||0; });
+    const alicMapDash = {};
+    costsResDash.rows.forEach(r => { costsMapDash[r.mla_id] = parseFloat(r.costo_unit)||0; alicMapDash[r.mla_id] = parseFloat(r.alicuota_iva) || 21; });
 
     const byProduct = byProductBase.map(i => {
       const prevRev   = prevRevenueByItem[i.id] || 0;
@@ -2738,20 +2753,25 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
         pct_recibido:    i.revenue > 0 ? ((i.net / i.revenue) * 100).toFixed(1) : '0'
       };
     });
+    // IVA por producto: débito sobre la venta + crédito sobre el CMV a la alícuota de cada
+    // producto. Comisión y envío vendedor son servicios de ML → 21%. (mismo criterio que /pyl)
+    let ivaDebitoProdDash = 0, ivaCreditoCmvDash = 0, revenueProdDash = 0;
     Object.values(byItem).forEach(i => {
+      const alic = alicMapDash[i.id] ?? 21;
+      ivaDebitoProdDash += ivaContenido(i.revenue, alic);
+      revenueProdDash += i.revenue;
       const c = costsMapDash[i.id];
-      if (c != null && c > 0) { cmv_total_dash += c * i.units; cmv_cubierto_dash++; }
+      if (c != null && c > 0) { cmv_total_dash += c * i.units; cmv_cubierto_dash++; ivaCreditoCmvDash += ivaContenido(c * i.units, alic); }
     });
     const hasCMVDash = cmv_cubierto_dash > 0;
-    const iva21 = 0.21;
     // IIBB estimado del cliente — egreso impositivo, mismo patrón que el P&L de /api/reporte/pyl
     const fiscalRowDash = await pool.query('SELECT tasa_iibb_pct, condicion_iva FROM clients WHERE id=$1', [clientId]);
     const tasaIibbDash = parseFloat(fiscalRowDash.rows[0]?.tasa_iibb_pct) || 0;
     const condicionIvaDash = fiscalRowDash.rows[0]?.condicion_iva || 'responsable_inscripto';
     const esMonotribDash = condicionIvaDash === 'monotributista';
     const iibbEstimadoDash = totalFacturacion * (tasaIibbDash / 100);
-    const ivaVentasDash   = (hasCMVDash && !esMonotribDash) ? curData.amount / (1+iva21) * iva21 : 0;
-    const ivaComprasDash  = (hasCMVDash && !esMonotribDash) ? (totalSaleFee + totalSellerShip + cmv_total_dash) / (1+iva21) * iva21 : 0;
+    const ivaVentasDash   = (hasCMVDash && !esMonotribDash) ? ivaDebitoProdDash + ivaContenido(Math.max(0, curData.amount - revenueProdDash), IVA_SERVICIOS_PCT) : 0;
+    const ivaComprasDash  = (hasCMVDash && !esMonotribDash) ? ivaCreditoCmvDash + ivaContenido(totalSaleFee + totalSellerShip, IVA_SERVICIOS_PCT) : 0;
     const ivaNetoDash     = (hasCMVDash && !esMonotribDash) ? Math.max(0, ivaVentasDash - ivaComprasDash) : 0;
     const utilidadDash    = hasCMVDash ? netoML - cmv_total_dash - adsSpend - ivaNetoDash - iibbEstimadoDash : null;
     const margenDash      = hasCMVDash && curData.amount > 0 ? (utilidadDash / curData.amount * 100) : null;
@@ -4140,11 +4160,11 @@ app.get('/api/reporte/items-vendidos', requireAuth, async (req, res) => {
 
     // Load saved costs
     const costsRes = await pool.query(
-      'SELECT mla_id, costo_unit, notas FROM product_costs WHERE client_id=$1',
+      'SELECT mla_id, costo_unit, alicuota_iva, notas FROM product_costs WHERE client_id=$1',
       [client_id]
     );
     const costsMap = {};
-    costsRes.rows.forEach(r => { costsMap[r.mla_id] = { costo_unit: parseFloat(r.costo_unit)||0, notas: r.notas }; });
+    costsRes.rows.forEach(r => { costsMap[r.mla_id] = { costo_unit: parseFloat(r.costo_unit)||0, alicuota_iva: parseFloat(r.alicuota_iva) || 21, notas: r.notas }; });
 
     // ── Envío vendedor REAL por MLA (opt-in) ──────────────────────────────────
     // Atribuye el senderCost de cada envío a sus ítems (repartido por unidades si la
@@ -4181,6 +4201,7 @@ app.get('/api/reporte/items-vendidos', requireAuth, async (req, res) => {
         ...i,
         sku: skuMap[i.mla_id] || null,
         costo_unit: costsMap[i.mla_id]?.costo_unit ?? null,
+        alicuota_iva: costsMap[i.mla_id]?.alicuota_iva ?? 21,
         notas: costsMap[i.mla_id]?.notas || '',
         cmv_total: costsMap[i.mla_id]?.costo_unit != null
           ? costsMap[i.mla_id].costo_unit * i.units : null,
@@ -4220,7 +4241,6 @@ app.get('/api/reporte/margen-real-producto', requireAuth, async (req, res) => {
     if (!uid) return res.status(400).json({ error: 'Cliente sin ML User ID' });
     const tasaIibb = parseFloat(cRes.rows[0]?.tasa_iibb_pct) || 0;
     const esMonotrib = (cRes.rows[0]?.condicion_iva || 'responsable_inscripto') === 'monotributista';
-    const IVA = 0.21;
 
     const fmt = d => new Date(d).toISOString().slice(0,19) + '.000-00:00';
     const { orders } = await fetchAllOrders(uid, headers, fmt(date_from + 'T00:00:00'), fmt(date_to + 'T23:59:59'));
@@ -4252,9 +4272,10 @@ app.get('/api/reporte/margen-real-producto', requireAuth, async (req, res) => {
       });
     });
 
-    // CMV por MLA
-    const costsRes = await pool.query('SELECT mla_id, costo_unit FROM product_costs WHERE client_id=$1', [client_id]);
-    const costsMap = {}; costsRes.rows.forEach(r => { costsMap[r.mla_id] = parseFloat(r.costo_unit)||0; });
+    // CMV por MLA + alícuota de IVA por producto
+    const costsRes = await pool.query('SELECT mla_id, costo_unit, alicuota_iva FROM product_costs WHERE client_id=$1', [client_id]);
+    const costsMap = {}, alicMap = {};
+    costsRes.rows.forEach(r => { costsMap[r.mla_id] = parseFloat(r.costo_unit)||0; alicMap[r.mla_id] = parseFloat(r.alicuota_iva) || 21; });
 
     // Flex/FULL manual: sumar el de cada mes que toca el rango, escalado por los días
     // del rango que caen en ese mes (el bolo se carga mensual; si el rango es parcial,
@@ -4307,8 +4328,11 @@ app.get('/api/reporte/margen-real-producto', requireAuth, async (req, res) => {
       const envReal = Math.round(m.envio_real);
       const flexImp = Math.round((m.units_full + m.units_flex) * flexU);
       const publi = Math.round(adsByItem[m.mla_id] || 0);
-      const ivaV = esMonotrib ? 0 : fact/(1+IVA)*IVA;
-      const ivaC = esMonotrib ? 0 : (com + envReal + flexImp + cmv)/(1+IVA)*IVA;
+      const alic = alicMap[m.mla_id] ?? 21;
+      // Débito sobre la venta y crédito sobre el CMV a la alícuota del producto; comisión,
+      // envío y flex son servicios de ML → 21%.
+      const ivaV = esMonotrib ? 0 : ivaContenido(fact, alic);
+      const ivaC = esMonotrib ? 0 : ivaContenido(cmv, alic) + ivaContenido(com + envReal + flexImp, IVA_SERVICIOS_PCT);
       const ivaDif = Math.round(ivaV - ivaC);
       const iibb = Math.round(fact * (tasaIibb/100));
       const margen = Math.round(fact - com - cmv - envReal - flexImp - publi - ivaDif - iibb);
@@ -4388,13 +4412,14 @@ app.get('/api/reporte/items-activos', requireAuth, async (req, res) => {
     }
 
     // Costos guardados
-    const costsRes = await pool.query('SELECT mla_id, costo_unit, notas FROM product_costs WHERE client_id=$1', [client_id]);
+    const costsRes = await pool.query('SELECT mla_id, costo_unit, alicuota_iva, notas FROM product_costs WHERE client_id=$1', [client_id]);
     const costsMap = {};
-    costsRes.rows.forEach(r => { costsMap[r.mla_id] = { costo_unit: parseFloat(r.costo_unit)||0, notas: r.notas }; });
+    costsRes.rows.forEach(r => { costsMap[r.mla_id] = { costo_unit: parseFloat(r.costo_unit)||0, alicuota_iva: parseFloat(r.alicuota_iva) || 21, notas: r.notas }; });
 
     const items = Object.values(itemsMap).map(i => ({
       ...i,
       costo_unit: costsMap[i.mla_id]?.costo_unit ?? null,
+      alicuota_iva: costsMap[i.mla_id]?.alicuota_iva ?? 21,
       notas: costsMap[i.mla_id]?.notas || '',
       has_cost: costsMap[i.mla_id] != null,
     })).sort((a, b) => (a.title || '').localeCompare(b.title || ''));
@@ -4411,15 +4436,23 @@ app.get('/api/reporte/items-activos', requireAuth, async (req, res) => {
 
 app.post('/api/reporte/costos', requireAuth, async (req, res) => {
   try {
-    const { client_id, costos } = req.body; // costos: [{mla_id, title, costo_unit, notas}]
+    const { client_id, costos } = req.body; // costos: [{mla_id, title, costo_unit, alicuota_iva, notas}]
     if (!client_id || !costos?.length) return res.status(400).json({ error: 'Faltan datos' });
+    const ALIC_VALIDAS = [0, 2.5, 5, 10.5, 21, 27];
     for (const c of costos) {
+      // Alícuota: si llega un valor estándar válido se usa; si no llega (import de Excel
+      // sin columna) se manda NULL y el COALESCE preserva la alícuota ya guardada (o 21 en
+      // un alta nueva). Así un import masivo de costos nunca pisa la alícuota cargada a mano.
+      const alicRaw = parseFloat(c.alicuota_iva);
+      const alic = ALIC_VALIDAS.includes(alicRaw) ? alicRaw : null;
       await pool.query(`
-        INSERT INTO product_costs (client_id, mla_id, title, costo_unit, notas, updated_at)
-        VALUES ($1,$2,$3,$4,$5,NOW())
+        INSERT INTO product_costs (client_id, mla_id, title, costo_unit, alicuota_iva, notas, updated_at)
+        VALUES ($1,$2,$3,$4,COALESCE($5,21),$6,NOW())
         ON CONFLICT (client_id, mla_id) DO UPDATE SET
-          title=$3, costo_unit=$4, notas=$5, updated_at=NOW()
-      `, [client_id, c.mla_id, c.title, c.costo_unit||0, c.notas||'']);
+          title=$3, costo_unit=$4,
+          alicuota_iva=COALESCE($5, product_costs.alicuota_iva, 21),
+          notas=$6, updated_at=NOW()
+      `, [client_id, c.mla_id, c.title, c.costo_unit||0, alic, c.notas||'']);
     }
     res.json({ ok: true, saved: costos.length });
   } catch(e) { res.status(500).json({ error: e.message }); }
@@ -4551,16 +4584,23 @@ app.get('/api/reporte/pyl', requireAuth, async (req, res) => {
     } catch(e){}
 
     // ── CMV ───────────────────────────────────────────────────────────────────
-    const costsRes = await pool.query('SELECT mla_id, costo_unit FROM product_costs WHERE client_id=$1', [client_id]);
+    const costsRes = await pool.query('SELECT mla_id, costo_unit, alicuota_iva FROM product_costs WHERE client_id=$1', [client_id]);
     const costsMap = {};
-    costsRes.rows.forEach(r => { costsMap[r.mla_id] = parseFloat(r.costo_unit)||0; });
+    costsRes.rows.forEach(r => { costsMap[r.mla_id] = { costo_unit: parseFloat(r.costo_unit)||0, alicuota_iva: parseFloat(r.alicuota_iva) || 21 }; });
 
+    // IVA por producto: débito sobre la venta y crédito sobre el CMV, cada uno a la
+    // alícuota del producto (10,5% / 21% / etc). Los servicios de ML van aparte a 21%.
     let cmv_total = 0, cmv_cubierto = 0, cmv_estimado = false;
+    let iva_debito_productos = 0, iva_credito_cmv = 0, revenue_productos = 0;
     const items_detalle = Object.values(byMla).map(i => {
-      const costo = costsMap[i.mla_id];
+      const c = costsMap[i.mla_id];
+      const costo = c?.costo_unit;
+      const alic = c?.alicuota_iva ?? 21;
       const cmv = costo != null ? costo * i.units : null;
-      if (cmv != null) { cmv_total += cmv; cmv_cubierto++; }
-      return { ...i, costo_unit: costo ?? null, cmv };
+      if (cmv != null) { cmv_total += cmv; cmv_cubierto++; iva_credito_cmv += ivaContenido(cmv, alic); }
+      iva_debito_productos += ivaContenido(i.revenue, alic);
+      revenue_productos += i.revenue;
+      return { ...i, costo_unit: costo ?? null, alicuota_iva: alic, cmv };
     }).sort((a,b) => b.revenue - a.revenue);
 
     if (cmv_cubierto < items_detalle.length) cmv_estimado = true;
@@ -4586,10 +4626,13 @@ app.get('/api/reporte/pyl', requireAuth, async (req, res) => {
     // ── P&L ───────────────────────────────────────────────────────────────────
     const total_ingresos   = facturacion + ingreso_envio_comprador;
     // IVA neto a pagar: IVA ventas − IVA compras acreditable (CMV + comisión + envío vendedor).
+    // El débito sobre la venta y el crédito sobre el CMV usan la alícuota de cada producto
+    // (10,5% / 21% / etc, acumulada arriba). La comisión y el envío vendedor son servicios de
+    // ML que siempre tributan 21%. El remanente de facturación no atribuido a un producto
+    // (envío comprador prorrateado, etc.) se grava a 21%.
     // Monotributista no liquida IVA: no discrimina IVA en ventas ni puede tomarlo como crédito.
-    const iva21 = 0.21;
-    const iva_ventas   = esMonotributista ? 0 : facturacion / (1 + iva21) * iva21;
-    const iva_compras  = esMonotributista ? 0 : (egreso_comision + egreso_envio_total + cmv_total) / (1 + iva21) * iva21;
+    const iva_ventas   = esMonotributista ? 0 : iva_debito_productos + ivaContenido(Math.max(0, facturacion - revenue_productos), IVA_SERVICIOS_PCT);
+    const iva_compras  = esMonotributista ? 0 : iva_credito_cmv + ivaContenido(egreso_comision + egreso_envio_total, IVA_SERVICIOS_PCT);
     const iva_neto     = esMonotributista ? 0 : Math.max(0, iva_ventas - iva_compras);
 
     // IIBB estimado: facturación × tasa del cliente. Egreso impositivo provincial.
@@ -7959,13 +8002,12 @@ app.get('/api/promociones', requireAuth, async (req, res) => {
 
     // 3. Costos desde product_costs + condición IVA del cliente
     const [costsRes, ivaRes] = await Promise.all([
-      pool.query('SELECT mla_id, costo_unit FROM product_costs WHERE client_id=$1', [clientId]),
+      pool.query('SELECT mla_id, costo_unit, alicuota_iva FROM product_costs WHERE client_id=$1', [clientId]),
       pool.query('SELECT condicion_iva FROM clients WHERE id=$1', [clientId]),
     ]);
-    const costMap = {};
-    costsRes.rows.forEach(r => { costMap[r.mla_id] = parseFloat(r.costo_unit) || 0; });
+    const costMap = {}, alicMap = {};
+    costsRes.rows.forEach(r => { costMap[r.mla_id] = parseFloat(r.costo_unit) || 0; alicMap[r.mla_id] = parseFloat(r.alicuota_iva) || 21; });
     const esMonotrib = (ivaRes.rows[0]?.condicion_iva || 'responsable_inscripto') === 'monotributista';
-    const IVA = 0.21;
 
     // 4. Ventas últimos 30 días para cobertura
     const now = new Date();
@@ -8003,6 +8045,7 @@ app.get('/api/promociones', requireAuth, async (req, res) => {
     const itemsConDescuento = descontados
       .map(it => {
         const costo    = costMap[it.id] || 0;
+        const alic     = alicMap[it.id] ?? 21;
         const precio   = it._price;
         const original = it._precioLista;
         const comision = comisionMap[it.id] != null ? comisionMap[it.id] : null;
@@ -8019,8 +8062,8 @@ app.get('/api/promociones', requireAuth, async (req, res) => {
         // Rentabilidad neta sin envío: requiere costo Y comisión
         let ivaNeto = null, margenNeto = null, rentNetaPct = null;
         if (costo > 0 && comision != null) {
-          const ivaVentas  = esMonotrib ? 0 : precio / (1 + IVA) * IVA;
-          const ivaCompras = esMonotrib ? 0 : (comision + costo) / (1 + IVA) * IVA;
+          const ivaVentas  = esMonotrib ? 0 : ivaContenido(precio, alic);
+          const ivaCompras = esMonotrib ? 0 : ivaContenido(costo, alic) + ivaContenido(comision, IVA_SERVICIOS_PCT);
           ivaNeto    = Math.max(0, ivaVentas - ivaCompras);
           margenNeto = precio - comision - ivaNeto - costo;
           rentNetaPct = +(margenNeto / precio * 100).toFixed(1);
@@ -8072,7 +8115,6 @@ app.get('/api/promociones/desglose', requireAuth, async (req, res) => {
     const clientRow = await pool.query('SELECT ml_user_id, condicion_iva FROM clients WHERE id=$1', [clientId]);
     const uid = clientRow.rows[0]?.ml_user_id;
     const esMonotrib = (clientRow.rows[0]?.condicion_iva || 'responsable_inscripto') === 'monotributista';
-    const IVA = 0.21;
 
     // 1. Ítem + precios
     const [b, pricesResp] = await Promise.all([
@@ -8156,17 +8198,18 @@ app.get('/api/promociones/desglose', requireAuth, async (req, res) => {
       } catch(_) {}
     }
 
-    // 5. Costo unitario
-    const costRow = await pool.query('SELECT costo_unit FROM product_costs WHERE client_id=$1 AND mla_id=$2', [clientId, itemId]);
+    // 5. Costo unitario + alícuota de IVA del producto
+    const costRow = await pool.query('SELECT costo_unit, alicuota_iva FROM product_costs WHERE client_id=$1 AND mla_id=$2', [clientId, itemId]);
     const costo = parseFloat(costRow.rows[0]?.costo_unit) || 0;
+    const alic  = parseFloat(costRow.rows[0]?.alicuota_iva) || 21;
 
     // 6. P&L neto por unidad (con envío y publicidad).
-    //    IVA crédito: comisión+envío+costo (la publi se trata como el dashboard: se
-    //    resta del margen sin computar su IVA por separado).
+    //    IVA débito sobre la venta y crédito sobre el costo a la alícuota del producto;
+    //    comisión y envío son servicios de ML → 21%. (la publi se resta del margen sin IVA).
     const com = comision || 0;
     const env = envioSeller || 0;
-    const ivaVentas  = esMonotrib ? 0 : precio / (1 + IVA) * IVA;
-    const ivaCompras = esMonotrib ? 0 : (com + env + costo) / (1 + IVA) * IVA;
+    const ivaVentas  = esMonotrib ? 0 : ivaContenido(precio, alic);
+    const ivaCompras = esMonotrib ? 0 : ivaContenido(costo, alic) + ivaContenido(com + env, IVA_SERVICIOS_PCT);
     const ivaNeto    = Math.max(0, ivaVentas - ivaCompras);
     const margenNeto = costo > 0 ? precio - com - ivaNeto - env - publiUnit - costo : null;
     const rentNetaPct = margenNeto != null && precio > 0 ? +(margenNeto / precio * 100).toFixed(1) : null;

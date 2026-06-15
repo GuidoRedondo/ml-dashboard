@@ -4034,6 +4034,7 @@ async function importarCMV(input) {
       const costKey = allRows.length ? Object.keys(allRows[0]).find(k => k.toLowerCase().includes('costo')) : null;
       const mlaKey  = allRows.length ? Object.keys(allRows[0]).find(k => k.toLowerCase().includes('mla')) : 'MLA';
       const titKey  = allRows.length ? Object.keys(allRows[0]).find(k => k.toLowerCase().includes('títul') || k.toLowerCase().includes('title') || k.toLowerCase().includes('descrip')) : 'Título';
+      const alicKey = allRows.length ? Object.keys(allRows[0]).find(k => { const l=k.toLowerCase(); return l.includes('alicuota')||l.includes('alícuota')||l.includes('iva'); }) : null;
       const notKey  = allRows.length ? Object.keys(allRows[0]).find(k => k.toLowerCase().includes('nota')) : 'Notas';
 
       if (!costKey) { showToast('❌ No se encontró columna de costo en el archivo'); return; }
@@ -4044,6 +4045,7 @@ async function importarCMV(input) {
           mla_id: String(r[mlaKey]).trim(),
           title: String(r[titKey] || '').trim(),
           costo_unit: parseFloat(String(r[costKey]).replace(/[,$\s]/g,'')) || 0,
+          alicuota_iva: alicKey ? parseFloat(String(r[alicKey]||'').replace(/[%\s]/g,'').replace(',','.')) : undefined,
           notas: String(r[notKey] || '').trim()
         }))
         .filter(r => r.mla_id.startsWith('MLA') && r.costo_unit > 0);
@@ -5957,13 +5959,13 @@ async function loadSimulador() {
     apiCall('GET', `/api/reporte/items-activos?client_id=${client.id}`).catch(() => null),
     apiCall('GET', `/api/reporte/items-vendidos?client_id=${client.id}&date_from=${range.date_from}&date_to=${range.date_to}`).catch(() => null),
   ]);
-  const costsMap = {};
-  (vendidosData?.items || []).forEach(i => { if (i.costo_unit) costsMap[i.mla_id] = parseFloat(i.costo_unit)||0; });
-  (activosData?.items || []).forEach(i => { if (i.costo_unit) costsMap[i.mla_id] = parseFloat(i.costo_unit)||0; });
+  const costsMap = {}, alicMap = {};
+  (vendidosData?.items || []).forEach(i => { if (i.costo_unit) costsMap[i.mla_id] = parseFloat(i.costo_unit)||0; if (i.alicuota_iva != null) alicMap[i.mla_id] = parseFloat(i.alicuota_iva); });
+  (activosData?.items || []).forEach(i => { if (i.costo_unit) costsMap[i.mla_id] = parseFloat(i.costo_unit)||0; if (i.alicuota_iva != null) alicMap[i.mla_id] = parseFloat(i.alicuota_iva); });
 
-  // Agregar costo_unit a cada producto
-  Object.values(allProducts).forEach(p => { p.costo_unit = costsMap[p.id] || 0; });
-  pubItems.forEach(p => { p.costo_unit = costsMap[p.id] || 0; });
+  // Agregar costo_unit + alícuota de IVA a cada producto
+  Object.values(allProducts).forEach(p => { p.costo_unit = costsMap[p.id] || 0; p.alicuota_iva = alicMap[p.id] ?? null; });
+  pubItems.forEach(p => { p.costo_unit = costsMap[p.id] || 0; p.alicuota_iva = alicMap[p.id] ?? null; });
 
   const allItems = [...sorted, ...pubItems];
   window._simItems = allItems;
@@ -6194,6 +6196,16 @@ async function onSimMLAChange(id) {
     cmvInput.value = 0;
     cmvInput.style.borderColor = '';
     cmvInput.title = '';
+  }
+
+  // Alícuota de IVA del producto: precargar IVA ventas y compras CMV con la alícuota
+  // guardada (10,5% / 21% / etc). Monotributista queda en 0. Los servicios de ML (envío,
+  // comisión) no se tocan acá. El consultor puede sobrescribir a mano.
+  if (!esMonotributistaActivo() && item.alicuota_iva != null) {
+    const ivaV = document.getElementById('simIVAVentas');
+    const ivaC = document.getElementById('simIVACMV');
+    if (ivaV) { ivaV.value = item.alicuota_iva; ivaV.style.borderColor = item.alicuota_iva != 21 ? '#d97706' : ''; }
+    if (ivaC) { ivaC.value = item.alicuota_iva; ivaC.style.borderColor = item.alicuota_iva != 21 ? '#d97706' : ''; }
   }
 
   // Cargar margen guardado para este producto (o mantener el actual si no hay)
@@ -7105,14 +7117,14 @@ async function descargarCMVRentabilidad() {
     const wsData = [
       [`COSTOS DE PRODUCTOS — ${client.name} | ${date_from} → ${date_to}`],
       ['⚠ Completá la columna "Costo Unitario (ARS)". Guardá y subí el archivo para actualizar.'],
-      ['MLA', 'Título', 'SKU', 'Costo Unitario (ARS)', 'Unidades vendidas', 'Facturación (ARS)', 'Notas'],
+      ['MLA', 'Título', 'SKU', 'Costo Unitario (ARS)', 'Alicuota IVA (%)', 'Unidades vendidas', 'Facturación (ARS)', 'Notas'],
       ...(data.items || []).map(i => [
-        i.mla_id, i.title, i.sku || '', i.costo_unit || '', i.units, Math.round(i.revenue), i.notas || ''
+        i.mla_id, i.title, i.sku || '', i.costo_unit || '', i.alicuota_iva ?? 21, i.units, Math.round(i.revenue), i.notas || ''
       ])
     ];
     const wb = XLSX.utils.book_new();
     const ws = XLSX.utils.aoa_to_sheet(wsData);
-    ws['!cols'] = [{ wch: 18 }, { wch: 50 }, { wch: 20 }, { wch: 22 }, { wch: 18 }, { wch: 20 }, { wch: 25 }];
+    ws['!cols'] = [{ wch: 18 }, { wch: 50 }, { wch: 20 }, { wch: 22 }, { wch: 16 }, { wch: 18 }, { wch: 20 }, { wch: 25 }];
     XLSX.utils.book_append_sheet(wb, ws, 'CMV');
     XLSX.writeFile(wb, `CMV_${client.name.replace(/\s+/g,'_')}_${date_from}.xlsx`);
     showToast('✅ Excel descargado');
@@ -7141,6 +7153,7 @@ async function importarCMVRentabilidad(input) {
     const colMLA   = headers.findIndex(h => h.includes('mla'));
     const colTit   = headers.findIndex(h => h.includes('títul') || h.includes('title'));
     const colCosto = headers.findIndex(h => h.includes('costo'));
+    const colAlic  = headers.findIndex(h => h.includes('alicuota') || h.includes('alícuota') || h.includes('iva'));
     const colNotas = headers.findIndex(h => h.includes('nota'));
     if (colMLA === -1 || colCosto === -1) { showToast('❌ No se encontraron columnas MLA o Costo en el archivo'); input.value=''; return; }
     const costos = [];
@@ -7148,8 +7161,9 @@ async function importarCMVRentabilidad(input) {
       const mla_id = String(row[colMLA]||'').trim();
       const title  = colTit >= 0 ? String(row[colTit]||'').trim() : '';
       const costo  = parseFloat(String(row[colCosto]||'').replace(/[,$\s]/g,''))||0;
+      const alic   = colAlic >= 0 ? parseFloat(String(row[colAlic]||'').replace(/[%\s]/g,'').replace(',','.')) : undefined;
       const notas  = colNotas >= 0 ? String(row[colNotas]||'').trim() : '';
-      if (mla_id.startsWith('MLA') && costo > 0) costos.push({ mla_id, title, costo_unit: costo, notas });
+      if (mla_id.startsWith('MLA') && costo > 0) costos.push({ mla_id, title, costo_unit: costo, alicuota_iva: alic, notas });
     });
     if (!costos.length) { showToast('❌ Sin costos válidos en el archivo'); input.value=''; return; }
     const r = await apiCall('POST', '/api/reporte/costos', { client_id: client.id, costos });
@@ -9883,7 +9897,7 @@ async function descargarTemplateExcel() {
     const wsData = [
       [`PLANILLA DE COSTOS — ${clientName} | ${data.items.length} publicaciones activas`],
       ["⚠  Completá la columna 'Costo Unitario (ARS)'. Guardá y subí el archivo al dashboard."],
-      ['MLA', 'SKU', 'Descripción', 'Precio actual', 'Stock', 'Costo Unitario (ARS)', 'Notas'],
+      ['MLA', 'SKU', 'Descripción', 'Precio actual', 'Stock', 'Costo Unitario (ARS)', 'Alicuota IVA (%)', 'Notas'],
       ...(data.items || []).map(i => [
         i.mla_id,
         i.sku || '',
@@ -9891,13 +9905,14 @@ async function descargarTemplateExcel() {
         i.price || '',
         i.stock || '',
         i.costo_unit || '',
+        i.alicuota_iva ?? 21,
         i.notas || '',
       ])
     ];
 
     const wb = XLSX.utils.book_new();
     const ws = XLSX.utils.aoa_to_sheet(wsData);
-    ws['!cols'] = [{ wch: 18 }, { wch: 20 }, { wch: 50 }, { wch: 16 }, { wch: 10 }, { wch: 22 }, { wch: 25 }];
+    ws['!cols'] = [{ wch: 18 }, { wch: 20 }, { wch: 50 }, { wch: 16 }, { wch: 10 }, { wch: 22 }, { wch: 16 }, { wch: 25 }];
     XLSX.utils.book_append_sheet(wb, ws, 'Costos');
     XLSX.writeFile(wb, `Costos_${clientName.replace(/\s+/g,'_')}_${hoy}.xlsx`);
     showToast(`✅ Excel con ${data.items.length} publicaciones descargado`);
@@ -9932,6 +9947,7 @@ async function importarCostosExcel(input) {
     const colMLA    = headers.findIndex(h => h.includes('mla'));
     const colTitle  = headers.findIndex(h => h.includes('descrip') || h.includes('título') || h.includes('titulo'));
     const colCosto  = headers.findIndex(h => h.includes('costo'));
+    const colAlic   = headers.findIndex(h => h.includes('alicuota') || h.includes('alícuota') || h.includes('iva'));
     const colNotas  = headers.findIndex(h => h.includes('nota'));
 
     const costos = [];
@@ -9939,9 +9955,10 @@ async function importarCostosExcel(input) {
       const mla_id = String(row[colMLA]||'').trim();
       const title  = colTitle >= 0 ? String(row[colTitle]||'').trim() : '';
       const costo  = colCosto >= 0 ? parseFloat(String(row[colCosto]||'').replace(/[,$\s]/g,''))||0 : 0;
+      const alic   = colAlic >= 0 ? parseFloat(String(row[colAlic]||'').replace(/[%\s]/g,'').replace(',','.')) : undefined;
       const notas  = colNotas >= 0 ? String(row[colNotas]||'').trim() : '';
       if (mla_id.startsWith('MLA') && costo > 0) {
-        costos.push({ mla_id, title, costo_unit: costo, notas });
+        costos.push({ mla_id, title, costo_unit: costo, alicuota_iva: alic, notas });
       }
     });
 
@@ -10440,6 +10457,24 @@ async function loadReporteItems() {
   }
 }
 
+// Alícuotas de IVA estándar de Argentina. La del producto aplica a su venta y su costo;
+// los servicios de ML (comisión, envíos, publi) siempre tributan 21%.
+const ALICUOTAS_IVA = [
+  { v: 21,   label: '21%'   },
+  { v: 10.5, label: '10,5%' },
+  { v: 27,   label: '27%'   },
+  { v: 5,    label: '5%'    },
+  { v: 2.5,  label: '2,5%'  },
+  { v: 0,    label: '0%'    },
+];
+function alicuotaSelect(mlaId, current) {
+  const cur = (current == null) ? 21 : parseFloat(current);
+  const opts = ALICUOTAS_IVA.map(a =>
+    `<option value="${a.v}" ${a.v === cur ? 'selected' : ''}>${a.label}</option>`).join('');
+  const noStd = cur === 21 ? '' : 'border-color:#d97706;color:#d97706;font-weight:600';
+  return `<select id="alic_${mlaId}" style="padding:5px 6px;border-radius:6px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:12px;${noStd}">${opts}</select>`;
+}
+
 function renderReporteCostos(data, clientId) {
   const el = document.getElementById('reporteCostosContent');
   const items = data.items || [];
@@ -10458,6 +10493,9 @@ function renderReporteCostos(data, clientId) {
         <input type="number" id="costo_${item.mla_id}" value="${item.costo_unit ?? ''}" placeholder="0"
           style="width:110px;padding:5px 8px;border-radius:6px;border:1px solid ${item.has_cost?'var(--border)':'#fca5a5'};background:${item.has_cost?'var(--surface2)':'#fef2f2'};color:var(--text);font-size:13px;text-align:right"
           oninput="updateCmvRow('${item.mla_id}',${item.units})">
+      </td>
+      <td style="padding:8px 10px;border-bottom:1px solid var(--border);text-align:center">
+        ${alicuotaSelect(item.mla_id, item.alicuota_iva)}
       </td>
       <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;text-align:right" id="cmv_${item.mla_id}">
         ${item.cmv_total != null ? '$'+Math.round(item.cmv_total).toLocaleString('es-AR') : '<span style="color:#dc2626">—</span>'}
@@ -10501,6 +10539,7 @@ function renderReporteCostos(data, clientId) {
         <th style="padding:8px 10px;font-size:11px;color:var(--muted);text-align:center;border-bottom:1px solid var(--border)">Unidades</th>
         <th style="padding:8px 10px;font-size:11px;color:var(--muted);text-align:right;border-bottom:1px solid var(--border)">Facturación</th>
         <th style="padding:8px 10px;font-size:11px;color:var(--muted);text-align:right;border-bottom:1px solid var(--border)">Costo unitario $</th>
+        <th style="padding:8px 10px;font-size:11px;color:var(--muted);text-align:center;border-bottom:1px solid var(--border)" title="Alícuota de IVA del producto. La comisión y los envíos de ML siempre van a 21%.">Alícuota IVA</th>
         <th style="padding:8px 10px;font-size:11px;color:var(--muted);text-align:right;border-bottom:1px solid var(--border)">CMV total</th>
         <th style="padding:8px 10px;font-size:11px;color:var(--muted);text-align:left;border-bottom:1px solid var(--border)">Notas</th>
       </tr></thead>
@@ -10519,12 +10558,12 @@ function descargarSinCosto(clientId) {
   const wsData = [
     ['SIN COSTO — ' + clientName + ' | ' + sinCosto.length + ' productos'],
     ['Completa la columna Costo Unitario (ARS). Guarda y sube el archivo al dashboard.'],
-    ['MLA', 'SKU', 'Descripcion', 'Unidades vendidas', 'Facturacion (ARS)', 'Costo Unitario (ARS)', 'Notas'],
-    ...sinCosto.map(i => [i.mla_id, i.sku || '', i.title, i.units, Math.round(i.revenue), '', ''])
+    ['MLA', 'SKU', 'Descripcion', 'Unidades vendidas', 'Facturacion (ARS)', 'Costo Unitario (ARS)', 'Alicuota IVA (%)', 'Notas'],
+    ...sinCosto.map(i => [i.mla_id, i.sku || '', i.title, i.units, Math.round(i.revenue), '', i.alicuota_iva ?? 21, ''])
   ];
   const wb = XLSX.utils.book_new();
   const ws = XLSX.utils.aoa_to_sheet(wsData);
-  ws['!cols'] = [{wch:18},{wch:20},{wch:50},{wch:18},{wch:20},{wch:22},{wch:25}];
+  ws['!cols'] = [{wch:18},{wch:20},{wch:50},{wch:18},{wch:20},{wch:22},{wch:16},{wch:25}];
   XLSX.utils.book_append_sheet(wb, ws, 'Sin Costo');
   XLSX.writeFile(wb, 'SinCosto_' + clientName.replace(/\s+/g,'_') + '_' + hoy + '.xlsx');
   showToast('Excel con ' + sinCosto.length + ' productos sin costo descargado');
@@ -10560,6 +10599,7 @@ async function guardarCostos(clientId) {
     mla_id: item.mla_id,
     title: item.title,
     costo_unit: parseFloat(document.getElementById(`costo_${item.mla_id}`)?.value)||0,
+    alicuota_iva: parseFloat(document.getElementById(`alic_${item.mla_id}`)?.value),
     notas: document.getElementById(`notas_${item.mla_id}`)?.value||'',
   })).filter(c => c.costo_unit > 0);
 
