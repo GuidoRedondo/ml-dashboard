@@ -350,7 +350,40 @@ async function initDB() {
       -- a esta alícuota; los servicios de ML (comisión, envío, publi) siguen a 21%.
       ALTER TABLE product_costs ADD COLUMN IF NOT EXISTS alicuota_iva NUMERIC(5,2) DEFAULT 21;
       UPDATE product_costs SET alicuota_iva = 21 WHERE alicuota_iva IS NULL;
+      -- ── PASO 1: publi automática con aprobación + ejecución real ───────
+      -- Gate por cliente: el motor solo procesa clientes con publi_activa=true.
+      -- Default false => se activa de a uno, nadie entra sin prenderlo.
+      ALTER TABLE clients ADD COLUMN IF NOT EXISTS publi_activa BOOLEAN DEFAULT false;
+      -- Valores estructurados para poder EJECUTAR (hoy solo hay accion_sugerida en texto libre).
+      -- valor_actual:    estado de la campaña al generar la sugerencia, ej {"budget":5000,"acos_target":15,"status":"active"}
+      -- valor_propuesto: SOLO el campo que cambia, ej {"budget":5750}  ← esto es lo que se PUTea a ML
+      ALTER TABLE decisiones_publi ADD COLUMN IF NOT EXISTS valor_actual        JSONB;
+      ALTER TABLE decisiones_publi ADD COLUMN IF NOT EXISTS valor_propuesto     JSONB;
+      -- Auditoría de la ejecución real contra ML.
+      ALTER TABLE decisiones_publi ADD COLUMN IF NOT EXISTS ejecutada_en        TIMESTAMP;
+      ALTER TABLE decisiones_publi ADD COLUMN IF NOT EXISTS resultado_ejecucion JSONB;
     EXCEPTION WHEN OTHERS THEN NULL; END $$;
+    -- PASO 1: blindaje del CHECK de estado para sumar 'ejecutada' y 'error'.
+    -- Busca el nombre REAL del constraint en pg_constraint (no asume convención) y lo recrea.
+    -- SIN EXCEPTION a propósito: si el CHECK no se puede actualizar, que FALLE FUERTE y se vea
+    -- en los logs de arranque, en vez de tragar el error y quedar con el constraint viejo.
+    DO $$
+    DECLARE
+      cname text;
+    BEGIN
+      SELECT con.conname INTO cname
+      FROM pg_constraint con
+      WHERE con.conrelid = 'decisiones_publi'::regclass
+        AND con.contype = 'c'
+        AND pg_get_constraintdef(con.oid) ILIKE '%estado%';
+      IF cname IS NOT NULL THEN
+        EXECUTE format('ALTER TABLE decisiones_publi DROP CONSTRAINT %I', cname);
+      END IF;
+      -- 'obsoleta' = anti-pisada (paso 3b): el valor de la campaña cambió entre que se generó
+      -- la sugerencia y que se quiso aplicar; no se ejecuta a ciegas, queda para revisión manual.
+      ALTER TABLE decisiones_publi ADD CONSTRAINT decisiones_publi_estado_check
+        CHECK (estado IN ('nueva','aplicada','descartada','vencida','pospuesta','ejecutada','error','obsoleta'));
+    END $$;
   `);
 
   // Tabla de informes mensuales
@@ -9707,6 +9740,26 @@ async function fetchPADSMetrics(client, days = 30) {
   } catch(e) { console.error(`[PUBLI] fetchPADSMetrics ${client.name}:`, e.message); return null; }
 }
 
+// GET puntual de UNA campaña — estado AUTORITATIVO y fresco para valor_actual.
+// Principio #1: la fuente de verdad para calcular/ejecutar un cambio es ESTO, nunca el snapshot
+// (que puede estar viejo o traer budget/acos_target en null). Misma familia que fetchPADSMetrics:
+// ruta con site_id + api-version 2. El método/ruta del UPDATE (3b) se confirma con GET real;
+// este GET es read-only, así que si la ruta exacta difiere lo veremos en el log de la 1ra corrida.
+async function fetchCampaignFresh(siteId, advId, campaignId, token) {
+  try {
+    const url = `${ML_API}/advertising/${siteId}/advertisers/${advId}/product_ads/campaigns/${campaignId}`;
+    const r = await fetch(url, { headers: { 'Authorization': `Bearer ${token}`, 'api-version': '2' } });
+    if (!r.ok) { console.warn(`[PUBLI] fetchCampaignFresh ${campaignId}: HTTP ${r.status}`); return null; }
+    const c = await r.json();
+    return {
+      budget:      c.budget ?? null,
+      acos_target: c.acos_target ?? null,
+      status:      c.status ?? null,
+      strategy:    c.strategy ?? null   // PROFITABILITY | INCREASE | VISIBILITY (mayúsculas)
+    };
+  } catch(e) { console.error(`[PUBLI] fetchCampaignFresh ${campaignId}:`, e.message); return null; }
+}
+
 function getMet(obj) {
   // Normaliza métricas sin importar si vienen en .metrics o directamente
   return obj?.metrics || obj || {};
@@ -9721,17 +9774,22 @@ async function publiDecisionExists(clientId, tipo, objetoId) {
   return r.rows.length > 0;
 }
 
-async function insertDecision(clientId, { tipo, nivel, objeto_id, objeto_nombre, accion, justificacion, metricas, impacto, prioridad }) {
+async function insertDecision(clientId, { tipo, nivel, objeto_id, objeto_nombre, accion, justificacion, metricas, impacto, prioridad, valor_actual, valor_propuesto }) {
   await pool.query(
     `INSERT INTO decisiones_publi
-       (client_id, tipo_decision, nivel, objeto_id, objeto_nombre, accion_sugerida, justificacion, metricas_snapshot, impacto_estimado_pesos, prioridad)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-    [clientId, tipo, nivel, String(objeto_id), objeto_nombre || '', accion, justificacion, JSON.stringify(metricas), impacto || 0, prioridad || 0]
+       (client_id, tipo_decision, nivel, objeto_id, objeto_nombre, accion_sugerida, justificacion, metricas_snapshot, impacto_estimado_pesos, prioridad, valor_actual, valor_propuesto)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+    [clientId, tipo, nivel, String(objeto_id), objeto_nombre || '', accion, justificacion, JSON.stringify(metricas), impacto || 0, prioridad || 0,
+     valor_actual ? JSON.stringify(valor_actual) : null,
+     valor_propuesto ? JSON.stringify(valor_propuesto) : null]
   );
 }
 
-async function evalPubliRules(client, { campaigns, items }, roas_target) {
+async function evalPubliRules(client, { campaigns, items, advId, siteId }, roas_target) {
   let count = 0;
+
+  // Token fresco para leer el estado autoritativo de campañas (valor_actual) vía fetchCampaignFresh.
+  const token = await getClientToken(client.id);
 
   // Mapa campaign_id → nombre para enriquecer decisiones de ítems
   const campMap = {};
@@ -9745,11 +9803,16 @@ async function evalPubliRules(client, { campaigns, items }, roas_target) {
     try {
       const m = getMet(c); const roas = parseFloat(m.roas) || 0; const gasto = parseFloat(m.cost) || 0;
       if (roas < 1.3 * roas_target || gasto <= 0) continue;
-      if (await publiDecisionExists(client.id, 'escalar_campania', c.id || c.campaign_id)) continue;
-      const datos = { nombre_regla: 'Escalar campaña ganadora', objeto_id: c.id || c.campaign_id, objeto_nombre: c.name || c.campaign_name || 'Campaña', roas_target, roas: roas.toFixed(2), acos: (parseFloat(m.acos)||0).toFixed(2), cvr: (parseFloat(m.cvr)||0).toFixed(3), gasto: Math.round(gasto), ventas_unidades: m.units_quantity || 0, ventas_amount: Math.round(parseFloat(m.total_amount)||0), accion_default: 'Subir presupuesto +20%', impacto_estimado: Math.round(gasto * 0.2) };
+      const campId = c.id || c.campaign_id;
+      if (await publiDecisionExists(client.id, 'escalar_campania', campId)) continue;
+      // valor_actual FRESCO (principio #1). Sin budget confiable no se propone (no se calcula % sobre null).
+      const estado = token ? await fetchCampaignFresh(siteId, advId, campId, token) : null;
+      if (!estado || estado.budget == null) { console.log(`[PUBLI-R1] ${client.name} campaña ${campId}: sin budget fresco — skip`); continue; }
+      const nuevoBudget = Math.round(estado.budget * 1.15);   // +15% (regla de oro; override solo manual)
+      const datos = { nombre_regla: 'Escalar campaña ganadora', objeto_id: campId, objeto_nombre: c.name || c.campaign_name || 'Campaña', roas_target, roas: roas.toFixed(2), acos: (parseFloat(m.acos)||0).toFixed(2), cvr: (parseFloat(m.cvr)||0).toFixed(3), gasto: Math.round(gasto), ventas_unidades: m.units_quantity || 0, ventas_amount: Math.round(parseFloat(m.total_amount)||0), accion_default: `Subir presupuesto +15% ($${estado.budget} → $${nuevoBudget})`, impacto_estimado: Math.round(gasto * 0.15) };
       const claude = await callClaudeForDecision(datos);
       const impacto = claude.impacto_pesos || datos.impacto_estimado;
-      await insertDecision(client.id, { tipo: 'escalar_campania', nivel: 'campania', objeto_id: datos.objeto_id, objeto_nombre: datos.objeto_nombre, accion: claude.accion, justificacion: claude.justificacion, metricas: m, impacto, prioridad: Math.round(impacto * 1.0) });
+      await insertDecision(client.id, { tipo: 'escalar_campania', nivel: 'campania', objeto_id: campId, objeto_nombre: datos.objeto_nombre, accion: claude.accion, justificacion: claude.justificacion, metricas: m, impacto, prioridad: Math.round(impacto * 1.0), valor_actual: estado, valor_propuesto: { budget: nuevoBudget } });
       count++;
     } catch(e) { console.error(`[PUBLI-R1] ${client.name} campaña ${c.id||c.campaign_id}:`, e.message); }
   }
@@ -9759,11 +9822,16 @@ async function evalPubliRules(client, { campaigns, items }, roas_target) {
     try {
       const m = getMet(c); const roas = parseFloat(m.roas) || 0; const gasto = parseFloat(m.cost) || 0;
       if (roas === 0 || roas > 0.7 * roas_target || gasto <= 5000) continue;
-      if (await publiDecisionExists(client.id, 'reducir_campania', c.id || c.campaign_id)) continue;
-      const datos = { nombre_regla: 'Reducir campaña perdedora', objeto_id: c.id || c.campaign_id, objeto_nombre: c.name || c.campaign_name || 'Campaña', roas_target, roas: roas.toFixed(2), acos: (parseFloat(m.acos)||0).toFixed(2), cvr: (parseFloat(m.cvr)||0).toFixed(3), gasto: Math.round(gasto), ventas_unidades: m.units_quantity || 0, ventas_amount: Math.round(parseFloat(m.total_amount)||0), accion_default: 'Bajar presupuesto -30% o cambiar estrategia', impacto_estimado: Math.round(gasto * 0.3) };
+      const campId = c.id || c.campaign_id;
+      if (await publiDecisionExists(client.id, 'reducir_campania', campId)) continue;
+      // valor_actual FRESCO (principio #1). Sin budget confiable no se propone.
+      const estado = token ? await fetchCampaignFresh(siteId, advId, campId, token) : null;
+      if (!estado || estado.budget == null) { console.log(`[PUBLI-R2] ${client.name} campaña ${campId}: sin budget fresco — skip`); continue; }
+      const nuevoBudget = Math.round(estado.budget * 0.70);   // -30%
+      const datos = { nombre_regla: 'Reducir campaña perdedora', objeto_id: campId, objeto_nombre: c.name || c.campaign_name || 'Campaña', roas_target, roas: roas.toFixed(2), acos: (parseFloat(m.acos)||0).toFixed(2), cvr: (parseFloat(m.cvr)||0).toFixed(3), gasto: Math.round(gasto), ventas_unidades: m.units_quantity || 0, ventas_amount: Math.round(parseFloat(m.total_amount)||0), accion_default: `Bajar presupuesto -30% ($${estado.budget} → $${nuevoBudget})`, impacto_estimado: Math.round(gasto * 0.3) };
       const claude = await callClaudeForDecision(datos);
       const impacto = claude.impacto_pesos || datos.impacto_estimado;
-      await insertDecision(client.id, { tipo: 'reducir_campania', nivel: 'campania', objeto_id: datos.objeto_id, objeto_nombre: datos.objeto_nombre, accion: claude.accion, justificacion: claude.justificacion, metricas: m, impacto, prioridad: Math.round(impacto * 1.0) });
+      await insertDecision(client.id, { tipo: 'reducir_campania', nivel: 'campania', objeto_id: campId, objeto_nombre: datos.objeto_nombre, accion: claude.accion, justificacion: claude.justificacion, metricas: m, impacto, prioridad: Math.round(impacto * 1.0), valor_actual: estado, valor_propuesto: { budget: nuevoBudget } });
       count++;
     } catch(e) { console.error(`[PUBLI-R2] ${client.name} campaña ${c.id||c.campaign_id}:`, e.message); }
   }
@@ -9861,11 +9929,21 @@ async function saveMetricasPubli(clientId, { campaigns, items }) {
   const fecha = new Date().toISOString().slice(0, 10);
   for (const c of campaigns) {
     const id = c.id || c.campaign_id; if (!id) continue;
+    // Snapshot = métricas + estado estructural de la campaña (budget/acos_target/status/strategy).
+    // OJO: esto es histórico/contexto, NO la fuente de verdad para ejecutar. El valor_actual con el
+    // que se calcula y se aplica un cambio se lee FRESCO con un GET puntual a la campaña (ver paso 3),
+    // nunca de acá: el snapshot puede estar viejo o traer budget/acos_target en null.
+    const payload = { ...getMet(c), _estado: {
+      budget:      c.budget ?? null,
+      acos_target: c.acos_target ?? null,
+      status:      c.status ?? null,
+      strategy:    c.strategy ?? null
+    }};
     await pool.query(
       `INSERT INTO metricas_publi (client_id, fecha, nivel, objeto_id, objeto_nombre, metricas)
        VALUES ($1,$2,'campania',$3,$4,$5)
        ON CONFLICT (client_id, fecha, nivel, objeto_id) DO UPDATE SET metricas=EXCLUDED.metricas`,
-      [clientId, fecha, String(id), c.name || c.campaign_name || '', JSON.stringify(getMet(c))]
+      [clientId, fecha, String(id), c.name || c.campaign_name || '', JSON.stringify(payload)]
     ).catch(() => {});
   }
   for (const it of items) {
