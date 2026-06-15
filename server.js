@@ -4438,7 +4438,7 @@ app.post('/api/reporte/costos', requireAuth, async (req, res) => {
   try {
     const { client_id, costos } = req.body; // costos: [{mla_id, title, costo_unit, alicuota_iva, notas}]
     if (!client_id || !costos?.length) return res.status(400).json({ error: 'Faltan datos' });
-    const ALIC_VALIDAS = [0, 2.5, 5, 10.5, 21, 27];
+    const ALIC_VALIDAS = [10.5, 21];
     for (const c of costos) {
       // Alícuota: si llega un valor estándar válido se usa; si no llega (import de Excel
       // sin columna) se manda NULL y el COALESCE preserva la alícuota ya guardada (o 21 en
