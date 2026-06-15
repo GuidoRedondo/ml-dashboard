@@ -9760,6 +9760,79 @@ async function fetchCampaignFresh(siteId, advId, campaignId, token) {
   } catch(e) { console.error(`[PUBLI] fetchCampaignFresh ${campaignId}:`, e.message); return null; }
 }
 
+// Resuelve {advId, siteId} del cliente a partir de su token (mismo patrón que fetchPADSMetrics).
+async function resolveAdvertiser(token) {
+  const h1 = { 'Authorization': `Bearer ${token}`, 'Api-Version': '1' };
+  const [userResp, advResp] = await Promise.all([
+    fetch(`${ML_API}/users/me`, { headers: h1 }).then(r => r.json()).catch(() => ({})),
+    fetch(`${ML_API}/advertising/advertisers?product_id=PADS`, { headers: h1 }).then(r => r.json()).catch(() => ({}))
+  ]);
+  const advertisers = advResp.advertisers || [];
+  if (userResp.error || !advertisers.length) return null;
+  const siteId = userResp.site_id || 'MLA';
+  const adv = advertisers.find(a => a.site_id === siteId) || advertisers[0];
+  return { advId: adv.advertiser_id, siteId };
+}
+
+// ── PASO 3b — ÚNICA función que ESCRIBE en ML. Todo el riesgo concentrado acá. ────────────────
+// DRY-RUN POR DEFAULT: solo ejecuta de verdad con PUBLI_DRY_RUN='false' explícito en el entorno.
+// ⚠️ RUTA Y MÉTODO PROVISIONALES: confirmar contra la API real (GET de campaña → ver forma de
+//    campos y si el update es PUT o PATCH) ANTES de poner PUBLI_DRY_RUN=false. Hasta entonces todo
+//    cae en dry-run y no se toca ninguna campaña.
+async function ejecutarCambioPubli(reco) {
+  const dryRun = process.env.PUBLI_DRY_RUN !== 'false';   // default = seco
+  const prop = (reco.valor_propuesto && typeof reco.valor_propuesto === 'object') ? reco.valor_propuesto : null;
+
+  // Guardas duras
+  if (reco.nivel !== 'campania')          return { ok: false, motivo: 'solo_campania', detalle: 'v1 ejecuta solo cambios de nivel campaña' };
+  if (!prop || !Object.keys(prop).length) return { ok: false, motivo: 'sin_propuesta' };
+
+  const token = await getClientToken(reco.client_id);
+  if (!token) return { ok: false, motivo: 'sin_token' };
+  const advInfo = await resolveAdvertiser(token);
+  if (!advInfo) return { ok: false, motivo: 'sin_advertiser' };
+  const { advId, siteId } = advInfo;
+  const campId = reco.objeto_id;
+
+  // Principio #2 — ANTI-PISADA: releer estado FRESCO y confirmar que el campo que vamos a pisar
+  // sigue valiendo lo que registramos en valor_actual. Si se movió, NO aplicar a ciegas.
+  const fresco = await fetchCampaignFresh(siteId, advId, campId, token);
+  if (!fresco) return { ok: false, motivo: 'sin_estado_fresco' };
+  const registrado = reco.valor_actual || {};
+  for (const campo of Object.keys(prop)) {
+    if (fresco[campo] !== registrado[campo]) {
+      return {
+        ok: false, motivo: 'valor_cambio', campo,
+        valor_registrado: registrado[campo] ?? null,
+        valor_actual_fresco: fresco[campo] ?? null,
+        detalle: `El ${campo} cambió desde que se generó la sugerencia (${registrado[campo]} → ${fresco[campo]}). No se aplica; revisar a mano.`
+      };
+    }
+  }
+
+  const rutaProvisional = `PUT ${ML_API}/advertising/${siteId}/advertisers/${advId}/product_ads/campaigns/${campId}`;
+
+  // DRY-RUN: muestra qué haría, sin tocar ML.
+  if (dryRun) {
+    return { ok: true, dry_run: true, ruta_provisional: rutaProvisional, habria_hecho: { campId, payload: prop } };
+  }
+
+  // ── ESCRITURA REAL (gated por PUBLI_DRY_RUN=false) — RUTA/MÉTODO PROVISIONALES ──
+  try {
+    const url = `${ML_API}/advertising/${siteId}/advertisers/${advId}/product_ads/campaigns/${campId}`;
+    const r = await fetch(url, {
+      method: 'PUT',   // ⚠️ confirmar PUT vs PATCH con la API real antes de habilitar
+      headers: { 'Authorization': `Bearer ${token}`, 'api-version': '2', 'Content-Type': 'application/json' },
+      body: JSON.stringify(prop)   // SOLO el/los campo(s) que cambian, ej {"budget":5750}
+    });
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok) return { ok: false, motivo: 'ml_error', status: r.status, body };
+    return { ok: true, dry_run: false, status: r.status, body };
+  } catch(e) {
+    return { ok: false, motivo: 'excepcion', detalle: e.message };
+  }
+}
+
 function getMet(obj) {
   // Normaliza métricas sin importar si vienen en .metrics o directamente
   return obj?.metrics || obj || {};
@@ -10044,6 +10117,36 @@ app.patch('/api/decisiones-publi/:id/posponer', requireAuth, async (req, res) =>
     await pool.query(`UPDATE decisiones_publi SET estado='pospuesta', posponer_hasta=CURRENT_DATE+$1, actualizada_en=NOW() WHERE id=$2`,
       [dias, req.params.id]);
     res.json({ ok: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// PASO 3b — EJECUCIÓN (separada del /aplicar manual, que sigue siendo el flag "lo hice a mano").
+// Gateado por PUBLI_DRY_RUN (default = seco): hasta confirmar la ruta/método real, todo cae en
+// dry-run y no toca ML. El botón APROBAR del frontend (paso 5) llamará acá; hoy queda dormido.
+app.post('/api/decisiones-publi/:id/ejecutar', requireAuth, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ error: 'Solo admin' });
+  try {
+    const r = await pool.query(`SELECT * FROM decisiones_publi WHERE id=$1`, [req.params.id]);
+    if (!r.rows.length) return res.status(404).json({ error: 'No encontrada' });
+    const reco = r.rows[0];
+    if (reco.estado !== 'nueva') return res.status(409).json({ error: `Estado '${reco.estado}': solo se ejecuta una decisión 'nueva'` });
+
+    const resultado = await ejecutarCambioPubli(reco);
+
+    // Mapear resultado → estado. En dry-run NO se cambia el estado (la decisión sigue 'nueva').
+    let nuevoEstado = null;
+    if (resultado.ok && !resultado.dry_run)        nuevoEstado = 'ejecutada';
+    else if (resultado.motivo === 'valor_cambio')  nuevoEstado = 'obsoleta';   // anti-pisada
+    else if (!resultado.ok)                         nuevoEstado = 'error';
+
+    if (nuevoEstado) {
+      await pool.query(
+        `UPDATE decisiones_publi SET estado=$1, ejecutada_en=NOW(), aplicada_por=$2,
+           resultado_ejecucion=$3, actualizada_en=NOW() WHERE id=$4`,
+        [nuevoEstado, req.user.username, JSON.stringify(resultado), reco.id]
+      );
+    }
+    res.json({ ok: resultado.ok, dry_run: !!resultado.dry_run, estado: nuevoEstado || reco.estado, resultado });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
