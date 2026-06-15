@@ -4447,10 +4447,10 @@ app.post('/api/reporte/costos', requireAuth, async (req, res) => {
       const alic = ALIC_VALIDAS.includes(alicRaw) ? alicRaw : null;
       await pool.query(`
         INSERT INTO product_costs (client_id, mla_id, title, costo_unit, alicuota_iva, notas, updated_at)
-        VALUES ($1,$2,$3,$4,COALESCE($5,21),$6,NOW())
+        VALUES ($1,$2,$3,$4,COALESCE($5::numeric,21),$6,NOW())
         ON CONFLICT (client_id, mla_id) DO UPDATE SET
           title=$3, costo_unit=$4,
-          alicuota_iva=COALESCE($5, product_costs.alicuota_iva, 21),
+          alicuota_iva=COALESCE($5::numeric, product_costs.alicuota_iva, 21),
           notas=$6, updated_at=NOW()
       `, [client_id, c.mla_id, c.title, c.costo_unit||0, alic, c.notas||'']);
     }
