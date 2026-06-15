@@ -10030,12 +10030,61 @@ async function saveMetricasPubli(clientId, { campaigns, items }) {
   }
 }
 
+// Mapeo de tipo de decisión → categoría para el desglose del aviso de Slack.
+const PUBLI_SLACK_BUCKET = {
+  escalar_campania: 'escalar', subir_puja_headroom: 'escalar',
+  reducir_campania: 'reducir',
+  pausar_sangrado: 'pausar', stockout_protector: 'pausar', discontinuar_muerta: 'pausar',
+};
+
+// Poster genérico de texto a Slack (dedicado a publi para no ensuciar logs con [HOTSALE]). No toca ML.
+async function sendPubliSlack(text) {
+  const url = process.env.SLACK_WEBHOOK_URL;
+  if (!url) return false;
+  try {
+    const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }) });
+    return r.ok;
+  } catch(e) { console.error('[PUBLI] Slack error:', e.message); return false; }
+}
+
+// Aviso de sugerencias NUEVAS generadas en esta corrida (creadas desde runStart, reloj de la DB).
+// Solo notifica si hay N>0 — no spamea corridas vacías.
+async function notificarPubliSlack(runStart) {
+  if (!process.env.SLACK_WEBHOOK_URL) return;
+  const r = await pool.query(
+    `SELECT tipo_decision, COUNT(*)::int AS n FROM decisiones_publi
+     WHERE estado='nueva' AND creada_en >= $1 GROUP BY tipo_decision`, [runStart]);
+  const buckets = { escalar: 0, reducir: 0, pausar: 0 };
+  let total = 0;
+  for (const row of r.rows) {
+    total += row.n;
+    const b = PUBLI_SLACK_BUCKET[row.tipo_decision];
+    if (b) buckets[b] += row.n;
+  }
+  if (total <= 0) return;   // doble guarda: nada nuevo que avisar
+
+  const partes = [];
+  if (buckets.escalar) partes.push(`🟢 ${buckets.escalar} escalar`);
+  if (buckets.reducir) partes.push(`🔴 ${buckets.reducir} reducir`);
+  if (buckets.pausar)  partes.push(`⚫ ${buckets.pausar} pausar`);
+  const desglose = partes.length ? `\n${partes.join('  ·  ')}` : '';
+
+  const dashUrl = process.env.SELF_URL
+    ? process.env.SELF_URL.replace('/health', '')
+    : (process.env.RAILWAY_PUBLIC_DOMAIN ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}` : '');
+
+  let text = `📊 *Publi* — ${total} sugerencia${total !== 1 ? 's' : ''} nueva${total !== 1 ? 's' : ''} esperando aprobación${desglose}`;
+  if (dashUrl) text += `\n<${dashUrl}|Ver en el dashboard →>`;
+  await sendPubliSlack(text);
+}
+
 async function runPubliAnalyzer({ tipo = 'auto' } = {}) {
   console.log('[PUBLI] Iniciando análisis —', new Date().toISOString());
   try {
     // Gate opt-in: solo clientes con publi_activa=true (default false). Arranca apagado para todos
     // hasta que se prenda cliente por cliente vía PATCH /api/clients/:id/publi-activa.
     const clients = await pool.query(`SELECT * FROM clients WHERE active=true AND access_token IS NOT NULL AND publi_activa = true ORDER BY name`);
+    const runStart = (await pool.query('SELECT NOW() AS now')).rows[0].now;   // reloj de la DB para contar lo nuevo
     let totalDecisiones = 0;
     for (const client of clients.rows) {
       console.log(`[PUBLI] Analizando ${client.name}...`);
@@ -10054,6 +10103,8 @@ async function runPubliAnalyzer({ tipo = 'auto' } = {}) {
     }
     await pool.query(`INSERT INTO ci_runs (tipo, alertas_count) VALUES ($1,$2)`, [`publi_${tipo}`, totalDecisiones]).catch(() => {});
     console.log(`[PUBLI] Análisis completo — ${totalDecisiones} decisiones generadas`);
+    // Aviso Slack SOLO si hubo sugerencias nuevas (N>0). No frena la corrida si Slack falla.
+    if (totalDecisiones > 0) { await notificarPubliSlack(runStart).catch(e => console.error('[PUBLI] Slack notify error:', e.message)); }
   } catch(e) { console.error('[PUBLI] Error en runPubliAnalyzer:', e.message); }
 }
 
