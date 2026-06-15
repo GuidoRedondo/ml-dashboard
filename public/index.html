@@ -5328,9 +5328,10 @@ function exportDescuentosExcel() {
     const com = precio * comPct/100, cargo = cargoFijoML(precio);
     const envio = precio >= 33000 ? envioUnit : 0;
     const iva21 = 0.21;
+    const alic = (p.alicuota_iva ?? 21) / 100;  // alícuota del producto: aplica a venta y CMV; com/envío van a 21%
     const ivaDif = esMonotributistaActivo()
       ? 0
-      : Math.max(0, precio/(1+iva21)*iva21 - (p.costo+com+envio)/(1+iva21)*iva21);
+      : Math.max(0, precio/(1+alic)*alic - ( p.costo/(1+alic)*alic + (com+envio)/(1+iva21)*iva21 ));
     return parseFloat(((precio - p.costo - com - cargo - envio - imp - tacos - cf - ivaDif) / precio * 100).toFixed(1));
   }
 
@@ -5727,6 +5728,7 @@ async function loadDescuentos() {
       id: item.mla_id, title: item.title,
       precio, precioLista, tieneDescuento,
       costo: item.costo_unit || 0,
+      alicuota_iva: item.alicuota_iva ?? 21,
       hasCMV: !!(item.has_cost && item.costo_unit > 0),
       comPct: parseFloat(comPct.toFixed(1)),
       comSource: comPctML != null ? 'ML' : (comPctHist != null ? 'hist.' : 'est.'),
@@ -5778,9 +5780,10 @@ function renderDescuentos() {
     const cargo = cargoFijoML(precio);
     const envio = precio >= 33000 ? envioUnit : 0;
     const iva21 = 0.21;
+    const alic = (p.alicuota_iva ?? 21) / 100;  // alícuota del producto: aplica a venta y CMV; com/envío van a 21%
     const ivaDif = esMonotributistaActivo()
       ? 0
-      : Math.max(0, precio/(1+iva21)*iva21 - (p.costo+com+envio)/(1+iva21)*iva21);
+      : Math.max(0, precio/(1+alic)*alic - ( p.costo/(1+alic)*alic + (com+envio)/(1+iva21)*iva21 ));
     const costoTotal = p.costo + com + cargo + envio + imp + tacos + cf + ivaDif;
     const utilidad = precio - costoTotal;
     const margen = (utilidad / precio * 100);
@@ -6853,12 +6856,13 @@ async function loadVentas() {
 
   // Cargar costos desde la DB
   const client = getActiveClient();
-  const costoMap = {};
+  const costoMap = {}, alicMap = {};
   if (client) {
     const range = getDateRange();
     const costsData = await apiCall('GET', `/api/reporte/items-vendidos?client_id=${client.id}&date_from=${range.date_from}&date_to=${range.date_to}`).catch(() => null);
     (costsData?.items || []).forEach(i => {
       if (i.costo_unit) costoMap[i.mla_id] = parseFloat(i.costo_unit);
+      if (i.alicuota_iva != null) alicMap[i.mla_id] = parseFloat(i.alicuota_iva);
     });
   }
 
@@ -6873,10 +6877,19 @@ async function loadVentas() {
       const hasCMV = cmvOrden > 0;
 
       // IVA a pagar por esta orden — Monotributista no liquida IVA (queda en 0).
+      // Alícuota efectiva: la del producto de mayor CMV de la orden (sin revenue por ítem se
+      // usa el dominante; con alícuota uniforme es exacto). Venta y CMV a esa alícuota;
+      // comisión y envío son servicios de ML → 21%.
       const iva21 = 0.21;
       const esMonotrib = esMonotributistaActivo();
-      const ivaVentas   = esMonotrib ? 0 : o.facturacion / (1 + iva21) * iva21;
-      const ivaCompras  = esMonotrib ? 0 : (o.comision + Math.max(0, o.envio_vendedor) + cmvOrden) / (1 + iva21) * iva21;
+      let alicOrden = 21, maxPesoCmv = -1;
+      (o.productos || []).forEach(p => {
+        const cmvP = (costoMap[p.id] || 0) * (p.quantity || 1);
+        if (cmvP > maxPesoCmv) { maxPesoCmv = cmvP; alicOrden = alicMap[p.id] ?? 21; }
+      });
+      const aO = alicOrden / 100;
+      const ivaVentas   = esMonotrib ? 0 : o.facturacion / (1 + aO) * aO;
+      const ivaCompras  = esMonotrib ? 0 : cmvOrden / (1 + aO) * aO + (o.comision + Math.max(0, o.envio_vendedor)) / (1 + iva21) * iva21;
       const ivaNeto     = esMonotrib ? 0 : Math.max(0, ivaVentas - ivaCompras);
 
       const utilidad = hasCMV ? o.neto - cmvOrden - ivaNeto : null;
