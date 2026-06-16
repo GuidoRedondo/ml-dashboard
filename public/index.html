@@ -15024,8 +15024,12 @@ async function dpAprobarEjecutar(id) {
   if (!r) { if (box) box.innerHTML = `<div class="err">⚠️ Error de red</div>`; return; }
   const res = r.resultado || {};
   if (r.dry_run) {
-    const payload = (res.habria_hecho && res.habria_hecho.payload) ? JSON.stringify(res.habria_hecho.payload) : '(sin payload)';
-    if (box) box.innerHTML = `<div class="prueba">🧪 MODO PRUEBA — esto es lo que haría:<br><b>${payload}</b><br><span style="font-weight:600;font-size:11px">No se ejecutó nada. La sugerencia sigue pendiente.</span></div>`;
+    const hh = res.habria_hecho || {};
+    const bodyStr = hh.body ? JSON.stringify(hh.body) : '(sin body)';
+    const ruta = res.ruta_provisional || '(sin ruta)';
+    if (box) box.innerHTML = `<div class="prueba">🧪 MODO PRUEBA — esto es lo que haría:<br>`
+      + `<b>${esc2(ruta)}</b><br><b>${esc2(bodyStr)}</b><br>`
+      + `<span style="font-weight:600;font-size:11px">No se ejecutó nada. La sugerencia sigue pendiente.</span></div>`;
     // sin reload: en dry-run el backend no cambia el estado, la tarjeta queda en la cola
   } else if (r.estado === 'ejecutada') {
     if (box) box.innerHTML = `<div class="ok">✅ Ejecutada — cambio aplicado en Mercado Libre.</div>`;
