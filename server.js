@@ -9763,10 +9763,12 @@ async function fetchCampaignFresh(siteId, advId, campaignId, token) {
     const c = (data.results || []).find(x => String(x.id || x.campaign_id) === String(campaignId));
     if (!c) { console.warn(`[PUBLI] fetchCampaignFresh ${campaignId}: no figura en el listado`); return null; }
     return {
+      name:        c.name ?? c.campaign_name ?? null,
       budget:      c.budget ?? null,
       acos_target: c.acos_target ?? null,
       status:      c.status ?? null,
-      strategy:    c.strategy ?? null   // PROFITABILITY | INCREASE | VISIBILITY (mayúsculas)
+      strategy:    c.strategy ?? null,   // PROFITABILITY | INCREASE | VISIBILITY (mayúsculas)
+      channel:     c.channel ?? null
     };
   } catch(e) { console.error(`[PUBLI] fetchCampaignFresh ${campaignId}:`, e.message); return null; }
 }
@@ -9821,25 +9823,38 @@ async function ejecutarCambioPubli(reco) {
     }
   }
 
-  const rutaProvisional = `PUT ${ML_API}/advertising/${siteId}/advertisers/${advId}/product_ads/campaigns/${campId}`;
+  // Hipótesis confirmada en doc ML: las ESCRITURAS de campaña van con prefijo /marketplace
+  // (las lecturas andan sin él). Mismo siteId/advId que el resto.
+  const urlPut = `${ML_API}/marketplace/advertising/${siteId}/advertisers/${advId}/product_ads/campaigns/${campId}`;
+
+  // Body COMPLETO: partimos del estado fresco y pisamos SOLO el/los campo(s) propuestos (ej budget).
+  // Stripeamos null/undefined para no mandar campos que ML no expuso (ej acos_target en campañas
+  // no-PROFITABILITY) y que podrían hacer rebotar el PUT.
+  const bodyCompleto = { name: fresco.name, status: fresco.status, strategy: fresco.strategy,
+                         channel: fresco.channel, acos_target: fresco.acos_target, budget: fresco.budget,
+                         ...prop };
+  Object.keys(bodyCompleto).forEach(k => { if (bodyCompleto[k] == null) delete bodyCompleto[k]; });
 
   // DRY-RUN: muestra qué haría, sin tocar ML.
   if (dryRun) {
-    return { ok: true, dry_run: true, ruta_provisional: rutaProvisional, habria_hecho: { campId, payload: prop } };
+    return { ok: true, dry_run: true, ruta_provisional: `PUT ${urlPut}`, habria_hecho: { campId, body: bodyCompleto } };
   }
 
-  // ── ESCRITURA REAL (gated por PUBLI_DRY_RUN=false) — RUTA/MÉTODO PROVISIONALES ──
+  // ── ESCRITURA REAL (gated por PUBLI_DRY_RUN=false) ──
   try {
-    const url = `${ML_API}/advertising/${siteId}/advertisers/${advId}/product_ads/campaigns/${campId}`;
-    const r = await fetch(url, {
-      method: 'PUT',   // ⚠️ confirmar PUT vs PATCH con la API real antes de habilitar
+    console.log(`[PUBLI-PUT] → PUT ${urlPut}`);
+    console.log(`[PUBLI-PUT] body: ${JSON.stringify(bodyCompleto)}`);
+    const r = await fetch(urlPut, {
+      method: 'PUT',
       headers: { 'Authorization': `Bearer ${token}`, 'api-version': '2', 'Content-Type': 'application/json' },
-      body: JSON.stringify(prop)   // SOLO el/los campo(s) que cambian, ej {"budget":5750}
+      body: JSON.stringify(bodyCompleto)
     });
     const body = await r.json().catch(() => ({}));
-    if (!r.ok) return { ok: false, motivo: 'ml_error', status: r.status, body };
+    console.log(`[PUBLI-PUT] ← status ${r.status} · resp: ${JSON.stringify(body).slice(0, 500)}`);
+    if (!r.ok) return { ok: false, motivo: 'ml_error', status: r.status, url: urlPut, sent: bodyCompleto, body };
     return { ok: true, dry_run: false, status: r.status, body };
   } catch(e) {
+    console.error(`[PUBLI-PUT] excepción: ${e.message}`);
     return { ok: false, motivo: 'excepcion', detalle: e.message };
   }
 }
