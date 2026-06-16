@@ -678,13 +678,13 @@ app.get('/api/clients', requireAuth, async (req, res) => {
     if (req.user.role === 'cliente' && req.user.client_id) {
       // Cliente solo ve su propia cuenta
       query = `SELECT id, name, ml_user_id, site_id, active, token_expires_at, updated_at,
-               roas_target, tasa_iibb_pct, condicion_iva,
+               roas_target, tasa_iibb_pct, condicion_iva, publi_activa,
                (refresh_token IS NOT NULL AND refresh_token != '') AS has_refresh_token
                FROM clients WHERE id = $1`;
       params = [req.user.client_id];
     } else {
       query = `SELECT id, name, ml_user_id, site_id, active, token_expires_at, updated_at,
-               roas_target, tasa_iibb_pct, condicion_iva,
+               roas_target, tasa_iibb_pct, condicion_iva, publi_activa,
                (refresh_token IS NOT NULL AND refresh_token != '') AS has_refresh_token
                FROM clients ORDER BY name`;
     }

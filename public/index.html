@@ -1742,6 +1742,12 @@ tbody td {
             style="width:70px;padding:4px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px;font-family:var(--font)">
           <button onclick="guardarIibbTasa()" style="padding:4px 10px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:12px;cursor:pointer;font-family:var(--font)">Guardar</button>
         </div>
+        <div style="display:flex;align-items:center;gap:8px" title="Gate del motor: el análisis automático solo procesa clientes con esto en ON. Default OFF — se activa de a uno.">
+          <label style="font-size:12px;color:var(--muted);white-space:nowrap">Publi automática:</label>
+          <input type="checkbox" id="dp-publi-activa" onchange="togglePubliActiva(this.checked)"
+            style="width:16px;height:16px;cursor:pointer;accent-color:#16a34a">
+          <span id="dp-publi-activa-label" style="font-size:12px;font-weight:700;color:var(--muted)">—</span>
+        </div>
         <div style="display:flex;align-items:center;gap:8px">
           <label style="font-size:12px;color:var(--muted)">Nivel:</label>
           <select id="dp-filter-nivel" onchange="loadDecisionesPubli()"
@@ -14831,6 +14837,7 @@ async function loadDecisionesPubli() {
     const found = (clients || []).find(c => c.id === client.id);
     if (found?.roas_target) document.getElementById('dp-roas-input').value = found.roas_target;
     if (found?.tasa_iibb_pct != null) document.getElementById('dp-iibb-input').value = found.tasa_iibb_pct;
+    _setPubliActivaUI(!!found?.publi_activa);
   }
 
   const estadoMap = { nuevas: 'nueva', aplicadas: 'aplicada', descartadas: 'descartada' };
@@ -15113,6 +15120,29 @@ async function guardarRoasTarget() {
   if (!val || val <= 0) { showToast('❌ ROAS target inválido'); return; }
   await apiCall('PATCH', `/api/clients/${client.id}/roas-target`, { roas_target: val });
   showToast(`✅ ROAS target actualizado a ${val}x`);
+}
+
+// Refleja el estado del gate publi_activa en el checkbox + etiqueta ON/OFF
+function _setPubliActivaUI(activa) {
+  const chk = document.getElementById('dp-publi-activa');
+  const lbl = document.getElementById('dp-publi-activa-label');
+  if (chk) chk.checked = !!activa;
+  if (lbl) { lbl.textContent = activa ? 'ON' : 'OFF'; lbl.style.color = activa ? '#16a34a' : 'var(--muted)'; }
+}
+
+// Toggle del gate del motor de publi para el cliente activo. PATCH /api/clients/:id/publi-activa.
+// No toca ML — solo prende/apaga la generación de sugerencias. Revierte el checkbox si el server rechaza.
+async function togglePubliActiva(activa) {
+  const client = getActiveClient();
+  if (!client) { showToast('Seleccioná un cliente primero'); _setPubliActivaUI(!activa); return; }
+  const res = await apiCall('PATCH', `/api/clients/${client.id}/publi-activa`, { publi_activa: activa });
+  if (!res || res.error || res.publi_activa !== activa) {
+    _setPubliActivaUI(!activa);   // revertir: no se confirmó el cambio
+    showToast('❌ No se pudo cambiar: ' + (res?.error || 'error de conexión'));
+    return;
+  }
+  _setPubliActivaUI(activa);
+  showToast(activa ? `✅ Publi automática ACTIVADA para ${client.name}` : `⏸ Publi automática pausada para ${client.name}`);
 }
 
 async function guardarIibbTasa() {
