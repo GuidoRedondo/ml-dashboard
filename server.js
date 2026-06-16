@@ -9747,10 +9747,21 @@ async function fetchPADSMetrics(client, days = 30) {
 // este GET es read-only, así que si la ruta exacta difiere lo veremos en el log de la 1ra corrida.
 async function fetchCampaignFresh(siteId, advId, campaignId, token) {
   try {
-    const url = `${ML_API}/advertising/${siteId}/advertisers/${advId}/product_ads/campaigns/${campaignId}`;
-    const r = await fetch(url, { headers: { 'Authorization': `Bearer ${token}`, 'api-version': '2' } });
-    if (!r.ok) { console.warn(`[PUBLI] fetchCampaignFresh ${campaignId}: HTTP ${r.status}`); return null; }
-    const c = await r.json();
+    const h2 = { 'Authorization': `Bearer ${token}`, 'api-version': '2' };
+    const now = new Date();
+    const fromStr = new Date(now.getTime() - 30 * 86400000).toISOString().slice(0, 10);
+    const toStr = now.toISOString().slice(0, 10);
+    const mstr = 'clicks,prints,ctr,cost,cpc,acos,cvr,roas,direct_units_quantity,units_quantity,direct_amount,total_amount';
+    // ML no expone GET por-campaña en esta cuenta (daba HTTP 404). Usamos el MISMO search que
+    // fetchPADSMetrics —que sí responde y trae budget/acos_target/status/strategy top-level— y
+    // filtramos la campaña por id. limit=50 = mismo cap que el listado del que salió, así la
+    // campaña que calificó en R1/R2 siempre figura.
+    const url = `${ML_API}/advertising/${siteId}/advertisers/${advId}/product_ads/campaigns/search?date_from=${fromStr}&date_to=${toStr}&metrics=${mstr}&limit=50`;
+    const r = await fetch(url, { headers: h2 });
+    if (!r.ok) { console.warn(`[PUBLI] fetchCampaignFresh search ${campaignId}: HTTP ${r.status}`); return null; }
+    const data = await r.json();
+    const c = (data.results || []).find(x => String(x.id || x.campaign_id) === String(campaignId));
+    if (!c) { console.warn(`[PUBLI] fetchCampaignFresh ${campaignId}: no figura en el listado`); return null; }
     return {
       budget:      c.budget ?? null,
       acos_target: c.acos_target ?? null,
