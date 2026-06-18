@@ -4930,13 +4930,8 @@ async function toggleSegEvolucion(id, mla, row) {
     if (window._segCharts[id]) { window._segCharts[id].destroy(); }
     window._segCharts[id] = new Chart(canvas, convChartConfig(data));
 
-    const t = data.totals || {};
-    const stat = (label, val, color) => `<div style="background:var(--surface);border-radius:10px;padding:8px 14px;flex:1;min-width:110px"><div style="font-size:11px;color:var(--muted)">${label}</div><div style="font-size:16px;font-weight:700;color:${color||'var(--text)'}">${val}</div></div>`;
     const statsEl = document.getElementById(`seg-stats-${id}`);
-    if (statsEl) statsEl.innerHTML =
-      stat('Visitas totales',     (t.visits||0).toLocaleString('es-AR'), '#3b82f6') +
-      stat('Unidades vendidas',   (t.units||0).toLocaleString('es-AR'),  '#00e676') +
-      stat('Conversión promedio', (t.conversion||0) + '%',               '#ff9100');
+    renderConvStatCards(statsEl, window._segCharts[id], data.totals);
   } catch(e) {
     if (sub) sub.textContent = 'Error al cargar: ' + e.message;
   }
@@ -8728,6 +8723,7 @@ function convChartConfig(data) {
   const labels = data.days.map(d => d.date.slice(5));
   const visits = data.days.map(d => d.visits);
   const units  = data.days.map(d => d.units);
+  const revenue = data.days.map(d => d.revenue || 0);
   const conv   = data.days.map(d => d.conversion);
   // Media de conversión del período: la conversión global (units/visits) que ya se muestra
   // como "Conversión promedio" en los stats; fallback al promedio de los puntos diarios.
@@ -8742,6 +8738,7 @@ function convChartConfig(data) {
         { type:'bar',  label:'Unidades',     data:units,  yAxisID:'y',  backgroundColor:'rgba(0,230,118,.55)',  borderColor:'rgba(0,230,118,.95)', borderWidth:1, order:2 },
         { type:'line', label:'Conversión %', data:conv,   yAxisID:'y1', borderColor:'#ff9100', backgroundColor:'#ff9100', borderWidth:2, tension:.3, pointRadius:3, pointHoverRadius:5, order:1 },
         { type:'line', label:`Media (${convAvg}%)`, data:labels.map(() => convAvg), yAxisID:'y1', borderColor:'#fcd34d', backgroundColor:'#fcd34d', borderWidth:1.5, borderDash:[6,4], pointRadius:0, pointHoverRadius:0, tension:0, fill:false, order:0 },
+        { type:'line', label:'Facturación', data:revenue, yAxisID:'y2', borderColor:'#fbbf24', backgroundColor:'rgba(251,191,36,.15)', borderWidth:2, tension:.3, pointRadius:3, pointHoverRadius:5, fill:true, hidden:true, order:4 },
       ]
     },
     options: {
@@ -8749,15 +8746,62 @@ function convChartConfig(data) {
       interaction:{ mode:'index', intersect:false },
       plugins:{
         legend:{ labels:{ color:'#bbb', usePointStyle:true, font:{size:12} } },
-        tooltip:{ callbacks:{ label:(ctx)=>{ if(ctx.dataset.yAxisID==='y1'){ const name = ctx.dataset.label==='Conversión %' ? 'Conversión' : ctx.dataset.label; return `${name}: ${ctx.parsed.y}%`; } return `${ctx.dataset.label}: ${ctx.parsed.y.toLocaleString('es-AR')}`; } } }
+        tooltip:{ callbacks:{ label:(ctx)=>{ if(ctx.dataset.yAxisID==='y1'){ const name = ctx.dataset.label==='Conversión %' ? 'Conversión' : ctx.dataset.label; return `${name}: ${ctx.parsed.y}%`; } if(ctx.dataset.yAxisID==='y2'){ return `${ctx.dataset.label}: $${Math.round(ctx.parsed.y).toLocaleString('es-AR')}`; } return `${ctx.dataset.label}: ${ctx.parsed.y.toLocaleString('es-AR')}`; } } }
       },
       scales:{
         x:{ ticks:{ color:'#888', maxRotation:0, autoSkip:true, maxTicksLimit:15 }, grid:{ color:'rgba(255,255,255,.05)' } },
         y:{ position:'left', beginAtZero:true, title:{display:true,text:'Visitas / Unidades',color:'#888'}, ticks:{ color:'#888' }, grid:{ color:'rgba(255,255,255,.05)' } },
-        y1:{ position:'right', beginAtZero:true, title:{display:true,text:'Conversión %',color:'#ff9100'}, ticks:{ color:'#ff9100', callback:v=>v+'%' }, grid:{ drawOnChartArea:false } }
+        y1:{ position:'right', beginAtZero:true, title:{display:true,text:'Conversión %',color:'#ff9100'}, ticks:{ color:'#ff9100', callback:v=>v+'%' }, grid:{ drawOnChartArea:false } },
+        y2:{ position:'right', display:false, beginAtZero:true, title:{display:true,text:'Facturación',color:'#fbbf24'}, ticks:{ color:'#fbbf24', callback:v=>'$'+(v>=1000?(v/1000).toFixed(0)+'k':v) }, grid:{ drawOnChartArea:false } }
       }
     }
   };
+}
+
+// ── Tarjetas-selector debajo del gráfico de conversión ──────────────────────
+// Cada tarjeta prende/apaga su(s) dataset(s) en el chart (y su eje propio si
+// tiene). Compartidas por el tab Seguimiento y el modal de conversión.
+function _convStatCards(totals) {
+  const t = totals || {};
+  return [
+    { label:'Visitas totales',     val:(t.visits||0).toLocaleString('es-AR'),                color:'#3b82f6', ds:[0] },
+    { label:'Unidades vendidas',   val:(t.units||0).toLocaleString('es-AR'),                 color:'#00e676', ds:[1] },
+    { label:'Facturación',         val:'$'+Math.round(t.revenue||0).toLocaleString('es-AR'), color:'#fbbf24', ds:[4], axis:'y2' },
+    { label:'Conversión promedio', val:(t.conversion||0)+'%',                                color:'#ff9100', ds:[2,3] },
+  ];
+}
+
+function renderConvStatCards(containerEl, chart, totals, opts) {
+  if (!containerEl || !chart) return;
+  const big = opts && opts.big;
+  const cards = _convStatCards(totals);
+  containerEl._convChart = chart;
+  containerEl._convCards = cards;
+  const pad = big ? '10px 16px' : '8px 14px';
+  const bg  = big ? 'var(--surface2)' : 'var(--surface)';
+  const fs  = big ? '18px' : '16px';
+  containerEl.innerHTML = cards.map((c, i) => {
+    const on = chart.isDatasetVisible(c.ds[0]);
+    return `<div data-cidx="${i}" onclick="toggleConvCard(this)" title="Click para mostrar/ocultar en el gráfico"
+      style="background:${bg};border:1px solid var(--border);border-radius:10px;padding:${pad};flex:1;min-width:120px;cursor:pointer;user-select:none;opacity:${on?'1':'.45'};transition:opacity .15s">
+      <div style="font-size:11px;color:var(--muted);display:flex;align-items:center;gap:5px"><span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:${c.color}"></span>${c.label}</div>
+      <div style="font-size:${fs};font-weight:700;color:${c.color}">${c.val}</div>
+    </div>`;
+  }).join('');
+}
+
+function toggleConvCard(cardEl) {
+  const container = cardEl.parentElement;
+  const chart = container && container._convChart;
+  const cards = container && container._convCards;
+  if (!chart || !cards) return;
+  const card = cards[parseInt(cardEl.dataset.cidx)];
+  if (!card) return;
+  const show = !chart.isDatasetVisible(card.ds[0]);
+  card.ds.forEach(di => chart.setDatasetVisibility(di, show));
+  if (card.axis && chart.options.scales[card.axis]) chart.options.scales[card.axis].display = show;
+  chart.update();
+  cardEl.style.opacity = show ? '1' : '.45';
 }
 
 function renderConversionChart(data) {
@@ -8770,12 +8814,7 @@ function renderConversionChart(data) {
   if (!window.Chart) { document.getElementById('convChartSub').textContent = 'Chart.js no disponible'; return; }
   _convChart = new Chart(canvas, convChartConfig(data));
 
-  const t = data.totals || {};
-  const stat = (label, val, color) => `<div style="background:var(--surface2);border-radius:10px;padding:10px 16px;flex:1;min-width:120px"><div style="font-size:11px;color:var(--muted)">${label}</div><div style="font-size:18px;font-weight:700;color:${color||'var(--text)'}">${val}</div></div>`;
-  document.getElementById('convChartStats').innerHTML =
-    stat('Visitas totales',     (t.visits||0).toLocaleString('es-AR'), '#3b82f6') +
-    stat('Unidades vendidas',   (t.units||0).toLocaleString('es-AR'),  '#00e676') +
-    stat('Conversión promedio', (t.conversion||0) + '%',               '#ff9100');
+  renderConvStatCards(document.getElementById('convChartStats'), _convChart, data.totals, { big: true });
 }
 
 async function loadAds() {

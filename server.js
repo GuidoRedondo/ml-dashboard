@@ -3398,16 +3398,21 @@ app.get('/api/item/conversion-diaria', requireAuth, async (req, res) => {
       }
     } catch(e) {}
 
-    // ── Unidades vendidas por día ──
+    // ── Unidades vendidas y facturación por día ──
     const fmt = d => d.toISOString().slice(0,19) + '.000-00:00';
     const unitsByDay = {};
+    const revenueByDay = {};
     try {
       const { orders } = await fetchAllOrders(uid, headers, fmt(from), fmt(to));
       orders.forEach(o => {
         const day = (o.date_created || o.date_closed || '').slice(0,10);
         if (!day) return;
         (o.order_items || []).forEach(oi => {
-          if (oi.item && oi.item.id === itemId) unitsByDay[day] = (unitsByDay[day] || 0) + (oi.quantity || 0);
+          if (oi.item && oi.item.id === itemId) {
+            const qty = oi.quantity || 0;
+            unitsByDay[day]   = (unitsByDay[day]   || 0) + qty;
+            revenueByDay[day] = (revenueByDay[day] || 0) + (parseFloat(oi.unit_price) || 0) * qty;
+          }
         });
       });
     } catch(e) {}
@@ -3422,15 +3427,17 @@ app.get('/api/item/conversion-diaria', requireAuth, async (req, res) => {
     const days = dayKeys.map(k => {
       const visits = visByDay[k] || 0;
       const units  = unitsByDay[k] || 0;
+      const revenue = Math.round(revenueByDay[k] || 0);
       const conversion = visits > 0 ? Math.round((units / visits * 100) * 100) / 100 : 0;
-      return { date: k, visits, units, conversion };
+      return { date: k, visits, units, revenue, conversion };
     });
 
     const totVis = days.reduce((s, d) => s + d.visits, 0);
     const totUni = days.reduce((s, d) => s + d.units, 0);
+    const totRev = days.reduce((s, d) => s + d.revenue, 0);
     res.json({
       item_id: itemId, title, from: fromDate, to: toDate, days,
-      totals: { visits: totVis, units: totUni, conversion: totVis > 0 ? Math.round(totUni / totVis * 10000) / 100 : 0 }
+      totals: { visits: totVis, units: totUni, revenue: totRev, conversion: totVis > 0 ? Math.round(totUni / totVis * 10000) / 100 : 0 }
     });
   } catch(e) {
     console.error('[CONVERSION_DIARIA]', e.message);
