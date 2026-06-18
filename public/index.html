@@ -4426,6 +4426,7 @@ async function loadConversion(forceRefresh) {
       return;
     }
     _convData = { items: data.items || [], metadatos: data.metadatos || {} };
+    await loadSeguimientoMap(); // para pintar las ★ de seguimiento en la tabla
     renderConversionKpis();
     renderConversionTable();
     const m = _convData.metadatos;
@@ -4545,14 +4546,20 @@ function renderConversionTable() {
   };
   // Mismo criterio de color que la tab Publicidad > Anuncios (line 8070).
   const ctrColor = v => !v || v <= 0 ? 'var(--muted)' : v < 0.20 ? '#ff5252' : v < 0.30 ? '#ff9100' : '#00e676';
+  const clientId = getActiveClient()?.id;
   const rows = items.map(i => {
     const sem = _convSemaforo(i.conversion);
     const link = `https://articulo.mercadolibre.com.ar/${i.mla_id.replace('MLA','MLA-')}`;
     const hasAds = (i.impresiones || 0) > 0;
     const ctrCol = hasAds ? ctrColor(i.ctr) : 'var(--muted)';
     const pub = _convPubBadge(i.publicidad_status);
+    const seg = window._seguimientoMap?.[i.mla_id];
+    const star = seg ? '★' : '☆';
+    const starColor = seg ? '#FFD700' : 'var(--muted)';
+    const segTitle = esc(i.title).replace(/'/g, "\\'");
     return `
       <tr style="border-top:1px solid var(--border)">
+        <td style="padding:8px 10px;text-align:center;cursor:pointer;font-size:16px;color:${starColor}" title="${seg ? 'Quitar seguimiento' : 'Seguir esta publicación'}" onclick="toggleSeguimiento('${i.mla_id}','${segTitle}',${clientId})">${star}</td>
         <td style="padding:8px 10px;max-width:380px"><a href="${link}" target="_blank" style="color:var(--text);text-decoration:none" title="Abrir en ML">${esc(i.title)}</a></td>
         <td style="padding:8px 10px;font-size:11px;white-space:nowrap"><span style="color:var(--muted);cursor:pointer" title="Click para copiar" onclick="copyMLA(this,'${i.mla_id}')">${i.mla_id}</span><span onclick="openConversionChartFromTab('${i.mla_id}')" style="cursor:pointer;margin-left:6px" title="Ver conversión diaria">📈</span></td>
         <td style="padding:8px 10px;text-align:right;font-weight:600">${renderPrecio(i)}</td>
@@ -4572,6 +4579,7 @@ function renderConversionTable() {
       <table style="width:100%;border-collapse:collapse;font-size:13px;color:var(--text)">
         <thead style="position:sticky;top:0;background:var(--surface2);z-index:1">
           <tr style="color:var(--muted);font-size:10px;text-transform:uppercase">
+            <th style="padding:8px 10px;text-align:center">★</th>
             ${th('Título', 'title', 'left')}
             ${th('MLA', 'mla_id', 'left')}
             ${th('Precio', 'price', 'right')}
@@ -4835,6 +4843,7 @@ async function toggleSeguimiento(mla, titulo, clientId) {
   }
   renderPerfPublicaciones();
   if (_adsActiveTab === 'anuncios' && _adsAnunciosData) renderAdsAnuncios(_adsAnunciosData);
+  if (_perfActiveTab === 'conversion' && _convData.items) renderConversionTable();
 }
 
 async function loadSeguimiento(forceRefresh) {
