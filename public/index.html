@@ -8738,7 +8738,7 @@ function convChartConfig(data) {
         { type:'bar',  label:'Unidades',     data:units,  yAxisID:'y',  backgroundColor:'rgba(0,230,118,.55)',  borderColor:'rgba(0,230,118,.95)', borderWidth:1, order:2 },
         { type:'line', label:'Conversión %', data:conv,   yAxisID:'y1', borderColor:'#ff9100', backgroundColor:'#ff9100', borderWidth:2, tension:.3, pointRadius:3, pointHoverRadius:5, order:1 },
         { type:'line', label:`Media (${convAvg}%)`, data:labels.map(() => convAvg), yAxisID:'y1', borderColor:'#fcd34d', backgroundColor:'#fcd34d', borderWidth:1.5, borderDash:[6,4], pointRadius:0, pointHoverRadius:0, tension:0, fill:false, order:0 },
-        { type:'line', label:'Facturación', data:revenue, yAxisID:'y2', borderColor:'#fbbf24', backgroundColor:'rgba(251,191,36,.15)', borderWidth:2, tension:.3, pointRadius:3, pointHoverRadius:5, fill:true, hidden:true, order:4 },
+        { type:'line', label:'Facturación', data:revenue, yAxisID:'y2', borderColor:'#10b981', backgroundColor:'rgba(16,185,129,.15)', borderWidth:2, tension:.3, pointRadius:3, pointHoverRadius:5, fill:true, hidden:true, order:4 },
       ]
     },
     options: {
@@ -8752,7 +8752,7 @@ function convChartConfig(data) {
         x:{ ticks:{ color:'#888', maxRotation:0, autoSkip:true, maxTicksLimit:15 }, grid:{ color:'rgba(255,255,255,.05)' } },
         y:{ position:'left', beginAtZero:true, title:{display:true,text:'Visitas / Unidades',color:'#888'}, ticks:{ color:'#888' }, grid:{ color:'rgba(255,255,255,.05)' } },
         y1:{ position:'right', beginAtZero:true, title:{display:true,text:'Conversión %',color:'#ff9100'}, ticks:{ color:'#ff9100', callback:v=>v+'%' }, grid:{ drawOnChartArea:false } },
-        y2:{ position:'right', display:false, beginAtZero:true, title:{display:true,text:'Facturación',color:'#fbbf24'}, ticks:{ color:'#fbbf24', callback:v=>'$'+(v>=1000?(v/1000).toFixed(0)+'k':v) }, grid:{ drawOnChartArea:false } }
+        y2:{ position:'right', display:false, beginAtZero:true, title:{display:true,text:'Facturación',color:'#10b981'}, ticks:{ color:'#10b981', callback:v=>'$'+(v>=1000?(v/1000).toFixed(0)+'k':v) }, grid:{ drawOnChartArea:false } }
       }
     }
   };
@@ -8766,7 +8766,7 @@ function _convStatCards(totals) {
   return [
     { label:'Visitas totales',     val:(t.visits||0).toLocaleString('es-AR'),                color:'#3b82f6', ds:[0] },
     { label:'Unidades vendidas',   val:(t.units||0).toLocaleString('es-AR'),                 color:'#00e676', ds:[1] },
-    { label:'Facturación',         val:'$'+Math.round(t.revenue||0).toLocaleString('es-AR'), color:'#fbbf24', ds:[4], axis:'y2' },
+    { label:'Facturación',         val:'$'+Math.round(t.revenue||0).toLocaleString('es-AR'), color:'#10b981', ds:[4], axis:'y2' },
     { label:'Conversión promedio', val:(t.conversion||0)+'%',                                color:'#ff9100', ds:[2,3] },
   ];
 }
