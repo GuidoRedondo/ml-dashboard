@@ -12079,6 +12079,8 @@ function renderCurvaABC() {
     return { ...p, pctAcum, clase, rank: i + 1 };
   });
 
+  window._abcClassified = { classified, totalRevenue, stockMap };
+
   const byClase = { A: classified.filter(p=>p.clase==='A'), B: classified.filter(p=>p.clase==='B'), C: classified.filter(p=>p.clase==='C') };
   const fmtN = n => '$' + Math.round(n).toLocaleString('es-AR');
   const claseStyle = {
@@ -12120,6 +12122,9 @@ function renderCurvaABC() {
   }).join('');
 
   el.innerHTML = `
+    <div style="display:flex;justify-content:flex-end;margin-bottom:12px">
+      <button onclick="exportCurvaABC()" class="sync-btn" style="font-size:12px">📥 Exportar Excel</button>
+    </div>
     <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:20px">${kpis}</div>
     <div class="kpi-card" style="padding:0;overflow:hidden">
       <div style="overflow-x:auto">
@@ -12144,6 +12149,37 @@ function renderCurvaABC() {
       <span>🔴 C = último 5% (acumulado 95–100%)</span>
       <span>Stock: 🟢 >10 · 🟠 ≤10 · 🔴 ≤3</span>
     </div>`;
+}
+
+function exportCurvaABC() {
+  const XLSX = window.XLSX;
+  if (!XLSX) { showToast('Librería Excel no disponible'); return; }
+  const data = window._abcClassified;
+  if (!data || !data.classified || !data.classified.length) { showToast('No hay datos para exportar'); return; }
+
+  const { classified, totalRevenue, stockMap = {} } = data;
+  const rows = classified.map(p => {
+    const stock = stockMap[p.id] ?? null;
+    return {
+      '#':              p.rank,
+      'Clase':          p.clase,
+      'Producto':       p.title || '',
+      'MLA':            p.id,
+      'Facturación':    Math.round(p.revenue || 0),
+      'Unidades':       p.units || 0,
+      'Stock':          stock != null ? stock : '',
+      '% Individual':   totalRevenue > 0 ? +(p.revenue / totalRevenue * 100).toFixed(1) : 0,
+      '% Acumulado':    +p.pctAcum.toFixed(1),
+    };
+  });
+
+  const ws = XLSX.utils.json_to_sheet(rows);
+  ws['!cols'] = [{wch:6},{wch:7},{wch:55},{wch:14},{wch:14},{wch:10},{wch:9},{wch:13},{wch:13}];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Curva ABC');
+  const client = getActiveClient();
+  const fecha = new Date().toISOString().slice(0,10);
+  XLSX.writeFile(wb, `CurvaABC_${(client?.name||'cliente').replace(/\s+/g,'_')}_${fecha}.xlsx`);
 }
 
 function renderPrioridades() {
