@@ -7372,6 +7372,79 @@ app.get('/api/opiniones/item', requireAuth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// Resumen inteligente (IA) de las opiniones de un producto.
+app.get('/api/opiniones/resumen', requireAuth, async (req, res) => {
+  try {
+    const clientId = parseInt(req.query.client_id);
+    const itemId = req.query.item_id;
+    const conversion = req.query.conversion || null; // contexto opcional (% conversión)
+    const title = req.query.title || '';
+    const token = await getClientToken(clientId);
+    if (!token) return res.status(403).json({ error: 'Sin token' });
+    const headers = { 'Authorization': `Bearer ${token}` };
+
+    const head = await fetch(`${ML_API}/reviews/item/${itemId}?limit=1`, { headers }).then(r => r.json());
+    const rating = head.rating_average || 0;
+    const total = head.paging?.total || 0;
+    if (!total) return res.json({ error: 'Este producto no tiene opiniones para resumir' });
+
+    // Muestra de hasta 60 comentarios (cubre lo bueno y lo malo).
+    const sample = [];
+    for (let off = 0; off < Math.min(total, 60); off += 50) {
+      const rv = await fetch(`${ML_API}/reviews/item/${itemId}?limit=50&offset=${off}`, { headers }).then(r => r.json()).catch(() => ({}));
+      (rv.reviews || []).forEach(r => sample.push({ rate: r.rate || 0, title: r.title || '', content: r.content || '' }));
+      if (!rv.reviews || rv.reviews.length < 50) break;
+    }
+
+    const resumen = await callClaudeForOpinionSummary({ title, rating, total, conversion, reviews: sample });
+    res.json({ ...resumen, rating, total, sampled: sample.length });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Resume las opiniones de un producto con Claude (mismo patrón que callClaudeForDecision).
+async function callClaudeForOpinionSummary({ title, rating, total, conversion, reviews }) {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) return { error: 'IA no configurada (falta ANTHROPIC_API_KEY en el servidor)' };
+
+  const sample = (reviews || []).slice(0, 60)
+    .map(r => `[${r.rate}★] ${r.title ? r.title + ' — ' : ''}${(r.content || '').replace(/\s+/g, ' ').slice(0, 280)}`)
+    .join('\n');
+  const convLine = conversion ? `\n- Conversión de la publicación: ${conversion}% (referencia: <2% es baja para ML)` : '';
+
+  const prompt = `Sos consultor experto en Mercado Libre de Negocio Redondo (Método Redondo). Tono directo, argentino rioplatense, foco en accionar concreto. Te paso las opiniones de compradores de un producto y tenés que resumirlas para una call con el seller.
+
+Producto: ${title || '(sin título)'}
+Rating promedio: ${rating} de 5 · ${total} opiniones${convLine}
+
+Opiniones (muestra):
+${sample}
+
+Devolveme ESTRICTAMENTE JSON, sin texto fuera del JSON:
+{"valoran":["lo que más valoran, 2-3 puntos cortos"],"quejas":["quejas recurrentes, 2-4 puntos cortos; vacío si no hay"],"veredicto":"<una frase: si el problema es el PRODUCTO en sí, la PUBLICACIÓN (fotos/ficha/expectativas), el ENVÍO/operación, o si está OK>","recomendacion":"<acción concreta de 1-2 líneas que el seller puede hacer ya>"}`;
+
+  try {
+    const resp = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 700, messages: [{ role: 'user', content: prompt }] })
+    }).then(r => r.json());
+    if (resp.error) throw new Error(`Anthropic API: ${resp.error.message || JSON.stringify(resp.error)}`);
+    const text = resp.content?.[0]?.text || '{}';
+    const match = text.match(/\{[\s\S]*\}/);
+    if (!match) throw new Error('No JSON en respuesta de Claude');
+    const result = JSON.parse(match[0]);
+    return {
+      valoran: Array.isArray(result.valoran) ? result.valoran : [],
+      quejas: Array.isArray(result.quejas) ? result.quejas : [],
+      veredicto: result.veredicto || '',
+      recomendacion: result.recomendacion || ''
+    };
+  } catch (e) {
+    console.error('[CLAUDE-OPIN] Error:', e.message);
+    return { error: e.message };
+  }
+}
+
 app.get('/api/logistica/full-stock', requireAuth, async (req, res) => {
   try {
     const clientId = parseInt(req.query.client_id);

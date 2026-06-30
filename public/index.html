@@ -8486,13 +8486,17 @@ function refreshAdsTab() {
 let _opinionesData = null;
 
 // Filtros de la pestaña Opiniones (para tomar decisiones).
-let _opinFilters = { calif: 'todas', minOps: 3, orden: 'opiniones' };
+let _opinFilters = { calif: 'todas', minOps: 3, orden: 'opiniones', search: '', bajaConv: false };
+// Cruce con conversión (cargado on-demand).
+let _opinConvMap = {};
+let _opinConvState = 'none'; // none | loading | ready | error
 
 async function loadOpiniones() {
   const el = document.getElementById('opinionesContent');
   const client = getActiveClient();
   if (!client) { el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">Seleccioná un cliente primero</div>'; return; }
   el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">⏳ Recopilando opiniones de los compradores...<br><span style="font-size:11px">(en cuentas grandes puede tardar unos segundos)</span></div>';
+  _opinConvMap = {}; _opinConvState = 'none';
   try {
     const data = await apiCall('GET', `/api/opiniones?client_id=${client.id}`);
     if (!data || data.error) { el.innerHTML = `<div style="color:#ff5252;padding:40px;text-align:center">Error al cargar opiniones${data?.error ? ': ' + data.error : ''}</div>`; return; }
@@ -8554,10 +8558,26 @@ function renderOpiniones() {
     : '';
 
   const sel = (val, cur) => val === cur ? 'selected' : '';
+  const escAttr = s => String(s || '').replace(/"/g, '&quot;');
+
+  // Botón / estado del cruce con conversión.
+  const convBtn = _opinConvState === 'loading'
+    ? `<button disabled class="sync-btn" style="font-size:12px;padding:6px 12px;opacity:.6">⏳ Cruzando…</button>`
+    : _opinConvState === 'ready'
+      ? `<span style="font-size:12px;color:#00e676;font-weight:600">✓ Conversión cruzada</span>`
+      : `<button onclick="loadOpinConversion()" class="sync-btn" style="font-size:12px;padding:6px 12px" title="Trae la conversión de los últimos 30 días y la cruza por publicación">🎯 Cruzar con conversión</button>`;
+
+  // Checkbox que solo tiene sentido con conversión cargada.
+  const bajaConvChk = _opinConvState === 'ready'
+    ? `<label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);cursor:pointer" title="Buen rating pero baja conversión → el problema suele ser la PUBLICACIÓN, no el producto">
+        <input type="checkbox" ${_opinFilters.bajaConv ? 'checked' : ''} onchange="_opinFilters.bajaConv=this.checked;renderOpinList()" style="margin:0"> 💡 Buen rating, baja conv.
+      </label>`
+    : '';
+
   const filters = `
     <div style="display:flex;gap:10px;align-items:center;margin-bottom:14px;flex-wrap:wrap">
-      <input id="opinSearch" type="text" placeholder="Buscar por título o MLA..."
-        oninput="renderOpinList()"
+      <input id="opinSearch" type="text" placeholder="Buscar por título o MLA..." value="${escAttr(_opinFilters.search)}"
+        oninput="_opinFilters.search=this.value;renderOpinList()"
         style="flex:1;min-width:200px;padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px">
       <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)">Calificación:
         <select onchange="setOpinFilter('calif',this.value)" style="padding:6px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:12px">
@@ -8581,6 +8601,9 @@ function renderOpiniones() {
           <option value="precio" ${sel('precio', _opinFilters.orden)}>Precio</option>
         </select>
       </label>
+      ${bajaConvChk}
+      ${convBtn}
+      <button onclick="exportOpinionesExcel()" class="sync-btn" style="font-size:12px;padding:6px 12px">📥 Excel</button>
       <div style="font-size:12px;color:var(--muted)" id="opinCount"></div>
     </div>`;
 
@@ -8588,32 +8611,69 @@ function renderOpiniones() {
   renderOpinList();
 }
 
+// Trae la conversión (últimos 30 días) y la cruza por MLA. Reusa _convData si ya está.
+async function loadOpinConversion() {
+  const client = getActiveClient();
+  if (!client) return;
+  if (_convData && _convData.items && _convData.items.length) {
+    _convData.items.forEach(i => { _opinConvMap[i.mla_id] = { conversion: i.conversion, visitas: i.visitas }; });
+    _opinConvState = 'ready';
+    renderOpiniones();
+    return;
+  }
+  _opinConvState = 'loading';
+  renderOpiniones();
+  const today = new Date().toISOString().slice(0, 10);
+  const from  = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+  try {
+    const data = await apiCall('GET', `/api/reporte/visitas?client_id=${client.id}&date_from=${from}&date_to=${today}`);
+    if (data && data.items) {
+      data.items.forEach(i => { _opinConvMap[i.mla_id] = { conversion: i.conversion, visitas: i.visitas }; });
+      _convData = { items: data.items, metadatos: data.metadatos || {} }; // cachear para la tab Conversión
+      _opinConvState = 'ready';
+    } else { _opinConvState = 'error'; }
+  } catch (e) { _opinConvState = 'error'; }
+  renderOpiniones();
+}
+
 // Renderiza solo la lista filtrable (sin tocar los controles → no pierde foco).
-function renderOpinList() {
-  const cont = document.getElementById('opinList');
+// Devuelve los ítems tras aplicar los filtros y el orden actuales (compartido con el export).
+function opinFilteredItems() {
   const d = _opinionesData;
-  if (!cont || !d) return;
-  const q = (document.getElementById('opinSearch')?.value || '').toLowerCase().trim();
+  if (!d) return [];
   const f = _opinFilters;
+  const q = (f.search || '').toLowerCase().trim();
   let items = (d.items || []).slice();
 
-  // Búsqueda
   if (q) items = items.filter(i => (i.title || '').toLowerCase().includes(q) || (i.id || '').toLowerCase().includes(q));
-  // Mínimo de opiniones
   if (f.minOps > 0) items = items.filter(i => (i.total || 0) >= f.minOps);
-  // Calificación
-  if (f.calif === 'malas')      items = items.filter(i => (i.rating || 0) < 3.5);
+  if (f.calif === 'malas')          items = items.filter(i => (i.rating || 0) < 3.5);
   else if (f.calif === 'regulares') items = items.filter(i => (i.rating || 0) >= 3.5 && (i.rating || 0) < 4);
   else if (f.calif === 'buenas')    items = items.filter(i => (i.rating || 0) >= 4.5);
 
-  // Orden
+  // Buen rating, baja conversión: producto validado pero la publicación no convierte.
+  if (f.bajaConv && _opinConvState === 'ready') {
+    items = items.filter(i => {
+      const c = _opinConvMap[i.id];
+      return (i.rating || 0) >= 4 && c && c.visitas >= 100 && c.conversion < 2;
+    });
+  }
+
   items.sort((a, b) => {
     if (f.orden === 'peor')   return (a.rating || 0) - (b.rating || 0);
     if (f.orden === 'mejor')  return (b.rating || 0) - (a.rating || 0);
     if (f.orden === 'precio') return (b.price || 0) - (a.price || 0);
     if (f.orden === 'neg')    return (opinPctNeg(b) ?? -1) - (opinPctNeg(a) ?? -1);
-    return (b.total || 0) - (a.total || 0); // opiniones
+    return (b.total || 0) - (a.total || 0);
   });
+  return items;
+}
+
+function renderOpinList() {
+  const cont = document.getElementById('opinList');
+  const d = _opinionesData;
+  if (!cont || !d) return;
+  const items = opinFilteredItems();
 
   const countEl = document.getElementById('opinCount');
   if (countEl) countEl.textContent = items.length + ' publicaciones';
@@ -8628,6 +8688,20 @@ function renderOpinList() {
     const negBadge = pNeg != null
       ? `<div style="font-size:11px;color:${opinPctNegColor(pNeg)};font-weight:600">${pNeg.toFixed(0)}% neg.</div>`
       : '';
+    const c = _opinConvMap[i.id];
+    let convBadge = '';
+    if (_opinConvState === 'ready') {
+      if (c && c.visitas != null) {
+        const lowConv = (i.rating || 0) >= 4 && c.visitas >= 100 && c.conversion < 2;
+        const convCol = c.conversion >= 3 ? '#00e676' : c.conversion >= 1.5 ? '#ff9100' : '#ff4d4d';
+        convBadge = `<div style="text-align:center;flex-shrink:0;min-width:74px">
+            <div style="font-size:12px;font-weight:600;color:${convCol}">${(c.conversion || 0).toFixed(1)}% conv.</div>
+            <div style="font-size:10px;color:var(--muted)">${(c.visitas || 0).toLocaleString('es-AR')} vis.${lowConv ? ' · 💡' : ''}</div>
+          </div>`;
+      } else {
+        convBadge = `<div style="text-align:center;flex-shrink:0;min-width:74px;font-size:10px;color:var(--muted)">sin datos</div>`;
+      }
+    }
     return `
     <div style="border:1px solid var(--border);border-radius:10px;margin-bottom:10px;overflow:hidden;background:var(--surface)">
       <div style="display:flex;align-items:center;gap:12px;padding:10px 14px;cursor:pointer" onclick="toggleOpinItem('${i.id}')">
@@ -8636,6 +8710,7 @@ function renderOpinList() {
           <div style="font-weight:600;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtmlOpin(i.title)}</div>
           <div style="font-size:11px;color:var(--muted)">${i.id} · ${opinFmtMoney(i.price)}${i.sold ? ' · ' + i.sold.toLocaleString('es-AR') + ' vendidos' : ''}</div>
         </div>
+        ${convBadge}
         <div style="text-align:right;flex-shrink:0;min-width:60px">${negBadge}</div>
         <div style="text-align:right;flex-shrink:0">
           <div style="color:${opinRatingColor(i.rating)};font-size:15px;letter-spacing:1px">${opinStars(i.rating)}</div>
@@ -8646,6 +8721,40 @@ function renderOpinList() {
       <div id="opin-body-${i.id}" style="display:none;border-top:1px solid var(--border);padding:12px 14px"></div>
     </div>`;
   }).join('');
+}
+
+// Export a Excel de las publicaciones (con filtros aplicados).
+function exportOpinionesExcel() {
+  const items = opinFilteredItems();
+  if (!items.length) { showToast ? showToast('Sin datos para exportar') : alert('Sin datos para exportar'); return; }
+  const rows = items.map(i => {
+    const rl = i.rating_levels || {};
+    const pNeg = opinPctNeg(i);
+    const c = _opinConvMap[i.id];
+    const row = {
+      'Título': i.title || '',
+      'MLA': i.id,
+      'Link': i.permalink || '',
+      'Precio': i.price || 0,
+      'Vendidos': i.sold || 0,
+      'Rating': i.rating || 0,
+      'Opiniones': i.total || 0,
+      '% Negativas': pNeg != null ? +pNeg.toFixed(1) : '',
+      '5★': rl.five_star || 0, '4★': rl.four_star || 0, '3★': rl.three_star || 0, '2★': rl.two_star || 0, '1★': rl.one_star || 0,
+    };
+    if (_opinConvState === 'ready') {
+      row['Conversión %'] = c ? (c.conversion || 0) : '';
+      row['Visitas 30d']  = c ? (c.visitas || 0) : '';
+    }
+    return row;
+  });
+  const ws = XLSX.utils.json_to_sheet(rows);
+  ws['!cols'] = [{wch:55},{wch:14},{wch:48},{wch:11},{wch:9},{wch:8},{wch:10},{wch:11},{wch:6},{wch:6},{wch:6},{wch:6},{wch:6},{wch:12},{wch:11}];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Opiniones');
+  const client = getActiveClient();
+  const fname = `Opiniones_${(client?.name || 'cliente').replace(/\s+/g, '_')}.xlsx`;
+  XLSX.writeFile(wb, fname);
 }
 
 async function toggleOpinItem(itemId) {
@@ -8660,19 +8769,25 @@ async function toggleOpinItem(itemId) {
   body.style.display = '';
   if (caret) caret.textContent = '▲';
   if (body.dataset.loaded === '1') return; // ya cargado
-  body.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:14px;text-align:center">⏳ Cargando comentarios...</div>';
+  // Estructura: zona del resumen IA + zona de comentarios.
+  body.innerHTML =
+    `<div id="opin-resumen-${itemId}" style="margin-bottom:12px">
+       <button onclick="loadOpinResumen('${itemId}')" class="sync-btn" style="font-size:12px;padding:6px 14px;background:#6366f1;color:#fff">✨ Resumen inteligente (IA)</button>
+     </div>
+     <div id="opin-reviews-${itemId}"><div style="color:var(--muted);font-size:12px;padding:14px;text-align:center">⏳ Cargando comentarios...</div></div>`;
   body.dataset.offset = '0';
   await loadOpinReviews(itemId, true);
 }
 
 async function loadOpinReviews(itemId, replace) {
   const body = document.getElementById('opin-body-' + itemId);
+  const zone = document.getElementById('opin-reviews-' + itemId);
   const client = getActiveClient();
-  if (!client || !body) return;
+  if (!client || !body || !zone) return;
   const offset = parseInt(body.dataset.offset || '0');
   try {
     const data = await apiCall('GET', `/api/opiniones/item?client_id=${client.id}&item_id=${itemId}&offset=${offset}&limit=20`);
-    if (!data || data.error) { body.innerHTML = `<div style="color:#ff5252;font-size:12px;padding:10px">Error al cargar comentarios</div>`; return; }
+    if (!data || data.error) { zone.innerHTML = `<div style="color:#ff5252;font-size:12px;padding:10px">Error al cargar comentarios</div>`; return; }
     const list = (data.reviews || []).map(r => {
       const dt = r.date ? new Date(r.date).toLocaleDateString('es-AR') : '';
       const color = opinRatingColor(r.rate);
@@ -8693,7 +8808,7 @@ async function loadOpinReviews(itemId, replace) {
       ? `<div style="text-align:center;margin-top:10px"><button onclick="loadOpinReviews('${itemId}',false)" class="sync-btn" style="font-size:12px;padding:6px 14px">Cargar más (${loadedSoFar}/${data.total})</button></div>`
       : '';
 
-    if (replace) body.innerHTML = '<div id="opin-list-' + itemId + '">' + list + '</div>' + '<div id="opin-more-' + itemId + '">' + moreBtn + '</div>';
+    if (replace) zone.innerHTML = '<div id="opin-list-' + itemId + '">' + list + '</div>' + '<div id="opin-more-' + itemId + '">' + moreBtn + '</div>';
     else {
       document.getElementById('opin-list-' + itemId).insertAdjacentHTML('beforeend', list);
       const m = document.getElementById('opin-more-' + itemId);
@@ -8702,7 +8817,37 @@ async function loadOpinReviews(itemId, replace) {
     body.dataset.offset = String(loadedSoFar);
     body.dataset.loaded = '1';
   } catch (e) {
-    body.innerHTML = `<div style="color:#ff5252;font-size:12px;padding:10px">Error: ${e.message}</div>`;
+    zone.innerHTML = `<div style="color:#ff5252;font-size:12px;padding:10px">Error: ${e.message}</div>`;
+  }
+}
+
+// Resumen inteligente (IA) de las opiniones de un producto.
+async function loadOpinResumen(itemId) {
+  const zone = document.getElementById('opin-resumen-' + itemId);
+  const client = getActiveClient();
+  if (!zone || !client) return;
+  zone.innerHTML = '<div style="background:rgba(99,102,241,.08);border:1px solid #6366f1;border-radius:8px;padding:12px;font-size:12px;color:var(--muted)">⏳ Analizando las opiniones con IA...</div>';
+  const item = (_opinionesData?.items || []).find(i => i.id === itemId) || {};
+  const c = _opinConvMap[itemId];
+  const params = new URLSearchParams({ client_id: client.id, item_id: itemId, title: item.title || '' });
+  if (c && c.conversion != null) params.set('conversion', c.conversion);
+  try {
+    const r = await apiCall('GET', `/api/opiniones/resumen?${params.toString()}`);
+    if (!r || r.error) {
+      zone.innerHTML = `<div style="background:rgba(255,82,82,.08);border:1px solid #ff5252;border-radius:8px;padding:12px;font-size:12px;color:#ff5252">No se pudo generar el resumen: ${r?.error || 'sin respuesta'}<br><button onclick="loadOpinResumen('${itemId}')" class="sync-btn" style="font-size:11px;padding:4px 10px;margin-top:6px">Reintentar</button></div>`;
+      return;
+    }
+    const li = arr => (arr || []).map(x => `<li style="margin-bottom:2px">${escapeHtmlOpin(x)}</li>`).join('');
+    const valoran = (r.valoran || []).length ? `<div style="margin-bottom:8px"><div style="font-size:11px;font-weight:700;color:#00e676;text-transform:uppercase;letter-spacing:.5px">👍 Lo que valoran</div><ul style="margin:4px 0 0;padding-left:18px;font-size:12px;color:var(--text)">${li(r.valoran)}</ul></div>` : '';
+    const quejas = (r.quejas || []).length ? `<div style="margin-bottom:8px"><div style="font-size:11px;font-weight:700;color:#ff4d4d;text-transform:uppercase;letter-spacing:.5px">👎 Quejas recurrentes</div><ul style="margin:4px 0 0;padding-left:18px;font-size:12px;color:var(--text)">${li(r.quejas)}</ul></div>` : '';
+    const veredicto = r.veredicto ? `<div style="margin-bottom:8px"><span style="font-size:11px;font-weight:700;color:#6366f1;text-transform:uppercase;letter-spacing:.5px">⚖️ Veredicto: </span><span style="font-size:12px;color:var(--text)">${escapeHtmlOpin(r.veredicto)}</span></div>` : '';
+    const reco = r.recomendacion ? `<div style="background:var(--surface2);border-radius:6px;padding:8px 10px;font-size:12px;color:var(--text)"><span style="font-weight:700;color:#ff9100">🎯 Acción: </span>${escapeHtmlOpin(r.recomendacion)}</div>` : '';
+    zone.innerHTML = `<div style="background:rgba(99,102,241,.06);border:1px solid #6366f1;border-radius:8px;padding:12px 14px">
+      <div style="font-size:11px;color:var(--muted);margin-bottom:8px">✨ Resumen IA · sobre ${r.sampled || 0} de ${(r.total||0).toLocaleString('es-AR')} opiniones</div>
+      ${valoran}${quejas}${veredicto}${reco}
+    </div>`;
+  } catch (e) {
+    zone.innerHTML = `<div style="background:rgba(255,82,82,.08);border:1px solid #ff5252;border-radius:8px;padding:12px;font-size:12px;color:#ff5252">Error: ${e.message}</div>`;
   }
 }
 
