@@ -8490,6 +8490,8 @@ let _opinFilters = { calif: 'todas', minOps: 3, orden: 'opiniones', search: '', 
 // Cruce con conversión (cargado on-demand).
 let _opinConvMap = {};
 let _opinConvState = 'none'; // none | loading | ready | error
+// Resumen IA: apagado hasta que haya créditos en Anthropic. Poner en true para reactivar.
+const OPIN_IA_ENABLED = false;
 
 async function loadOpiniones() {
   const el = document.getElementById('opinionesContent');
@@ -8769,12 +8771,14 @@ async function toggleOpinItem(itemId) {
   body.style.display = '';
   if (caret) caret.textContent = '▲';
   if (body.dataset.loaded === '1') return; // ya cargado
-  // Estructura: zona del resumen IA + zona de comentarios.
-  body.innerHTML =
-    `<div id="opin-resumen-${itemId}" style="margin-bottom:12px">
-       <button onclick="loadOpinResumen('${itemId}')" class="sync-btn" style="font-size:12px;padding:6px 14px;background:#6366f1;color:#fff">✨ Resumen inteligente (IA)</button>
-     </div>
-     <div id="opin-reviews-${itemId}"><div style="color:var(--muted);font-size:12px;padding:14px;text-align:center">⏳ Cargando comentarios...</div></div>`;
+  // Estructura: zona del resumen IA (si está habilitada) + zona de comentarios.
+  const resumenZone = OPIN_IA_ENABLED
+    ? `<div id="opin-resumen-${itemId}" style="margin-bottom:12px">
+         <button onclick="loadOpinResumen('${itemId}')" class="sync-btn" style="font-size:12px;padding:6px 14px;background:#6366f1;color:#fff">✨ Resumen inteligente (IA)</button>
+       </div>`
+    : '';
+  body.innerHTML = resumenZone +
+    `<div id="opin-reviews-${itemId}"><div style="color:var(--muted);font-size:12px;padding:14px;text-align:center">⏳ Cargando comentarios...</div></div>`;
   body.dataset.offset = '0';
   await loadOpinReviews(itemId, true);
 }
