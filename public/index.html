@@ -1042,6 +1042,10 @@ tbody td {
           style="padding:8px 18px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-2px;font-family:var(--font-b)">
           ⭐ Seguimiento
         </button>
+        <button id="tab-perf-opiniones" onclick="switchPerfTab('opiniones')"
+          style="padding:8px 18px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-2px;font-family:var(--font-b)">
+          💬 Opiniones
+        </button>
       </div>
       <!-- Tab Análisis -->
       <div id="perf-tab-analisis">
@@ -1120,6 +1124,10 @@ tbody td {
         </div>
         <div id="seguimientoContent"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Marcá publicaciones con ★ en la tabla de Publicaciones para hacer seguimiento.</div></div>
       </div>
+      <!-- Tab Opiniones -->
+      <div id="perf-tab-opiniones" style="display:none">
+        <div id="opinionesContent"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Seleccioná la pestaña Opiniones para cargar.</div></div>
+      </div>
     </div>
 
     <!-- PUBLICACIONES -->
@@ -1197,14 +1205,9 @@ tbody td {
           style="padding:8px 18px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-2px;font-family:var(--font-b)">
           📋 Anuncios
         </button>
-        <button id="tab-ads-opiniones" onclick="switchAdsTab('opiniones')"
-          style="padding:8px 18px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-2px;font-family:var(--font-b)">
-          ⭐ Opiniones
-        </button>
       </div>
       <div id="adsContent"></div>
       <div id="adsAnunciosContent" style="display:none"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Seleccioná la pestaña Anuncios para cargar</div></div>
-      <div id="adsOpinionesContent" style="display:none"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Seleccioná la pestaña Opiniones para cargar</div></div>
     </div>
 
     <!-- DIAGNÓSTICO MENSUAL -->
@@ -4357,7 +4360,7 @@ let _perfPubModeFilter = null;
 
 function switchPerfTab(tab) {
   _perfActiveTab = tab;
-  ['analisis','publicaciones','conversion','ventas-hora','seguimiento'].forEach(t => {
+  ['analisis','publicaciones','conversion','ventas-hora','seguimiento','opiniones'].forEach(t => {
     const el  = document.getElementById(`perf-tab-${t}`);
     const btn = document.getElementById(`tab-perf-${t}`);
     if (el)  el.style.display  = t === tab ? '' : 'none';
@@ -4367,10 +4370,11 @@ function switchPerfTab(tab) {
     }
   });
   const btnExport = document.getElementById('btnExportPerf');
-  if (btnExport) btnExport.style.display = (tab === 'publicaciones' || tab === 'ventas-hora' || tab === 'conversion') ? 'none' : '';
+  if (btnExport) btnExport.style.display = (tab === 'publicaciones' || tab === 'ventas-hora' || tab === 'conversion' || tab === 'opiniones') ? 'none' : '';
   if (tab === 'publicaciones') { window._perfPubSearch = ''; loadSeguimientoMap(); renderPerfPublicaciones(); }
   if (tab === 'seguimiento') loadSeguimiento();
   if (tab === 'conversion') initConversionTab();
+  if (tab === 'opiniones' && !_opinionesData) loadOpiniones();
   if (tab === 'ventas-hora') {
     const client = getActiveClient();
     const iframe = document.getElementById('iframe-ventas-hora');
@@ -8457,7 +8461,7 @@ let _adsAnunciosSort = { col: 'inversion', asc: false };
 
 function switchAdsTab(tab) {
   _adsActiveTab = tab;
-  const tabs = { campanas: 'adsContent', anuncios: 'adsAnunciosContent', opiniones: 'adsOpinionesContent' };
+  const tabs = { campanas: 'adsContent', anuncios: 'adsAnunciosContent' };
   Object.keys(tabs).forEach(t => {
     document.getElementById(tabs[t]).style.display = t === tab ? '' : 'none';
     const btn = document.getElementById(`tab-ads-${t}`);
@@ -8467,16 +8471,12 @@ function switchAdsTab(tab) {
     }
   });
   if (tab === 'anuncios' && !_adsAnunciosData) loadAdsAnuncios();
-  if (tab === 'opiniones' && !_opinionesData) loadOpiniones();
 }
 
 function refreshAdsTab() {
   if (_adsActiveTab === 'anuncios') {
     _adsAnunciosData = null;
     loadAdsAnuncios();
-  } else if (_adsActiveTab === 'opiniones') {
-    _opinionesData = null;
-    loadOpiniones();
   } else {
     loadAds();
   }
@@ -8485,8 +8485,11 @@ function refreshAdsTab() {
 // ── Opiniones de compradores ─────────────────────────────────────────────
 let _opinionesData = null;
 
+// Filtros de la pestaña Opiniones (para tomar decisiones).
+let _opinFilters = { calif: 'todas', minOps: 3, orden: 'opiniones' };
+
 async function loadOpiniones() {
-  const el = document.getElementById('adsOpinionesContent');
+  const el = document.getElementById('opinionesContent');
   const client = getActiveClient();
   if (!client) { el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">Seleccioná un cliente primero</div>'; return; }
   el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">⏳ Recopilando opiniones de los compradores...<br><span style="font-size:11px">(en cuentas grandes puede tardar unos segundos)</span></div>';
@@ -8509,9 +8512,25 @@ function opinStars(rating) {
 function opinRatingColor(rating) {
   return rating >= 4 ? '#00e676' : rating >= 3 ? '#ff9100' : '#ff4d4d';
 }
+// % de opiniones negativas (1 y 2 estrellas) a partir de la distribución.
+function opinPctNeg(i) {
+  const rl = i.rating_levels;
+  if (!rl || !i.total) return null;
+  const neg = (rl.one_star || 0) + (rl.two_star || 0);
+  return neg / i.total * 100;
+}
+function opinPctNegColor(p) {
+  if (p == null) return 'var(--muted)';
+  return p >= 25 ? '#ff4d4d' : p >= 10 ? '#ff9100' : '#00e676';
+}
+
+function setOpinFilter(key, val) {
+  _opinFilters[key] = (key === 'minOps') ? (parseInt(val) || 0) : val;
+  renderOpinList();
+}
 
 function renderOpiniones() {
-  const el = document.getElementById('adsOpinionesContent');
+  const el = document.getElementById('opinionesContent');
   const d = _opinionesData;
   if (!d) return;
 
@@ -8519,11 +8538,14 @@ function renderOpiniones() {
   const avgRating = (d.items || []).length
     ? (d.items.reduce((s, i) => s + (i.rating || 0) * (i.total || 0), 0) / (totalOps || 1))
     : 0;
+  // Publicaciones problemáticas: rating < 3.5 con al menos 3 opiniones.
+  const problematicas = (d.items || []).filter(i => (i.rating || 0) < 3.5 && (i.total || 0) >= 3).length;
 
   const header = `
     <div class="kpi-grid" style="margin-bottom:16px">
       <div class="kpi-card"><div class="kpi-label">⭐ RATING PROMEDIO</div><div class="kpi-value" style="color:${opinRatingColor(avgRating)}">${avgRating ? avgRating.toFixed(2) : '—'}</div><div class="kpi-sub">Ponderado por cantidad de opiniones</div></div>
       <div class="kpi-card"><div class="kpi-label">💬 OPINIONES TOTALES</div><div class="kpi-value">${totalOps.toLocaleString('es-AR')}</div><div class="kpi-sub">${d.meta.with_reviews} publicaciones con opiniones</div></div>
+      <div class="kpi-card"><div class="kpi-label">🔴 PUBLIC. PROBLEMÁTICAS</div><div class="kpi-value" style="color:${problematicas ? '#ff4d4d' : '#00e676'}">${problematicas}</div><div class="kpi-sub">rating &lt; 3.5 con ≥3 opiniones</div></div>
       <div class="kpi-card"><div class="kpi-label">📦 PUBLICACIONES</div><div class="kpi-value">${d.meta.total_items.toLocaleString('es-AR')}</div><div class="kpi-sub">activas en la cuenta</div></div>
     </div>`;
 
@@ -8531,36 +8553,82 @@ function renderOpiniones() {
     ? `<div style="background:rgba(255,145,0,.1);border:1px solid #ff9100;border-radius:8px;padding:8px 12px;margin-bottom:12px;font-size:12px;color:#ff9100">⚠️ La cuenta tiene ${d.meta.total_items.toLocaleString('es-AR')} publicaciones. Se escanearon las ${d.meta.scanned.toLocaleString('es-AR')} con más ventas (las más probables de tener opiniones).</div>`
     : '';
 
-  const search = `
+  const sel = (val, cur) => val === cur ? 'selected' : '';
+  const filters = `
     <div style="display:flex;gap:10px;align-items:center;margin-bottom:14px;flex-wrap:wrap">
       <input id="opinSearch" type="text" placeholder="Buscar por título o MLA..."
         oninput="renderOpinList()"
-        style="flex:1;min-width:220px;padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px">
+        style="flex:1;min-width:200px;padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px">
+      <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)">Calificación:
+        <select onchange="setOpinFilter('calif',this.value)" style="padding:6px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:12px">
+          <option value="todas" ${sel('todas', _opinFilters.calif)}>Todas</option>
+          <option value="malas" ${sel('malas', _opinFilters.calif)}>🔴 Malas (&lt;3.5★)</option>
+          <option value="regulares" ${sel('regulares', _opinFilters.calif)}>⚠️ Regulares (3.5–4★)</option>
+          <option value="buenas" ${sel('buenas', _opinFilters.calif)}>✅ Buenas (≥4.5★)</option>
+        </select>
+      </label>
+      <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)">Mín. opiniones:
+        <input type="number" min="0" step="1" value="${_opinFilters.minOps}" onchange="setOpinFilter('minOps',this.value)"
+          title="Saca el ruido: publicaciones con pocas opiniones no son representativas."
+          style="width:64px;padding:5px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:12px">
+      </label>
+      <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)">Ordenar:
+        <select onchange="setOpinFilter('orden',this.value)" style="padding:6px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:12px">
+          <option value="opiniones" ${sel('opiniones', _opinFilters.orden)}>Más opiniones</option>
+          <option value="peor" ${sel('peor', _opinFilters.orden)}>Peor rating</option>
+          <option value="mejor" ${sel('mejor', _opinFilters.orden)}>Mejor rating</option>
+          <option value="neg" ${sel('neg', _opinFilters.orden)}>Más % negativas</option>
+          <option value="precio" ${sel('precio', _opinFilters.orden)}>Precio</option>
+        </select>
+      </label>
       <div style="font-size:12px;color:var(--muted)" id="opinCount"></div>
     </div>`;
 
-  el.innerHTML = header + capWarn + search + '<div id="opinList"></div>';
+  el.innerHTML = header + capWarn + filters + '<div id="opinList"></div>';
   renderOpinList();
 }
 
-// Renderiza solo la lista filtrable (sin tocar el input → no pierde foco).
+// Renderiza solo la lista filtrable (sin tocar los controles → no pierde foco).
 function renderOpinList() {
   const cont = document.getElementById('opinList');
   const d = _opinionesData;
   if (!cont || !d) return;
   const q = (document.getElementById('opinSearch')?.value || '').toLowerCase().trim();
-  let items = d.items || [];
+  const f = _opinFilters;
+  let items = (d.items || []).slice();
+
+  // Búsqueda
   if (q) items = items.filter(i => (i.title || '').toLowerCase().includes(q) || (i.id || '').toLowerCase().includes(q));
+  // Mínimo de opiniones
+  if (f.minOps > 0) items = items.filter(i => (i.total || 0) >= f.minOps);
+  // Calificación
+  if (f.calif === 'malas')      items = items.filter(i => (i.rating || 0) < 3.5);
+  else if (f.calif === 'regulares') items = items.filter(i => (i.rating || 0) >= 3.5 && (i.rating || 0) < 4);
+  else if (f.calif === 'buenas')    items = items.filter(i => (i.rating || 0) >= 4.5);
+
+  // Orden
+  items.sort((a, b) => {
+    if (f.orden === 'peor')   return (a.rating || 0) - (b.rating || 0);
+    if (f.orden === 'mejor')  return (b.rating || 0) - (a.rating || 0);
+    if (f.orden === 'precio') return (b.price || 0) - (a.price || 0);
+    if (f.orden === 'neg')    return (opinPctNeg(b) ?? -1) - (opinPctNeg(a) ?? -1);
+    return (b.total || 0) - (a.total || 0); // opiniones
+  });
 
   const countEl = document.getElementById('opinCount');
   if (countEl) countEl.textContent = items.length + ' publicaciones';
 
   if (!items.length) {
-    cont.innerHTML = '<div style="color:var(--muted);padding:30px;text-align:center">No hay publicaciones con opiniones para mostrar</div>';
+    cont.innerHTML = '<div style="color:var(--muted);padding:30px;text-align:center">No hay publicaciones que cumplan los filtros</div>';
     return;
   }
 
-  cont.innerHTML = items.map(i => `
+  cont.innerHTML = items.map(i => {
+    const pNeg = opinPctNeg(i);
+    const negBadge = pNeg != null
+      ? `<div style="font-size:11px;color:${opinPctNegColor(pNeg)};font-weight:600">${pNeg.toFixed(0)}% neg.</div>`
+      : '';
+    return `
     <div style="border:1px solid var(--border);border-radius:10px;margin-bottom:10px;overflow:hidden;background:var(--surface)">
       <div style="display:flex;align-items:center;gap:12px;padding:10px 14px;cursor:pointer" onclick="toggleOpinItem('${i.id}')">
         <img src="${i.thumbnail}" style="width:46px;height:46px;object-fit:contain;border-radius:6px;background:#fff;flex-shrink:0" onerror="this.style.visibility='hidden'">
@@ -8568,6 +8636,7 @@ function renderOpinList() {
           <div style="font-weight:600;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtmlOpin(i.title)}</div>
           <div style="font-size:11px;color:var(--muted)">${i.id} · ${opinFmtMoney(i.price)}${i.sold ? ' · ' + i.sold.toLocaleString('es-AR') + ' vendidos' : ''}</div>
         </div>
+        <div style="text-align:right;flex-shrink:0;min-width:60px">${negBadge}</div>
         <div style="text-align:right;flex-shrink:0">
           <div style="color:${opinRatingColor(i.rating)};font-size:15px;letter-spacing:1px">${opinStars(i.rating)}</div>
           <div style="font-size:11px;color:var(--muted)">${(i.rating || 0).toFixed(1)} · ${i.total.toLocaleString('es-AR')} opiniones</div>
@@ -8575,7 +8644,8 @@ function renderOpinList() {
         <span id="opin-caret-${i.id}" style="color:var(--muted);font-size:13px;flex-shrink:0">▼</span>
       </div>
       <div id="opin-body-${i.id}" style="display:none;border-top:1px solid var(--border);padding:12px 14px"></div>
-    </div>`).join('');
+    </div>`;
+  }).join('');
 }
 
 async function toggleOpinItem(itemId) {
