@@ -7389,11 +7389,13 @@ app.get('/api/opiniones/resumen', requireAuth, async (req, res) => {
     if (!total) return res.json({ error: 'Este producto no tiene opiniones para resumir' });
 
     // Muestra de hasta 60 comentarios (cubre lo bueno y lo malo).
+    const SAMPLE_CAP = 60;
     const sample = [];
-    for (let off = 0; off < Math.min(total, 60); off += 50) {
-      const rv = await fetch(`${ML_API}/reviews/item/${itemId}?limit=50&offset=${off}`, { headers }).then(r => r.json()).catch(() => ({}));
+    for (let off = 0; off < Math.min(total, SAMPLE_CAP); off += 50) {
+      const lim = Math.min(50, SAMPLE_CAP - off);
+      const rv = await fetch(`${ML_API}/reviews/item/${itemId}?limit=${lim}&offset=${off}`, { headers }).then(r => r.json()).catch(() => ({}));
       (rv.reviews || []).forEach(r => sample.push({ rate: r.rate || 0, title: r.title || '', content: r.content || '' }));
-      if (!rv.reviews || rv.reviews.length < 50) break;
+      if (!rv.reviews || rv.reviews.length < lim) break;
     }
 
     const resumen = await callClaudeForOpinionSummary({ title, rating, total, conversion, reviews: sample });
