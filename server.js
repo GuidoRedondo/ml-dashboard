@@ -7283,6 +7283,95 @@ async function fetchAllActiveItemIds(uid, headers) {
   return ids;
 }
 
+// ── Opiniones / Reviews de compradores ───────────────────────────────────
+// Lista los ítems activos del seller que tienen opiniones, con rating y total.
+// Prioriza por ventas (más ventas → más probable que tenga reviews) y limita el
+// escaneo para no colgar cuentas con miles de publicaciones (avisa si truncó).
+app.get('/api/opiniones', requireAuth, async (req, res) => {
+  try {
+    const clientId = parseInt(req.query.client_id);
+    const token = await getClientToken(clientId);
+    if (!token) return res.status(403).json({ error: 'Cliente no conectado o token expirado' });
+    const headers = { 'Authorization': `Bearer ${token}` };
+    const me = await fetch(`${ML_API}/users/me`, { headers }).then(r => r.json());
+    if (me.error || !me.id) return res.status(403).json({ error: 'token invalido' });
+    const uid = me.id;
+
+    // 1. Todos los ítems activos (scan: soporta +1000 publicaciones)
+    const allIds = await fetchAllActiveItemIds(uid, headers);
+
+    // 2. Datos básicos por ítem (batches de 20 con concurrencia)
+    const itemMeta = {};
+    const detailBatches = [];
+    for (let i = 0; i < allIds.length; i += 20) detailBatches.push(allIds.slice(i, i + 20));
+    const DETAIL_CONCURRENCY = 8;
+    for (let g = 0; g < detailBatches.length; g += DETAIL_CONCURRENCY) {
+      const group = detailBatches.slice(g, g + DETAIL_CONCURRENCY);
+      await Promise.all(group.map(async batch => {
+        const data = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,title,price,thumbnail,permalink,sold_quantity`, { headers }).then(r => r.json()).catch(() => []);
+        (Array.isArray(data) ? data : []).forEach(r => {
+          if (r.code !== 200 || !r.body) return;
+          const b = r.body;
+          itemMeta[b.id] = {
+            id: b.id, title: b.title || '', price: b.price || 0,
+            thumbnail: (b.thumbnail || '').replace('http://', 'https://'),
+            permalink: b.permalink || '', sold: b.sold_quantity || 0
+          };
+        });
+      }));
+    }
+
+    // 3. Orden por ventas desc y tope de escaneo
+    const ordered = Object.values(itemMeta).sort((a, b) => b.sold - a.sold);
+    const MAX_SCAN = Math.min(parseInt(req.query.max) || 800, 3000);
+    const toScan = ordered.slice(0, MAX_SCAN);
+    const capped = ordered.length > MAX_SCAN;
+
+    // 4. Resumen de reviews por ítem (limit=1 para minimizar payload)
+    const items = [];
+    const REV_CONCURRENCY = 10;
+    for (let i = 0; i < toScan.length; i += REV_CONCURRENCY) {
+      const group = toScan.slice(i, i + REV_CONCURRENCY);
+      await Promise.all(group.map(async it => {
+        try {
+          const rv = await fetch(`${ML_API}/reviews/item/${it.id}?limit=1`, { headers }).then(r => r.json());
+          const total = rv.paging?.total ?? (Array.isArray(rv.reviews) ? rv.reviews.length : 0);
+          if (total > 0) items.push({ ...it, rating: rv.rating_average || 0, total, rating_levels: rv.rating_levels || null });
+        } catch (e) { /* ítem sin reviews o error puntual */ }
+      }));
+    }
+
+    items.sort((a, b) => b.total - a.total);
+    res.json({ items, meta: { total_items: ordered.length, scanned: toScan.length, capped, with_reviews: items.length } });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Comentarios completos de un ítem, paginados.
+app.get('/api/opiniones/item', requireAuth, async (req, res) => {
+  try {
+    const clientId = parseInt(req.query.client_id);
+    const itemId = req.query.item_id;
+    const offset = parseInt(req.query.offset) || 0;
+    const limit = Math.min(parseInt(req.query.limit) || 20, 50);
+    const token = await getClientToken(clientId);
+    if (!token) return res.status(403).json({ error: 'Sin token' });
+    const headers = { 'Authorization': `Bearer ${token}` };
+    const rv = await fetch(`${ML_API}/reviews/item/${itemId}?limit=${limit}&offset=${offset}`, { headers }).then(r => r.json());
+    const reviews = (rv.reviews || []).map(r => ({
+      id: r.id, rate: r.rate || 0, title: r.title || '', content: r.content || '',
+      date: r.date_created || r.buying_date || null,
+      likes: r.likes || 0, dislikes: r.dislikes || 0,
+      has_media: Array.isArray(r.media) && r.media.length > 0
+    }));
+    res.json({
+      rating: rv.rating_average || 0,
+      total: rv.paging?.total ?? reviews.length,
+      rating_levels: rv.rating_levels || null,
+      offset, limit, reviews
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 app.get('/api/logistica/full-stock', requireAuth, async (req, res) => {
   try {
     const clientId = parseInt(req.query.client_id);

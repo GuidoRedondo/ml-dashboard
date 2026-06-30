@@ -1197,9 +1197,14 @@ tbody td {
           style="padding:8px 18px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-2px;font-family:var(--font-b)">
           📋 Anuncios
         </button>
+        <button id="tab-ads-opiniones" onclick="switchAdsTab('opiniones')"
+          style="padding:8px 18px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-2px;font-family:var(--font-b)">
+          ⭐ Opiniones
+        </button>
       </div>
       <div id="adsContent"></div>
       <div id="adsAnunciosContent" style="display:none"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Seleccioná la pestaña Anuncios para cargar</div></div>
+      <div id="adsOpinionesContent" style="display:none"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Seleccioná la pestaña Opiniones para cargar</div></div>
     </div>
 
     <!-- DIAGNÓSTICO MENSUAL -->
@@ -8452,7 +8457,7 @@ let _adsAnunciosSort = { col: 'inversion', asc: false };
 
 function switchAdsTab(tab) {
   _adsActiveTab = tab;
-  const tabs = { campanas: 'adsContent', anuncios: 'adsAnunciosContent' };
+  const tabs = { campanas: 'adsContent', anuncios: 'adsAnunciosContent', opiniones: 'adsOpinionesContent' };
   Object.keys(tabs).forEach(t => {
     document.getElementById(tabs[t]).style.display = t === tab ? '' : 'none';
     const btn = document.getElementById(`tab-ads-${t}`);
@@ -8462,15 +8467,177 @@ function switchAdsTab(tab) {
     }
   });
   if (tab === 'anuncios' && !_adsAnunciosData) loadAdsAnuncios();
+  if (tab === 'opiniones' && !_opinionesData) loadOpiniones();
 }
 
 function refreshAdsTab() {
   if (_adsActiveTab === 'anuncios') {
     _adsAnunciosData = null;
     loadAdsAnuncios();
+  } else if (_adsActiveTab === 'opiniones') {
+    _opinionesData = null;
+    loadOpiniones();
   } else {
     loadAds();
   }
+}
+
+// ── Opiniones de compradores ─────────────────────────────────────────────
+let _opinionesData = null;
+
+async function loadOpiniones() {
+  const el = document.getElementById('adsOpinionesContent');
+  const client = getActiveClient();
+  if (!client) { el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">Seleccioná un cliente primero</div>'; return; }
+  el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">⏳ Recopilando opiniones de los compradores...<br><span style="font-size:11px">(en cuentas grandes puede tardar unos segundos)</span></div>';
+  try {
+    const data = await apiCall('GET', `/api/opiniones?client_id=${client.id}`);
+    if (!data || data.error) { el.innerHTML = `<div style="color:#ff5252;padding:40px;text-align:center">Error al cargar opiniones${data?.error ? ': ' + data.error : ''}</div>`; return; }
+    _opinionesData = data;
+    renderOpiniones();
+  } catch (e) {
+    el.innerHTML = `<div style="color:#ff5252;font-size:13px;padding:40px;text-align:center">Error: ${e.message}</div>`;
+  }
+}
+
+function opinFmtMoney(n) { return '$' + Math.round(n || 0).toLocaleString('es-AR'); }
+
+function opinStars(rating) {
+  const r = Math.round(rating || 0);
+  return '★'.repeat(r) + '☆'.repeat(Math.max(0, 5 - r));
+}
+function opinRatingColor(rating) {
+  return rating >= 4 ? '#00e676' : rating >= 3 ? '#ff9100' : '#ff4d4d';
+}
+
+function renderOpiniones() {
+  const el = document.getElementById('adsOpinionesContent');
+  const d = _opinionesData;
+  if (!d) return;
+
+  const totalOps = (d.items || []).reduce((s, i) => s + (i.total || 0), 0);
+  const avgRating = (d.items || []).length
+    ? (d.items.reduce((s, i) => s + (i.rating || 0) * (i.total || 0), 0) / (totalOps || 1))
+    : 0;
+
+  const header = `
+    <div class="kpi-grid" style="margin-bottom:16px">
+      <div class="kpi-card"><div class="kpi-label">⭐ RATING PROMEDIO</div><div class="kpi-value" style="color:${opinRatingColor(avgRating)}">${avgRating ? avgRating.toFixed(2) : '—'}</div><div class="kpi-sub">Ponderado por cantidad de opiniones</div></div>
+      <div class="kpi-card"><div class="kpi-label">💬 OPINIONES TOTALES</div><div class="kpi-value">${totalOps.toLocaleString('es-AR')}</div><div class="kpi-sub">${d.meta.with_reviews} publicaciones con opiniones</div></div>
+      <div class="kpi-card"><div class="kpi-label">📦 PUBLICACIONES</div><div class="kpi-value">${d.meta.total_items.toLocaleString('es-AR')}</div><div class="kpi-sub">activas en la cuenta</div></div>
+    </div>`;
+
+  const capWarn = d.meta.capped
+    ? `<div style="background:rgba(255,145,0,.1);border:1px solid #ff9100;border-radius:8px;padding:8px 12px;margin-bottom:12px;font-size:12px;color:#ff9100">⚠️ La cuenta tiene ${d.meta.total_items.toLocaleString('es-AR')} publicaciones. Se escanearon las ${d.meta.scanned.toLocaleString('es-AR')} con más ventas (las más probables de tener opiniones).</div>`
+    : '';
+
+  const search = `
+    <div style="display:flex;gap:10px;align-items:center;margin-bottom:14px;flex-wrap:wrap">
+      <input id="opinSearch" type="text" placeholder="Buscar por título o MLA..."
+        oninput="renderOpinList()"
+        style="flex:1;min-width:220px;padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px">
+      <div style="font-size:12px;color:var(--muted)" id="opinCount"></div>
+    </div>`;
+
+  el.innerHTML = header + capWarn + search + '<div id="opinList"></div>';
+  renderOpinList();
+}
+
+// Renderiza solo la lista filtrable (sin tocar el input → no pierde foco).
+function renderOpinList() {
+  const cont = document.getElementById('opinList');
+  const d = _opinionesData;
+  if (!cont || !d) return;
+  const q = (document.getElementById('opinSearch')?.value || '').toLowerCase().trim();
+  let items = d.items || [];
+  if (q) items = items.filter(i => (i.title || '').toLowerCase().includes(q) || (i.id || '').toLowerCase().includes(q));
+
+  const countEl = document.getElementById('opinCount');
+  if (countEl) countEl.textContent = items.length + ' publicaciones';
+
+  if (!items.length) {
+    cont.innerHTML = '<div style="color:var(--muted);padding:30px;text-align:center">No hay publicaciones con opiniones para mostrar</div>';
+    return;
+  }
+
+  cont.innerHTML = items.map(i => `
+    <div style="border:1px solid var(--border);border-radius:10px;margin-bottom:10px;overflow:hidden;background:var(--surface)">
+      <div style="display:flex;align-items:center;gap:12px;padding:10px 14px;cursor:pointer" onclick="toggleOpinItem('${i.id}')">
+        <img src="${i.thumbnail}" style="width:46px;height:46px;object-fit:contain;border-radius:6px;background:#fff;flex-shrink:0" onerror="this.style.visibility='hidden'">
+        <div style="flex:1;min-width:0">
+          <div style="font-weight:600;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtmlOpin(i.title)}</div>
+          <div style="font-size:11px;color:var(--muted)">${i.id} · ${opinFmtMoney(i.price)}${i.sold ? ' · ' + i.sold.toLocaleString('es-AR') + ' vendidos' : ''}</div>
+        </div>
+        <div style="text-align:right;flex-shrink:0">
+          <div style="color:${opinRatingColor(i.rating)};font-size:15px;letter-spacing:1px">${opinStars(i.rating)}</div>
+          <div style="font-size:11px;color:var(--muted)">${(i.rating || 0).toFixed(1)} · ${i.total.toLocaleString('es-AR')} opiniones</div>
+        </div>
+        <span id="opin-caret-${i.id}" style="color:var(--muted);font-size:13px;flex-shrink:0">▼</span>
+      </div>
+      <div id="opin-body-${i.id}" style="display:none;border-top:1px solid var(--border);padding:12px 14px"></div>
+    </div>`).join('');
+}
+
+async function toggleOpinItem(itemId) {
+  const body = document.getElementById('opin-body-' + itemId);
+  const caret = document.getElementById('opin-caret-' + itemId);
+  if (!body) return;
+  if (body.style.display !== 'none') {
+    body.style.display = 'none';
+    if (caret) caret.textContent = '▼';
+    return;
+  }
+  body.style.display = '';
+  if (caret) caret.textContent = '▲';
+  if (body.dataset.loaded === '1') return; // ya cargado
+  body.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:14px;text-align:center">⏳ Cargando comentarios...</div>';
+  body.dataset.offset = '0';
+  await loadOpinReviews(itemId, true);
+}
+
+async function loadOpinReviews(itemId, replace) {
+  const body = document.getElementById('opin-body-' + itemId);
+  const client = getActiveClient();
+  if (!client || !body) return;
+  const offset = parseInt(body.dataset.offset || '0');
+  try {
+    const data = await apiCall('GET', `/api/opiniones/item?client_id=${client.id}&item_id=${itemId}&offset=${offset}&limit=20`);
+    if (!data || data.error) { body.innerHTML = `<div style="color:#ff5252;font-size:12px;padding:10px">Error al cargar comentarios</div>`; return; }
+    const list = (data.reviews || []).map(r => {
+      const dt = r.date ? new Date(r.date).toLocaleDateString('es-AR') : '';
+      const color = opinRatingColor(r.rate);
+      const likes = r.likes ? ` 👍 ${r.likes}` : '';
+      const dislikes = r.dislikes ? ` 👎 ${r.dislikes}` : '';
+      return `<div style="border-bottom:1px solid var(--border);padding:9px 0">
+        <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px">
+          <span style="color:${color};font-size:13px;letter-spacing:1px">${opinStars(r.rate)}</span>
+          <span style="font-size:11px;color:var(--muted)">${dt}${r.has_media ? ' · 📷' : ''}${likes}${dislikes}</span>
+        </div>
+        ${r.title ? `<div style="font-weight:600;font-size:12px;margin-top:3px">${escapeHtmlOpin(r.title)}</div>` : ''}
+        ${r.content ? `<div style="font-size:12px;color:var(--text);margin-top:2px;line-height:1.45">${escapeHtmlOpin(r.content)}</div>` : ''}
+      </div>`;
+    }).join('');
+
+    const loadedSoFar = offset + (data.reviews || []).length;
+    const moreBtn = loadedSoFar < data.total
+      ? `<div style="text-align:center;margin-top:10px"><button onclick="loadOpinReviews('${itemId}',false)" class="sync-btn" style="font-size:12px;padding:6px 14px">Cargar más (${loadedSoFar}/${data.total})</button></div>`
+      : '';
+
+    if (replace) body.innerHTML = '<div id="opin-list-' + itemId + '">' + list + '</div>' + '<div id="opin-more-' + itemId + '">' + moreBtn + '</div>';
+    else {
+      document.getElementById('opin-list-' + itemId).insertAdjacentHTML('beforeend', list);
+      const m = document.getElementById('opin-more-' + itemId);
+      if (m) m.innerHTML = moreBtn;
+    }
+    body.dataset.offset = String(loadedSoFar);
+    body.dataset.loaded = '1';
+  } catch (e) {
+    body.innerHTML = `<div style="color:#ff5252;font-size:12px;padding:10px">Error: ${e.message}</div>`;
+  }
+}
+
+function escapeHtmlOpin(s) {
+  return (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
 async function loadAdsAnuncios() {
