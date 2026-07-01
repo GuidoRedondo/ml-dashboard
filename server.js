@@ -9754,12 +9754,15 @@ app.get('/api/seguimiento', requireAuth, async (req, res) => {
       const ritmos  = inRange.map(r => parseFloat(r.ritmo_dia) || 0);
       const ritmo   = ritmos.length ? ritmos.reduce((a,b) => a+b, 0) / ritmos.length : 0;
       const ultimo  = inRange[inRange.length - 1];
+      const stock   = ultimo ? ultimo.stock : null;
+      const cobertura = (stock != null && ritmo > 0) ? Math.round(stock / ritmo) : null;
       return {
         visitas, ordenes,
         conversion: visitas > 0 ? parseFloat((ordenes / visitas * 100).toFixed(2)) : 0,
         ritmo_dia:  parseFloat(ritmo.toFixed(3)),
         precio:     ultimo ? parseFloat(ultimo.precio) || null : null,
-        stock:      ultimo ? ultimo.stock : null,
+        stock,
+        cobertura,
       };
     };
 
@@ -9783,6 +9786,8 @@ app.get('/api/seguimiento', requireAuth, async (req, res) => {
           conversion: delta(cur, prev, 'conversion'),
           ritmo_dia:  delta(cur, prev, 'ritmo_dia'),
           precio:     delta(cur, prev, 'precio'),
+          stock:      delta(cur, prev, 'stock'),
+          cobertura:  delta(cur, prev, 'cobertura'),
         } : null,
         snapshots_count: rows.length,
       };
