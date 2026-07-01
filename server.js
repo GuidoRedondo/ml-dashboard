@@ -258,6 +258,14 @@ async function initDB() {
       updated_at        TIMESTAMP DEFAULT NOW(),
       UNIQUE(client_id, item_id)
     );
+    CREATE TABLE IF NOT EXISTS stock_umbral_critico (
+      id          SERIAL PRIMARY KEY,
+      client_id   INTEGER NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+      item_id     VARCHAR(30) NOT NULL,
+      min_stock   INTEGER NOT NULL,
+      updated_at  TIMESTAMP DEFAULT NOW(),
+      UNIQUE(client_id, item_id)
+    );
     CREATE TABLE IF NOT EXISTS bitacora (
       id           SERIAL PRIMARY KEY,
       client_id    INTEGER NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
@@ -7662,6 +7670,49 @@ app.put('/api/logistica/full-stock/:item_id', requireAuth, async (req, res) => {
     res.json({ ok: true });
   } catch(e) {
     console.error('[FULL_STOCK_PUT]', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+
+// ── STOCK: umbral crítico por producto (en unidades) ─────────────────────────
+app.get('/api/stock/umbral-critico', requireAuth, async (req, res) => {
+  try {
+    const client_id = parseInt(req.query.client_id);
+    if (!client_id) return res.status(400).json({ error: 'client_id requerido' });
+    const { rows } = await pool.query(
+      'SELECT item_id, min_stock FROM stock_umbral_critico WHERE client_id = $1',
+      [client_id]
+    );
+    const map = {};
+    rows.forEach(r => { map[r.item_id] = r.min_stock; });
+    res.json({ umbrales: map });
+  } catch(e) {
+    console.error('[STOCK_UMBRAL_GET]', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.put('/api/stock/umbral-critico/:item_id', requireAuth, async (req, res) => {
+  try {
+    const { item_id } = req.params;
+    const { client_id, min_stock } = req.body;
+    if (!client_id) return res.status(400).json({ error: 'client_id requerido' });
+    // min_stock null/vacío/0 => limpiar override
+    const n = parseInt(min_stock);
+    if (isNaN(n) || n < 1) {
+      await pool.query('DELETE FROM stock_umbral_critico WHERE client_id = $1 AND item_id = $2', [client_id, item_id]);
+      return res.json({ ok: true, cleared: true });
+    }
+    await pool.query(`
+      INSERT INTO stock_umbral_critico (client_id, item_id, min_stock, updated_at)
+      VALUES ($1, $2, $3, NOW())
+      ON CONFLICT (client_id, item_id) DO UPDATE
+        SET min_stock = EXCLUDED.min_stock, updated_at = NOW()
+    `, [client_id, item_id, n]);
+    res.json({ ok: true, min_stock: n });
+  } catch(e) {
+    console.error('[STOCK_UMBRAL_PUT]', e.message);
     res.status(500).json({ error: e.message });
   }
 });

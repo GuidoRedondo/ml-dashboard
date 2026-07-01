@@ -14566,6 +14566,27 @@ window.addEventListener('DOMContentLoaded', () => {
 let _stockData = null;
 let _stockSort = { col: 'valor_stock', asc: false };
 let _stockFilter = 'todos';
+// Escala de cobertura configurable (días). critico = rojo, alerta = naranja, resto = verde.
+let _stockUmbrales = (() => {
+  try {
+    const s = JSON.parse(localStorage.getItem('stockUmbrales'));
+    if (s && s.critico > 0 && s.alerta > s.critico) return s;
+  } catch(e) {}
+  return { critico: 7, alerta: 21 };
+})();
+
+function setStockUmbral(tipo, val) {
+  const n = parseInt(val, 10);
+  if (isNaN(n) || n < 1) { renderStock(); return; }
+  _stockUmbrales[tipo] = n;
+  // Mantener siempre critico < alerta
+  if (_stockUmbrales.critico >= _stockUmbrales.alerta) {
+    if (tipo === 'critico') _stockUmbrales.alerta = _stockUmbrales.critico + 1;
+    else _stockUmbrales.critico = Math.max(1, _stockUmbrales.alerta - 1);
+  }
+  try { localStorage.setItem('stockUmbrales', JSON.stringify(_stockUmbrales)); } catch(e) {}
+  renderStock();
+}
 
 async function loadStock() {
   const el = document.getElementById('stockContent');
@@ -14581,15 +14602,17 @@ async function loadStock() {
   const dias = Math.max(1, Math.round((new Date(date_to) - new Date(date_from)) / (1000*60*60*24)));
 
   try {
-    // Cargar publicaciones activas (items-full) + costos (product_costs)
-    const [itemsRes, costsRes] = await Promise.all([
+    // Cargar publicaciones activas (items-full) + costos (product_costs) + umbrales críticos por producto
+    const [itemsRes, costsRes, umbralRes] = await Promise.all([
       fetch(`${SERVER_URL}/api/items-full?client_id=${client.id}&date_from=${date_from}&date_to=${date_to}&session_id=${getSession()||''}`).then(r => r.json()),
-      apiCall('GET', `/api/reporte/items-activos?client_id=${client.id}`)
+      apiCall('GET', `/api/reporte/items-activos?client_id=${client.id}`),
+      apiCall('GET', `/api/stock/umbral-critico?client_id=${client.id}`).catch(() => ({ umbrales: {} }))
     ]);
 
     const items   = (itemsRes?.items || []).filter(i => i.status === 'active' || i.status === 'paused');
     const costsMap = {};
     (costsRes?.items || []).forEach(i => { if (i.costo_unit != null) costsMap[i.mla_id] = parseFloat(i.costo_unit); });
+    const umbralMap = (umbralRes && umbralRes.umbrales) || {};
 
     // Construir filas
     const rows = items.map(item => {
@@ -14609,6 +14632,7 @@ async function loadStock() {
         cobertura,
         is_full:     item.is_full || false,
         units:       item.units || 0,
+        min_critico: umbralMap[item.id] ?? null,   // umbral crítico en unidades (por producto)
       };
     });
 
@@ -14652,6 +14676,24 @@ function sortStock(col) {
   renderStockRows();
 }
 
+async function setStockMinCritico(itemId, val) {
+  if (!_stockData) return;
+  const client = getActiveClient();
+  if (!client) return;
+  const n = parseInt(val, 10);
+  const min = (isNaN(n) || n < 1) ? null : n;
+  // Actualizar estado local y refrescar KPIs/filtros al instante
+  const row = _stockData.rows.find(r => r.id === itemId);
+  if (row) row.min_critico = min;
+  renderStock();
+  try {
+    await apiCall('PUT', `/api/stock/umbral-critico/${itemId}`, { client_id: client.id, min_stock: min });
+    showToast(min == null ? '✅ Mínimo quitado' : `✅ Mínimo crítico: ${min} u.`);
+  } catch(e) {
+    showToast('⚠️ No se pudo guardar el mínimo');
+  }
+}
+
 function renderStock() {
   if (!_stockData) return;
   const { rows, dias } = _stockData;
@@ -14660,9 +14702,13 @@ function renderStock() {
   const fmtN = n => n != null ? n.toLocaleString('es-AR') : '—';
 
   // ── KPIs ─────────────────────────────────────────────────────────────────
+  const uCrit       = _stockUmbrales.critico;
+  const uAlert      = _stockUmbrales.alerta;
   const total       = rows.length;
   const sinStock    = rows.filter(r => r.stock === 0).length;
-  const critico     = rows.filter(r => r.stock > 0 && r.cobertura != null && r.cobertura <= 7).length;
+  const critico     = rows.filter(r => r.stock > 0 && r.cobertura != null && r.cobertura <= uCrit).length;
+  const bajoMin     = rows.filter(r => r.min_critico != null && r.stock <= r.min_critico).length;
+  const conMin      = rows.filter(r => r.min_critico != null).length;
   const sinCMV      = rows.filter(r => r.costo == null).length;
   const conFull     = rows.filter(r => r.is_full).length;
   const valorTotal  = rows.filter(r => r.valor_stock != null).reduce((s, r) => s + r.valor_stock, 0);
@@ -14677,10 +14723,11 @@ function renderStock() {
       ${sub ? `<div style="font-size:11px;color:var(--muted);margin-top:4px">${sub}</div>` : ''}
     </div>`;
 
-  const kpis = `<div style="display:grid;grid-template-columns:repeat(6,1fr);gap:12px;margin-bottom:16px">
+  const kpis = `<div style="display:grid;grid-template-columns:repeat(7,1fr);gap:12px;margin-bottom:16px">
     ${kpiCard('📦','Total activas', total, 'var(--accent)', `${dias}d de período`, 'todos')}
     ${kpiCard('⚠️','Sin stock', sinStock, sinStock>0?'#ff5252':'#00e676', 'Stock = 0', 'sin_stock')}
-    ${kpiCard('🔴','Cobertura crítica', critico, critico>0?'#ff9100':'#00e676', '≤ 7 días', 'critico')}
+    ${kpiCard('🔴','Cobertura crítica', critico, critico>0?'#ff9100':'#00e676', `≤ ${uCrit} días`, 'critico')}
+    ${kpiCard('🚨','Bajo mínimo', bajoMin, bajoMin>0?'#ff5252':'#00e676', `${conMin} con mínimo fijado`, 'bajo_min')}
     ${kpiCard('❓','Sin CMV', sinCMV, sinCMV>0?'#6366f1':'#00e676', 'Sin costo cargado', 'sin_cmv')}
     ${kpiCard('📦','Con FULL', conFull, '#00bcd4', `${(conFull/Math.max(total,1)*100).toFixed(0)}% del total`, 'full')}
     <div class="kpi-card" style="padding:16px;border-top:3px solid #059669">
@@ -14698,7 +14745,8 @@ function renderStock() {
       ${[
         ['todos','Todos',`${total}`,'var(--accent)'],
         ['sin_stock','Sin stock',`${sinStock}`,'#ff5252'],
-        ['critico','Crítico ≤7d',`${critico}`,'#ff9100'],
+        ['critico',`Crítico ≤${uCrit}d`,`${critico}`,'#ff9100'],
+        ['bajo_min','Bajo mínimo',`${bajoMin}`,'#ff5252'],
         ['sin_cmv','Sin CMV',`${sinCMV}`,'#6366f1'],
         ['full','FULL',`${conFull}`,'#00bcd4'],
       ].map(([key,label,count,color]) => `
@@ -14720,8 +14768,20 @@ function renderStock() {
   };
 
   el.innerHTML = kpis + alertasHtml + filtros + `
-    <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap">
       <span id="stockCount" style="font-size:12px;color:var(--muted)">${rows.length} productos</span>
+      <div style="margin-left:auto;display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);flex-wrap:wrap">
+        <span style="font-weight:600">Escala de cobertura:</span>
+        <span style="white-space:nowrap">🔴 Crítico ≤
+          <input type="number" min="1" value="${uCrit}" onchange="setStockUmbral('critico', this.value)"
+            style="width:52px;padding:3px 6px;border-radius:6px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:12px;text-align:center">
+        d</span>
+        <span style="white-space:nowrap">🟠 Alerta ≤
+          <input type="number" min="2" value="${uAlert}" onchange="setStockUmbral('alerta', this.value)"
+            style="width:52px;padding:3px 6px;border-radius:6px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:12px;text-align:center">
+        d</span>
+        <span style="white-space:nowrap">🟢 OK &gt; ${uAlert}d</span>
+      </div>
     </div>
     <div class="kpi-card" style="padding:0;overflow:hidden">
       <div style="overflow-x:auto">
@@ -14731,6 +14791,7 @@ function renderStock() {
             ${th('sku',         'SKU',         'left')}
             ${th('title',       'Título',      'left')}
             ${th('stock',       'Stock')}
+            ${th('min_critico', 'Crítico (u.)')}
             ${th('costo',       'CMV unit.')}
             ${th('valor_stock', 'Valor en stock')}
             ${th('ritmo',       'Ritmo/día')}
@@ -14742,7 +14803,8 @@ function renderStock() {
       </div>
     </div>
     <div style="font-size:11px;color:var(--muted);margin-top:10px">
-      Cobertura = stock actual / (unidades vendidas ÷ ${dias} días del período) · Publicaciones activas y pausadas
+      Cobertura = stock actual / (unidades vendidas ÷ ${dias} días del período) · Publicaciones activas y pausadas<br>
+      <b>Escala de cobertura</b>: umbrales en días (global, se aplican a todos). <b>Crítico (u.)</b>: mínimo de unidades por producto — cuando el stock cae a ese nivel o menos, se marca 🚨 (se guarda por cuenta).
     </div>`;
 
   renderStockRows();
@@ -14758,7 +14820,8 @@ function renderStockRows() {
   const f = _stockFilter;
   let filtered = rows;
   if (f === 'sin_stock') filtered = rows.filter(r => r.stock === 0);
-  else if (f === 'critico')   filtered = rows.filter(r => r.stock > 0 && r.cobertura != null && r.cobertura <= 7);
+  else if (f === 'critico')   filtered = rows.filter(r => r.stock > 0 && r.cobertura != null && r.cobertura <= _stockUmbrales.critico);
+  else if (f === 'bajo_min')  filtered = rows.filter(r => r.min_critico != null && r.stock <= r.min_critico);
   else if (f === 'sin_cmv')   filtered = rows.filter(r => r.costo == null);
   else if (f === 'full')      filtered = rows.filter(r => r.is_full);
 
@@ -14772,11 +14835,11 @@ function renderStockRows() {
   });
 
   const stockColor  = s => s === 0 ? '#ff5252' : s <= 3 ? '#ff5252' : s <= 10 ? '#ff9100' : '#00e676';
-  const coberColor  = c => c == null ? 'var(--muted)' : c <= 7 ? '#ff5252' : c <= 21 ? '#ff9100' : '#00e676';
-  const coberBadge  = c => {
+  const coberColor  = (c, uCrit, uAlert) => c == null ? 'var(--muted)' : c <= uCrit ? '#ff5252' : c <= uAlert ? '#ff9100' : '#00e676';
+  const coberBadge  = (c, uCrit, uAlert) => {
     if (c == null) return '<span style="color:var(--muted)">—</span>';
-    const col = coberColor(c);
-    const icon = c <= 7 ? '🔴' : c <= 21 ? '🟠' : '🟢';
+    const col = coberColor(c, uCrit, uAlert);
+    const icon = c <= uCrit ? '🔴' : c <= uAlert ? '🟠' : '🟢';
     return `<span style="color:${col};font-weight:700">${icon} ${c}d</span>`;
   };
 
@@ -14792,16 +14855,21 @@ function renderStockRows() {
           style="color:var(--text);text-decoration:none;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block"
           title="${r.title}">${r.title}</a>
       </td>
-      <td style="padding:8px 10px;text-align:right;font-weight:700;font-size:13px;color:${stockColor(r.stock)}">${r.stock.toLocaleString('es-AR')}</td>
+      <td style="padding:8px 10px;text-align:right;font-weight:700;font-size:13px;color:${(r.min_critico!=null && r.stock<=r.min_critico) ? '#ff5252' : stockColor(r.stock)}">${(r.min_critico!=null && r.stock<=r.min_critico) ? '🚨 ' : ''}${r.stock.toLocaleString('es-AR')}</td>
+      <td style="padding:8px 10px;text-align:center">
+        <input type="number" min="0" value="${r.min_critico ?? ''}" placeholder="—"
+          onchange="setStockMinCritico('${r.id}', this.value)" title="Marcar crítico cuando el stock cae a este nivel o menos (vacío = sin mínimo)"
+          style="width:56px;padding:3px 6px;border-radius:6px;border:1px solid ${r.min_critico!=null?'#ff9100':'var(--border)'};background:var(--surface2);color:var(--text);font-size:12px;text-align:center">
+      </td>
       <td style="padding:8px 10px;text-align:right;color:${r.costo!=null?'var(--text)':'var(--muted)'}">${r.costo!=null ? fmt(r.costo) : '—'}</td>
       <td style="padding:8px 10px;text-align:right;font-weight:700;color:${r.valor_stock!=null?'#059669':'var(--muted)'}">${r.valor_stock!=null ? fmt(r.valor_stock) : '—'}</td>
       <td style="padding:8px 10px;text-align:right;color:${r.ritmo>0?'var(--text)':'var(--muted)'}">${r.ritmo > 0 ? r.ritmo : '—'}</td>
       <td style="padding:8px 10px;text-align:right">${coberBadge(r.cobertura)}</td>
       <td style="padding:8px 10px;text-align:center">${r.is_full ? '<span style="background:rgba(0,188,212,.15);color:#00bcd4;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600">FULL</span>' : '<span style="color:var(--muted);font-size:11px">—</span>'}</td>
-    </tr>`).join('') || `<tr><td colspan="9" style="padding:40px;text-align:center;color:var(--muted)">Sin productos con este filtro</td></tr>`;
+    </tr>`).join('') || `<tr><td colspan="10" style="padding:40px;text-align:center;color:var(--muted)">Sin productos con este filtro</td></tr>`;
 
   // Actualizar KPI cards según filtro activo
-  ['todos','sin_stock','critico','sin_cmv','full'].forEach(key => {
+  ['todos','sin_stock','critico','bajo_min','sin_cmv','full'].forEach(key => {
     const card = document.getElementById(`stk-kpi-${key}`);
     if (card) {
       card.style.outline = _stockFilter===key ? '2px solid var(--accent)' : 'none';
@@ -14823,6 +14891,7 @@ function exportStockExcel() {
     'SKU':              r.sku === '—' ? '' : r.sku,
     'Título':           r.title,
     'Stock':            r.stock,
+    'Crítico (u.)':     r.min_critico ?? '',
     'CMV unitario':     r.costo ?? '',
     'Valor en stock':   r.valor_stock != null ? Math.round(r.valor_stock) : '',
     'Ritmo/día':        r.ritmo > 0 ? r.ritmo : '',
@@ -14832,7 +14901,7 @@ function exportStockExcel() {
 
   const wb = XLSX.utils.book_new();
   const ws = XLSX.utils.json_to_sheet(data);
-  ws['!cols'] = [16,18,50,10,14,16,12,16,8].map(w => ({ wch: w }));
+  ws['!cols'] = [16,18,50,10,12,14,16,12,16,8].map(w => ({ wch: w }));
   XLSX.utils.book_append_sheet(wb, ws, 'Stock');
   const fecha = new Date().toISOString().slice(0,10);
   XLSX.writeFile(wb, `Stock_${(client?.name||'').replace(/\s+/g,'_')}_${fecha}.xlsx`);
