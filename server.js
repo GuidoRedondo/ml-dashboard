@@ -3791,15 +3791,14 @@ app.post('/api/diagnostico/calcular', requireAuth, async (req, res) => {
     const totalInactive = (itemsInactRes.paging && itemsInactRes.paging.total) || 0;
     const pubTotal = totalActive + totalInactive;
 
-    // Visitas del mes — usar date_from/date_to para el mes exacto (no "last N días desde hoy")
+    // Visitas del mes — agregado a nivel usuario (matchea el panel de ML).
+    // OJO: NO usar fetchVisitsRange (/items/{id}/visits/time_window con date_from+date_to):
+    // ML ignora el date_from y devuelve solo el último día → daba 0 en meses pasados.
     const dateFromStr = `${year}-${String(month+1).padStart(2,'0')}-01`;
     const dateToStr   = `${year}-${String(month+1).padStart(2,'0')}-${String(daysInMonth).padStart(2,'0')}`;
-    let visitas = 0;
-    for (let i = 0; i < allActiveIdsFull.length; i += 20) {
-      const batch = allActiveIdsFull.slice(i, i+20);
-      const vMap = await fetchVisitsRange(batch, dateFromStr, dateToStr, headers);
-      Object.values(vMap).forEach(v => { visitas += v; });
-    }
+    const visitasData = await fetchUserVisits(uid, dateFromStr, dateToStr, headers);
+    let visitas = visitasData ? visitasData.total : 0;
+    console.log(`[DIAG VISITAS] ${mes} visitas=${visitas} (rango ${dateFromStr}→${dateToStr})`);
 
     // Conversión
     const conversion = visitas > 0 ? parseFloat(((ventas / visitas) * 100).toFixed(2)) : 0;
@@ -3983,13 +3982,22 @@ app.post('/api/diagnostico/calcular', requireAuth, async (req, res) => {
     // Antes se mezclaban (un cupón contaba también como descuento). Ahora van separados.
     let mktOrdenesConDescuento=0, mktOrdenesConCupon=0;
     let mktMontoDescuento=0, mktMontoCupon=0;
-    // Debug puntual: ver qué campos manda ML en el search (para descuento vs cupón)
-    if (orders[0]) {
-      const o0 = orders[0], oi0 = o0.order_items?.[0] || {};
+    // Debug: escanear TODAS las órdenes para ver qué señales de descuento/cupón manda ML
+    if (orders.length) {
+      let withFull=0, withOrig=0, unitLtFull=0, itemDisc=0, withCoupon=0;
+      orders.forEach(o => {
+        if ((o.coupon?.amount>0) || o.coupon?.id || (o.payments||[]).some(p=>p.coupon_amount>0||p.coupon_id)) withCoupon++;
+        (o.order_items||[]).forEach(oi => {
+          if (oi.full_unit_price != null) withFull++;
+          if (oi.original_price != null) withOrig++;
+          const f=parseFloat(oi.full_unit_price ?? oi.original_price)||0, u=parseFloat(oi.unit_price)||0;
+          if (f>0 && u>0 && u<f) unitLtFull++;
+          if (oi.discounts?.length) itemDisc++;
+        });
+      });
       console.log('[DIAG FIELDS]', JSON.stringify({
-        coupon: o0.coupon || null,
-        item: { full_unit_price: oi0.full_unit_price, original_price: oi0.original_price, unit_price: oi0.unit_price, discounts: oi0.discounts?.length || 0 },
-        payment0: (o0.payments?.[0]) ? { coupon_amount: o0.payments[0].coupon_amount, coupon_id: o0.payments[0].coupon_id } : null,
+        orders: orders.length, withFull, withOrig, unitLtFull, itemDisc, withCoupon,
+        itemKeys: Object.keys(orders[0].order_items?.[0] || {}),
       }));
     }
     try {

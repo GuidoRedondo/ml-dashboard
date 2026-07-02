@@ -9702,16 +9702,6 @@ function diagRender(meses, clientId) {
     ${row('Preguntas recibidas', d=>d.manuales?.preguntas_total||null, fmtN)}
     ${row('Preguntas respondidas', d=>d.manuales?.preguntas_respondidas||null, fmtN)}
     ${row('Conversión preguntas', d=>d.manuales?.conversion_preguntas||null, fmtP)}
-    ${sec('🚚 Logística — ventas y facturación por forma de entrega','#fef3c7')}
-    ${row('📦 FULL — ventas', d=>d.manuales?.full_ventas??null, fmtN)}
-    ${row('📦 FULL — facturación', d=>d.manuales?.full_fact_monto||null, fmtM)}
-    ${row('📦 FULL — % de facturación', d=>d.manuales?.full_fact_pct||null, fmtP)}
-    ${row('🛵 FLEX — ventas', d=>d.manuales?.flex_ventas??null, fmtN)}
-    ${row('🛵 FLEX — facturación', d=>d.manuales?.flex_fact_monto||null, fmtM)}
-    ${row('🛵 FLEX — % de facturación', d=>d.manuales?.flex_fact_pct||null, fmtP)}
-    ${row('✉️ ME/Correo — ventas', d=>d.manuales?.corr_ventas??null, fmtN)}
-    ${row('✉️ ME/Correo — facturación', d=>d.manuales?.corr_fact_monto||null, fmtM)}
-    ${row('✉️ ME/Correo — % de facturación', d=>d.manuales?.corr_fact_pct||null, fmtP)}
     ${sec('📣 Central de Marketing','#fff7ed')}
     ${row('🏷 Ventas con descuento (promo/oferta)', d=>d.manuales?.mkt_ordenes_con_descuento??null, fmtN)}
     ${row('% ventas con descuento', d=>d.manuales?.mkt_pct_descuento||null, fmtP)}
@@ -9782,7 +9772,65 @@ function diagRender(meses, clientId) {
       </div>
     </div>
   </div>` : '';
-  el.innerHTML = formHTML + repCard + tableHTML;
+
+  // ── Logística: torta por mes (cantidad + facturación por canal) ──────────────
+  const CANALES = [
+    { k:'FULL',      icon:'📦', color:'#00bcd4', vk:'full_ventas', fk:'full_fact_monto' },
+    { k:'FLEX',      icon:'🛵', color:'#7c3aed', vk:'flex_ventas', fk:'flex_fact_monto' },
+    { k:'ME/Correo', icon:'✉️', color:'#f59e0b', vk:'corr_ventas', fk:'corr_fact_monto' },
+  ];
+  const logiPieData = [];
+  const logiCards = cols.map((c, idx) => {
+    const m = c.data?.manuales || {};
+    const items = CANALES.map(ch => ({ label: ch.k, icon: ch.icon, color: ch.color, ventas: m[ch.vk] || 0, fact: m[ch.fk] || 0 }));
+    const totalFact = items.reduce((s,x)=>s+x.fact,0);
+    const canvasId = `diagLogiPie-${idx}`;
+    if (c.data && totalFact > 0) {
+      logiPieData.push({ id: canvasId, labels: items.map(x=>`${x.icon} ${x.label}`), data: items.map(x=>x.fact), colors: items.map(x=>x.color) });
+    }
+    const legend = items.map(x => `
+      <div style="display:flex;align-items:center;gap:6px;font-size:11px;margin-bottom:3px">
+        <span style="width:10px;height:10px;border-radius:2px;background:${x.color};display:inline-block;flex-shrink:0"></span>
+        <span style="flex:1">${x.icon} ${x.label}</span>
+        <span style="font-weight:700">${x.ventas} vta${x.ventas===1?'':'s'}</span>
+        <span style="color:var(--muted);min-width:74px;text-align:right">${x.fact>0?fmtM(x.fact):'—'}</span>
+      </div>`).join('');
+    return `<div style="flex:1;min-width:230px;background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:14px">
+      <div style="font-size:12px;font-weight:700;text-align:center;margin-bottom:8px">${c.label}${c.data?'':' <span style="color:#aaa;font-size:10px;font-weight:400">(sin datos)</span>'}</div>
+      ${c.data && totalFact>0
+        ? `<div style="position:relative;height:150px;margin-bottom:10px"><canvas id="${canvasId}"></canvas></div>`
+        : `<div style="height:150px;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:12px">Sin datos</div>`}
+      ${legend}
+    </div>`;
+  }).join('');
+  const logisticaHTML = `<div style="margin-bottom:22px">
+    <div style="font-size:13px;font-weight:700;font-family:var(--font-b);margin-bottom:10px">🚚 Logística — cantidad y facturación por canal</div>
+    <div style="display:flex;gap:12px;flex-wrap:wrap">${logiCards}</div>
+  </div>`;
+
+  el.innerHTML = formHTML + repCard + logisticaHTML + tableHTML;
+
+  // Crear las tortas (destruye las previas para no acumular instancias)
+  window._diagPieCharts = window._diagPieCharts || {};
+  Object.values(window._diagPieCharts).forEach(ch => { try { ch.destroy(); } catch(e){} });
+  window._diagPieCharts = {};
+  if (window.Chart) {
+    logiPieData.forEach(p => {
+      const cv = document.getElementById(p.id);
+      if (!cv) return;
+      window._diagPieCharts[p.id] = new Chart(cv, {
+        type: 'doughnut',
+        data: { labels: p.labels, datasets: [{ data: p.data, backgroundColor: p.colors, borderWidth: 0 }] },
+        options: {
+          responsive: true, maintainAspectRatio: false, cutout: '55%',
+          plugins: {
+            legend: { display: false },
+            tooltip: { callbacks: { label: ctx => `${ctx.label}: $${Math.round(ctx.parsed).toLocaleString('es-AR')}` } },
+          },
+        },
+      });
+    });
+  }
 }
 
 // ── FOTOS ─────────────────────────────────────────────────────────────────────
