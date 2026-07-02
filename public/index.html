@@ -9686,19 +9686,33 @@ function diagRender(meses, clientId) {
     ${row('Preguntas recibidas', d=>d.manuales?.preguntas_total||null, fmtN)}
     ${row('Preguntas respondidas', d=>d.manuales?.preguntas_respondidas||null, fmtN)}
     ${row('Conversión preguntas', d=>d.manuales?.conversion_preguntas||null, fmtP)}
-    ${sec('🚚 Logística','#fef3c7')}
-    ${row('Fact por FULL', d=>d.manuales?.full_fact_monto||null, fmtM)}
-    ${row('% por FULL', d=>d.manuales?.full_fact_pct||null, fmtP)}
-    ${row('Fact por FLEX', d=>d.manuales?.flex_fact_monto||null, fmtM)}
-    ${row('% por FLEX', d=>d.manuales?.flex_fact_pct||null, fmtP)}
-    ${row('Fact por ME/Correo', d=>d.manuales?.corr_fact_monto||null, fmtM)}
-    ${row('% por ME/Correo', d=>d.manuales?.corr_fact_pct||null, fmtP)}
+    ${sec('🚚 Logística — ventas y facturación por forma de entrega','#fef3c7')}
+    ${row('📦 FULL — ventas', d=>d.manuales?.full_ventas??null, fmtN)}
+    ${row('📦 FULL — facturación', d=>d.manuales?.full_fact_monto||null, fmtM)}
+    ${row('📦 FULL — % de facturación', d=>d.manuales?.full_fact_pct||null, fmtP)}
+    ${row('🛵 FLEX — ventas', d=>d.manuales?.flex_ventas??null, fmtN)}
+    ${row('🛵 FLEX — facturación', d=>d.manuales?.flex_fact_monto||null, fmtM)}
+    ${row('🛵 FLEX — % de facturación', d=>d.manuales?.flex_fact_pct||null, fmtP)}
+    ${row('✉️ ME/Correo — ventas', d=>d.manuales?.corr_ventas??null, fmtN)}
+    ${row('✉️ ME/Correo — facturación', d=>d.manuales?.corr_fact_monto||null, fmtM)}
+    ${row('✉️ ME/Correo — % de facturación', d=>d.manuales?.corr_fact_pct||null, fmtP)}
     ${sec('📣 Central de Marketing','#fff7ed')}
-    ${row('Ventas con descuento', d=>d.manuales?.mkt_ordenes_con_descuento||null, fmtN)}
+    ${row('🏷 Ventas con descuento (promo/oferta)', d=>d.manuales?.mkt_ordenes_con_descuento??null, fmtN)}
     ${row('% ventas con descuento', d=>d.manuales?.mkt_pct_descuento||null, fmtP)}
-    ${row('Ventas con cupón', d=>d.manuales?.mkt_ordenes_con_cupon||null, fmtN)}
+    ${row('$ resignado en descuentos', d=>d.manuales?.mkt_monto_descuento||null, fmtM, false)}
+    ${row('🎟 Ventas con cupón', d=>d.manuales?.mkt_ordenes_con_cupon??null, fmtN)}
     ${row('% ventas con cupón', d=>d.manuales?.mkt_pct_cupon||null, fmtP)}
+    ${row('$ resignado en cupones', d=>d.manuales?.mkt_monto_cupon||null, fmtM, false)}
     ${row('Difusiones', d=>d.manuales?.mkt_difusiones, fmtT)}
+    ${sec('💵 Financiero — cuánto queda de cada venta','#dcfce7')}
+    ${row('Facturación bruta', d=>d.facturacion, fmtM)}
+    ${row('− Comisión ML', d=>d.manuales?.fin_comision||null, fmtM, false)}
+    ${row('− Impuestos', d=>d.manuales?.fin_impuestos||null, fmtM, false)}
+    ${row('− Envío a cargo del vendedor', d=>d.manuales?.fin_envio_vendedor||null, fmtM, false)}
+    ${row('= Neto después de ML', d=>d.manuales?.fin_neto_ml??null, fmtM)}
+    ${row('✅ % que queda después de ML', d=>d.manuales?.fin_pct_neto_ml??null, fmtP)}
+    ${row('− Publicidad', d=>d.manuales?.fin_publicidad||null, fmtM, false)}
+    ${row('✅ % que queda (– publicidad)', d=>d.manuales?.fin_pct_neto_total??null, fmtP)}
     ${sec('🏷 Publicidad','#fce7e7')}
     ${row('Inversión PADS', d=>d.pads_inversion, fmtM, false)}
     ${row('Facturación PADS', d=>d.pads_ingresos, fmtM)}

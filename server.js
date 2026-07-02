@@ -3883,7 +3883,7 @@ app.post('/api/diagnostico/calcular', requireAuth, async (req, res) => {
         keepFetching = results.length === 100 && offset < total;
         if (offset > 2000) break;
       }
-      console.log(`[DIAG ADS] ${mesStr} advId=${advId} inversion=${padsInversion} ingresos=${padsIngresos} clicks=${padsClicks}`);
+      console.log(`[DIAG ADS] ${mes} advId=${advId} inversion=${padsInversion} ingresos=${padsIngresos} clicks=${padsClicks}`);
     } catch(e) { console.error('[DIAG ADS ERROR]', e.message); }
     const padsAcos = padsIngresos > 0 ? parseFloat(((padsInversion/padsIngresos)*100).toFixed(2)) : 0;
     const padsTacos = facturacion > 0 ? parseFloat(((padsInversion/facturacion)*100).toFixed(2)) : 0;
@@ -3895,6 +3895,7 @@ app.post('/api/diagnostico/calcular', requireAuth, async (req, res) => {
     // ── 6b. Logística — % facturación por modo desde las órdenes ─────────────
     // ML includes logistic_type directly in order.shipping — no need to fetch each shipment
     let logFullFact=0, logFlexFact=0, logCorreoFact=0, logFullActive=false, logFlexActive=false;
+    let logFullCount=0, logFlexCount=0, logCorreoCount=0;
     let logUnknownCount=0;
     try {
       orders.forEach(o => {
@@ -3919,15 +3920,15 @@ app.post('/api/diagnostico/calcular', requireAuth, async (req, res) => {
           logUnknownCount++;
         }
 
-        if (mode === 'FULL')      { logFullFact += rev; logFullActive = true; }
-        else if (mode === 'FLEX') { logFlexFact += rev; logFlexActive = true; }
-        else if (mode === 'Correo') logCorreoFact += rev;
+        if (mode === 'FULL')      { logFullFact += rev; logFullCount++; logFullActive = true; }
+        else if (mode === 'FLEX') { logFlexFact += rev; logFlexCount++; logFlexActive = true; }
+        else if (mode === 'Correo') { logCorreoFact += rev; logCorreoCount++; }
         // Unknown: will be resolved via shipment sampling below
       });
 
       // If too many unknowns, sample shipments to resolve the distribution
       if (logUnknownCount > orders.length * 0.3) {
-        console.log(`[DIAG LOG] ${mesStr} Many unknowns (${logUnknownCount}/${orders.length}) — sampling shipments to determine mode distribution`);
+        console.log(`[DIAG LOG] ${mes} Many unknowns (${logUnknownCount}/${orders.length}) — sampling shipments to determine mode distribution`);
         const unknownOrders = orders.filter(o => {
           const lt = (o.shipping?.logistic_type || '').toLowerCase();
           return !lt;
@@ -3958,41 +3959,71 @@ app.post('/api/diagnostico/calcular', requireAuth, async (req, res) => {
           logFullFact += unknownRevenue * fullRatio;
           logFlexFact += unknownRevenue * flexRatio;
           logCorreoFact += unknownRevenue * (1 - fullRatio - flexRatio);
+          // Distribuir también la cantidad de ventas desconocidas según la muestra
+          const uCount = unknownOrders.length;
+          const uFull  = Math.round(uCount * fullRatio);
+          const uFlex  = Math.round(uCount * flexRatio);
+          logFullCount   += uFull;
+          logFlexCount   += uFlex;
+          logCorreoCount += Math.max(0, uCount - uFull - uFlex);
           if (fullRatio > 0) logFullActive = true;
           if (flexRatio > 0) logFlexActive = true;
           console.log(`[DIAG LOG] Sample: full=${(fullRatio*100).toFixed(0)}% flex=${(flexRatio*100).toFixed(0)}% correo=${((1-fullRatio-flexRatio)*100).toFixed(0)}% applied to $${Math.round(unknownRevenue)}`);
         }
       }
 
-      console.log(`[DIAG LOG] ${mesStr} orders=${orders.length} unknowns=${logUnknownCount} FULL=$${Math.round(logFullFact)}(${facturacion>0?(logFullFact/facturacion*100).toFixed(1):0}%) FLEX=$${Math.round(logFlexFact)}(${facturacion>0?(logFlexFact/facturacion*100).toFixed(1):0}%) Correo=$${Math.round(logCorreoFact)}`);
+      console.log(`[DIAG LOG] ${mes} orders=${orders.length} unknowns=${logUnknownCount} FULL=$${Math.round(logFullFact)}(${facturacion>0?(logFullFact/facturacion*100).toFixed(1):0}%) FLEX=$${Math.round(logFlexFact)}(${facturacion>0?(logFlexFact/facturacion*100).toFixed(1):0}%) Correo=$${Math.round(logCorreoFact)}`);
     } catch(e) { console.error('[DIAG LOG]', e.message); }
     const logFullPct = facturacion>0 ? parseFloat(((logFullFact/facturacion)*100).toFixed(1)) : 0;
     const logFlexPct = facturacion>0 ? parseFloat(((logFlexFact/facturacion)*100).toFixed(1)) : 0;
 
-    // ── 6c. Marketing — descuentos y cupones desde órdenes ────────────────────
+    // ── 6c. Marketing — DESCUENTOS vs CUPONES (dos cosas distintas) ───────────
+    //   • Descuento = baja de precio en la publicación (promo/oferta): unit_price < precio de lista.
+    //   • Cupón     = beneficio aplicado en el pago/orden (cupón MELI o del vendedor).
+    // Antes se mezclaban (un cupón contaba también como descuento). Ahora van separados.
     let mktOrdenesConDescuento=0, mktOrdenesConCupon=0;
+    let mktMontoDescuento=0, mktMontoCupon=0;
     try {
       orders.forEach(o => {
-        // Check discount in multiple places ML can store it
-        const hasDiscount =
-          (o.order_items||[]).some(oi =>
-            (oi.discounts && oi.discounts.length > 0) ||
-            (oi.sale_fee && oi.original_price && oi.unit_price < oi.original_price)
-          ) ||
-          (o.discount_amount && parseFloat(o.discount_amount) > 0) ||
-          (o.payments||[]).some(p => p.coupon_amount > 0 || p.coupon_id);
+        // ── Cupón: monto del cupón a nivel orden o pago ──
+        const cuponMonto =
+          (parseFloat(o.coupon?.amount) || 0) +
+          (o.payments||[]).reduce((s,p) => s + (parseFloat(p.coupon_amount)||0), 0);
+        const hasCoupon = cuponMonto > 0 || !!(o.coupon && o.coupon.id) || (o.payments||[]).some(p => p.coupon_id);
 
-        const hasCoupon =
-          (o.coupon && (o.coupon.amount > 0 || o.coupon.id)) ||
-          (o.payments||[]).some(p => p.coupon_amount > 0 || p.coupon_id);
+        // ── Descuento: baja de precio a nivel publicación (sin contar cupón) ──
+        let descMonto = 0, hasDescuento = false;
+        (o.order_items||[]).forEach(oi => {
+          const full = parseFloat(oi.full_unit_price ?? oi.original_price) || 0;
+          const unit = parseFloat(oi.unit_price) || 0;
+          const qty  = oi.quantity || 0;
+          if (full > 0 && unit > 0 && unit < full) { hasDescuento = true; descMonto += (full - unit) * qty; }
+          else if (oi.discounts && oi.discounts.length > 0) { hasDescuento = true; }
+        });
 
-        if (hasDiscount) mktOrdenesConDescuento++;
-        if (hasCoupon)   mktOrdenesConCupon++;
+        if (hasDescuento) { mktOrdenesConDescuento++; mktMontoDescuento += descMonto; }
+        if (hasCoupon)    { mktOrdenesConCupon++;     mktMontoCupon     += cuponMonto; }
       });
-      console.log(`[DIAG MKT] ${mesStr} descuentos=${mktOrdenesConDescuento}/${ventas} cupones=${mktOrdenesConCupon}/${ventas}`);
+      console.log(`[DIAG MKT] ${mes} descuentos=${mktOrdenesConDescuento}/${ventas} ($${Math.round(mktMontoDescuento)}) cupones=${mktOrdenesConCupon}/${ventas} ($${Math.round(mktMontoCupon)})`);
     } catch(e) { console.error('[DIAG MKT]', e.message); }
     const mktPctDescuento = ventas>0 ? parseFloat(((mktOrdenesConDescuento/ventas)*100).toFixed(1)) : 0;
     const mktPctCupon     = ventas>0 ? parseFloat(((mktOrdenesConCupon/ventas)*100).toFixed(1))     : 0;
+
+    // ── 6d. Financiero básico — ¿cuánto queda de cada venta tras los cargos de ML? ──
+    // Mismo criterio que el detalle de ventas del P&L: neto = fact − comisión − impuestos − envío vendedor.
+    let finComision=0, finImpuestos=0, finEnvioVendedor=0;
+    orders.forEach(o => {
+      finComision  += (o.order_items||[]).reduce((s,oi)=>s+(parseFloat(oi.sale_fee)||0),0);
+      finImpuestos += parseFloat(o.taxes?.amount) || 0;
+      (o.payments||[]).forEach(p => { const sc = parseFloat(p.shipping_cost)||0; if (sc>0) finEnvioVendedor += sc; });
+    });
+    const finPublicidad   = padsInversion;
+    const finCargosML     = finComision + finImpuestos + finEnvioVendedor;
+    const finNetoML       = facturacion - finCargosML;
+    const finPctNetoML    = facturacion>0 ? parseFloat(((finNetoML/facturacion)*100).toFixed(1)) : 0;
+    const finNetoTotal    = finNetoML - finPublicidad;
+    const finPctNetoTotal = facturacion>0 ? parseFloat(((finNetoTotal/facturacion)*100).toFixed(1)) : 0;
+    console.log(`[DIAG FIN] ${mes} fact=$${Math.round(facturacion)} comision=$${Math.round(finComision)} imp=$${Math.round(finImpuestos)} envio=$${Math.round(finEnvioVendedor)} publi=$${Math.round(finPublicidad)} netoML=${finPctNetoML}% netoTotal=${finPctNetoTotal}%`);
 
     // ── 7. Tiempos de respuesta + conversión de preguntas ────────────────────
     let tiempos = { lv_business: null, lv_noche: null, finde: null, mediana: null };
@@ -4054,7 +4085,7 @@ app.post('/api/diagnostico/calcular', requireAuth, async (req, res) => {
       }
       preguntasTotal = preguntasRespondidas + allQUnans.length;
       conversionPreguntas = preguntasTotal > 0 ? parseFloat(((preguntasRespondidas / preguntasTotal) * 100).toFixed(1)) : null;
-      console.log(`[DIAG TIEMPOS] ${mesStr} lv=${avg(bySlot.lv_b)}min noche=${avg(bySlot.lv_n)}min finde=${avg(bySlot.fin)}min total_q=${allQ.length} unanswered=${allQUnans.length}`);
+      console.log(`[DIAG TIEMPOS] ${mes} lv=${avg(bySlot.lv_b)}min noche=${avg(bySlot.lv_n)}min finde=${avg(bySlot.fin)}min total_q=${allQ.length} unanswered=${allQUnans.length}`);
     } catch(e) { console.error('[DIAG TIEMPOS]', e.message); }
 
     // ── 8. Guardar en DB ──────────────────────────────────────────────────────
@@ -4075,17 +4106,32 @@ app.post('/api/diagnostico/calcular', requireAuth, async (req, res) => {
       // Logística (auto)
       full_activo:    logFullActive ? 'SI' : 'NO',
       flex_activo:    logFlexActive ? 'SI' : 'NO',
+      full_ventas:    logFullCount,
+      flex_ventas:    logFlexCount,
+      corr_ventas:    logCorreoCount,
       full_fact_pct:  logFullPct,
       flex_fact_pct:  logFlexPct,
       full_fact_monto: Math.round(logFullFact),
       flex_fact_monto: Math.round(logFlexFact),
       corr_fact_monto: Math.round(logCorreoFact),
       corr_fact_pct:  facturacion>0 ? parseFloat(((logCorreoFact/facturacion)*100).toFixed(1)) : 0,
-      // Marketing (auto)
+      // Marketing (auto) — descuento y cupón ya NO se mezclan
       mkt_ordenes_con_descuento: mktOrdenesConDescuento,
       mkt_pct_descuento: mktPctDescuento,
+      mkt_monto_descuento: Math.round(mktMontoDescuento),
       mkt_ordenes_con_cupon: mktOrdenesConCupon,
       mkt_pct_cupon: mktPctCupon,
+      mkt_monto_cupon: Math.round(mktMontoCupon),
+      // Financiero básico (auto) — cuánto queda de cada venta tras cargos de ML
+      fin_comision:       Math.round(finComision),
+      fin_impuestos:      Math.round(finImpuestos),
+      fin_envio_vendedor: Math.round(finEnvioVendedor),
+      fin_publicidad:     Math.round(finPublicidad),
+      fin_cargos_ml:      Math.round(finCargosML),
+      fin_neto_ml:        Math.round(finNetoML),
+      fin_pct_neto_ml:    finPctNetoML,
+      fin_neto_total:     Math.round(finNetoTotal),
+      fin_pct_neto_total: finPctNetoTotal,
       // Preserve manual fields
       mkt_descuentos: mktOrdenesConDescuento > 0 ? 'SI' : (manualesExistentes.mkt_descuentos || 'NO'),
       mkt_cupones:    mktOrdenesConCupon > 0     ? 'SI' : (manualesExistentes.mkt_cupones    || 'NO'),
