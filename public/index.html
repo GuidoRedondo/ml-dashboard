@@ -9304,15 +9304,19 @@ async function loadAds() {
   const acosNum = totalSpend && totalSales ? (totalSpend / totalSales) * 100 : null;
 
   // ── Proyección de gasto en publicidad (siempre del MES EN CURSO) ─────
-  // Independiente del período filtrado: trae lo gastado del 1ro del mes hasta hoy
-  // y lo proyecta a fin de mes según el ritmo diario.
+  // Independiente del período filtrado: trae lo gastado del 1ro del mes hasta AYER
+  // (el día en curso está parcial y distorsiona el promedio, sobre todo los primeros
+  // días del mes) y lo proyecta a fin de mes según el ritmo diario de días completos.
   const _today = new Date();
   const _yr = _today.getFullYear(), _mo = _today.getMonth();
   const _daysInMonth = new Date(_yr, _mo + 1, 0).getDate();
-  const _dayOfMonth = _today.getDate(); // días transcurridos del mes (incluye hoy)
+  const _dayOfMonth = _today.getDate();
   const _pad = n => String(n).padStart(2, '0');
+  // Solo días completos = hasta ayer. Si es el día 1, no hay días completos → usamos día 1.
+  const _diasCompletos = Math.max(1, _dayOfMonth - 1);
+  const _cutoffDay = Math.max(1, _dayOfMonth - 1);
   const _monthFrom = `${_yr}-${_pad(_mo + 1)}-01`;
-  const _monthTo   = `${_yr}-${_pad(_mo + 1)}-${_pad(_dayOfMonth)}`;
+  const _monthTo   = `${_yr}-${_pad(_mo + 1)}-${_pad(_cutoffDay)}`;
   let monthSpend = 0;
   await Promise.all(connected.map(async acc => {
     try {
@@ -9322,7 +9326,7 @@ async function loadAds() {
       if (d.summary) monthSpend += d.summary.spend || 0;
     } catch(e) { /* proyección best-effort */ }
   }));
-  const dailyAvgSpend = monthSpend / Math.max(1, _dayOfMonth);
+  const dailyAvgSpend = monthSpend / _diasCompletos;
   const projMonthly = dailyAvgSpend * _daysInMonth;
   const projRemaining = Math.max(0, projMonthly - monthSpend);
   const _monthName = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'][_mo];
@@ -9404,7 +9408,7 @@ async function loadAds() {
       <div class="kpi-card"><div class="kpi-label">🎯 CONV. ADS</div><div class="kpi-value">${convAdsNum ? convAdsNum.toFixed(1)+'%' : '—'}</div><div class="kpi-sub">Ventas Ads / Clics</div></div>
       <div class="kpi-card"><div class="kpi-label">👁 IMPRESIONES</div><div class="kpi-value">${totalImpr >= 1000000 ? Math.round(totalImpr/1000000)+'M' : totalImpr >= 1000 ? Math.round(totalImpr/1000)+'K' : totalImpr.toLocaleString('es-AR')}</div></div>
       <div class="kpi-card"><div class="kpi-label">💰 % VENTAS CON ADS</div><div class="kpi-value">${salesShareNum ? salesShareNum.toFixed(1)+'%' : '—'}</div><div class="kpi-sub">${salesShareNum ? (salesShareNum >= 50 ? '🔥 Muy dependiente de Ads' : salesShareNum >= 30 ? '⚠️ Moderado' : '✅ Saludable') : 'Ventas Ads / Facturación total'}</div></div>
-      <div class="kpi-card" style="border:1px solid var(--yellow);background:linear-gradient(135deg,rgba(255,145,0,.08),transparent)"><div class="kpi-label">🔮 PROYECCIÓN ${_monthName.toUpperCase()}</div><div class="kpi-value" style="color:var(--yellow)">${fmt(projMonthly)}</div><div class="kpi-sub">Van ${fmt(monthSpend)} (día ${_dayOfMonth}/${_daysInMonth}) · ${fmt(dailyAvgSpend)}/día · faltan ${fmt(projRemaining)}</div></div>
+      <div class="kpi-card" style="border:1px solid var(--yellow);background:linear-gradient(135deg,rgba(255,145,0,.08),transparent)"><div class="kpi-label">🔮 PROYECCIÓN ${_monthName.toUpperCase()}</div><div class="kpi-value" style="color:var(--yellow)">${fmt(projMonthly)}</div><div class="kpi-sub">Van ${fmt(monthSpend)}${_dayOfMonth>1?' hasta ayer':''} · promedio sobre ${_diasCompletos}/${_daysInMonth} días · ${fmt(dailyAvgSpend)}/día · faltan ${fmt(projRemaining)}</div></div>
     </div>`;
 
   if (!allCampaigns.length) {
