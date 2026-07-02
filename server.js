@@ -3796,7 +3796,13 @@ app.post('/api/diagnostico/calcular', requireAuth, async (req, res) => {
     // ML ignora el date_from y devuelve solo el último día → daba 0 en meses pasados.
     const dateFromStr = `${year}-${String(month+1).padStart(2,'0')}-01`;
     const dateToStr   = `${year}-${String(month+1).padStart(2,'0')}-${String(daysInMonth).padStart(2,'0')}`;
-    const visitasData = await fetchUserVisits(uid, dateFromStr, dateToStr, headers);
+    // Para meses pasados, /items_visits?date_from&date_to da el total agregado correcto.
+    // El ?last=N (fetchUserVisits) no siempre alcanza hacia atrás → daba 0. Probamos
+    // rango primero y caemos al wrapper como fallback.
+    let visitasData = await fetchUserVisitsRange(uid, dateFromStr, dateToStr, headers);
+    if (!visitasData || !visitasData.total) {
+      visitasData = await fetchUserVisits(uid, dateFromStr, dateToStr, headers);
+    }
     let visitas = visitasData ? visitasData.total : 0;
     console.log(`[DIAG VISITAS] ${mes} visitas=${visitas} (rango ${dateFromStr}→${dateToStr})`);
 

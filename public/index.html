@@ -1236,7 +1236,7 @@ tbody td {
           <option value="2026-03-01" selected>Mar 2026</option>
         </select>
         <button class="sync-btn" id="diagCalcBtn" onclick="diagCalcularTodo()" style="background:var(--accent);color:#fff;border:none">⚡ Calcular 3 meses</button>
-        <button class="sync-btn" id="diagPdfBtn" onclick="diagExportPDF()" style="background:#0f0f23;color:#00e676;border:none">📄 PDF</button>
+        <button class="sync-btn" id="diagPdfBtn" onclick="diagExportPDF()" style="background:#fff952;color:#292929;border:none;font-weight:700">📄 PDF</button>
       </div>
       <div id="diagContent"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Seleccioná un cliente y calculá el diagnóstico del mes</div></div>
     </div>
@@ -9785,17 +9785,23 @@ function diagRender(meses, clientId) {
     const m = c.data?.manuales || {};
     const items = CANALES.map(ch => ({ label: ch.k, icon: ch.icon, color: ch.color, ventas: m[ch.vk] || 0, fact: m[ch.fk] || 0 }));
     const totalFact = items.reduce((s,x)=>s+x.fact,0);
+    const totalVentas = items.reduce((s,x)=>s+x.ventas,0);
     const canvasId = `diagLogiPie-${idx}`;
     if (c.data && totalFact > 0) {
       logiPieData.push({ id: canvasId, labels: items.map(x=>`${x.icon} ${x.label}`), data: items.map(x=>x.fact), colors: items.map(x=>x.color) });
     }
-    const legend = items.map(x => `
+    const legend = items.map(x => {
+      const pf = totalFact>0 ? (x.fact/totalFact*100) : 0;
+      const pv = totalVentas>0 ? (x.ventas/totalVentas*100) : 0;
+      return `
       <div style="display:flex;align-items:center;gap:6px;font-size:11px;margin-bottom:3px">
         <span style="width:10px;height:10px;border-radius:2px;background:${x.color};display:inline-block;flex-shrink:0"></span>
         <span style="flex:1">${x.icon} ${x.label}</span>
-        <span style="font-weight:700">${x.ventas} vta${x.ventas===1?'':'s'}</span>
-        <span style="color:var(--muted);min-width:74px;text-align:right">${x.fact>0?fmtM(x.fact):'—'}</span>
-      </div>`).join('');
+        <span style="font-weight:700" title="Ventas">${x.ventas} (${x.ventas>0?pv.toFixed(0):0}%)</span>
+        <span style="color:var(--muted);min-width:88px;text-align:right" title="Facturación">${x.fact>0?fmtM(x.fact):'—'}</span>
+        <span style="min-width:40px;text-align:right;font-weight:700;color:${x.color}" title="% de facturación">${x.fact>0?pf.toFixed(0)+'%':'—'}</span>
+      </div>`;
+    }).join('');
     return `<div style="flex:1;min-width:230px;background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:14px">
       <div style="font-size:12px;font-weight:700;text-align:center;margin-bottom:8px">${c.label}${c.data?'':' <span style="color:#aaa;font-size:10px;font-weight:400">(sin datos)</span>'}</div>
       ${c.data && totalFact>0
@@ -9876,9 +9882,12 @@ function diagExportPDF() {
   ];
   const logiCards = cols.map((c, idx) => {
     const m = c.data?.manuales || {};
-    const legend = CANALES.map(ch =>
-      `<div class="leg"><span>${ch.k}</span><b>${(m[ch.vk]||0)} vtas</b><span class="mut">${m[ch.fk]>0?fmtM(m[ch.fk]):'—'}</span></div>`
-    ).join('');
+    const totF = CANALES.reduce((s,ch)=>s+(m[ch.fk]||0),0);
+    const legend = CANALES.map(ch => {
+      const f = m[ch.fk]||0;
+      const pf = totF>0 ? Math.round(f/totF*100) : 0;
+      return `<div class="leg"><span>${ch.k}</span><b>${(m[ch.vk]||0)} vtas</b><span class="mut">${f>0?fmtM(f):'—'}</span><span class="pct">${f>0?pf+'%':'—'}</span></div>`;
+    }).join('');
     return `<div class="pie-card">
       <div class="pie-title">${c.label}</div>
       ${pieImgs[idx] ? `<img src="${pieImgs[idx]}" style="width:150px;height:150px;object-fit:contain">` : '<div class="mut" style="height:150px;display:flex;align-items:center;justify-content:center">Sin datos</div>'}
@@ -9907,41 +9916,49 @@ function diagExportPDF() {
 
   const html = `<!DOCTYPE html><html lang="es"><head><meta charset="utf-8">
     <title>Diagnóstico Mensual — ${cliente} — Negocio Redondo</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@600;700;800&display=swap" rel="stylesheet">
     <style>
       * { box-sizing:border-box; -webkit-print-color-adjust:exact; print-color-adjust:exact; }
-      body { font-family:'Segoe UI',Roboto,Helvetica,Arial,sans-serif; color:#1a1a2e; margin:0; }
-      .cover { background:linear-gradient(135deg,#0f0f23 0%,#1a1a3e 50%,#0d1b2a 100%); color:#fff; padding:70px 50px; }
-      .cover .brand { color:#00e676; font-size:14px; letter-spacing:3px; text-transform:uppercase; font-weight:700; }
-      .cover h1 { font-size:40px; margin:16px 0 6px; }
-      .cover h1 span { color:#00e676; }
-      .cover .cli { font-size:22px; font-weight:600; margin-top:18px; }
-      .cover .meta { color:#9fb3c8; font-size:13px; margin-top:10px; }
+      body { font-family:'Plus Jakarta Sans',sans-serif; font-weight:800; color:#292929; background:#f4f1e8; margin:0; }
+      .cover { background:#fff952; color:#292929; padding:64px 46px; border-bottom:7px solid #292929; }
+      .cover .brand { font-size:13px; letter-spacing:3px; text-transform:uppercase; display:inline-block;
+        background:#292929; color:#fff952; padding:6px 12px; }
+      .cover h1 { font-size:54px; margin:22px 0 4px; line-height:1; letter-spacing:-1px; }
+      .cover .cli { font-size:26px; margin-top:20px; display:inline-block; background:#292929; color:#f4f1e8; padding:8px 16px;
+        border:7px solid #292929; box-shadow:12px 12px 0 rgba(41,41,41,.25); }
+      .cover .meta { font-size:14px; margin-top:18px; font-weight:700; }
       .wrap { padding:34px 40px; }
-      h2 { font-size:15px; padding:8px 12px; margin:26px 0 10px; background:#f6f7fb; color:#0f0f23; }
-      table { width:100%; border-collapse:collapse; font-size:12px; margin-bottom:6px; }
-      thead th { background:#0f0f23; color:#fff; padding:8px 10px; text-align:center; font-weight:600; }
-      tbody td { padding:7px 10px; text-align:center; border-bottom:1px solid #eee; }
-      tbody td.lbl { text-align:left; color:#555; font-weight:500; }
-      tbody tr:nth-child(even) { background:#fafafa; }
-      .pies { display:flex; gap:14px; flex-wrap:wrap; }
-      .pie-card { flex:1; min-width:200px; border:1px solid #e5e7eb; border-radius:10px; padding:12px; text-align:center; }
-      .pie-title { font-weight:700; font-size:13px; margin-bottom:6px; }
-      .leg { display:flex; justify-content:space-between; gap:6px; font-size:11px; margin-top:4px; }
-      .leg b { font-weight:700; }
-      .mut { color:#999; }
-      .kpis { display:flex; flex-wrap:wrap; gap:10px; }
-      .kpi { flex:1; min-width:120px; background:#f8f9fc; border-left:3px solid #00b894; border-radius:6px; padding:10px 12px; }
-      .kpi-l { font-size:10px; color:#888; text-transform:uppercase; }
-      .kpi-v { font-size:17px; font-weight:700; color:#0f0f23; margin-top:3px; }
-      .notas { margin-top:20px; padding:14px 16px; background:#f0fff8; border:1px solid #b2dfdb; border-radius:8px; font-size:12px; }
-      .foot { margin-top:30px; padding-top:14px; border-top:1px solid #eee; color:#999; font-size:11px; text-align:center; }
-      @media print { h2, table, .pie-card, .kpis { page-break-inside:avoid; } .cover { page-break-after:always; } }
+      h2 { font-size:16px; padding:10px 14px; margin:30px 0 14px; background:#fff952; color:#292929;
+        border:7px solid #292929; box-shadow:10px 10px 0 #292929; display:inline-block; }
+      table { width:100%; border-collapse:separate; border-spacing:0; font-size:12px; margin-bottom:10px;
+        border:7px solid #292929; box-shadow:10px 10px 0 #292929; background:#fffdf5; }
+      thead th { background:#292929; color:#fff952; padding:9px 10px; text-align:center; font-weight:800; }
+      thead th:first-child { text-align:left; }
+      tbody td { padding:8px 10px; text-align:center; border-top:2px solid #292929; font-weight:700; }
+      tbody td.lbl { text-align:left; font-weight:800; }
+      tbody tr:nth-child(even) { background:#f4f1e8; }
+      .pies { display:flex; gap:18px; flex-wrap:wrap; }
+      .pie-card { flex:1; min-width:210px; background:#fffdf5; border:7px solid #292929; box-shadow:10px 10px 0 #292929;
+        padding:14px; text-align:center; }
+      .pie-title { font-weight:800; font-size:14px; margin-bottom:8px; }
+      .leg { display:flex; justify-content:space-between; gap:6px; font-size:11px; margin-top:5px; font-weight:700; }
+      .leg b { font-weight:800; }
+      .leg .pct { min-width:34px; text-align:right; font-weight:800; }
+      .mut { color:#8a8676; }
+      .kpis { display:flex; flex-wrap:wrap; gap:14px; }
+      .kpi { flex:1; min-width:130px; background:#fffdf5; border:7px solid #292929; box-shadow:8px 8px 0 #292929; padding:12px 14px; }
+      .kpi-l { font-size:10px; text-transform:uppercase; letter-spacing:.5px; }
+      .kpi-v { font-size:19px; font-weight:800; margin-top:4px; }
+      .notas { margin-top:24px; padding:16px 18px; background:#fff952; border:7px solid #292929; box-shadow:10px 10px 0 #292929; font-size:12px; font-weight:700; }
+      .foot { margin-top:40px; padding-top:16px; border-top:7px solid #292929; font-size:11px; text-align:center; font-weight:700; }
+      @media print { h2, table, .pie-card, .kpis { page-break-inside:avoid; } .cover { page-break-after:always; } body { background:#f4f1e8; } }
     </style></head><body>
     <div class="cover">
       <div class="brand">Negocio Redondo · Método Redondo™</div>
-      <h1>Diagnóstico <span>Mensual</span></h1>
+      <h1>DIAGNÓSTICO MENSUAL</h1>
       <div class="cli">${cliente}</div>
-      <div class="meta">Períodos: ${rango}<br>Generado el ${hoy}</div>
+      <div class="meta">Períodos: ${rango} &nbsp;·&nbsp; Generado el ${hoy}</div>
     </div>
     <div class="wrap">
       ${tbl('📊 Métricas Generales', '#8b5cf6', [
