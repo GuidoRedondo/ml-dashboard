@@ -3983,6 +3983,15 @@ app.post('/api/diagnostico/calcular', requireAuth, async (req, res) => {
     // Antes se mezclaban (un cupón contaba también como descuento). Ahora van separados.
     let mktOrdenesConDescuento=0, mktOrdenesConCupon=0;
     let mktMontoDescuento=0, mktMontoCupon=0;
+    // Debug puntual: ver qué campos manda ML en el search (para descuento vs cupón)
+    if (orders[0]) {
+      const o0 = orders[0], oi0 = o0.order_items?.[0] || {};
+      console.log('[DIAG FIELDS]', JSON.stringify({
+        coupon: o0.coupon || null,
+        item: { full_unit_price: oi0.full_unit_price, original_price: oi0.original_price, unit_price: oi0.unit_price, discounts: oi0.discounts?.length || 0 },
+        payment0: (o0.payments?.[0]) ? { coupon_amount: o0.payments[0].coupon_amount, coupon_id: o0.payments[0].coupon_id } : null,
+      }));
+    }
     try {
       orders.forEach(o => {
         // ── Cupón: monto del cupón a nivel orden o pago ──
@@ -4011,12 +4020,31 @@ app.post('/api/diagnostico/calcular', requireAuth, async (req, res) => {
 
     // ── 6d. Financiero básico — ¿cuánto queda de cada venta tras los cargos de ML? ──
     // Mismo criterio que el detalle de ventas del P&L: neto = fact − comisión − impuestos − envío vendedor.
+    // Comisión (sale_fee) e impuestos (taxes.amount) vienen en /orders/search. El envío a cargo
+    // del vendedor NO viene confiable ahí → se pide a /shipments/{id}/costs (igual que el P&L),
+    // acotado a una muestra y extrapolado para no colgar en cuentas de mucho volumen.
     let finComision=0, finImpuestos=0, finEnvioVendedor=0;
     orders.forEach(o => {
       finComision  += (o.order_items||[]).reduce((s,oi)=>s+(parseFloat(oi.sale_fee)||0),0);
       finImpuestos += parseFloat(o.taxes?.amount) || 0;
-      (o.payments||[]).forEach(p => { const sc = parseFloat(p.shipping_cost)||0; if (sc>0) finEnvioVendedor += sc; });
     });
+    try {
+      const finShipIds = [...new Set(orders.map(o=>o.shipping?.id).filter(Boolean))];
+      const sampleN = Math.min(finShipIds.length, 400);
+      let sampledSender = 0, sampledOk = 0;
+      for (let i=0; i<sampleN; i+=10) {
+        const batch = finShipIds.slice(i, i+10);
+        await Promise.all(batch.map(async sid => {
+          try {
+            const costs = await fetch(`${ML_API}/shipments/${sid}/costs`, {headers}).then(r=>r.json());
+            const senderCost = parseFloat(costs.senders?.[0]?.cost) || 0;
+            sampledSender += senderCost; sampledOk++;
+          } catch(e){}
+        }));
+      }
+      // Extrapolar el promedio de la muestra al total de envíos
+      finEnvioVendedor = sampledOk > 0 ? (sampledSender / sampledOk) * finShipIds.length : 0;
+    } catch(e) { console.error('[DIAG FIN ENVIO]', e.message); }
     const finPublicidad   = padsInversion;
     const finCargosML     = finComision + finImpuestos + finEnvioVendedor;
     const finNetoML       = facturacion - finCargosML;
