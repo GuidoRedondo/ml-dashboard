@@ -1093,6 +1093,9 @@ tbody td {
           <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);cursor:pointer">
             <input id="convOnlyRotos" type="checkbox" onchange="renderConversionTable()" style="margin:0"> Solo embudos rotos
           </label>
+          <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);cursor:pointer" title="Las publicaciones de catálogo compiten por precio/reputación: no podés tocar título, fotos ni ficha. Ocultalas para enfocarte en las que sí podés optimizar.">
+            <input id="convHideCatalogo" type="checkbox" onchange="renderConversionKpis();renderConversionTable()" style="margin:0"> Ocultar catálogo
+          </label>
           <span id="convCount" style="font-size:11px;color:var(--muted)"></span>
         </div>
         <div id="convTableWrap"></div>
@@ -4475,7 +4478,10 @@ function _convMinVisitas() {
 function renderConversionKpis() {
   const kpis = document.getElementById('convKpis');
   const minVis = _convMinVisitas();
-  const items = (_convData.items || []).filter(i => i.visitas >= minVis);
+  const hideCat = document.getElementById('convHideCatalogo')?.checked;
+  const allItems = (_convData.items || []).filter(i => i.visitas >= minVis);
+  const catalogCount = allItems.filter(i => i.catalog_listing).length;
+  const items = hideCat ? allItems.filter(i => !i.catalog_listing) : allItems;
   const meta = _convData.metadatos || {};
   // Total visitas: usamos el agregado oficial del seller (matchea ML panel),
   // no la suma del breakdown (que puede estar capada a 1000 items).
@@ -4491,7 +4497,8 @@ function renderConversionKpis() {
   // sea coherente con la tabla — no diluye con visitas de items no medidos.
   const convProm = sumBreakdown > 0 ? (totalUni / sumBreakdown * 100) : 0;
   const semProm  = _convSemaforo(convProm);
-  const rotos    = items.filter(i => i.visitas > 500 && i.conversion < 2).length;
+  // Embudos rotos: solo los accionables (excluye catálogo, que no se puede optimizar).
+  const rotos    = items.filter(i => !i.catalog_listing && i.visitas > 500 && i.conversion < 2).length;
   const sinTraf  = items.filter(i => i.conversion > 5 && i.visitas < 500).length;
   const card = (label, value, color, sub) => `
     <div style="flex:1;min-width:170px;background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:14px 16px">
@@ -4510,8 +4517,9 @@ function renderConversionKpis() {
   kpis.innerHTML =
     card(`${semProm.emoji} Conversión promedio`, convProm.toFixed(2) + '%', semProm.color) +
     card('Total visitas (seller)', totalVisSeller.toLocaleString('es-AR'), null, totalSub) +
-    card('🔴 Embudos rotos', rotos + (rotos === 1 ? ' producto' : ' productos'), rotos > 0 ? '#ef4444' : 'var(--text)') +
-    card('💎 Buenos sin tráfico', sinTraf + (sinTraf === 1 ? ' producto' : ' productos'), sinTraf > 0 ? '#10b981' : 'var(--text)');
+    card('🔴 Embudos rotos', rotos + (rotos === 1 ? ' producto' : ' productos'), rotos > 0 ? '#ef4444' : 'var(--text)', 'accionables (excl. catálogo)') +
+    card('💎 Buenos sin tráfico', sinTraf + (sinTraf === 1 ? ' producto' : ' productos'), sinTraf > 0 ? '#10b981' : 'var(--text)') +
+    card('📖 En catálogo', catalogCount + (catalogCount === 1 ? ' producto' : ' productos'), catalogCount > 0 ? '#6d28d9' : 'var(--text)', 'competís por precio/reputación');
 }
 
 function _convSortClick(col) {
@@ -4527,8 +4535,12 @@ function renderConversionTable() {
   let items = (_convData.items || []).filter(i => i.visitas >= minVis);
   const search = (document.getElementById('convSearch').value || '').trim().toLowerCase();
   if (search) items = items.filter(i => (i.title || '').toLowerCase().includes(search) || (i.mla_id || '').toLowerCase().includes(search));
+  if (document.getElementById('convHideCatalogo')?.checked) {
+    items = items.filter(i => !i.catalog_listing);
+  }
   if (document.getElementById('convOnlyRotos').checked) {
-    items = items.filter(i => i.visitas > 500 && i.conversion < 2);
+    // Embudos rotos accionables: los de catálogo no se pueden optimizar
+    items = items.filter(i => !i.catalog_listing && i.visitas > 500 && i.conversion < 2);
   }
   items.sort((a, b) => {
     const ca = a[_convSort.col], cb = b[_convSort.col];
@@ -4569,7 +4581,7 @@ function renderConversionTable() {
     return `
       <tr style="border-top:1px solid var(--border)">
         <td style="padding:8px 10px;text-align:center;cursor:pointer;font-size:16px;color:${starColor}" title="${seg ? 'Quitar seguimiento' : 'Seguir esta publicación'}" onclick="toggleSeguimiento('${i.mla_id}','${segTitle}',${clientId})">${star}</td>
-        <td style="padding:8px 10px;max-width:380px"><a href="${link}" target="_blank" style="color:var(--text);text-decoration:none" title="Abrir en ML">${esc(i.title)}</a></td>
+        <td style="padding:8px 10px;max-width:380px">${i.catalog_listing ? '<span style="background:#ede9fe;color:#6d28d9;border-radius:4px;padding:1px 6px;font-size:10px;font-weight:700;margin-right:6px;white-space:nowrap" title="Compite en catálogo: no podés modificar título, fotos ni ficha. Se juega por precio, reputación y envío.">📖 Catálogo</span>' : ''}<a href="${link}" target="_blank" style="color:var(--text);text-decoration:none" title="Abrir en ML">${esc(i.title)}</a></td>
         <td style="padding:8px 10px;font-size:11px;white-space:nowrap"><span style="color:var(--muted);cursor:pointer" title="Click para copiar" onclick="copyMLA(this,'${i.mla_id}')">${i.mla_id}</span><span onclick="openConversionChartFromTab('${i.mla_id}')" style="cursor:pointer;margin-left:6px" title="Ver conversión diaria">📈</span></td>
         <td style="padding:8px 10px;text-align:right;font-weight:600">${renderPrecio(i)}</td>
         <td style="padding:8px 10px;text-align:right">${(i.visitas||0).toLocaleString('es-AR')}</td>
@@ -4617,8 +4629,11 @@ function exportConversionExcel() {
   const search = (document.getElementById('convSearch').value || '').trim().toLowerCase();
   let view = items;
   if (search) view = view.filter(i => (i.title || '').toLowerCase().includes(search) || (i.mla_id || '').toLowerCase().includes(search));
+  if (document.getElementById('convHideCatalogo')?.checked) {
+    view = view.filter(i => !i.catalog_listing);
+  }
   if (document.getElementById('convOnlyRotos').checked) {
-    view = view.filter(i => i.visitas > 500 && i.conversion < 2);
+    view = view.filter(i => !i.catalog_listing && i.visitas > 500 && i.conversion < 2);
   }
   view = view.slice().sort((a, b) => {
     const ca = a[_convSort.col], cb = b[_convSort.col];
@@ -4629,6 +4644,7 @@ function exportConversionExcel() {
   const rows = view.map(i => ({
     'Título':         i.title || '',
     'MLA':            i.mla_id,
+    'Catálogo':       i.catalog_listing ? 'Sí' : 'No',
     'Link':           `https://articulo.mercadolibre.com.ar/${i.mla_id.replace('MLA','MLA-')}`,
     'Precio':         i.price != null ? i.price : '',
     'Precio lista':   (i.original_price != null && i.price != null && i.original_price > i.price) ? i.original_price : '',
@@ -4645,7 +4661,7 @@ function exportConversionExcel() {
   }));
   const ws = XLSX.utils.json_to_sheet(rows);
   // Ancho aproximado por columna
-  ws['!cols'] = [{wch:60},{wch:14},{wch:50},{wch:11},{wch:12},{wch:10},{wch:8},{wch:10},{wch:14},{wch:11},{wch:12},{wch:9},{wch:9},{wch:11},{wch:9}];
+  ws['!cols'] = [{wch:60},{wch:14},{wch:9},{wch:50},{wch:11},{wch:12},{wch:10},{wch:8},{wch:10},{wch:14},{wch:11},{wch:12},{wch:9},{wch:9},{wch:11},{wch:9}];
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Conversión');
   const client = getActiveClient();

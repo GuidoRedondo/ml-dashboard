@@ -5324,6 +5324,7 @@ app.get('/api/reporte/visitas', requireAuth, async (req, res) => {
     const titleMap = {};
     const priceMap = {};         // id -> price actual (con descuento aplicado)
     const originalPriceMap = {}; // id -> precio lista tachado (si hay descuento)
+    const catalogMap = {};       // id -> compite en catálogo (no se puede modificar la publicación)
     Object.entries(salesByMla).forEach(([id, v]) => { titleMap[id] = v.title; });
     const PRICE_CONCURRENCY = 12;
     for (let i = 0; i < workingIds.length; i += PRICE_CONCURRENCY) {
@@ -5353,6 +5354,7 @@ app.get('/api/reporte/visitas', requireAuth, async (req, res) => {
             : (price != null && price < basePrice ? basePrice : null);
           if (price != null) priceMap[id] = price;
           if (precioLista != null) originalPriceMap[id] = precioLista;
+          catalogMap[id] = !!b.catalog_listing;
         } catch(e) {}
       }));
     }
@@ -5387,6 +5389,7 @@ app.get('/api/reporte/visitas', requireAuth, async (req, res) => {
         conversion,
         price,
         original_price,
+        catalog_listing: !!catalogMap[id],
         impresiones: ads.impresiones,
         clicks: ads.clicks,
         ctr: ads.ctr,
