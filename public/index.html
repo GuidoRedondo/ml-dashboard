@@ -10967,6 +10967,7 @@ function renderComparacion(data, mes_a, mes_b) {
   if (!el || !data) return;
 
   const { pyl_a, pyl_b, diff } = data;
+  window._cmpState = { pyl_a, pyl_b, diff, mes_a, mes_b };
   const fmt  = n => n != null ? '$' + Math.round(n).toLocaleString('es-AR') : '—';
   const fmtP = n => n != null ? parseFloat(n).toFixed(1) + '%' : '—';
   const fmtMes = m => {
@@ -11114,46 +11115,156 @@ function renderComparacion(data, mes_a, mes_b) {
 
   el.innerHTML = kpis + tabla +
     `<div style="text-align:right;margin-top:14px">
-      <button onclick="descargarComparacionPDF('${mes_a}','${mes_b}')" style="padding:7px 18px;border:none;border-radius:8px;background:#6366f1;color:#fff;font-size:13px;font-weight:600;cursor:pointer">📄 Descargar PDF</button>
+      <button onclick="descargarComparacionPDF('${mes_a}','${mes_b}')" style="padding:7px 18px;border:none;border-radius:8px;background:#fff952;color:#292929;font-size:13px;font-weight:700;cursor:pointer">📄 Descargar PDF</button>
     </div>`;
 }
 
 function descargarComparacionPDF(mes_a, mes_b) {
-  const content = document.getElementById('cmpResultados')?.innerHTML;
-  if (!content) return;
+  const st = window._cmpState;
+  if (!st) { showToast('Generá la comparación primero'); return; }
+  const a = st.pyl_a, b = st.pyl_b, diff = st.diff;
+  mes_a = mes_a || st.mes_a; mes_b = mes_b || st.mes_b;
+  const cliente = getActiveClient()?.name || 'Cliente';
+
+  const fmt  = n => n != null && n !== '' ? '$' + Math.round(n).toLocaleString('es-AR') : '—';
+  const fmtP = n => n != null && n !== '' ? parseFloat(n).toFixed(1) + '%' : '—';
   const fmtMes = m => {
     if (m === 'actual') return 'Mes en curso';
     const [y, mo] = m.split('-');
-    const nombres = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
-    return `${nombres[parseInt(mo)-1]} ${y}`;
+    const N = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
+    return `${N[parseInt(mo)-1]} ${y}`;
   };
-  const win = window.open('', '_blank');
-  win.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8">
-    <title>Comparación ${fmtMes(mes_a)} vs ${fmtMes(mes_b)}</title>
+  const dCol = (d, pos=true) => d==null||d===0 ? '#8a8676' : ((d>0)===pos ? '#0a8f3c' : '#c62828');
+  const dTxt = (d, pos=true, pct=false, base=null) => {
+    if (d==null) return '—';
+    if (d===0) return '=';
+    const icon = d>0?'▲':'▼';
+    if (pct) return `${d>0?'+':''}${parseFloat(d).toFixed(1)}pp`;
+    const nom = '$' + Math.round(Math.abs(d)).toLocaleString('es-AR');
+    const p = base && parseFloat(base) ? ` (${Math.abs(d/parseFloat(base)*100).toFixed(0)}%)` : '';
+    return `${icon} ${d>0?'+':'-'}${nom}${p}`;
+  };
+
+  const factA = a?.ingresos?.facturacion, factB = b?.ingresos?.facturacion;
+  const S = (label) => `<tr class="sec"><td colspan="4">${label}</td></tr>`;
+  const R = (label, va, vb, d, o={}) => {
+    const { bold=false, indent=false, pos=true, pctFact=false } = o;
+    const pa = pctFact && parseFloat(factA) ? `<span class="pf">${(Math.abs(parseFloat(va)||0)/parseFloat(factA)*100).toFixed(1)}%</span>` : '';
+    const pb = pctFact && parseFloat(factB) ? `<span class="pf">${(Math.abs(parseFloat(vb)||0)/parseFloat(factB)*100).toFixed(1)}%</span>` : '';
+    return `<tr class="${bold?'bold':''}">
+      <td class="lbl" style="${indent?'padding-left:26px':''}">${label}</td>
+      <td>${fmt(va)}${pa}</td>
+      <td class="mut">${fmt(vb)}${pb}</td>
+      <td style="color:${dCol(d,pos)};font-weight:800">${dTxt(d,pos)}</td></tr>`;
+  };
+  const RP = (label, va, vb, d) => `<tr>
+      <td class="lbl mut">${label}</td><td>${fmtP(va)}</td><td class="mut">${fmtP(vb)}</td>
+      <td style="color:${dCol(d,true)};font-weight:800">${dTxt(d,true,true)}</td></tr>`;
+
+  const kpi = (label, va, vb, d, f, pos=true) => `<div class="kpi">
+      <div class="kpi-l">${label}</div>
+      <div class="kpi-row">
+        <div><div class="kpi-m">${fmtMes(mes_a)}</div><div class="kpi-v">${f(va)}</div></div>
+        <div class="kpi-d" style="color:${dCol(d,pos)}">${d==null?'—':d===0?'=':dTxt(d,pos,false,vb)}</div>
+        <div style="text-align:right"><div class="kpi-m">${fmtMes(mes_b)}</div><div class="kpi-v mut">${f(vb)}</div></div>
+      </div></div>`;
+
+  const totalImpA = (parseFloat(a?.iva?.neto)||0) + (parseFloat(a?.impuestos_manuales?.total)||0);
+  const totalImpB = (parseFloat(b?.iva?.neto)||0) + (parseFloat(b?.impuestos_manuales?.total)||0);
+  const fmtNum = v => v?.toLocaleString('es-AR') ?? '—';
+  const hoy = new Date().toLocaleDateString('es-AR', {day:'2-digit', month:'long', year:'numeric'});
+
+  const kpis = `<div class="kpis">
+    ${kpi('Facturación', a?.ingresos?.facturacion, b?.ingresos?.facturacion, diff?.facturacion, fmt)}
+    ${kpi('Ventas', a?.ordenes, b?.ordenes, diff?.ordenes, fmtNum)}
+    ${kpi('Resultado Neto ML', a?.resultado_neto_ml, b?.resultado_neto_ml, diff?.resultado_neto, fmt)}
+    ${kpi('CMV', a?.cmv?.total, b?.cmv?.total, diff?.cmv, fmt, false)}
+    ${kpi('Gastos Fijos', a?.gastos_fijos?.total, b?.gastos_fijos?.total, diff?.gastos_fijos, fmt, false)}
+    ${kpi('Utilidad Final', a?.utilidad_final, b?.utilidad_final, diff?.utilidad_final, fmt)}
+  </div>`;
+
+  const tabla = `<table>
+    <thead><tr><th style="text-align:left">Concepto</th><th>${fmtMes(mes_a)}</th><th>${fmtMes(mes_b)}</th><th>Variación</th></tr></thead>
+    <tbody>
+      ${S('📥 Ingresos')}
+      ${R('Facturación productos', a?.ingresos?.facturacion, b?.ingresos?.facturacion, diff?.facturacion, {indent:true})}
+      ${R('Ingreso envío comprador', a?.ingresos?.envio_comprador, b?.ingresos?.envio_comprador, null, {indent:true})}
+      ${R('TOTAL INGRESOS', a?.ingresos?.total, b?.ingresos?.total, diff?.facturacion, {bold:true})}
+      ${S('📤 Egresos ML')}
+      ${R('Comisión ML', a?.egresos_ml?.comision, b?.egresos_ml?.comision, null, {indent:true, pos:false, pctFact:true})}
+      ${R('Costo envío vendedor', a?.egresos_ml?.envio_vendedor, b?.egresos_ml?.envio_vendedor, null, {indent:true, pos:false, pctFact:true})}
+      ${R('Publicidad (PADS)', a?.egresos_ml?.publicidad, b?.egresos_ml?.publicidad, null, {indent:true, pos:false, pctFact:true})}
+      ${R('TOTAL EGRESOS ML', a?.egresos_ml?.total, b?.egresos_ml?.total, diff?.total_egresos_ml, {bold:true, pos:false, pctFact:true})}
+      ${S('💰 Resultado')}
+      ${R('RESULTADO NETO ML', a?.resultado_neto_ml, b?.resultado_neto_ml, diff?.resultado_neto, {bold:true, pctFact:true})}
+      ${RP('% Recibido', a?.margenes?.pct_recibido, b?.margenes?.pct_recibido, diff?.pct_recibido)}
+      ${S('🏭 Costo Merc. Vendida')}
+      ${R('Costo de mercancía', a?.cmv?.total, b?.cmv?.total, diff?.cmv, {bold:true, pos:false, pctFact:true})}
+      ${R('UTILIDAD ANTES GF', a?.utilidad_antes_gf, b?.utilidad_antes_gf, diff?.utilidad_antes_gf, {bold:true, pctFact:true})}
+      ${S('🏢 Gastos Fijos')}
+      ${R('TOTAL GASTOS FIJOS', a?.gastos_fijos?.total, b?.gastos_fijos?.total, diff?.gastos_fijos, {bold:true, pos:false, pctFact:true})}
+      ${S('🧾 Impuestos')}
+      ${R('IVA neto a pagar', a?.iva?.neto, b?.iva?.neto, diff?.iva_neto, {indent:true, pos:false, pctFact:true})}
+      ${(a?.impuestos_manuales?.total || b?.impuestos_manuales?.total) ? R('Impuestos manuales', a?.impuestos_manuales?.total, b?.impuestos_manuales?.total, diff?.impuestos_manuales, {indent:true, pos:false, pctFact:true}) : ''}
+      ${R('TOTAL IMPUESTOS', totalImpA, totalImpB, totalImpA - totalImpB, {bold:true, pos:false, pctFact:true})}
+      ${S('📊 Resultado Final')}
+      ${R('UTILIDAD FINAL', a?.utilidad_final, b?.utilidad_final, diff?.utilidad_final, {bold:true, pctFact:true})}
+      ${RP('Margen %', a?.margenes?.margen, b?.margenes?.margen, diff?.margen)}
+      ${RP('Rentabilidad %', a?.margenes?.rentabilidad, b?.margenes?.rentabilidad, diff?.rentabilidad)}
+    </tbody></table>`;
+
+  const html = `<!DOCTYPE html><html lang="es"><head><meta charset="utf-8">
+    <title>Comparación P&L — ${cliente} — Negocio Redondo</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@600;700;800&display=swap" rel="stylesheet">
     <style>
-      * { box-sizing: border-box; margin: 0; padding: 0; }
-      body { font-family: Arial, sans-serif; font-size: 12px; color: #111; background: #fff; padding: 24px; }
-      h1 { font-size: 16px; margin-bottom: 16px; color: #111; }
-      table { width: 100%; border-collapse: collapse; font-size: 11px; }
-      th, td { padding: 6px 10px; border-bottom: 1px solid #e0e0e0; }
-      th { background: #f5f5f5; font-weight: 600; text-align: right; }
-      th:first-child, td:first-child { text-align: left; }
-      .kpi-grid, [style*="grid-template-columns"] { display: grid; grid-template-columns: repeat(3,1fr); gap: 10px; margin-bottom: 16px; }
-      .kpi-card, [class*="kpi-card"] { border: 1px solid #e0e0e0; border-radius: 6px; padding: 12px; background: #fff; }
-      @media print {
-        body { padding: 10px; }
-        button { display: none !important; }
-        @page { margin: 12mm; size: A4; }
-      }
-    </style>
-  </head><body>
-    <h1>Comparación P&L — ${fmtMes(mes_a)} vs ${fmtMes(mes_b)}</h1>
-    ${content}
-    <scr` + `ipt>
-      document.querySelector('button[onclick*="descargarComparacionPDF"]')?.remove();
-      window.onload = () => { window.print(); };
-    </scr` + `ipt>
-  </body></html>`);
+      * { box-sizing:border-box; -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+      body { font-family:'Plus Jakarta Sans',sans-serif; font-weight:800; color:#292929; background:#f4f1e8; margin:0; }
+      .cover { background:#fff952; color:#292929; padding:64px 46px; border-bottom:7px solid #292929; }
+      .cover .brand { font-size:13px; letter-spacing:3px; text-transform:uppercase; display:inline-block; background:#292929; color:#fff952; padding:6px 12px; }
+      .cover h1 { font-size:50px; margin:22px 0 4px; line-height:1; letter-spacing:-1px; }
+      .cover .cli { font-size:24px; margin-top:20px; display:inline-block; background:#292929; color:#f4f1e8; padding:8px 16px; border:7px solid #292929; box-shadow:16px 16px 0 #292929; }
+      .cover .meta { font-size:14px; margin-top:18px; font-weight:700; }
+      .wrap { padding:34px 40px; }
+      h2 { font-size:16px; padding:10px 14px; margin:6px 0 18px; background:#fff952; color:#292929; border:7px solid #292929; box-shadow:16px 16px 0 #292929; display:inline-block; }
+      .kpis { display:grid; grid-template-columns:repeat(3,1fr); gap:16px; margin-bottom:34px; }
+      .kpi { background:#fffdf5; border:7px solid #292929; box-shadow:16px 16px 0 #292929; padding:12px 14px; }
+      .kpi-l { font-size:10px; text-transform:uppercase; letter-spacing:.5px; margin-bottom:8px; }
+      .kpi-row { display:flex; justify-content:space-between; align-items:flex-end; gap:6px; }
+      .kpi-m { font-size:10px; color:#8a8676; }
+      .kpi-v { font-size:18px; font-weight:800; }
+      .kpi-d { font-size:12px; font-weight:800; text-align:center; }
+      table { width:100%; border-collapse:separate; border-spacing:0; font-size:12px; border:7px solid #292929; box-shadow:16px 16px 0 #292929; background:#fffdf5; }
+      thead th { background:#292929; color:#fff952; padding:9px 11px; text-align:right; font-weight:800; }
+      thead th:first-child { text-align:left; }
+      tbody td { padding:8px 11px; text-align:right; border-top:2px solid #292929; font-weight:700; }
+      tbody td.lbl { text-align:left; }
+      tbody tr.bold td { font-weight:800; background:#fbf7d9; }
+      tbody tr.sec td { background:#292929; color:#fff952; font-weight:800; text-transform:uppercase; letter-spacing:.05em; font-size:11px; text-align:left; padding:7px 11px; }
+      .mut { color:#8a8676; }
+      .pf { display:block; font-size:9px; color:#8a8676; font-weight:700; margin-top:1px; }
+      .foot { margin-top:40px; padding-top:16px; border-top:7px solid #292929; font-size:11px; text-align:center; font-weight:700; }
+      @media print { table, .kpi, h2 { page-break-inside:avoid; } .cover { page-break-after:always; } button { display:none !important; } }
+    </style></head><body>
+    <div class="cover">
+      <div class="brand">Negocio Redondo · Método Redondo™</div>
+      <h1>COMPARACIÓN P&L</h1>
+      <div class="cli">${cliente}</div>
+      <div class="meta">${fmtMes(mes_a)} vs ${fmtMes(mes_b)} &nbsp;·&nbsp; Generado el ${hoy}</div>
+    </div>
+    <div class="wrap">
+      <h2>📊 Resumen</h2>
+      ${kpis}
+      <h2>🧾 Estado de resultados (P&amp;L)</h2>
+      ${tabla}
+      <div class="foot">Negocio Redondo LATAM · app.negocioredondolatam.com · Reporte generado automáticamente</div>
+    </div>
+    <scr`+`ipt>window.onload=()=>{setTimeout(()=>window.print(),400)}</scr`+`ipt>
+  </body></html>`;
+
+  const win = window.open('', '_blank');
+  if (!win) { showToast('Permití las ventanas emergentes para exportar el PDF'); return; }
+  win.document.write(html);
   win.document.close();
 }
 
