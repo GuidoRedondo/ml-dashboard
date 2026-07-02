@@ -3796,15 +3796,32 @@ app.post('/api/diagnostico/calcular', requireAuth, async (req, res) => {
     // ML ignora el date_from y devuelve solo el último día → daba 0 en meses pasados.
     const dateFromStr = `${year}-${String(month+1).padStart(2,'0')}-01`;
     const dateToStr   = `${year}-${String(month+1).padStart(2,'0')}-${String(daysInMonth).padStart(2,'0')}`;
-    // Para meses pasados, /items_visits?date_from&date_to da el total agregado correcto.
-    // El ?last=N (fetchUserVisits) no siempre alcanza hacia atrás → daba 0. Probamos
-    // rango primero y caemos al wrapper como fallback.
-    let visitasData = await fetchUserVisitsRange(uid, dateFromStr, dateToStr, headers);
-    if (!visitasData || !visitasData.total) {
-      visitasData = await fetchUserVisits(uid, dateFromStr, dateToStr, headers);
+    // Visitas: MISMO método que la pestaña Conversión (probado que funciona). Por ítem
+    // con ?last=N (N = días desde dateFrom hasta hoy) y filtrando localmente al rango del
+    // mes. NO usar date_from&date_to en time_window (ML ignora el from) ni el agregado
+    // de usuario (/items_visits) que devuelve 0 en meses pasados.
+    const todayStr = new Date().toISOString().slice(0,10);
+    const lastN = Math.max(1, Math.round((new Date(todayStr) - new Date(dateFromStr)) / 86400000) + 1);
+    const dateToIsToday = dateToStr >= todayStr;
+    let visitas = 0;
+    for (let i = 0; i < allActiveIdsFull.length; i += 20) {
+      const batch = allActiveIdsFull.slice(i, i+20);
+      const res = await Promise.all(batch.map(id =>
+        fetch(`${ML_API}/items/${id}/visits/time_window?last=${lastN}&unit=day`, { headers }).then(r=>r.json()).catch(()=>null)
+      ));
+      res.forEach(v => {
+        if (!v || v.error) return;
+        if (dateToIsToday && typeof v.total_visits === 'number') { visitas += v.total_visits; return; }
+        if (Array.isArray(v.results)) {
+          v.results.forEach(x => {
+            if (!x || !x.date) return;
+            const day = x.date.slice(0,10);
+            if (day >= dateFromStr && day <= dateToStr) visitas += (x.total || x.visits || 0);
+          });
+        }
+      });
     }
-    let visitas = visitasData ? visitasData.total : 0;
-    console.log(`[DIAG VISITAS] ${mes} visitas=${visitas} (rango ${dateFromStr}→${dateToStr})`);
+    console.log(`[DIAG VISITAS] ${mes} visitas=${visitas} lastN=${lastN} items=${allActiveIdsFull.length}`);
 
     // Conversión
     const conversion = visitas > 0 ? parseFloat(((ventas / visitas) * 100).toFixed(2)) : 0;

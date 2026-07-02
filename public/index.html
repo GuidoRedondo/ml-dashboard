@@ -1216,7 +1216,7 @@ tbody td {
     <!-- DIAGNÓSTICO MENSUAL -->
     <div class="page" id="page-diagnostico">
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px;flex-wrap:wrap">
-        <h2 style="margin:0;font-family:var(--font-b);flex:1">🩺 Diagnóstico Mensual</h2>
+        <h2 style="margin:0;font-family:var(--font-b);flex:1">🩺 Diagnóstico</h2>
         <select id="diagClientSel" onchange="diagCargarDatos()" style="padding:6px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px"></select>
         <select id="diagMesSel" style="padding:6px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px">
           <option value="2025-01-01">Ene 2025</option>
@@ -9915,7 +9915,7 @@ function diagExportPDF() {
   const notas = refCol?.data?.manuales?.notas || '';
 
   const html = `<!DOCTYPE html><html lang="es"><head><meta charset="utf-8">
-    <title>Diagnóstico Mensual — ${cliente} — Negocio Redondo</title>
+    <title>Diagnóstico — ${cliente} — Negocio Redondo</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@600;700;800&display=swap" rel="stylesheet">
     <style>
@@ -9956,7 +9956,7 @@ function diagExportPDF() {
     </style></head><body>
     <div class="cover">
       <div class="brand">Negocio Redondo · Método Redondo™</div>
-      <h1>DIAGNÓSTICO MENSUAL</h1>
+      <h1>DIAGNÓSTICO</h1>
       <div class="cli">${cliente}</div>
       <div class="meta">Períodos: ${rango} &nbsp;·&nbsp; Generado el ${hoy}</div>
     </div>
