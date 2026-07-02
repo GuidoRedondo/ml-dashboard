@@ -1236,6 +1236,7 @@ tbody td {
           <option value="2026-03-01" selected>Mar 2026</option>
         </select>
         <button class="sync-btn" id="diagCalcBtn" onclick="diagCalcularTodo()" style="background:var(--accent);color:#fff;border:none">⚡ Calcular 3 meses</button>
+        <button class="sync-btn" id="diagPdfBtn" onclick="diagExportPDF()" style="background:#0f0f23;color:#00e676;border:none">📄 PDF</button>
       </div>
       <div id="diagContent"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Seleccioná un cliente y calculá el diagnóstico del mes</div></div>
     </div>
@@ -9810,6 +9811,10 @@ function diagRender(meses, clientId) {
 
   el.innerHTML = formHTML + repCard + logisticaHTML + tableHTML;
 
+  // Guardar estado para el export a PDF
+  const _diagCliente = (document.getElementById('diagClientSel')?.selectedOptions?.[0]?.textContent) || (getActiveClient()?.name) || '';
+  window._diagState = { cols, clientId, clientName: _diagCliente };
+
   // Crear las tortas (destruye las previas para no acumular instancias)
   window._diagPieCharts = window._diagPieCharts || {};
   Object.values(window._diagPieCharts).forEach(ch => { try { ch.destroy(); } catch(e){} });
@@ -9831,6 +9836,159 @@ function diagRender(meses, clientId) {
       });
     });
   }
+}
+
+// ── DIAGNÓSTICO — EXPORT PDF (formato Negocio Redondo) ─────────────────────────
+function diagExportPDF() {
+  const st = window._diagState;
+  if (!st || !st.cols || !st.cols.some(c => c.data)) { showToast('Calculá el diagnóstico primero'); return; }
+  const cols = st.cols;
+  const cliente = st.clientName || 'Cliente';
+
+  const fmtM = v => v != null && v !== '' ? '$' + parseFloat(v).toLocaleString('es-AR', {maximumFractionDigits:0}) : '—';
+  const fmtN = v => v != null && v !== '' ? parseFloat(v).toLocaleString('es-AR') : '—';
+  const fmtP = v => v != null && v !== '' ? parseFloat(v).toFixed(1) + '%' : '—';
+  const fmtX = v => v != null && v !== '' ? parseFloat(v).toFixed(1) + 'x' : '—';
+  const fmtT = v => v || '—';
+  const g = (c, path) => { // getter con soporte manuales.
+    if (!c.data) return null;
+    return path.startsWith('m.') ? (c.data.manuales || {})[path.slice(2)] : c.data[path];
+  };
+  const rowsHTML = (defs) => defs.map(([lbl, path, fmt]) =>
+    `<tr><td class="lbl">${lbl}</td>${cols.map(c => `<td>${fmt(g(c, path))}</td>`).join('')}</tr>`
+  ).join('');
+  const tbl = (title, accent, defs) => `
+    <h2 style="border-left:4px solid ${accent}">${title}</h2>
+    <table>
+      <thead><tr><th style="text-align:left">Métrica</th>${cols.map(c=>`<th>${c.label}</th>`).join('')}</tr></thead>
+      <tbody>${rowsHTML(defs)}</tbody>
+    </table>`;
+
+  // Tortas de logística como imagen (desde los canvas ya renderizados)
+  const pieImgs = cols.map((c, idx) => {
+    const cv = document.getElementById(`diagLogiPie-${idx}`);
+    try { return cv ? cv.toDataURL('image/png') : null; } catch(e) { return null; }
+  });
+  const CANALES = [
+    { k:'📦 FULL', vk:'full_ventas', fk:'full_fact_monto' },
+    { k:'🛵 FLEX', vk:'flex_ventas', fk:'flex_fact_monto' },
+    { k:'✉️ ME/Correo', vk:'corr_ventas', fk:'corr_fact_monto' },
+  ];
+  const logiCards = cols.map((c, idx) => {
+    const m = c.data?.manuales || {};
+    const legend = CANALES.map(ch =>
+      `<div class="leg"><span>${ch.k}</span><b>${(m[ch.vk]||0)} vtas</b><span class="mut">${m[ch.fk]>0?fmtM(m[ch.fk]):'—'}</span></div>`
+    ).join('');
+    return `<div class="pie-card">
+      <div class="pie-title">${c.label}</div>
+      ${pieImgs[idx] ? `<img src="${pieImgs[idx]}" style="width:150px;height:150px;object-fit:contain">` : '<div class="mut" style="height:150px;display:flex;align-items:center;justify-content:center">Sin datos</div>'}
+      ${legend}
+    </div>`;
+  }).join('');
+
+  const refCol = cols.slice().reverse().find(c => c.data);
+  const rd = refCol?.data || {};
+  const kpi = (l, v) => `<div class="kpi"><div class="kpi-l">${l}</div><div class="kpi-v">${v}</div></div>`;
+  const repPubHTML = `
+    <h2 style="border-left:4px solid #6366f1">⭐ Reputación y Publicaciones — estado actual (${refCol?.label||''})</h2>
+    <div class="kpis">
+      ${kpi('Medalla', rd.rep_medalla || '—')}
+      ${kpi('Ventas 60d', fmtN(rd.rep_ventas_60))}
+      ${kpi('% Reclamos', rd.rep_reclamos!=null?(parseFloat(rd.rep_reclamos)*100).toFixed(2)+'%':'—')}
+      ${kpi('% Cancelaciones', rd.rep_cancelaciones!=null?(parseFloat(rd.rep_cancelaciones)*100).toFixed(2)+'%':'—')}
+      ${kpi('Publicaciones activas', fmtN(rd.pub_activas))}
+      ${kpi('Con ventas', fmtN(rd.pub_exitosas))}
+      ${kpi('Pareto 80%', fmtP(rd.pub_pareto_pct))}
+    </div>`;
+
+  const hoy = new Date().toLocaleDateString('es-AR', {day:'2-digit', month:'long', year:'numeric'});
+  const rango = cols.filter(c=>c.data).map(c=>c.label).join(' · ') || cols.map(c=>c.label).join(' · ');
+  const notas = refCol?.data?.manuales?.notas || '';
+
+  const html = `<!DOCTYPE html><html lang="es"><head><meta charset="utf-8">
+    <title>Diagnóstico Mensual — ${cliente} — Negocio Redondo</title>
+    <style>
+      * { box-sizing:border-box; -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+      body { font-family:'Segoe UI',Roboto,Helvetica,Arial,sans-serif; color:#1a1a2e; margin:0; }
+      .cover { background:linear-gradient(135deg,#0f0f23 0%,#1a1a3e 50%,#0d1b2a 100%); color:#fff; padding:70px 50px; }
+      .cover .brand { color:#00e676; font-size:14px; letter-spacing:3px; text-transform:uppercase; font-weight:700; }
+      .cover h1 { font-size:40px; margin:16px 0 6px; }
+      .cover h1 span { color:#00e676; }
+      .cover .cli { font-size:22px; font-weight:600; margin-top:18px; }
+      .cover .meta { color:#9fb3c8; font-size:13px; margin-top:10px; }
+      .wrap { padding:34px 40px; }
+      h2 { font-size:15px; padding:8px 12px; margin:26px 0 10px; background:#f6f7fb; color:#0f0f23; }
+      table { width:100%; border-collapse:collapse; font-size:12px; margin-bottom:6px; }
+      thead th { background:#0f0f23; color:#fff; padding:8px 10px; text-align:center; font-weight:600; }
+      tbody td { padding:7px 10px; text-align:center; border-bottom:1px solid #eee; }
+      tbody td.lbl { text-align:left; color:#555; font-weight:500; }
+      tbody tr:nth-child(even) { background:#fafafa; }
+      .pies { display:flex; gap:14px; flex-wrap:wrap; }
+      .pie-card { flex:1; min-width:200px; border:1px solid #e5e7eb; border-radius:10px; padding:12px; text-align:center; }
+      .pie-title { font-weight:700; font-size:13px; margin-bottom:6px; }
+      .leg { display:flex; justify-content:space-between; gap:6px; font-size:11px; margin-top:4px; }
+      .leg b { font-weight:700; }
+      .mut { color:#999; }
+      .kpis { display:flex; flex-wrap:wrap; gap:10px; }
+      .kpi { flex:1; min-width:120px; background:#f8f9fc; border-left:3px solid #00b894; border-radius:6px; padding:10px 12px; }
+      .kpi-l { font-size:10px; color:#888; text-transform:uppercase; }
+      .kpi-v { font-size:17px; font-weight:700; color:#0f0f23; margin-top:3px; }
+      .notas { margin-top:20px; padding:14px 16px; background:#f0fff8; border:1px solid #b2dfdb; border-radius:8px; font-size:12px; }
+      .foot { margin-top:30px; padding-top:14px; border-top:1px solid #eee; color:#999; font-size:11px; text-align:center; }
+      @media print { h2, table, .pie-card, .kpis { page-break-inside:avoid; } .cover { page-break-after:always; } }
+    </style></head><body>
+    <div class="cover">
+      <div class="brand">Negocio Redondo · Método Redondo™</div>
+      <h1>Diagnóstico <span>Mensual</span></h1>
+      <div class="cli">${cliente}</div>
+      <div class="meta">Períodos: ${rango}<br>Generado el ${hoy}</div>
+    </div>
+    <div class="wrap">
+      ${tbl('📊 Métricas Generales', '#8b5cf6', [
+        ['Facturación','facturacion',fmtM],
+        ['Ventas','ventas',fmtN],
+        ['Visitas','visitas',fmtN],
+        ['Conversión','conversion',fmtP],
+        ['Ticket promedio','ticket_promedio',fmtM],
+      ])}
+      ${tbl('💵 Financiero — cuánto queda de cada venta', '#16a34a', [
+        ['Facturación bruta','facturacion',fmtM],
+        ['− Comisión ML','m.fin_comision',fmtM],
+        ['− Impuestos','m.fin_impuestos',fmtM],
+        ['− Envío a cargo del vendedor','m.fin_envio_vendedor',fmtM],
+        ['= Neto después de ML','m.fin_neto_ml',fmtM],
+        ['✅ % que queda después de ML','m.fin_pct_neto_ml',fmtP],
+        ['− Publicidad','m.fin_publicidad',fmtM],
+        ['✅ % que queda (– publicidad)','m.fin_pct_neto_total',fmtP],
+      ])}
+      <h2 style="border-left:4px solid #f59e0b">🚚 Logística — cantidad y facturación por canal</h2>
+      <div class="pies">${logiCards}</div>
+      ${tbl('📣 Central de Marketing', '#f97316', [
+        ['🏷 Ventas con descuento','m.mkt_ordenes_con_descuento',fmtN],
+        ['% ventas con descuento','m.mkt_pct_descuento',fmtP],
+        ['$ resignado en descuentos','m.mkt_monto_descuento',fmtM],
+        ['🎟 Ventas con cupón','m.mkt_ordenes_con_cupon',fmtN],
+        ['% ventas con cupón','m.mkt_pct_cupon',fmtP],
+        ['$ resignado en cupones','m.mkt_monto_cupon',fmtM],
+      ])}
+      ${tbl('🏷 Publicidad', '#ef4444', [
+        ['Inversión PADS','pads_inversion',fmtM],
+        ['Facturación PADS','pads_ingresos',fmtM],
+        ['ROAS','pads_roas',fmtX],
+        ['TACOS','pads_tacos',fmtP],
+        ['% Fact por publicidad','pads_aporte_pct',fmtP],
+      ])}
+      ${repPubHTML}
+      ${notas ? `<div class="notas"><b>📝 Notas del mes:</b> ${notas}</div>` : ''}
+      <div class="foot">Negocio Redondo LATAM · app.negocioredondolatam.com · Reporte generado automáticamente</div>
+    </div>
+  </body></html>`;
+
+  const w = window.open('', '_blank');
+  if (!w) { showToast('Permití las ventanas emergentes para exportar el PDF'); return; }
+  w.document.write(html);
+  w.document.close();
+  setTimeout(() => { try { w.focus(); w.print(); } catch(e){} }, 500);
 }
 
 // ── FOTOS ─────────────────────────────────────────────────────────────────────
