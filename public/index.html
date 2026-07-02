@@ -9732,7 +9732,7 @@ function diagRender(meses, clientId) {
     ${sec('🏷 Publicidad','#fce7e7')}
     ${row('Inversión PADS', d=>d.pads_inversion, fmtM, false)}
     ${row('Facturación PADS', d=>d.pads_ingresos, fmtM)}
-    ${row('ACOS', d=>d.pads_acos, fmtP, false)}
+    ${row('ROAS', d=>d.pads_roas, v=>v!=null?parseFloat(v).toFixed(1)+'x':'—')}
     ${row('TACOS', d=>d.pads_tacos, fmtP, false)}
     ${row('% Fact por publicidad', d=>d.pads_aporte_pct, fmtP)}
     </tbody></table></div>`;

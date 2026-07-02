@@ -4030,7 +4030,8 @@ app.post('/api/diagnostico/calcular', requireAuth, async (req, res) => {
     });
     try {
       const finShipIds = [...new Set(orders.map(o=>o.shipping?.id).filter(Boolean))];
-      const sampleN = Math.min(finShipIds.length, 400);
+      // Muestra chica para no colgar el request (cada mes es un POST aparte). Se extrapola.
+      const sampleN = Math.min(finShipIds.length, 60);
       let sampledSender = 0, sampledOk = 0;
       for (let i=0; i<sampleN; i+=10) {
         const batch = finShipIds.slice(i, i+10);
