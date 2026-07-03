@@ -5391,11 +5391,12 @@ function exportDescuentosExcel() {
     return parseFloat(((precio - p.costo - com - cargo - envio - imp - tacos - cf - ivaDif) / precio * 100).toFixed(1));
   }
 
-  const rows = _descuentosData.map(p => {
+  const rows = [..._descuentosData].sort((a,b) => (b.revenue||0) - (a.revenue||0)).map(p => {
     const comPct    = parseFloat(document.getElementById(`dsc_com_${p.id}`)?.value ?? p.comPct);
     const envioUnit = parseFloat(document.getElementById(`dsc_env_${p.id}`)?.value ?? p.envioUnit);
     const row = {
       'MLA': p.id, 'Título': p.title,
+      'Facturación': Math.round(p.revenue || 0),
       'Precio': Math.round(p.precio), 'CMV': Math.round(p.costo),
       'Comisión %': comPct, 'Envío $': envioUnit,
       'Margen actual %': calcM(p, p.precio, comPct, envioUnit),
@@ -5790,6 +5791,7 @@ async function loadDescuentos() {
       comSource: comPctML != null ? 'ML' : (comPctHist != null ? 'hist.' : 'est.'),
       envioUnit,
       stock, cobertura, units, cuenta: client.name,
+      revenue: bp?.revenue || 0,   // facturación del período (para ordenar por importancia)
     };
   });
 
@@ -5904,6 +5906,7 @@ function renderDescuentos() {
     html += '<td style="padding:6px 8px;font-size:12px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + p.title.replace(/"/g,"'") + '">'
       + '<a href="https://articulo.mercadolibre.com.ar/' + mlaLink + '" target="_blank" style="color:var(--text);text-decoration:none">' + p.title + '</a>'
       + '</td>';
+    html += '<td style="padding:6px 8px;text-align:right;font-size:12px;font-weight:700;color:' + (p.revenue > 0 ? '#059669' : 'var(--muted)') + '">' + (p.revenue > 0 ? '$' + Math.round(p.revenue).toLocaleString('es-AR') : '—') + '</td>';
     const precioDisplay = p.tieneDescuento
       ? '<span style="color:#ff9100;font-weight:700">$' + Math.round(p.precio).toLocaleString('es-AR') + '</span>'
         + '<br><span style="font-size:10px;color:var(--muted);text-decoration:line-through">$' + Math.round(p.precioLista).toLocaleString('es-AR') + '</span>'
@@ -5959,7 +5962,7 @@ function renderDescuentos() {
     + '</div>'
     + '<div style="overflow-x:auto;max-height:620px;overflow-y:auto;border-radius:10px;border:1px solid var(--border)">'
     + '<table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr style="background:var(--surface2)">'
-    + dscTh('id','MLA','left') + dscTh('title','Título','left') + dscTh('precio','Precio') + dscTh('costo','CMV')
+    + dscTh('id','MLA','left') + dscTh('title','Título','left') + dscTh('revenue','Facturación') + dscTh('precio','Precio') + dscTh('costo','CMV')
     + '<th style="' + thS() + '">Comisión</th><th style="' + thS() + '">Envío $</th>'
     + dscTh('margen','Margen actual') + dscTh('stock','Stock') + dscTh('cobertura','Cobertura')
     + presetHeaders
