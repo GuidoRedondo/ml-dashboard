@@ -6987,7 +6987,8 @@ app.get('/api/debug/sku', requireAuth, async (req, res) => {
     const token = await getClientToken(clientId);
     if (!token) return res.json({ error: 'Cliente sin token' });
     const headers = { Authorization: `Bearer ${token}` };
-    const b = await fetch(`${ML_API}/items/${itemId}?attributes=id,title,seller_custom_field,attributes,variations`, { headers }).then(r => r.json());
+    // Ítem COMPLETO (sin ?attributes=) — el filtrado devuelve variaciones con attributes vacíos.
+    const b = await fetch(`${ML_API}/items/${itemId}`, { headers }).then(r => r.json());
     if (b.error) return res.json({ error: b.error, message: b.message });
     res.json({
       id: b.id,
@@ -6999,8 +7000,8 @@ app.get('/api/debug/sku', requireAuth, async (req, res) => {
         id: v.id,
         combo: (v.attribute_combinations || []).map(a => a.value_name).join(' / '),
         seller_custom_field: v.seller_custom_field ?? null,
-        SELLER_SKU: v.attributes?.find(a => a.id === 'SELLER_SKU')?.value_name ?? null,
-        variation_attribute_ids: (v.attributes || []).map(a => a.id),
+        // Volcar TODOS los atributos de la variación (id + valor) para ver dónde está el SKU real
+        attributes: (v.attributes || []).map(a => ({ id: a.id, name: a.name, value: a.value_name ?? a.values?.[0]?.name ?? null })),
       })),
       resultado_extractSku: extractSku(b),
     });
