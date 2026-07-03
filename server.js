@@ -738,13 +738,26 @@ app.get('/oauth/callback', async (req, res) => {
   try {
     const { code, state } = req.query;
     if (!code || !state) return res.send('<h2>Error: faltan parámetros</h2>');
-    const clientId = parseInt(state);
-    const clientResult = await pool.query('SELECT * FROM clients WHERE id = $1', [clientId]);
-    if (!clientResult.rows.length) return res.send('<h2>Error: cliente no encontrado</h2>');
-    const client = clientResult.rows[0];
+
+    // Onboarding self-service: state = "onboard" (o "onboard:<base64 del nombre>").
+    // No hay cliente todavía → se crea/actualiza recién al autorizar, con las
+    // credenciales de app del entorno.
+    const isOnboard = String(state).startsWith('onboard');
+    let clientId = null, client = null, refName = null;
+    if (isOnboard) {
+      const parts = String(state).split(':');
+      if (parts[1]) { try { refName = Buffer.from(parts[1], 'base64url').toString('utf8').trim(); } catch(e) {} }
+    } else {
+      clientId = parseInt(state);
+      const clientResult = await pool.query('SELECT * FROM clients WHERE id = $1', [clientId]);
+      if (!clientResult.rows.length) return res.send('<h2>Error: cliente no encontrado</h2>');
+      client = clientResult.rows[0];
+    }
     const redirectUri = process.env.REDIRECT_URI || 'https://ml-dashboard-production.up.railway.app/oauth/callback';
 
-    const creds = getMLCredentials(client);
+    const creds = isOnboard
+      ? { app_id: process.env.ML_APP_ID, client_secret: process.env.ML_CLIENT_SECRET }
+      : getMLCredentials(client);
     const bodyParams = new URLSearchParams({ grant_type: 'authorization_code', client_id: creds.app_id, client_secret: creds.client_secret, code, redirect_uri: redirectUri });
     console.log('[OAUTH_CALLBACK] body enviado a ML:', bodyParams.toString());
     const tokenRes = await fetch(`${ML_API}/oauth/token`, {
@@ -771,21 +784,84 @@ app.get('/oauth/callback', async (req, res) => {
     const user = await userRes.json();
     const expiresAt = new Date(Date.now() + (tokens.expires_in || 21600) * 1000);
 
-    await pool.query(`
-      UPDATE clients SET
-        ml_user_id = $1, access_token = $2, refresh_token = $3,
-        token_expires_at = $4, site_id = $5, updated_at = NOW()
-      WHERE id = $6
-    `, [user.id, tokens.access_token, tokens.refresh_token, expiresAt, user.site_id || 'MLA', clientId]);
+    if (isOnboard) {
+      // Upsert por ml_user_id (UNIQUE): si ya existe, solo refresca tokens y lo reactiva;
+      // si es nuevo, lo crea con el nombre del link (ref) o el nickname de ML.
+      const existing = await pool.query('SELECT id FROM clients WHERE ml_user_id = $1', [user.id]);
+      if (existing.rows.length) {
+        clientId = existing.rows[0].id;
+        await pool.query(`
+          UPDATE clients SET access_token=$1, refresh_token=$2, token_expires_at=$3,
+            site_id=$4, active=true, updated_at=NOW() WHERE id=$5
+        `, [tokens.access_token, tokens.refresh_token, expiresAt, user.site_id || 'MLA', clientId]);
+      } else {
+        const nombre = refName || user.nickname || `Cuenta ${user.id}`;
+        const ins = await pool.query(`
+          INSERT INTO clients (name, ml_user_id, access_token, refresh_token, token_expires_at, site_id, active)
+          VALUES ($1,$2,$3,$4,$5,$6,true) RETURNING id
+        `, [nombre, user.id, tokens.access_token, tokens.refresh_token, expiresAt, user.site_id || 'MLA']);
+        clientId = ins.rows[0].id;
+      }
+    } else {
+      await pool.query(`
+        UPDATE clients SET
+          ml_user_id = $1, access_token = $2, refresh_token = $3,
+          token_expires_at = $4, site_id = $5, updated_at = NOW()
+        WHERE id = $6
+      `, [user.id, tokens.access_token, tokens.refresh_token, expiresAt, user.site_id || 'MLA', clientId]);
+    }
 
-    res.send(`<!DOCTYPE html><html><body style="font-family:sans-serif;text-align:center;padding:60px;background:#0a0a0a;color:#fff">
-      <h1 style="color:#00e676">✅ ¡Conectado exitosamente!</h1>
-      <p style="color:#aaa">La cuenta <strong style="color:#fff">${user.nickname}</strong> fue vinculada al dashboard.</p>
-      <p style="color:#666;font-size:14px">Podés cerrar esta ventana.</p>
-    </body></html>`);
+    res.send(`<!DOCTYPE html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+      <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@700;800&display=swap" rel="stylesheet">
+      <style>body{font-family:'Plus Jakarta Sans',sans-serif;font-weight:800;background:#f4f1e8;color:#292929;margin:0;display:flex;min-height:100vh;align-items:center;justify-content:center;padding:24px}
+      .card{background:#fff952;border:7px solid #292929;box-shadow:16px 16px 0 #292929;padding:40px 36px;max-width:460px;text-align:center}
+      .card h1{font-size:30px;margin:0 0 12px}.card p{font-weight:700;font-size:15px;margin:6px 0;line-height:1.4}
+      .name{display:inline-block;background:#292929;color:#fff952;padding:4px 12px;margin-top:6px}</style></head>
+      <body><div class="card">
+        <div style="font-size:44px">✅</div>
+        <h1>¡Cuenta vinculada!</h1>
+        <p>Tu cuenta de Mercado Libre quedó conectada con Negocio Redondo.</p>
+        <p class="name">${user.nickname || ('Cuenta ' + user.id)}</p>
+        <p style="font-weight:700;font-size:13px;margin-top:18px">Ya podés cerrar esta ventana. ¡Gracias!</p>
+      </div></body></html>`);
   } catch(e) {
     res.send(`<h2>Error: ${e.message}</h2>`);
   }
+});
+
+// Landing público de vinculación self-service. Guido comparte este link (con ?ref=Nombre
+// opcional) y quien lo abre autoriza su cuenta de ML sin login previo al dashboard.
+app.get('/vincular', (req, res) => {
+  const ref = (req.query.ref || '').toString().slice(0, 80);
+  const appId = process.env.ML_APP_ID;
+  const redirectUri = process.env.REDIRECT_URI || 'https://ml-dashboard-production.up.railway.app/oauth/callback';
+  const state = ref ? 'onboard:' + Buffer.from(ref).toString('base64url') : 'onboard';
+  const authUrl = `https://auth.mercadolibre.com.ar/authorization?response_type=code&client_id=${appId}&redirect_uri=${encodeURIComponent(redirectUri)}&state=${encodeURIComponent(state)}`;
+  res.send(`<!DOCTYPE html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Vincular tu cuenta · Negocio Redondo</title>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@600;700;800&display=swap" rel="stylesheet">
+    <style>*{box-sizing:border-box}body{font-family:'Plus Jakarta Sans',sans-serif;font-weight:800;background:#f4f1e8;color:#292929;margin:0;display:flex;min-height:100vh;align-items:center;justify-content:center;padding:24px}
+    .card{background:#fffdf5;border:7px solid #292929;box-shadow:16px 16px 0 #292929;padding:40px 36px;max-width:500px}
+    .brand{display:inline-block;background:#292929;color:#fff952;font-size:12px;letter-spacing:2px;text-transform:uppercase;padding:6px 12px}
+    h1{font-size:30px;margin:18px 0 10px;line-height:1.1}
+    p{font-weight:700;font-size:14px;line-height:1.5;margin:10px 0}
+    ul{font-weight:700;font-size:13px;line-height:1.6;padding-left:18px}
+    .btn{display:block;text-align:center;text-decoration:none;background:#fff952;color:#292929;border:7px solid #292929;box-shadow:8px 8px 0 #292929;padding:16px;font-size:17px;font-weight:800;margin-top:24px;transition:transform .05s}
+    .btn:active{transform:translate(4px,4px);box-shadow:2px 2px 0 #292929}
+    .foot{font-size:11px;color:#8a8676;margin-top:18px;font-weight:700}</style></head>
+    <body><div class="card">
+      <div class="brand">Negocio Redondo · Método Redondo™</div>
+      <h1>Vinculá tu cuenta de Mercado Libre</h1>
+      <p>Para armar tu diagnóstico necesitamos permiso de solo lectura sobre tu cuenta de Mercado Libre.</p>
+      <p style="font-weight:800">Nunca vemos tu contraseña ni podemos vender/publicar por vos.</p>
+      <ul>
+        <li>Vas a ser redirigido a Mercado Libre para autorizar.</li>
+        <li>Iniciás sesión ahí (en su sitio, no acá) y confirmás.</li>
+        <li>Listo: tu cuenta queda conectada con nosotros.</li>
+      </ul>
+      <a class="btn" href="${authUrl}">🔗 Autorizar en Mercado Libre →</a>
+      ${ref ? `<p class="foot">Vinculación para: ${ref}</p>` : ''}
+    </div></body></html>`);
 });
 
 // Refresh token — usa refresh_token (dura 6 meses). Si no hay, el token está muerto.

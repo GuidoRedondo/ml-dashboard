@@ -1636,6 +1636,20 @@ tbody td {
         </div>
       </div>
 
+      <!-- Link de vinculación self-service -->
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px 18px;margin-bottom:16px">
+        <div style="font-size:14px;font-weight:700;font-family:var(--font-b);margin-bottom:4px">🔗 Link de vinculación</div>
+        <div style="font-size:12px;color:var(--muted);margin-bottom:12px">Compartí este link a un prospecto. Cuando autoriza su cuenta de Mercado Libre, se crea/activa solo en tu lista de clientes — no necesita login al dashboard.</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
+          <div style="display:flex;flex-direction:column;gap:4px;flex:1;min-width:180px">
+            <label style="font-size:11px;color:var(--muted)">Nombre para identificarlo (opcional)</label>
+            <input id="vincularRef" type="text" placeholder="Ej: Juan de AquaMarket" oninput="_updateVincularLink()" style="padding:7px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px">
+          </div>
+          <input id="vincularLink" type="text" readonly onclick="this.select()" style="flex:2;min-width:260px;padding:7px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:12px;font-family:monospace">
+          <button class="sync-btn" onclick="_copyVincularLink(this)" style="background:#fff952;color:#292929;border:none;font-weight:700">📋 Copiar</button>
+        </div>
+      </div>
+
       <div id="clientsAdminContent"></div>
     </div>
 
@@ -2598,7 +2612,27 @@ async function loadAllData() {
 }
 
 // ─── CLIENTS ADMIN PAGE ───────────────────────────────────────────────────────
+function _updateVincularLink() {
+  const inp = document.getElementById('vincularLink');
+  if (!inp) return;
+  const ref = (document.getElementById('vincularRef')?.value || '').trim();
+  let url = window.location.origin + '/vincular';
+  if (ref) url += '?ref=' + encodeURIComponent(ref);
+  inp.value = url;
+}
+
+function _copyVincularLink(btn) {
+  _updateVincularLink();
+  const inp = document.getElementById('vincularLink');
+  if (!inp) return;
+  navigator.clipboard.writeText(inp.value).then(() => {
+    const t = btn.textContent; btn.textContent = '✓ Copiado';
+    setTimeout(() => { btn.textContent = t; }, 1500);
+  }).catch(() => { inp.select(); document.execCommand('copy'); });
+}
+
 function renderClientsList() {
+  _updateVincularLink();
   const el = document.getElementById('clientsAdminContent');
   if (!el) return;
 
