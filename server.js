@@ -6987,8 +6987,8 @@ app.get('/api/debug/sku', requireAuth, async (req, res) => {
     const token = await getClientToken(clientId);
     if (!token) return res.json({ error: 'Cliente sin token' });
     const headers = { Authorization: `Bearer ${token}` };
-    // Ítem COMPLETO (sin ?attributes=) — el filtrado devuelve variaciones con attributes vacíos.
-    const b = await fetch(`${ML_API}/items/${itemId}`, { headers }).then(r => r.json());
+    // Ítem COMPLETO con include_attributes=all — el filtrado devuelve variaciones con attributes vacíos.
+    const b = await fetch(`${ML_API}/items/${itemId}?include_attributes=all`, { headers }).then(r => r.json());
     if (b.error) return res.json({ error: b.error, message: b.message });
     res.json({
       id: b.id,
