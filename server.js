@@ -787,21 +787,28 @@ app.get('/oauth/callback', async (req, res) => {
     if (isOnboard) {
       // Upsert por ml_user_id (UNIQUE): si ya existe, solo refresca tokens y lo reactiva;
       // si es nuevo, lo crea con el nombre del link (ref) o el nickname de ML.
-      const existing = await pool.query('SELECT id FROM clients WHERE ml_user_id = $1', [user.id]);
+      const existing = await pool.query('SELECT id, name FROM clients WHERE ml_user_id = $1', [user.id]);
+      let nombreCliente, esNuevo;
       if (existing.rows.length) {
         clientId = existing.rows[0].id;
+        nombreCliente = existing.rows[0].name;
+        esNuevo = false;
         await pool.query(`
           UPDATE clients SET access_token=$1, refresh_token=$2, token_expires_at=$3,
             site_id=$4, active=true, updated_at=NOW() WHERE id=$5
         `, [tokens.access_token, tokens.refresh_token, expiresAt, user.site_id || 'MLA', clientId]);
       } else {
         const nombre = refName || user.nickname || `Cuenta ${user.id}`;
+        nombreCliente = nombre;
+        esNuevo = true;
         const ins = await pool.query(`
           INSERT INTO clients (name, ml_user_id, access_token, refresh_token, token_expires_at, site_id, active)
           VALUES ($1,$2,$3,$4,$5,$6,true) RETURNING id
         `, [nombre, user.id, tokens.access_token, tokens.refresh_token, expiresAt, user.site_id || 'MLA']);
         clientId = ins.rows[0].id;
       }
+      // Aviso a admins (fire-and-forget, no bloquea la pantalla de éxito)
+      notificarVinculacion({ nombre: nombreCliente, nickname: user.nickname, mlUserId: user.id, esNuevo }).catch(() => {});
     } else {
       await pool.query(`
         UPDATE clients SET
@@ -863,6 +870,37 @@ app.get('/vincular', (req, res) => {
       ${ref ? `<p class="foot">Vinculación para: ${ref}</p>` : ''}
     </div></body></html>`);
 });
+
+// Aviso a los admins cuando alguien vincula su cuenta por el link de onboarding.
+async function notificarVinculacion({ nombre, nickname, mlUserId, esNuevo }) {
+  const titulo = esNuevo ? '🎉 Nueva cuenta vinculada' : '🔄 Cuenta reconectada';
+  const cuenta = nickname || `ML ${mlUserId}`;
+  // Slack
+  try {
+    const url = process.env.SLACK_WEBHOOK_URL;
+    if (url) await fetch(url, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: `${titulo}: *${nombre}* (${cuenta}) se vinculó por el link de onboarding. Ya está activa en tu lista de clientes.` })
+    });
+  } catch(e) { console.error('[VINCULAR] Slack error:', e.message); }
+  // Email a los admins
+  try {
+    if (transporter) {
+      const admins = await pool.query("SELECT email FROM users WHERE role='admin' AND email IS NOT NULL AND email <> ''");
+      const to = admins.rows.map(r => r.email).filter(Boolean).join(',');
+      if (to) await sendEmail({
+        to,
+        subject: `${titulo} — ${nombre}`,
+        html: `<div style="font-family:sans-serif;color:#292929">
+          <h2 style="margin:0 0 8px">${titulo}</h2>
+          <p><b>${nombre}</b> ${esNuevo ? 'se vinculó por primera vez' : 'reconectó su cuenta'} a través del link de vinculación.</p>
+          <ul><li>Cuenta ML: <b>${cuenta}</b></li><li>ML user id: ${mlUserId}</li></ul>
+          <p>Ya aparece activa en tu lista de clientes del dashboard.</p>
+        </div>`
+      });
+    }
+  } catch(e) { console.error('[VINCULAR] Email error:', e.message); }
+}
 
 // Refresh token — usa refresh_token (dura 6 meses). Si no hay, el token está muerto.
 async function refreshClientToken(client) {
