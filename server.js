@@ -1144,6 +1144,20 @@ async function fetchShippingCosts(orders, headers) {
 }
 
 // ── DASHBOARD DATA (by client ID) ─────────────────────────────────────────────
+// SKU del ítem: preferir el atributo estructurado SELLER_SKU (el que ML muestra como
+// "SKU" en el editor de la publicación) por sobre seller_custom_field, que es un campo
+// legacy donde muchos ERPs meten un ID interno (ej. el Id de Aleph en White Salud).
+// Cae a la variación y, por último, al campo legacy. Requiere que el fetch pida
+// attributes (y variations cuando aplique).
+function extractSku(item) {
+  if (!item) return null;
+  return item.attributes?.find(a => a.id === 'SELLER_SKU')?.value_name
+    || item.variations?.[0]?.attributes?.find(a => a.id === 'SELLER_SKU')?.value_name
+    || item.seller_custom_field
+    || item.seller_sku
+    || null;
+}
+
 async function fetchAllOrders(uid, headers, fromStr, toStr) {
   try {
     const base = `${ML_API}/orders/search?seller=${uid}&order.status=paid&sort=date_desc&limit=50&order.date_created.from=${encodeURIComponent(fromStr)}&order.date_created.to=${encodeURIComponent(toStr)}`;
@@ -2851,9 +2865,7 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
         (Array.isArray(data) ? data : []).forEach(r => {
           if (r.code !== 200 || !r.body) return;
           const b = r.body;
-          skuMapDash[b.id] = b.seller_custom_field
-            || b.attributes?.find(a => a.id === 'SELLER_SKU')?.value_name
-            || null;
+          skuMapDash[b.id] = extractSku(b);
         });
       } catch(e) {}
     }
@@ -3660,7 +3672,7 @@ app.get('/api/items-full', requireAuth, async (req, res) => {
     for (let i = 0; i < allIds.length; i += 20) {
       const batch = allIds.slice(i, i+20);
       try {
-        const data = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,title,price,status,sub_status,available_quantity,listing_type_id,category_id,shipping,pictures,condition,catalog_listing,video_id,health,seller_custom_field,last_updated`, { headers }).then(r => r.json());
+        const data = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,title,price,status,sub_status,available_quantity,listing_type_id,category_id,shipping,pictures,condition,catalog_listing,video_id,health,seller_custom_field,attributes,variations,last_updated`, { headers }).then(r => r.json());
         (Array.isArray(data) ? data : []).forEach(r => {
           if (r.code === 200 && r.body) itemDetailsMap[r.body.id] = r.body;
         });
@@ -3766,7 +3778,7 @@ app.get('/api/items-full', requireAuth, async (req, res) => {
         category_id: detail.category_id || '',
         condition: detail.condition || '',
         catalog_listing: detail.catalog_listing || false,
-        sku: detail.seller_custom_field || detail.seller_sku || '',
+        sku: extractSku(detail) || '',
         photo_count: pics.length,
         photo_urls: pics.slice(0,3).map(p => p.url || p.secure_url || ''),
         is_full: isFull,
@@ -4407,11 +4419,7 @@ app.get('/api/reporte/items-vendidos', requireAuth, async (req, res) => {
         (Array.isArray(data) ? data : []).forEach(r => {
           if (r.code !== 200 || !r.body) return;
           const b = r.body;
-          const sku = b.seller_custom_field
-            || b.attributes?.find(a => a.id === 'SELLER_SKU')?.value_name
-            || b.variations?.[0]?.attributes?.find(a => a.id === 'SELLER_SKU')?.value_name
-            || null;
-          skuMap[b.id] = sku;
+          skuMap[b.id] = extractSku(b);
         });
       } catch(e) {}
     }
@@ -4648,9 +4656,7 @@ app.get('/api/reporte/items-activos', requireAuth, async (req, res) => {
             fetch(`${ML_API}/items/${itemId}/prices`, { headers }).then(r => r.json()).catch(() => null),
           ]);
           if (b.error || !b.id) return;
-          const sku = b.seller_custom_field
-            || b.attributes?.find(a => a.id === 'SELLER_SKU')?.value_name
-            || null;
+          const sku = extractSku(b);
           const basePrice  = parseFloat(b.price) || 0;
           const origPrice  = b.original_price ? parseFloat(b.original_price) : null;
           const saleRaw    = b.sale_price;
@@ -5045,10 +5051,7 @@ app.get('/api/reporte/devoluciones-analisis', requireAuth, async (req, res) => {
         (Array.isArray(data) ? data : []).forEach(r => {
           if (r.code !== 200 || !r.body) return;
           const b = r.body;
-          skuMap[b.id] = b.seller_custom_field
-            || b.attributes?.find(a => a.id === 'SELLER_SKU')?.value_name
-            || b.variations?.[0]?.attributes?.find(a => a.id === 'SELLER_SKU')?.value_name
-            || null;
+          skuMap[b.id] = extractSku(b);
         });
       } catch(e) {}
     }
@@ -7690,12 +7693,12 @@ app.get('/api/logistica/full-stock', requireAuth, async (req, res) => {
       const group = detailBatches.slice(g, g + DETAIL_CONCURRENCY);
       await Promise.all(group.map(async batch => {
       try {
-        const data = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,title,price,available_quantity,shipping,inventory_id,seller_custom_field,variations`, { headers }).then(r => r.json());
+        const data = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,title,price,available_quantity,shipping,inventory_id,seller_custom_field,attributes,variations`, { headers }).then(r => r.json());
         (Array.isArray(data) ? data : []).forEach(r => {
           if (r.code !== 200 || !r.body) return;
           const b = r.body;
           const lt       = b.shipping?.logistic_type || '';
-          const itemSku  = b.seller_custom_field || null;
+          const itemSku  = extractSku(b);
           // FULL se determina por la presencia de inventory_id (el inventario de
           // fulfillment), NO por el logistic_type del nivel ítem: un ítem puede tener
           // logistic_type 'cross_docking' arriba y variaciones SÍ en FULL (cada
