@@ -2866,7 +2866,7 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
     for (let i = 0; i < byItemIds.length; i += 20) {
       const batch = byItemIds.slice(i, i + 20);
       try {
-        const data = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,seller_custom_field,attributes,variations`, { headers }).then(r => r.json());
+        const data = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,seller_custom_field,attributes,variations&include_attributes=all`, { headers }).then(r => r.json());
         (Array.isArray(data) ? data : []).forEach(r => {
           if (r.code !== 200 || !r.body) return;
           const b = r.body;
@@ -3677,7 +3677,7 @@ app.get('/api/items-full', requireAuth, async (req, res) => {
     for (let i = 0; i < allIds.length; i += 20) {
       const batch = allIds.slice(i, i+20);
       try {
-        const data = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,title,price,status,sub_status,available_quantity,listing_type_id,category_id,shipping,pictures,condition,catalog_listing,video_id,health,seller_custom_field,attributes,variations,last_updated`, { headers }).then(r => r.json());
+        const data = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,title,price,status,sub_status,available_quantity,listing_type_id,category_id,shipping,pictures,condition,catalog_listing,video_id,health,seller_custom_field,attributes,variations,last_updated&include_attributes=all`, { headers }).then(r => r.json());
         (Array.isArray(data) ? data : []).forEach(r => {
           if (r.code === 200 && r.body) itemDetailsMap[r.body.id] = r.body;
         });
@@ -4420,7 +4420,7 @@ app.get('/api/reporte/items-vendidos', requireAuth, async (req, res) => {
     for (let i = 0; i < itemIds.length; i += 20) {
       const batch = itemIds.slice(i, i + 20);
       try {
-        const data = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,seller_custom_field,attributes,variations`, { headers }).then(r => r.json());
+        const data = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,seller_custom_field,attributes,variations&include_attributes=all`, { headers }).then(r => r.json());
         (Array.isArray(data) ? data : []).forEach(r => {
           if (r.code !== 200 || !r.body) return;
           const b = r.body;
@@ -4657,7 +4657,7 @@ app.get('/api/reporte/items-activos', requireAuth, async (req, res) => {
       await Promise.all(batch.map(async itemId => {
         try {
           const [b, pricesResp] = await Promise.all([
-            fetch(`${ML_API}/items/${itemId}`, { headers }).then(r => r.json()),
+            fetch(`${ML_API}/items/${itemId}?include_attributes=all`, { headers }).then(r => r.json()),
             fetch(`${ML_API}/items/${itemId}/prices`, { headers }).then(r => r.json()).catch(() => null),
           ]);
           if (b.error || !b.id) return;
@@ -5052,7 +5052,7 @@ app.get('/api/reporte/devoluciones-analisis', requireAuth, async (req, res) => {
     for (let i = 0; i < itemIds.length; i += 20) {
       const batch = itemIds.slice(i, i + 20);
       try {
-        const data = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,seller_custom_field,attributes,variations`, { headers }).then(r => r.json());
+        const data = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,seller_custom_field,attributes,variations&include_attributes=all`, { headers }).then(r => r.json());
         (Array.isArray(data) ? data : []).forEach(r => {
           if (r.code !== 200 || !r.body) return;
           const b = r.body;
@@ -7734,7 +7734,7 @@ app.get('/api/logistica/full-stock', requireAuth, async (req, res) => {
       const group = detailBatches.slice(g, g + DETAIL_CONCURRENCY);
       await Promise.all(group.map(async batch => {
       try {
-        const data = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,title,price,available_quantity,shipping,inventory_id,seller_custom_field,attributes,variations`, { headers }).then(r => r.json());
+        const data = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,title,price,available_quantity,shipping,inventory_id,seller_custom_field,attributes,variations&include_attributes=all`, { headers }).then(r => r.json());
         (Array.isArray(data) ? data : []).forEach(r => {
           if (r.code !== 200 || !r.body) return;
           const b = r.body;
