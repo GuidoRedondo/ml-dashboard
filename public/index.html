@@ -4166,6 +4166,23 @@ async function loadPublicaciones() {
     i.revenueShare = accTotal > 0 ? parseFloat(((i.revenue / accTotal) * 100).toFixed(2)) : 0;
   });
   allItems.sort((a, b) => b.revenue - a.revenue);
+
+  // PVP sugerido del proveedor — merge de las cuentas conectadas (keyed por MLA o SKU)
+  window._pvpMap = {};
+  await Promise.all(connected.map(async acc => {
+    try {
+      const d = await apiCall('GET', `/api/pvp?client_id=${acc.id}`);
+      if (d?.map) Object.assign(window._pvpMap, d.map);
+    } catch(_){}
+  }));
+  const _pvpM = window._pvpMap || {};
+  allItems.forEach(i => {
+    const idNoPfx = (i.id || '').replace(/^MLA-?/i, '');
+    const p = _pvpM[i.id] ?? _pvpM[idNoPfx] ?? _pvpM['MLA' + idNoPfx] ?? (i.sku != null ? _pvpM[i.sku] : undefined);
+    i._pvp = (p != null && !isNaN(parseFloat(p))) ? parseFloat(p) : null;
+    i._pvpdiff = (i._pvp != null && i.price != null) ? (parseFloat(i.price) - i._pvp) : null;
+  });
+
   window._pubsData = allItems;
   window._pubsFilter = 'all';
 
@@ -4260,14 +4277,22 @@ async function loadPublicaciones() {
       <input id="pubSearch" type="text" placeholder="Buscar por título o MLA..."
         onInput="filterPubSearch(this.value)"
         style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:8px 12px;color:var(--text);font-family:var(--font-b);font-size:13px;outline:none;flex:1;min-width:200px">
+      <button onclick="pubPvpFilter('pvp_over')" id="pvpBtnOver" style="padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:#ff9100;font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap">▲ Precio &gt; PVP <span style="opacity:.7">(${allItems.filter(i=>i._pvpdiff>0.01).length})</span></button>
+      <button onclick="pubPvpFilter('pvp_under')" id="pvpBtnUnder" style="padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:#00bcd4;font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap">▼ Precio &lt; PVP <span style="opacity:.7">(${allItems.filter(i=>i._pvpdiff<-0.01).length})</span></button>
+      <label style="padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:#fff952;color:#292929;font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap">📤 Cargar PVP<input type="file" accept=".xlsx,.xls,.csv" onchange="importPvpExcel(this)" style="display:none"></label>
+      <button onclick="clearPvp()" title="Borrar los PVP cargados" style="padding:8px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--muted);font-size:12px;cursor:pointer">🗑</button>
       <div id="pubCount" style="font-size:12px;color:var(--muted)">${allItems.length} publicaciones</div>
     </div>
+    <div id="pvpHint" style="font-size:11px;color:var(--muted);margin:-6px 0 12px">${Object.keys(window._pvpMap||{}).length ? Object.keys(window._pvpMap).length + ' PVP cargados · Excel con columna MLA o SKU + columna PVP/precio sugerido' : 'Sin PVP cargados. Subí un Excel con una columna MLA o SKU y otra con el PVP (precio sugerido).'}</div>
     <div style="overflow-x:auto">
       <table id="pubsTable">
         <thead><tr>
           <th style="text-align:center">★</th>
           <th style="cursor:pointer" onclick="sortPubs('id')">MLA ↕</th>
           <th style="cursor:pointer" onclick="sortPubs('title')">Título ↕</th>
+          <th style="text-align:right;cursor:pointer" onclick="sortPubs('price')">Precio ↕</th>
+          <th style="text-align:right">PVP</th>
+          <th style="text-align:right;cursor:pointer" onclick="sortPubs('_pvpdiff')">Dif. PVP ↕</th>
           <th style="cursor:pointer" onclick="sortPubs('status')">Estado ↕</th>
           <th style="text-align:center;cursor:pointer" onclick="sortPubs('is_full')">FULL ↕</th>
           <th style="text-align:right;cursor:pointer" onclick="sortPubs('available_quantity')">Stock ↕</th>
@@ -4333,7 +4358,27 @@ function buildPubRows(items, fmt, dias) {
     const starPub = segPub ? '★' : '☆';
     const starColorPub = segPub ? '#FFD700' : 'rgba(255,255,255,.45)';
     const clientIdPub = getActiveClient()?.id;
-    return '<tr class="pub-row" data-status="' + item.status + '" data-hassales="' + item.hasSales + '" data-hassales30d="' + item.hasSales30d + '" data-hasproblems="' + item.hasProblems + '" data-isfull="' + (item.is_full?'1':'0') + '" data-staledays="' + (dsc ?? 0) + '" data-search="' + (item.title + item.id + (item.cuenta||'')).toLowerCase() + '">'      + '<td style="text-align:center;cursor:pointer;font-size:16px;color:' + starColorPub + ';padding:0 4px" title="' + (segPub ? 'Quitar seguimiento' : 'Seguir esta publicación') + '" onclick="toggleSeguimiento(\'' + item.id + '\',\'' + item.title.replace(/'/g,"\\'") + '\',' + clientIdPub + ')">' + starPub + '</td>'      + '<td style="font-size:11px"><span style="color:var(--muted);cursor:pointer" title="Click para copiar" onclick="copyMLA(this,\'' + item.id + '\')">'      + item.id + '</span></td>'      + '<td style="max-width:240px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'      + '<a href="https://articulo.mercadolibre.com.ar/' + item.id.replace(/MLA(\d+)/, 'MLA-$1') + '" target="_blank" style="color:var(--text);text-decoration:none" title="Abrir en ML">'      + item.title + '</a></td>'      + '<td>' + statusTag + '</td>'      + '<td style="text-align:center">' + fullTag + '</td>'      + '<td style="text-align:right;font-weight:700;color:' + stockColor + '">' + (item.available_quantity != null ? item.available_quantity.toLocaleString('es-AR') : '—') + '</td>'      + '<td style="text-align:right;font-size:12px;font-weight:700;color:' + ritmoColor + '">' + (ritmo > 0 ? ritmo : '—') + '</td>'      + '<td style="text-align:right;font-size:12px;color:' + coberColor + '">' + coberturaStr + '</td>'      + '<td>' + adsTag + '</td>'      + '<td style="text-align:right;color:#00e676;font-weight:700">' + (item.units || '—') + '</td>'      + '<td style="text-align:right;color:var(--yellow);font-weight:700">' + (item.revenue > 0 ? fmt(item.revenue) : '—') + '</td>'      + '<td style="text-align:right;color:#00e676;font-weight:600">' + (item.adsSales > 0 ? fmt(item.adsSales) : '—') + '</td>'      + '<td style="text-align:right;font-size:12px">' + (item.revenueShare > 0 ? item.revenueShare + '%' : '—') + '</td>'      + '<td style="text-align:right">' + (item.visits > 0 ? item.visits.toLocaleString('es-AR') : '—') + '</td>'      + '<td style="text-align:right;font-size:13px;font-weight:700;color:' + convColor + '">' + (item.conversion > 0 ? item.conversion + '%' : '—') + '</td>'      + '<td style="text-align:right">' + (item.adsClicks > 0 ? item.adsClicks.toLocaleString('es-AR') : '—') + '</td>'      + '<td style="text-align:right;font-size:13px;font-weight:700;color:' + adsConvColor + '">' + (item.adsConversion > 0 ? item.adsConversion + '%' : '—') + '</td>'      + (function(){ if (item.health == null) return '<td style="text-align:center;color:var(--muted);font-size:11px">—</td>'; const h = item.health; const pct = Math.round(h * 100); const color = pct >= 80 ? '#00e676' : pct >= 50 ? '#ff9100' : '#ff5252'; const bar = '<div style="background:var(--surface2);border-radius:3px;height:4px;width:60px;margin:3px auto 0"><div style="background:'+color+';height:100%;width:'+pct+'%;border-radius:3px"></div></div>'; return '<td style="text-align:center"><span style="font-size:12px;font-weight:700;color:'+color+'">' + pct + '%</span>' + bar + '</td>'; })()      + '<td style="text-align:right;font-size:12px;font-weight:700;color:' + dscColor + '">' + dscStr + '</td>'      + '</tr>';
+    // ── PVP: precio actual vs sugerido del proveedor ──
+    const _price = item.price != null ? parseFloat(item.price) : null;
+    const _pvp   = item._pvp != null ? item._pvp : null;
+    let pvpState = 'none';
+    let pvpCells;
+    if (_pvp != null && _price != null) {
+      const diff = _price - _pvp;
+      const diffPct = _pvp > 0 ? (diff / _pvp * 100) : 0;
+      pvpState = Math.abs(diff) < 0.01 ? 'equal' : (diff > 0 ? 'over' : 'under');
+      const pcol = pvpState === 'over' ? '#ff9100' : pvpState === 'under' ? '#00bcd4' : 'var(--muted)';
+      const sign = diff > 0 ? '+' : '';
+      pvpCells = '<td style="text-align:right;font-weight:600">' + fmt(_price) + '</td>'
+        + '<td style="text-align:right;color:var(--muted)">' + fmt(_pvp) + '</td>'
+        + '<td style="text-align:right;font-weight:700;color:' + pcol + ';white-space:nowrap">' + sign + fmt(diff)
+        + '<div style="font-size:10px;font-weight:600">' + sign + diffPct.toFixed(0) + '%</div></td>';
+    } else {
+      pvpCells = '<td style="text-align:right;font-weight:600">' + (_price != null ? fmt(_price) : '—') + '</td>'
+        + '<td style="text-align:right;color:var(--muted)">—</td>'
+        + '<td style="text-align:center;color:var(--muted)">—</td>';
+    }
+    return '<tr class="pub-row" data-status="' + item.status + '" data-hassales="' + item.hasSales + '" data-hassales30d="' + item.hasSales30d + '" data-hasproblems="' + item.hasProblems + '" data-isfull="' + (item.is_full?'1':'0') + '" data-staledays="' + (dsc ?? 0) + '" data-pvpdiff="' + pvpState + '" data-search="' + (item.title + item.id + (item.cuenta||'')).toLowerCase() + '">'      + '<td style="text-align:center;cursor:pointer;font-size:16px;color:' + starColorPub + ';padding:0 4px" title="' + (segPub ? 'Quitar seguimiento' : 'Seguir esta publicación') + '" onclick="toggleSeguimiento(\'' + item.id + '\',\'' + item.title.replace(/'/g,"\\'") + '\',' + clientIdPub + ')">' + starPub + '</td>'      + '<td style="font-size:11px"><span style="color:var(--muted);cursor:pointer" title="Click para copiar" onclick="copyMLA(this,\'' + item.id + '\')">'      + item.id + '</span></td>'      + '<td style="max-width:240px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'      + '<a href="https://articulo.mercadolibre.com.ar/' + item.id.replace(/MLA(\d+)/, 'MLA-$1') + '" target="_blank" style="color:var(--text);text-decoration:none" title="Abrir en ML">'      + item.title + '</a></td>'      + pvpCells      + '<td>' + statusTag + '</td>'      + '<td style="text-align:center">' + fullTag + '</td>'      + '<td style="text-align:right;font-weight:700;color:' + stockColor + '">' + (item.available_quantity != null ? item.available_quantity.toLocaleString('es-AR') : '—') + '</td>'      + '<td style="text-align:right;font-size:12px;font-weight:700;color:' + ritmoColor + '">' + (ritmo > 0 ? ritmo : '—') + '</td>'      + '<td style="text-align:right;font-size:12px;color:' + coberColor + '">' + coberturaStr + '</td>'      + '<td>' + adsTag + '</td>'      + '<td style="text-align:right;color:#00e676;font-weight:700">' + (item.units || '—') + '</td>'      + '<td style="text-align:right;color:var(--yellow);font-weight:700">' + (item.revenue > 0 ? fmt(item.revenue) : '—') + '</td>'      + '<td style="text-align:right;color:#00e676;font-weight:600">' + (item.adsSales > 0 ? fmt(item.adsSales) : '—') + '</td>'      + '<td style="text-align:right;font-size:12px">' + (item.revenueShare > 0 ? item.revenueShare + '%' : '—') + '</td>'      + '<td style="text-align:right">' + (item.visits > 0 ? item.visits.toLocaleString('es-AR') : '—') + '</td>'      + '<td style="text-align:right;font-size:13px;font-weight:700;color:' + convColor + '">' + (item.conversion > 0 ? item.conversion + '%' : '—') + '</td>'      + '<td style="text-align:right">' + (item.adsClicks > 0 ? item.adsClicks.toLocaleString('es-AR') : '—') + '</td>'      + '<td style="text-align:right;font-size:13px;font-weight:700;color:' + adsConvColor + '">' + (item.adsConversion > 0 ? item.adsConversion + '%' : '—') + '</td>'      + (function(){ if (item.health == null) return '<td style="text-align:center;color:var(--muted);font-size:11px">—</td>'; const h = item.health; const pct = Math.round(h * 100); const color = pct >= 80 ? '#00e676' : pct >= 50 ? '#ff9100' : '#ff5252'; const bar = '<div style="background:var(--surface2);border-radius:3px;height:4px;width:60px;margin:3px auto 0"><div style="background:'+color+';height:100%;width:'+pct+'%;border-radius:3px"></div></div>'; return '<td style="text-align:center"><span style="font-size:12px;font-weight:700;color:'+color+'">' + pct + '%</span>' + bar + '</td>'; })()      + '<td style="text-align:right;font-size:12px;font-weight:700;color:' + dscColor + '">' + dscStr + '</td>'      + '</tr>';
   }).join('');
 }
 
@@ -4361,7 +4406,9 @@ function applyPubsFilter() {
       f === 'sales'    ? row.dataset.hassales === 'true' :
       f === 'full'     ? row.dataset.isfull === '1' :
       f === 'stale'    ? parseInt(row.dataset.staledays || '0') > 20 :
-      f === 'nosales'  ? (row.dataset.status === 'active' && row.dataset.hassales30d === 'false') : true;
+      f === 'nosales'  ? (row.dataset.status === 'active' && row.dataset.hassales30d === 'false') :
+      f === 'pvp_over' ? row.dataset.pvpdiff === 'over' :
+      f === 'pvp_under'? row.dataset.pvpdiff === 'under' : true;
     const matchSearch = !q || row.dataset.search.includes(q);
     const show = matchFilter && matchSearch;
     row.style.display = show ? '' : 'none';
@@ -4373,6 +4420,69 @@ function applyPubsFilter() {
 
 function filterPubSearch(val) {
   applyPubsFilter();
+}
+
+// Filtro PVP (mayor/menor). Toggle: si ya está activo, vuelve a "todos".
+function pubPvpFilter(type) {
+  window._pubsFilter = (window._pubsFilter === type) ? 'all' : type;
+  // Sacar el highlight de los cards de arriba
+  ['pubFilterActive','pubFilterInactive','pubFilterSales','pubFilterFull','pubFilterStale','pubFilterNoSales'].forEach(id => {
+    const c = document.getElementById(id); if (c) c.style.border = '2px solid transparent';
+  });
+  const over = document.getElementById('pvpBtnOver'), under = document.getElementById('pvpBtnUnder');
+  if (over)  over.style.borderColor  = window._pubsFilter === 'pvp_over'  ? '#ff9100' : 'var(--border)';
+  if (under) under.style.borderColor = window._pubsFilter === 'pvp_under' ? '#00bcd4' : 'var(--border)';
+  applyPubsFilter();
+}
+
+async function importPvpExcel(input) {
+  const file = input.files?.[0];
+  input.value = '';
+  if (!file) return;
+  const client = getActiveClient();
+  if (!client) { showToast('Seleccioná una cuenta primero'); return; }
+  try {
+    const buf = await file.arrayBuffer();
+    const wb = XLSX.read(buf, { type: 'array' });
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    const json = XLSX.utils.sheet_to_json(ws, { defval: '' });
+    if (!json.length) { showToast('El Excel está vacío'); return; }
+    // Detectar columnas por nombre (flexible)
+    const keys = Object.keys(json[0]);
+    const norm = s => String(s).toLowerCase().replace(/[^a-z0-9]/g,'');
+    const findKey = (...frags) => keys.find(k => frags.some(f => norm(k).includes(f)));
+    const mlaKey = findKey('mla','publicacion');
+    const skuKey = findKey('sku','codigo');
+    const pvpKey = findKey('pvp','sugerido','preciosugerido','precio');
+    if (!pvpKey) { showToast('No encontré la columna de PVP/precio en el Excel'); return; }
+    if (!mlaKey && !skuKey) { showToast('El Excel necesita una columna MLA o SKU'); return; }
+    const rows = [];
+    json.forEach(r => {
+      const pvp = parseFloat(String(r[pvpKey]).replace(/[^0-9.,-]/g,'').replace(/\.(?=\d{3}\b)/g,'').replace(',','.'));
+      if (isNaN(pvp) || pvp <= 0) return;
+      const mla = mlaKey ? String(r[mlaKey]).trim() : '';
+      const sku = skuKey ? String(r[skuKey]).trim() : '';
+      if (mla) rows.push({ ref: mla, pvp });
+      if (sku && sku !== mla) rows.push({ ref: sku, pvp });
+    });
+    if (!rows.length) { showToast('No pude leer filas válidas (revisá que el PVP sea numérico)'); return; }
+    const res = await apiCall('POST', '/api/pvp', { client_id: client.id, rows, replace: true });
+    showToast(`✅ ${res?.saved || rows.length} PVP cargados`);
+    loadPublicaciones();
+  } catch(e) {
+    showToast('Error al leer el Excel: ' + e.message);
+  }
+}
+
+async function clearPvp() {
+  const client = getActiveClient();
+  if (!client) return;
+  if (!confirm('¿Borrar todos los PVP cargados de esta cuenta?')) return;
+  try {
+    await apiCall('DELETE', `/api/pvp?client_id=${client.id}`);
+    showToast('PVP borrados');
+    loadPublicaciones();
+  } catch(e) { showToast('Error: ' + e.message); }
 }
 
 function copyMLA(el, id) {

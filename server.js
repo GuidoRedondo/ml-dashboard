@@ -266,6 +266,14 @@ async function initDB() {
       updated_at  TIMESTAMP DEFAULT NOW(),
       UNIQUE(client_id, item_id)
     );
+    CREATE TABLE IF NOT EXISTS pvp_sugerido (
+      id          SERIAL PRIMARY KEY,
+      client_id   INTEGER NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+      ref         VARCHAR(120) NOT NULL,   -- MLA o SKU (se matchea por cualquiera)
+      pvp         NUMERIC(14,2) NOT NULL,
+      updated_at  TIMESTAMP DEFAULT NOW(),
+      UNIQUE(client_id, ref)
+    );
     CREATE TABLE IF NOT EXISTS bitacora (
       id           SERIAL PRIMARY KEY,
       client_id    INTEGER NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
@@ -7974,6 +7982,50 @@ app.put('/api/stock/umbral-critico/:item_id', requireAuth, async (req, res) => {
   }
 });
 
+
+// ── PVP sugerido del proveedor (precio de venta al público) ──────────────────
+// Se guarda por cliente, keyed por ref (MLA o SKU). Al mostrar, se matchea cada
+// publicación por su MLA o por su SKU contra este mapa.
+app.get('/api/pvp', requireAuth, async (req, res) => {
+  try {
+    const client_id = parseInt(req.query.client_id);
+    if (!client_id) return res.status(400).json({ error: 'client_id requerido' });
+    const { rows } = await pool.query('SELECT ref, pvp FROM pvp_sugerido WHERE client_id = $1', [client_id]);
+    const map = {};
+    rows.forEach(r => { map[String(r.ref)] = parseFloat(r.pvp); });
+    res.json({ map, count: rows.length });
+  } catch(e) { console.error('[PVP_GET]', e.message); res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/pvp', requireAuth, async (req, res) => {
+  try {
+    const { client_id, rows, replace } = req.body;
+    if (!client_id) return res.status(400).json({ error: 'client_id requerido' });
+    if (!Array.isArray(rows)) return res.status(400).json({ error: 'rows requerido' });
+    if (replace) await pool.query('DELETE FROM pvp_sugerido WHERE client_id = $1', [client_id]);
+    let saved = 0;
+    for (const r of rows) {
+      const ref = String(r.ref || '').trim();
+      const pvp = parseFloat(r.pvp);
+      if (!ref || isNaN(pvp) || pvp <= 0) continue;
+      await pool.query(`
+        INSERT INTO pvp_sugerido (client_id, ref, pvp, updated_at) VALUES ($1,$2,$3,NOW())
+        ON CONFLICT (client_id, ref) DO UPDATE SET pvp = EXCLUDED.pvp, updated_at = NOW()
+      `, [client_id, ref, pvp]);
+      saved++;
+    }
+    res.json({ ok: true, saved });
+  } catch(e) { console.error('[PVP_POST]', e.message); res.status(500).json({ error: e.message }); }
+});
+
+app.delete('/api/pvp', requireAuth, async (req, res) => {
+  try {
+    const client_id = parseInt(req.query.client_id);
+    if (!client_id) return res.status(400).json({ error: 'client_id requerido' });
+    await pool.query('DELETE FROM pvp_sugerido WHERE client_id = $1', [client_id]);
+    res.json({ ok: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
 
 // ── COMPETENCIA ───────────────────────────────────────────────────────────────
 // ── ANÁLISIS DE PUBLICACIÓN COMPETIDOR ───────────────────────────────────────
