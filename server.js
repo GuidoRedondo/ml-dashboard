@@ -1151,8 +1151,13 @@ async function fetchShippingCosts(orders, headers) {
 // attributes (y variations cuando aplique).
 function extractSku(item) {
   if (!item) return null;
+  const v0 = item.variations?.[0];
+  // Orden: SELLER_SKU del item → SELLER_SKU de la variación → seller_custom_field de la
+  // variación (acá guarda White Salud el SKU real por variante) → seller_custom_field del
+  // item (suele ser un ID de ERP, ej. "Id Aleph: ...") → seller_sku.
   return item.attributes?.find(a => a.id === 'SELLER_SKU')?.value_name
-    || item.variations?.[0]?.attributes?.find(a => a.id === 'SELLER_SKU')?.value_name
+    || v0?.attributes?.find(a => a.id === 'SELLER_SKU')?.value_name
+    || v0?.seller_custom_field
     || item.seller_custom_field
     || item.seller_sku
     || null;
@@ -2861,7 +2866,7 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
     for (let i = 0; i < byItemIds.length; i += 20) {
       const batch = byItemIds.slice(i, i + 20);
       try {
-        const data = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,seller_custom_field,attributes`, { headers }).then(r => r.json());
+        const data = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,seller_custom_field,attributes,variations`, { headers }).then(r => r.json());
         (Array.isArray(data) ? data : []).forEach(r => {
           if (r.code !== 200 || !r.body) return;
           const b = r.body;
@@ -7743,7 +7748,7 @@ app.get('/api/logistica/full-stock', requireAuth, async (req, res) => {
             // Ítem con variaciones → una fila por variante
             b.variations.forEach(v => {
               const varName = (v.attribute_combinations || []).map(a => a.value_name).join(' / ') || `Var ${v.id}`;
-              const varSku  = v.attributes?.find(a => a.id === 'SELLER_SKU')?.value_name || itemSku || null;
+              const varSku  = v.attributes?.find(a => a.id === 'SELLER_SKU')?.value_name || v.seller_custom_field || itemSku || null;
               const varInv  = v.inventory_id || null;
               allItems.push({
                 id:           b.id,
