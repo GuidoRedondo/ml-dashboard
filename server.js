@@ -6967,6 +6967,41 @@ app.get('/api/competencia/categorias', requireAuth, async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
+// Debug SKU: muestra en crudo dónde está (o no) el SKU de una publicación.
+// Uso: /api/debug/sku?client_name=White&item_id=MLA123  (abrir logueado)
+app.get('/api/debug/sku', requireAuth, async (req, res) => {
+  try {
+    let clientId = parseInt(req.query.client_id);
+    if (!clientId && req.query.client_name) {
+      const r = await pool.query("SELECT id FROM clients WHERE name ILIKE $1 ORDER BY id LIMIT 1", ['%' + req.query.client_name + '%']);
+      clientId = r.rows[0]?.id;
+    }
+    if (!clientId) return res.json({ error: 'Falta client_id o client_name válido' });
+    const itemId = req.query.item_id;
+    if (!itemId) return res.json({ error: 'Falta item_id (MLA...)' });
+    const token = await getClientToken(clientId);
+    if (!token) return res.json({ error: 'Cliente sin token' });
+    const headers = { Authorization: `Bearer ${token}` };
+    const b = await fetch(`${ML_API}/items/${itemId}?attributes=id,title,seller_custom_field,attributes,variations`, { headers }).then(r => r.json());
+    if (b.error) return res.json({ error: b.error, message: b.message });
+    res.json({
+      id: b.id,
+      title: b.title,
+      seller_custom_field: b.seller_custom_field ?? null,
+      item_SELLER_SKU: b.attributes?.find(a => a.id === 'SELLER_SKU')?.value_name ?? null,
+      item_attribute_ids: (b.attributes || []).map(a => a.id),
+      variations: (b.variations || []).map(v => ({
+        id: v.id,
+        combo: (v.attribute_combinations || []).map(a => a.value_name).join(' / '),
+        seller_custom_field: v.seller_custom_field ?? null,
+        SELLER_SKU: v.attributes?.find(a => a.id === 'SELLER_SKU')?.value_name ?? null,
+        variation_attribute_ids: (v.attributes || []).map(a => a.id),
+      })),
+      resultado_extractSku: extractSku(b),
+    });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
 app.get('/api/competencia/diagnostico', requireAuth, async (req, res) => {
   try {
     const { item_id, client_id } = req.query;
