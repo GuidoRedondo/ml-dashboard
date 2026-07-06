@@ -6056,7 +6056,14 @@ function renderDescuentos() {
         + '<br><span style="font-size:10px;color:var(--muted);text-decoration:line-through">$' + Math.round(p.precioLista).toLocaleString('es-AR') + '</span>'
       : '$' + Math.round(p.precio).toLocaleString('es-AR');
     html += '<td style="padding:6px 8px;text-align:right;font-size:12px">' + precioDisplay + '</td>';
-    html += '<td style="padding:6px 8px;text-align:right;font-size:12px;color:' + (p.hasCMV ? 'var(--text)' : '#f59e0b') + '">' + (p.hasCMV ? '$' + Math.round(p.costo).toLocaleString('es-AR') : '⚠ sin CMV') + '</td>';
+    html += '<td style="padding:4px 6px;text-align:right;white-space:nowrap">'
+      + '<span style="font-size:11px;color:var(--muted);margin-right:2px">$</span>'
+      + '<input id="dsc_cmv_' + p.id + '" type="number" value="' + (p.costo || '') + '" min="0" step="1" placeholder="0"'
+      + ' onchange="guardarCostoDsc(\'' + p.id + '\',this.value)"'
+      + ' title="Cargá el costo unitario — se guarda solo en Reporte Financiero"'
+      + ' style="width:78px;padding:3px 6px;border-radius:5px;border:1px solid ' + (p.hasCMV ? 'var(--border)' : '#f59e0b') + ';background:' + (p.hasCMV ? 'var(--surface2)' : 'rgba(245,158,11,.12)') + ';color:var(--text);font-size:11px;text-align:right">'
+      + (p.hasCMV ? '' : '<div style="font-size:9px;color:#f59e0b;margin-top:1px">⚠ sin CMV</div>')
+      + '</td>';
     html += '<td style="padding:4px 6px;text-align:center">'
       + '<input id="dsc_com_' + p.id + '" type="number" value="' + comPct + '" min="0" max="30" step="0.1" onchange="renderDescuentos()" style="width:52px;padding:3px 5px;border-radius:5px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:11px;text-align:center">%'
       + '<div style="font-size:9px;color:' + (p.comSource === 'ML' ? '#00e676' : p.comSource === 'hist.' ? '#f59e0b' : '#ff5252') + ';margin-top:1px">' + (p.comSource === 'ML' ? '✓ ML' : p.comSource === 'hist.' ? '≈ hist.' : '≈ est.') + '</div>'
@@ -6119,6 +6126,30 @@ function _dscInput(id, label, def) {
     + '<label style="font-size:11px;color:var(--muted)">' + label + '</label>'
     + '<input id="' + id + '" type="number" value="' + def + '" min="0" max="100" step="0.1" onchange="renderDescuentos()" style="width:80px;padding:6px 8px;border-radius:7px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px;text-align:center">'
     + '</div>';
+}
+
+// Carga manual de CMV desde la solapa Descuentos — persiste en product_costs y recalcula márgenes.
+async function guardarCostoDsc(mlaId, value) {
+  const client = getActiveClient();
+  if (!client) { showToast('Seleccioná una cuenta'); return; }
+  const prod = (_descuentosData || []).find(p => p.id === mlaId);
+  if (!prod) return;
+
+  const costo = parseFloat(value) || 0;
+  // Actualizar estado local para recálculo inmediato de márgenes
+  prod.costo  = costo;
+  prod.hasCMV = costo > 0;
+  renderDescuentos();
+
+  try {
+    await apiCall('POST', '/api/reporte/costos', {
+      client_id: client.id,
+      costos: [{ mla_id: mlaId, title: prod.title, costo_unit: costo, alicuota_iva: prod.alicuota_iva ?? 21 }]
+    });
+    showToast('💾 CMV guardado ($' + Math.round(costo).toLocaleString('es-AR') + ') — ' + (prod.title || mlaId).substring(0, 40));
+  } catch (e) {
+    showToast('Error guardando CMV: ' + e.message);
+  }
 }
 
 
