@@ -11184,9 +11184,9 @@ function renderComparacion(data, mes_a, mes_b) {
 
   const kpis = `<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:20px">
     ${kpiDiff('Facturación', pyl_a?.ingresos?.facturacion, pyl_b?.ingresos?.facturacion, diff?.facturacion, fmt)}
-    ${kpiDiff('Ventas', pyl_a?.ordenes, pyl_b?.ordenes, diff?.ordenes, v => v?.toLocaleString('es-AR') ?? '—')}
-    ${kpiDiff('Resultado Neto ML', pyl_a?.resultado_neto_ml, pyl_b?.resultado_neto_ml, diff?.resultado_neto, fmt)}
+    ${kpiDiff('Se va en ML', pyl_a?.egresos_ml?.total, pyl_b?.egresos_ml?.total, diff?.total_egresos_ml, fmt, false)}
     ${kpiDiff('CMV', pyl_a?.cmv?.total, pyl_b?.cmv?.total, diff?.cmv, fmt, false)}
+    ${kpiDiff('Contribución Marginal', pyl_a?.utilidad_antes_gf, pyl_b?.utilidad_antes_gf, diff?.utilidad_antes_gf, fmt)}
     ${kpiDiff('Gastos Fijos', pyl_a?.gastos_fijos?.total, pyl_b?.gastos_fijos?.total, diff?.gastos_fijos, fmt, false)}
     ${kpiDiff('Utilidad Final', pyl_a?.utilidad_final, pyl_b?.utilidad_final, diff?.utilidad_final, fmt)}
   </div>`;
@@ -11223,6 +11223,11 @@ function renderComparacion(data, mes_a, mes_b) {
   const totalImpA = (parseFloat(a?.iva?.neto)||0) + (parseFloat(a?.impuestos_manuales?.total)||0);
   const totalImpB = (parseFloat(b?.iva?.neto)||0) + (parseFloat(b?.impuestos_manuales?.total)||0);
 
+  // Margen de contribución % = Contribución Marginal / Facturación
+  const cmPctA = parseFloat(factA) ? (parseFloat(a?.utilidad_antes_gf)||0) / parseFloat(factA) * 100 : null;
+  const cmPctB = parseFloat(factB) ? (parseFloat(b?.utilidad_antes_gf)||0) / parseFloat(factB) * 100 : null;
+  const cmPctD = (cmPctA != null && cmPctB != null) ? cmPctA - cmPctB : null;
+
   const tabla = `
     <div class="kpi-card" style="padding:0;overflow:hidden">
       <div style="overflow-x:auto">
@@ -11238,17 +11243,18 @@ function renderComparacion(data, mes_a, mes_b) {
             ${row('Facturación productos',    a?.ingresos?.facturacion,     b?.ingresos?.facturacion,     diff?.facturacion,   true)}
             ${row('Ingreso envío comprador',  a?.ingresos?.envio_comprador, b?.ingresos?.envio_comprador, null, true)}
             ${row('TOTAL INGRESOS',           a?.ingresos?.total,           b?.ingresos?.total,           diff?.facturacion,   false, true)}
-            ${sec('📤 Egresos ML')}
+            ${sec('📤 Lo que se va en Mercado Libre')}
             ${row('Comisión ML',              a?.egresos_ml?.comision,      b?.egresos_ml?.comision,      null, true, false, false, factA, factB)}
             ${row('Costo envío vendedor',     a?.egresos_ml?.envio_vendedor,b?.egresos_ml?.envio_vendedor,null, true, false, false, factA, factB)}
             ${row('Publicidad (PADS)',        a?.egresos_ml?.publicidad,    b?.egresos_ml?.publicidad,    null, true, false, false, factA, factB)}
             ${row('TOTAL EGRESOS ML',         a?.egresos_ml?.total,         b?.egresos_ml?.total,         diff?.total_egresos_ml, false, true, false, factA, factB)}
-            ${sec('💰 Resultado')}
             ${row('RESULTADO NETO ML',        a?.resultado_neto_ml,         b?.resultado_neto_ml,         diff?.resultado_neto, false, true, true, factA, factB)}
             ${rowPct('% Recibido',            a?.margenes?.pct_recibido,    b?.margenes?.pct_recibido,    diff?.pct_recibido)}
-            ${sec('🏭 Costo Merc. Vendida')}
-            ${row('Costo de mercancía',       a?.cmv?.total,                b?.cmv?.total,                diff?.cmv,           false, true, false, factA, factB)}
-            ${row('UTILIDAD ANTES GF',        a?.utilidad_antes_gf,         b?.utilidad_antes_gf,         diff?.utilidad_antes_gf, false, true, true, factA, factB)}
+            ${sec('🏭 Costo de la Mercadería Vendida')}
+            ${row('Costo de mercadería (CMV)', a?.cmv?.total,               b?.cmv?.total,                diff?.cmv,           false, true, false, factA, factB)}
+            ${sec('💚 Contribución Marginal', '#e8f5e9')}
+            ${row('CONTRIBUCIÓN MARGINAL',    a?.utilidad_antes_gf,         b?.utilidad_antes_gf,         diff?.utilidad_antes_gf, false, true, true, factA, factB)}
+            ${rowPct('Margen de contribución %', cmPctA,                    cmPctB,                       cmPctD)}
             ${sec('🏢 Gastos Fijos')}
             ${row('TOTAL GASTOS FIJOS',       a?.gastos_fijos?.total,       b?.gastos_fijos?.total,       diff?.gastos_fijos,  false, true, false, factA, factB)}
             ${sec('🧾 Impuestos', '#fef9ec')}
@@ -11322,14 +11328,17 @@ function descargarComparacionPDF(mes_a, mes_b) {
 
   const totalImpA = (parseFloat(a?.iva?.neto)||0) + (parseFloat(a?.impuestos_manuales?.total)||0);
   const totalImpB = (parseFloat(b?.iva?.neto)||0) + (parseFloat(b?.impuestos_manuales?.total)||0);
+  const cmPctA = parseFloat(factA) ? (parseFloat(a?.utilidad_antes_gf)||0) / parseFloat(factA) * 100 : null;
+  const cmPctB = parseFloat(factB) ? (parseFloat(b?.utilidad_antes_gf)||0) / parseFloat(factB) * 100 : null;
+  const cmPctD = (cmPctA != null && cmPctB != null) ? cmPctA - cmPctB : null;
   const fmtNum = v => v?.toLocaleString('es-AR') ?? '—';
   const hoy = new Date().toLocaleDateString('es-AR', {day:'2-digit', month:'long', year:'numeric'});
 
   const kpis = `<div class="kpis">
     ${kpi('Facturación', a?.ingresos?.facturacion, b?.ingresos?.facturacion, diff?.facturacion, fmt)}
-    ${kpi('Ventas', a?.ordenes, b?.ordenes, diff?.ordenes, fmtNum)}
-    ${kpi('Resultado Neto ML', a?.resultado_neto_ml, b?.resultado_neto_ml, diff?.resultado_neto, fmt)}
+    ${kpi('Se va en ML', a?.egresos_ml?.total, b?.egresos_ml?.total, diff?.total_egresos_ml, fmt, false)}
     ${kpi('CMV', a?.cmv?.total, b?.cmv?.total, diff?.cmv, fmt, false)}
+    ${kpi('Contribución Marginal', a?.utilidad_antes_gf, b?.utilidad_antes_gf, diff?.utilidad_antes_gf, fmt)}
     ${kpi('Gastos Fijos', a?.gastos_fijos?.total, b?.gastos_fijos?.total, diff?.gastos_fijos, fmt, false)}
     ${kpi('Utilidad Final', a?.utilidad_final, b?.utilidad_final, diff?.utilidad_final, fmt)}
   </div>`;
@@ -11341,17 +11350,18 @@ function descargarComparacionPDF(mes_a, mes_b) {
       ${R('Facturación productos', a?.ingresos?.facturacion, b?.ingresos?.facturacion, diff?.facturacion, {indent:true})}
       ${R('Ingreso envío comprador', a?.ingresos?.envio_comprador, b?.ingresos?.envio_comprador, null, {indent:true})}
       ${R('TOTAL INGRESOS', a?.ingresos?.total, b?.ingresos?.total, diff?.facturacion, {bold:true})}
-      ${S('📤 Egresos ML')}
+      ${S('📤 Lo que se va en Mercado Libre')}
       ${R('Comisión ML', a?.egresos_ml?.comision, b?.egresos_ml?.comision, null, {indent:true, pos:false, pctFact:true})}
       ${R('Costo envío vendedor', a?.egresos_ml?.envio_vendedor, b?.egresos_ml?.envio_vendedor, null, {indent:true, pos:false, pctFact:true})}
       ${R('Publicidad (PADS)', a?.egresos_ml?.publicidad, b?.egresos_ml?.publicidad, null, {indent:true, pos:false, pctFact:true})}
       ${R('TOTAL EGRESOS ML', a?.egresos_ml?.total, b?.egresos_ml?.total, diff?.total_egresos_ml, {bold:true, pos:false, pctFact:true})}
-      ${S('💰 Resultado')}
       ${R('RESULTADO NETO ML', a?.resultado_neto_ml, b?.resultado_neto_ml, diff?.resultado_neto, {bold:true, pctFact:true})}
       ${RP('% Recibido', a?.margenes?.pct_recibido, b?.margenes?.pct_recibido, diff?.pct_recibido)}
-      ${S('🏭 Costo Merc. Vendida')}
-      ${R('Costo de mercancía', a?.cmv?.total, b?.cmv?.total, diff?.cmv, {bold:true, pos:false, pctFact:true})}
-      ${R('UTILIDAD ANTES GF', a?.utilidad_antes_gf, b?.utilidad_antes_gf, diff?.utilidad_antes_gf, {bold:true, pctFact:true})}
+      ${S('🏭 Costo de la Mercadería Vendida')}
+      ${R('Costo de mercadería (CMV)', a?.cmv?.total, b?.cmv?.total, diff?.cmv, {bold:true, pos:false, pctFact:true})}
+      ${S('💚 Contribución Marginal')}
+      ${R('CONTRIBUCIÓN MARGINAL', a?.utilidad_antes_gf, b?.utilidad_antes_gf, diff?.utilidad_antes_gf, {bold:true, pctFact:true})}
+      ${RP('Margen de contribución %', cmPctA, cmPctB, cmPctD)}
       ${S('🏢 Gastos Fijos')}
       ${R('TOTAL GASTOS FIJOS', a?.gastos_fijos?.total, b?.gastos_fijos?.total, diff?.gastos_fijos, {bold:true, pos:false, pctFact:true})}
       ${S('🧾 Impuestos')}
