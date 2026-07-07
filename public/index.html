@@ -9830,6 +9830,178 @@ async function diagGuardarManuales(clientId, mes) {
   }
 }
 
+// ── DIAGNÓSTICO — narrativa + storytelling (compartido pantalla + PDF) ─────────
+const _diagFmt = {
+  m: v => (v==null||v===''||isNaN(v))?'—':'$'+parseFloat(v).toLocaleString('es-AR',{maximumFractionDigits:0}),
+  n: v => (v==null||v===''||isNaN(v))?'—':parseFloat(v).toLocaleString('es-AR'),
+  p: v => (v==null||v===''||isNaN(v))?'—':parseFloat(v).toFixed(1)+'%',
+  x: v => (v==null||v===''||isNaN(v))?'—':parseFloat(v).toFixed(1)+'x',
+};
+function _diagNum(v){ return (v==null||v===''||isNaN(v)) ? null : parseFloat(v); }
+// delta entre dos valores → {abs, pct, dir:'up'|'down'|'flat'} o null
+function diagDelta(prev, curr) {
+  prev=_diagNum(prev); curr=_diagNum(curr);
+  if (prev==null||curr==null) return null;
+  const abs = curr-prev;
+  const pct = prev!==0 ? (abs/Math.abs(prev))*100 : (curr!==0?100:0);
+  return { abs, pct, dir: Math.abs(pct)<0.5?'flat':(abs>0?'up':'down') };
+}
+// chip de tendencia coloreado; hib=higherIsBetter
+function diagChip(delta, hib=true) {
+  if (!delta) return '';
+  if (delta.dir==='flat') return '<span style="font-size:11px;font-weight:700;color:#8a8676;background:#8a86761a;padding:2px 7px;border-radius:20px">→ estable</span>';
+  const good = hib ? delta.dir==='up' : delta.dir==='down';
+  const arrow = delta.dir==='up' ? '▲' : '▼';
+  const col = good ? '#16a34a' : '#dc2626';
+  return `<span style="font-size:11px;font-weight:800;color:${col};background:${col}1a;padding:2px 7px;border-radius:20px;white-space:nowrap">${arrow} ${Math.abs(delta.pct).toFixed(0)}%</span>`;
+}
+// Motor narrativo: recibe cols (3 meses) → resumen ejecutivo + KPIs + bajadas por bloque
+function diagStory(cols) {
+  const wd = cols.filter(c => c.data);
+  if (!wd.length) return null;
+  const last = wd[wd.length-1], prev = wd.length>1 ? wd[wd.length-2] : null;
+  const G = (c,k)=> (c&&c.data) ? (k.slice(0,2)==='m.'?(c.data.manuales||{})[k.slice(2)]:c.data[k]) : null;
+  const dl = k => diagDelta(G(prev,k), G(last,k));
+  const mov = (k, hib=true) => {
+    const d = dl(k);
+    if (!d || d.dir==='flat') return 'se mantuvo estable';
+    const good = hib ? d.dir==='up' : d.dir==='down';
+    const verb = d.dir==='up' ? 'subió' : 'cayó';
+    return `${verb} ${Math.abs(d.pct).toFixed(0)}% ${good?'✅':'🔻'}`;
+  };
+  const f = _diagFmt;
+  const fact = _diagNum(G(last,'facturacion'));
+  const pctTot = _diagNum(G(last,'m.fin_pct_neto_total'));
+  const pctML  = _diagNum(G(last,'m.fin_pct_neto_ml'));
+  const pctQueda = pctTot!=null ? pctTot : pctML;
+
+  // Resumen ejecutivo
+  let hero = `En <b>${last.label}</b> la cuenta facturó <b>${f.m(fact)}</b>`;
+  if (prev) hero += `, la facturación <b>${mov('facturacion')}</b> frente a ${prev.label}`;
+  hero += '.';
+  if (pctQueda!=null) hero += ` De cada $100 que entran quedan <b>$${pctQueda.toFixed(0)}</b> después de las comisiones de Mercado Libre y la publicidad (antes del costo del producto).`;
+
+  // KPIs grandes del último mes
+  const kpis = [
+    { label:'Facturación',  value:f.m(fact),                         delta:dl('facturacion'),  hib:true },
+    { label:'Ventas',       value:f.n(G(last,'ventas')),             delta:dl('ventas'),       hib:true },
+    { label:'Conversión',   value:f.p(G(last,'conversion')),         delta:dl('conversion'),   hib:true },
+    { label:'Te queda limpio', value:pctQueda!=null?pctQueda.toFixed(1)+'%':'—', delta:dl('m.fin_pct_neto_total'), hib:true },
+    { label:'ROAS publi',   value:f.x(G(last,'pads_roas')),          delta:dl('pads_roas'),    hib:true },
+  ];
+
+  // Demanda / embudo
+  const vD = dl('visitas'), cD = dl('conversion');
+  let demandaTake = '';
+  if (vD&&cD) {
+    if (vD.dir==='up'&&cD.dir==='down') demandaTake = 'Entra más gente pero compra una proporción menor: el cuello está en la conversión (precio, fotos, ficha, reseñas), no en el tráfico.';
+    else if (vD.dir==='down'&&cD.dir==='up') demandaTake = 'Baja el tráfico pero mejora la conversión: hay que alimentar la parte alta del embudo (publicidad y posicionamiento).';
+    else if (vD.dir==='up'&&cD.dir==='up') demandaTake = 'Tráfico y conversión suben juntos: el combo ideal, hay que sostenerlo.';
+    else if (vD.dir==='down'&&cD.dir==='down') demandaTake = 'Caen tráfico y conversión a la vez: señal de alerta, revisar posicionamiento y competitividad de precio.';
+  }
+  const demanda = `Las visitas ${mov('visitas')}, la conversión ${mov('conversion')} y el ticket promedio ${mov('ticket_promedio')}.` + (demandaTake?` ${demandaTake}`:'');
+
+  // Financiero
+  let finTake = '';
+  if (pctTot!=null) {
+    if (pctTot<15) finTake = 'Queda poco margen operativo antes del costo del producto: ML y la publicidad se están comiendo la torta.';
+    else if (pctTot<25) finTake = 'Margen operativo ajustado: hay que cuidar cada punto.';
+    else finTake = 'Buen colchón operativo antes del costo del producto.';
+  }
+  let financiero = '';
+  if (pctML!=null) financiero += `El ${f.p(pctML)} de cada venta sobrevive a las comisiones e impuestos de ML.`;
+  if (pctTot!=null) financiero += ` Después de la publicidad te queda el <b>${f.p(pctTot)}</b> limpio (antes del costo del producto).`;
+  if (finTake) financiero += ` ${finTake}`;
+  if (!financiero) financiero = 'Cargá los datos financieros del mes para ver cuánto queda de cada venta.';
+
+  // Publicidad
+  const roas = _diagNum(G(last,'pads_roas'));
+  const aporte = _diagNum(G(last,'pads_aporte_pct'));
+  const tacos = _diagNum(G(last,'pads_tacos'));
+  let publiTake = '';
+  if (roas!=null) {
+    if (roas<3) publiTake = 'ROAS bajo: la publicidad no se está pagando sola, hay que optimizar campañas o pausar lo que sangra.';
+    else if (roas<6) publiTake = 'ROAS razonable, con margen para afinar.';
+    else publiTake = 'ROAS sólido: la inversión en ads rinde.';
+  }
+  let publicidad = '';
+  if (roas!=null) publicidad += `Cada $1 invertido en ads devolvió <b>$${roas.toFixed(1)}</b>.`;
+  if (aporte!=null) publicidad += ` La publicidad trajo el ${f.p(aporte)} de la facturación`;
+  if (tacos!=null) publicidad += ` (TACOS ${f.p(tacos)})`;
+  publicidad += (roas!=null||aporte!=null) ? '.' : 'Sin datos de publicidad para este mes.';
+  if (publiTake) publicidad += ` ${publiTake}`;
+
+  // Logística — canal dominante por facturación
+  const m = last.data.manuales || {};
+  const chans = [
+    { k:'FULL', f:_diagNum(m.full_fact_monto)||0 },
+    { k:'FLEX', f:_diagNum(m.flex_fact_monto)||0 },
+    { k:'ME/Correo', f:_diagNum(m.corr_fact_monto)||0 },
+  ];
+  const totF = chans.reduce((s,c)=>s+c.f,0);
+  let logistica = 'Cargá el detalle de logística del mes para ver el mix de canales.';
+  if (totF>0) {
+    const top = chans.slice().sort((a,b)=>b.f-a.f)[0];
+    logistica = `El ${(top.f/totF*100).toFixed(0)}% de la facturación se despacha por <b>${top.k}</b>. El mix de canales define costo de envío y velocidad de entrega — dos palancas directas sobre la reputación.`;
+  }
+
+  return { monthLabel:last.label, prevLabel:prev?prev.label:'', hero, kpis, demanda, financiero, publicidad, logistica };
+}
+
+// Configs de los gráficos del diagnóstico (canvas IDs fijos para poder exportarlos al PDF)
+function diagChartConfigs(cols) {
+  const labels = cols.map(c => c.label);
+  const val = (c,k)=> (c&&c.data) ? _diagNum(k.slice(0,2)==='m.'?(c.data.manuales||{})[k.slice(2)]:c.data[k]) : null;
+  const configs = [];
+  // 1) Evolución de facturación
+  configs.push({ id:'diagChartFact', type:'bar',
+    data:{ labels, datasets:[{ label:'Facturación', data:cols.map(c=>val(c,'facturacion')), backgroundColor:'#8b5cf6', borderRadius:6, maxBarThickness:70 }] },
+    options:{ responsive:true, maintainAspectRatio:false, plugins:{ legend:{display:false}, tooltip:{callbacks:{label:ctx=>'$'+Math.round(ctx.parsed.y||0).toLocaleString('es-AR')}} },
+      scales:{ y:{ ticks:{ callback:v=>'$'+(v/1000).toFixed(0)+'k' } } } } });
+  // 2) Ventas (barras) + Conversión (línea)
+  configs.push({ id:'diagChartConv', type:'bar',
+    data:{ labels, datasets:[
+      { label:'Ventas', data:cols.map(c=>val(c,'ventas')), backgroundColor:'#06b6d4', borderRadius:6, maxBarThickness:60, yAxisID:'y' },
+      { label:'Conversión %', type:'line', data:cols.map(c=>val(c,'conversion')), borderColor:'#f59e0b', backgroundColor:'#f59e0b', borderWidth:3, tension:.3, pointRadius:4, yAxisID:'y1' },
+    ] },
+    options:{ responsive:true, maintainAspectRatio:false, plugins:{ legend:{position:'bottom',labels:{boxWidth:12,font:{size:11}}} },
+      scales:{ y:{ position:'left', title:{display:false} }, y1:{ position:'right', grid:{drawOnChartArea:false}, ticks:{callback:v=>v+'%'} } } } });
+  // 3) A dónde va cada peso (dona, último mes con datos)
+  const ref = cols.slice().reverse().find(c => c.data);
+  if (ref) {
+    const fact = val(ref,'facturacion');
+    const comp = [
+      { l:'Te queda limpio', v:null, c:'#16a34a' },
+      { l:'Comisión ML',     v:val(ref,'m.fin_comision'), c:'#ef4444' },
+      { l:'Impuestos',       v:val(ref,'m.fin_impuestos'), c:'#f59e0b' },
+      { l:'Envío vendedor',  v:val(ref,'m.fin_envio_vendedor'), c:'#3b82f6' },
+      { l:'Publicidad',      v:val(ref,'m.fin_publicidad'), c:'#a855f7' },
+    ];
+    let neto = val(ref,'m.fin_neto_total');
+    if (neto==null && fact!=null) neto = fact - comp.slice(1).reduce((s,x)=>s+(x.v||0),0);
+    comp[0].v = neto;
+    const usable = comp.filter(x => x.v!=null && x.v>0);
+    if (usable.length && fact) {
+      configs.push({ id:'diagChartQueda', type:'doughnut', kind:'queda', refLabel:ref.label, total:fact, legend:usable,
+        data:{ labels:usable.map(x=>x.l), datasets:[{ data:usable.map(x=>x.v), backgroundColor:usable.map(x=>x.c), borderWidth:0 }] },
+        options:{ responsive:true, maintainAspectRatio:false, cutout:'58%', plugins:{ legend:{display:false},
+          tooltip:{callbacks:{label:ctx=>`${ctx.label}: $${Math.round(ctx.parsed).toLocaleString('es-AR')} (${(ctx.parsed/fact*100).toFixed(0)}%)`}} } } });
+    }
+  }
+  // 4) Retorno de la publicidad: inversión vs facturación generada
+  const anyAds = cols.some(c => val(c,'pads_inversion')!=null || val(c,'pads_ingresos')!=null);
+  if (anyAds) {
+    configs.push({ id:'diagChartRoas', type:'bar',
+      data:{ labels, datasets:[
+        { label:'Inversión ads', data:cols.map(c=>val(c,'pads_inversion')), backgroundColor:'#ef4444', borderRadius:6, maxBarThickness:44 },
+        { label:'Facturación generada', data:cols.map(c=>val(c,'pads_ingresos')), backgroundColor:'#16a34a', borderRadius:6, maxBarThickness:44 },
+      ] },
+      options:{ responsive:true, maintainAspectRatio:false, plugins:{ legend:{position:'bottom',labels:{boxWidth:12,font:{size:11}}}, tooltip:{callbacks:{label:ctx=>ctx.dataset.label+': $'+Math.round(ctx.parsed.y||0).toLocaleString('es-AR')}} },
+        scales:{ y:{ ticks:{ callback:v=>'$'+(v/1000).toFixed(0)+'k' } } } } });
+  }
+  return configs;
+}
+
 function diagRender(meses, clientId) {
   const el = document.getElementById('diagContent');
   const last3 = diagGetLast3Months();
@@ -9992,22 +10164,89 @@ function diagRender(meses, clientId) {
       ${legend}
     </div>`;
   }).join('');
+  // ── Storytelling: resumen ejecutivo + KPIs grandes + bajadas narrativas ───────
+  const story = diagStory(cols);
+  const chartConfigs = diagChartConfigs(cols);
+  const cfgById = Object.fromEntries(chartConfigs.map(c => [c.id, c]));
+  const note = txt => `<div style="font-size:12.5px;line-height:1.55;color:var(--muted);background:var(--surface2);border-left:3px solid var(--accent);border-radius:0 8px 8px 0;padding:10px 14px;margin-top:12px">${txt}</div>`;
+  const chartBox = (id, title, capt, minW=300) => cfgById[id] ? `
+    <div style="flex:1;min-width:${minW}px;background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:16px 18px">
+      <div style="font-size:13px;font-weight:800;font-family:var(--font-b);margin-bottom:12px">${title}</div>
+      <div style="position:relative;height:210px"><canvas id="${id}"></canvas></div>
+      ${capt?note(capt):''}
+    </div>` : '';
+
+  let heroHTML = '';
+  if (story) {
+    const kpiCards = story.kpis.map(k => `
+      <div style="background:#fffdf5;border:3px solid #292929;border-radius:12px;box-shadow:5px 5px 0 #292929;padding:12px 14px;flex:1;min-width:132px">
+        <div style="font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.06em;color:#8a8676">${k.label}</div>
+        <div style="display:flex;align-items:baseline;gap:8px;margin-top:5px;flex-wrap:wrap">
+          <span style="font-size:22px;font-weight:800;font-family:var(--font-b);color:#292929">${k.value}</span>
+          ${diagChip(k.delta, k.hib)}
+        </div>
+      </div>`).join('');
+    heroHTML = `<div style="background:#fff952;border:3px solid #292929;border-radius:16px;box-shadow:8px 8px 0 #292929;padding:20px 22px;margin-bottom:22px">
+      <div style="font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.14em;color:#292929;background:#292929;color:#fff952;display:inline-block;padding:4px 10px;border-radius:4px">Resumen ejecutivo · ${story.monthLabel}</div>
+      <p style="font-size:15px;font-weight:700;line-height:1.5;color:#292929;margin:14px 0 18px">${story.hero}</p>
+      <div style="display:flex;gap:12px;flex-wrap:wrap">${kpiCards}</div>
+    </div>`;
+  }
+
+  // Fila 1 de gráficos: facturación + ventas/conversión
+  const chartsRow1 = `<div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:20px">
+    ${chartBox('diagChartFact', '💰 Evolución de facturación', story?story.demanda.split('.')[0]+'.':'' )}
+    ${chartBox('diagChartConv', '🛒 Ventas y conversión', story?story.demanda:'')}
+  </div>`;
+
+  // Fila 2: a dónde va cada peso + retorno de publicidad
+  const quedaLegend = cfgById['diagChartQueda'] ? cfgById['diagChartQueda'].legend.map(x =>
+    `<div style="display:flex;align-items:center;gap:6px;font-size:11.5px;margin-bottom:3px">
+      <span style="width:10px;height:10px;border-radius:2px;background:${x.c};display:inline-block;flex-shrink:0"></span>
+      <span style="flex:1">${x.l}</span>
+      <span style="font-weight:800">${_diagFmt.m(x.v)}</span>
+      <span style="min-width:40px;text-align:right;font-weight:800;color:${x.c}">${(x.v/cfgById['diagChartQueda'].total*100).toFixed(0)}%</span>
+    </div>`).join('') : '';
+  const quedaBox = cfgById['diagChartQueda'] ? `
+    <div style="flex:1;min-width:300px;background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:16px 18px">
+      <div style="font-size:13px;font-weight:800;font-family:var(--font-b);margin-bottom:12px">💵 A dónde va cada peso — ${cfgById['diagChartQueda'].refLabel}</div>
+      <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:center">
+        <div style="position:relative;height:180px;width:180px;flex-shrink:0"><canvas id="diagChartQueda"></canvas></div>
+        <div style="flex:1;min-width:180px">${quedaLegend}</div>
+      </div>
+      ${story?note(story.financiero):''}
+    </div>` : '';
+  const chartsRow2 = (cfgById['diagChartQueda']||cfgById['diagChartRoas']) ? `<div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:20px">
+    ${quedaBox}
+    ${chartBox('diagChartRoas', '🏷 Retorno de la publicidad', story?story.publicidad:'')}
+  </div>` : '';
+
   const logisticaHTML = `<div style="margin-bottom:22px">
     <div style="font-size:13px;font-weight:700;font-family:var(--font-b);margin-bottom:10px">🚚 Logística — cantidad y facturación por canal</div>
     <div style="display:flex;gap:12px;flex-wrap:wrap">${logiCards}</div>
+    ${story?note(story.logistica):''}
   </div>`;
 
-  el.innerHTML = formHTML + repCard + logisticaHTML + tableHTML;
+  const detalleHTML = `<details style="margin-top:8px"><summary style="cursor:pointer;font-size:13px;font-weight:700;font-family:var(--font-b);color:var(--muted);padding:8px 0">📋 Ver tabla comparativa completa (3 meses)</summary>${tableHTML}</details>`;
+
+  el.innerHTML = formHTML + heroHTML + chartsRow1 + chartsRow2 + repCard + logisticaHTML + detalleHTML;
 
   // Guardar estado para el export a PDF
   const _diagCliente = (document.getElementById('diagClientSel')?.selectedOptions?.[0]?.textContent) || (getActiveClient()?.name) || '';
-  window._diagState = { cols, clientId, clientName: _diagCliente };
+  window._diagState = { cols, clientId, clientName: _diagCliente, story, chartConfigs };
 
-  // Crear las tortas (destruye las previas para no acumular instancias)
+  // Crear todos los gráficos (destruye los previos para no acumular instancias)
   window._diagPieCharts = window._diagPieCharts || {};
   Object.values(window._diagPieCharts).forEach(ch => { try { ch.destroy(); } catch(e){} });
   window._diagPieCharts = {};
   if (window.Chart) {
+    // Gráficos de storytelling (facturación, ventas/conv, dona "cada peso", publicidad)
+    chartConfigs.forEach(cfg => {
+      const cv = document.getElementById(cfg.id);
+      if (!cv) return;
+      window._diagPieCharts[cfg.id] = new Chart(cv, { type: cfg.type, data: cfg.data, options: cfg.options });
+    });
+    // Tortas de logística por canal
     logiPieData.forEach(p => {
       const cv = document.getElementById(p.id);
       if (!cv) return;
@@ -10032,6 +10271,18 @@ function diagExportPDF() {
   if (!st || !st.cols || !st.cols.some(c => c.data)) { showToast('Calculá el diagnóstico primero'); return; }
   const cols = st.cols;
   const cliente = st.clientName || 'Cliente';
+  const story = st.story || null;
+
+  // Gráficos de storytelling como imagen (desde los canvas ya renderizados en pantalla)
+  const chartImg = id => { const cv = document.getElementById(id); try { return cv ? cv.toDataURL('image/png') : null; } catch(e) { return null; } };
+  const imgFact = chartImg('diagChartFact'), imgConv = chartImg('diagChartConv');
+  const imgQueda = chartImg('diagChartQueda'), imgRoas = chartImg('diagChartRoas');
+  const pdfChip = k => {
+    const d = k.delta; if (!d) return '';
+    if (d.dir==='flat') return '<span class="chip flat">→</span>';
+    const good = k.hib ? d.dir==='up' : d.dir==='down';
+    return `<span class="chip ${good?'up':'down'}">${d.dir==='up'?'▲':'▼'} ${Math.abs(d.pct).toFixed(0)}%</span>`;
+  };
 
   const fmtM = v => v != null && v !== '' ? '$' + parseFloat(v).toLocaleString('es-AR', {maximumFractionDigits:0}) : '—';
   const fmtN = v => v != null && v !== '' ? parseFloat(v).toLocaleString('es-AR') : '—';
@@ -10096,6 +10347,24 @@ function diagExportPDF() {
   const rango = cols.filter(c=>c.data).map(c=>c.label).join(' · ') || cols.map(c=>c.label).join(' · ');
   const notas = refCol?.data?.manuales?.notas || '';
 
+  // Resumen ejecutivo (narrativa + KPIs con tendencia)
+  const resumenHTML = story ? `
+    <h2 style="border-left:4px solid #292929">🧭 Resumen ejecutivo — ${story.monthLabel}</h2>
+    <div class="note big">${story.hero}</div>
+    <div class="kpis" style="margin-bottom:18px">
+      ${story.kpis.map(k=>`<div class="kpi"><div class="kpi-l">${k.label}</div><div class="kpi-v">${k.value} ${pdfChip(k)}</div></div>`).join('')}
+    </div>` : '';
+  const chartsGenHTML = (imgFact||imgConv) ? `<div class="charts">
+      ${imgFact?`<div class="chart-card"><div class="pie-title">💰 Evolución de facturación</div><img src="${imgFact}"></div>`:''}
+      ${imgConv?`<div class="chart-card"><div class="pie-title">🛒 Ventas y conversión</div><img src="${imgConv}"></div>`:''}
+    </div>` : '';
+  const notaDemanda = story ? `<div class="note">${story.demanda}</div>` : '';
+  const chartQuedaHTML = imgQueda ? `<div class="charts"><div class="chart-card" style="max-width:340px"><div class="pie-title">💵 A dónde va cada peso</div><img src="${imgQueda}" style="max-width:250px"></div></div>` : '';
+  const notaFinanciero = story ? `<div class="note">${story.financiero}</div>` : '';
+  const chartRoasHTML = imgRoas ? `<div class="charts"><div class="chart-card"><div class="pie-title">🏷 Retorno de la publicidad</div><img src="${imgRoas}"></div></div>` : '';
+  const notaPubli = story ? `<div class="note">${story.publicidad}</div>` : '';
+  const notaLogistica = story ? `<div class="note">${story.logistica}</div>` : '';
+
   const html = `<!DOCTYPE html><html lang="es"><head><meta charset="utf-8">
     <title>Diagnóstico — ${cliente} — Negocio Redondo</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -10132,6 +10401,14 @@ function diagExportPDF() {
       .kpi { flex:1; min-width:130px; background:#fffdf5; border:7px solid #292929; box-shadow:16px 16px 0 #292929; padding:12px 14px; }
       .kpi-l { font-size:10px; text-transform:uppercase; letter-spacing:.5px; }
       .kpi-v { font-size:19px; font-weight:800; margin-top:4px; }
+      .charts { display:flex; gap:18px; flex-wrap:wrap; margin:6px 0 10px; }
+      .chart-card { flex:1; min-width:240px; background:#fffdf5; border:7px solid #292929; box-shadow:16px 16px 0 #292929; padding:14px; text-align:center; }
+      .chart-card img { max-width:100%; }
+      .chart-card .pie-title { font-weight:800; font-size:13px; margin-bottom:8px; }
+      .note { background:#fffdf5; border:7px solid #292929; box-shadow:16px 16px 0 #292929; padding:14px 16px; font-size:12.5px; font-weight:700; line-height:1.5; margin:6px 0 16px; }
+      .note.big { background:#fff952; font-size:14.5px; line-height:1.55; }
+      .chip { font-size:12px; font-weight:800; margin-left:6px; }
+      .chip.up { color:#16a34a; } .chip.down { color:#dc2626; } .chip.flat { color:#8a8676; }
       .notas { margin-top:24px; padding:16px 18px; background:#fff952; border:7px solid #292929; box-shadow:16px 16px 0 #292929; font-size:12px; font-weight:700; }
       .foot { margin-top:40px; padding-top:16px; border-top:7px solid #292929; font-size:11px; text-align:center; font-weight:700; }
       @media print { h2, table, .pie-card, .kpis { page-break-inside:avoid; } .cover { page-break-after:always; } body { background:#f4f1e8; } }
@@ -10143,6 +10420,7 @@ function diagExportPDF() {
       <div class="meta">Períodos: ${rango} &nbsp;·&nbsp; Generado el ${hoy}</div>
     </div>
     <div class="wrap">
+      ${resumenHTML}
       ${tbl('📊 Métricas Generales', '#8b5cf6', [
         ['Facturación','facturacion',fmtM],
         ['Ventas','ventas',fmtN],
@@ -10150,6 +10428,8 @@ function diagExportPDF() {
         ['Conversión','conversion',fmtP],
         ['Ticket promedio','ticket_promedio',fmtM],
       ])}
+      ${chartsGenHTML}
+      ${notaDemanda}
       ${tbl('💵 Financiero — cuánto queda de cada venta', '#16a34a', [
         ['Facturación bruta','facturacion',fmtM],
         ['− Comisión ML','m.fin_comision',fmtM],
@@ -10160,8 +10440,11 @@ function diagExportPDF() {
         ['− Publicidad','m.fin_publicidad',fmtM],
         ['✅ % que queda (– publicidad)','m.fin_pct_neto_total',fmtP],
       ])}
+      ${chartQuedaHTML}
+      ${notaFinanciero}
       <h2 style="border-left:4px solid #f59e0b">🚚 Logística — cantidad y facturación por canal</h2>
       <div class="pies">${logiCards}</div>
+      ${notaLogistica}
       ${tbl('📣 Central de Marketing', '#f97316', [
         ['🏷 Ventas con descuento','m.mkt_ordenes_con_descuento',fmtN],
         ['% ventas con descuento','m.mkt_pct_descuento',fmtP],
@@ -10177,6 +10460,8 @@ function diagExportPDF() {
         ['TACOS','pads_tacos',fmtP],
         ['% Fact por publicidad','pads_aporte_pct',fmtP],
       ])}
+      ${chartRoasHTML}
+      ${notaPubli}
       ${repPubHTML}
       ${notas ? `<div class="notas"><b>📝 Notas del mes:</b> ${notas}</div>` : ''}
       <div class="foot">Negocio Redondo LATAM · app.negocioredondolatam.com · Reporte generado automáticamente</div>
