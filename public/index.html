@@ -5867,9 +5867,11 @@ async function loadDescuentos() {
 
   el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">⏳ Cargando publicaciones activas...</div>';
 
-  // Fuente principal: TODAS las publicaciones activas + costos guardados
-  const itemsData = await apiCall('GET', `/api/reporte/items-activos?client_id=${client.id}`).catch(() => null);
-  const comisionMap = await loadComisionMap(itemsData?.items || []);
+  // Fuente principal: TODAS las publicaciones activas + costos guardados.
+  // fees=1 → el backend ya trae comisión (con cuotas si el listing es Premium) y envío
+  // del vendedor por ítem vía listing_prices, siempre cargados y sin el bug de caché
+  // entre clientes que tenía el mapa del frontend.
+  const itemsData = await apiCall('GET', `/api/reporte/items-activos?client_id=${client.id}&fees=1`).catch(() => null);
 
   if (!itemsData?.items?.length) {
     el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">No se encontraron publicaciones activas</div>';
@@ -5890,8 +5892,6 @@ async function loadDescuentos() {
 
   const dias = window._perfDays || 30;
 
-  const envioAPIMap = window._envioMap || {};
-
   const products = itemsData.items.map(item => {
     const bp  = byProductMap[item.mla_id];
     const pub = (window._pubsData || []).find(p => p.id === item.mla_id);
@@ -5902,20 +5902,18 @@ async function loadDescuentos() {
     const precioLista = item.original_price || null;
     const tieneDescuento = !!(precioLista && precioML > 0 && precioLista > precioML);
 
-    // Comisión — listing_prices con precio real devuelve sale_fee_amount (base + cuotas)
-    const lt = item.listing_type_id || ltMap[item.mla_id] || null;
-    const catId = item.category_id || pub?.category_id || null;
-    const comPctML   = getComisionPct(item.mla_id, lt, catId);
+    // Comisión — el backend la calcula con listing_prices usando el listing_type real,
+    // así que ya incluye las cuotas cuando la publicación es Premium (gold_pro).
+    // Fallback: comisión histórica real de ventas; último recurso: 13% estimado.
+    const comPctML   = item.com_pct != null ? item.com_pct : null;
     const comPctHist = bp?.revenue > 0 ? (bp.comision / bp.revenue * 100) : null;
-    // ML API ahora incluye cuotas; solo usar histórico si ML no respondió
     const comPct = comPctML != null ? comPctML : (comPctHist != null ? parseFloat(comPctHist.toFixed(1)) : 13);
 
-    // Costo de envío por unidad: API listing_prices (exacto), luego histórico, luego 0
-    const envioUnit = envioAPIMap[item.mla_id] != null
-      ? envioAPIMap[item.mla_id]
-      : bp?.units > 0 && precio >= 33000
-        ? Math.round((bp.envio_pagado || 0) / bp.units)
-        : 0;
+    // Costo de envío por unidad: backend (listing_prices), luego histórico, luego 0.
+    const envioBackend = item.envio_unit != null ? item.envio_unit : null;
+    const envioUnit = envioBackend != null
+      ? envioBackend
+      : (bp?.units > 0 && precio >= 33000 ? Math.round((bp.envio_pagado || 0) / bp.units) : 0);
 
     // Stock
     const stock = pub
@@ -5934,6 +5932,7 @@ async function loadDescuentos() {
       comPct: parseFloat(comPct.toFixed(1)),
       comSource: comPctML != null ? 'ML' : (comPctHist != null ? 'hist.' : 'est.'),
       envioUnit,
+      envioSource: envioBackend != null ? 'ML' : (bp?.units > 0 && precio >= 33000 ? 'hist.' : 'est.'),
       stock, cobertura, units, cuenta: client.name,
       revenue: bp?.revenue || 0,   // facturación del período (para ordenar por importancia)
     };
@@ -6070,6 +6069,7 @@ function renderDescuentos() {
       + '</td>';
     html += '<td style="padding:4px 6px;text-align:center">'
       + '<input id="dsc_env_' + p.id + '" type="number" value="' + envioUnit + '" min="0" step="10" onchange="renderDescuentos()" style="width:64px;padding:3px 5px;border-radius:5px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:11px;text-align:center">'
+      + '<div style="font-size:9px;color:' + (p.envioSource === 'ML' ? '#00e676' : p.envioSource === 'hist.' ? '#f59e0b' : '#ff5252') + ';margin-top:1px">' + (p.envioSource === 'ML' ? '✓ ML' : p.envioSource === 'hist.' ? '≈ hist.' : '≈ est.') + '</div>'
       + '</td>';
     html += p.hasCMV
       ? '<td style="padding:6px 8px;text-align:center;cursor:help" title="' + tooltip + '">'

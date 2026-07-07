@@ -4657,6 +4657,10 @@ app.get('/api/reporte/margen-real-producto', requireAuth, async (req, res) => {
 app.get('/api/reporte/items-activos', requireAuth, async (req, res) => {
   try {
     const { client_id } = req.query;
+    // fees=1 → calcula comisión (con cuotas según listing_type) y envío del vendedor
+    // por ítem vía listing_prices. Es opt-in porque agrega 1 llamada ML por ítem;
+    // solo la solapa Descuentos lo necesita.
+    const withFees = req.query.fees === '1';
     const token = await getClientToken(parseInt(client_id));
     if (!token) return res.status(403).json({ error: 'Sin token' });
     const headers = { 'Authorization': `Bearer ${token}` };
@@ -4702,7 +4706,39 @@ app.get('/api/reporte/items-activos', requireAuth, async (req, res) => {
           const candidates = [basePrice, salePrice, promoPrice, minPricesPromo].filter(v => v && v > 0);
           const price      = Math.min(...candidates);
           const precioLista = origPrice && origPrice > price ? origPrice : (price < basePrice ? basePrice : null);
-          itemsMap[b.id]   = { mla_id: b.id, title: b.title, sku, price, original_price: precioLista, stock: b.available_quantity, listing_type_id: b.listing_type_id, category_id: b.category_id, logistic_type: b.shipping?.logistic_type || 'cross_docking', shipping_mode: b.shipping?.mode || 'me2', shipping_weight: b.shipping?.dimensions?.weight || 500 };
+
+          // Comisión + envío del vendedor desde listing_prices. La comisión ya viene
+          // "con cuotas" cuando el listing_type es Premium (gold_pro): ML codifica el
+          // costo del financiamiento en el tipo de publicación, no en un extra aparte.
+          let comPct = null, envioUnit = null, comSource = null, envioSource = null;
+          if (withFees && b.listing_type_id && price > 0) {
+            try {
+              const lp = new URLSearchParams({
+                price:           Math.round(price),
+                currency_id:     'ARS',
+                listing_type_id: b.listing_type_id,
+                logistic_type:   b.shipping?.logistic_type || 'cross_docking',
+                shipping_modes:  b.shipping?.mode || 'me2',
+                billable_weight: b.shipping?.dimensions?.weight || 500,
+              });
+              if (b.category_id) lp.set('category_id', b.category_id);
+              const lpData = await fetch(`${ML_API}/sites/MLA/listing_prices?${lp}`, { headers }).then(r => r.json()).catch(() => null);
+              if (lpData && !lpData.error) {
+                const totalFee = lpData.sale_fee_amount;
+                if (totalFee != null) { comPct = parseFloat((totalFee / price * 100).toFixed(2)); comSource = 'ML'; }
+                const costs = lpData.shipping?.costs;
+                const sellerCost = Array.isArray(costs)
+                  ? (costs.find(c => c.type === 'seller')?.amount ?? null)
+                  : (lpData.shipping?.seller_cost ?? lpData.shipping?.cost ?? null);
+                // envío = costo del vendedor si aplica; 0 explícito si ML respondió pero el
+                // vendedor no paga envío en este ítem (no es "sin dato", es "no paga").
+                envioUnit = (sellerCost != null && parseFloat(sellerCost) > 0) ? Math.round(parseFloat(sellerCost)) : 0;
+                envioSource = 'ML';
+              }
+            } catch(e) {}
+          }
+
+          itemsMap[b.id]   = { mla_id: b.id, title: b.title, sku, price, original_price: precioLista, stock: b.available_quantity, listing_type_id: b.listing_type_id, category_id: b.category_id, logistic_type: b.shipping?.logistic_type || 'cross_docking', shipping_mode: b.shipping?.mode || 'me2', shipping_weight: b.shipping?.dimensions?.weight || 500, com_pct: comPct, envio_unit: envioUnit, com_source: comSource, envio_source: envioSource };
         } catch(e) {}
       }));
     }
