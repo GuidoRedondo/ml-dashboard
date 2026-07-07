@@ -9999,6 +9999,28 @@ function diagChartConfigs(cols) {
       options:{ responsive:true, maintainAspectRatio:false, plugins:{ legend:{position:'bottom',labels:{boxWidth:12,font:{size:11}}}, tooltip:{callbacks:{label:ctx=>ctx.dataset.label+': $'+Math.round(ctx.parsed.y||0).toLocaleString('es-AR')}} },
         scales:{ y:{ ticks:{ callback:v=>'$'+(v/1000).toFixed(0)+'k' } } } } });
   }
+  // 5) Preguntas del último mes (torta que parte las recibidas en pedazos que suman)
+  if (ref) {
+    const m = ref.data.manuales || {};
+    const recibidas   = _diagNum(m.preguntas_total) || 0;
+    const respondidas = _diagNum(m.preguntas_respondidas) || 0;
+    const convert     = Math.min(_diagNum(m.preguntas_convertidos) || 0, respondidas);
+    const respSinVta  = Math.max(0, respondidas - convert);
+    const sinResp     = Math.max(0, recibidas - respondidas);
+    const segs = [
+      { l:'🛒 Derivaron en venta', v:convert,    c:'#16a34a' },
+      { l:'💬 Respondidas s/venta', v:respSinVta, c:'#3b82f6' },
+      { l:'⏳ Sin responder',       v:sinResp,    c:'#f59e0b' },
+    ].filter(s => s.v > 0);
+    if (recibidas > 0 && segs.length) {
+      configs.push({ id:'diagChartPreg', type:'doughnut', kind:'preg', refLabel:ref.label,
+        recibidas, promedio:(m.preguntas_promedio||'—'), convPct:_diagNum(m.preguntas_conversion_venta),
+        compradores:_diagNum(m.preguntas_compradores), legend:segs,
+        data:{ labels:segs.map(s=>s.l), datasets:[{ data:segs.map(s=>s.v), backgroundColor:segs.map(s=>s.c), borderWidth:0 }] },
+        options:{ responsive:true, maintainAspectRatio:false, cutout:'58%', plugins:{ legend:{display:false},
+          tooltip:{callbacks:{label:ctx=>`${ctx.label}: ${ctx.parsed} (${(ctx.parsed/recibidas*100).toFixed(0)}%)`}} } } });
+    }
+  }
   return configs;
 }
 
@@ -10121,6 +10143,8 @@ function diagRender(meses, clientId) {
         ${[
           ['Total', fmtN(rd.pub_total)],
           ['Activas', fmtN(rd.pub_activas)],
+          ['⏸ Pausadas', fmtN(rd.manuales?.pub_pausadas)],
+          ['⛔ Inactivas', fmtN(rd.pub_inactivas)],
           ['% Activas', rd.pub_activas&&rd.pub_total?fmtP(rd.pub_activas/rd.pub_total*100):'—'],
           ['Con ventas', fmtN(rd.pub_exitosas)],
           ['% Relevantes', rd.pub_exitosas&&rd.pub_activas?fmtP(rd.pub_exitosas/rd.pub_activas*100):'—'],
@@ -10223,6 +10247,34 @@ function diagRender(meses, clientId) {
     ${chartBox('diagChartRoas', '🏷 Retorno de la publicidad', story?story.publicidad:'')}
   </div>` : '';
 
+  // Fila 3: preguntas (torta + tiempo promedio + conversión→venta)
+  const pregCfg = cfgById['diagChartPreg'];
+  const pregLegend = pregCfg ? pregCfg.legend.map(x =>
+    `<div style="display:flex;align-items:center;gap:6px;font-size:11.5px;margin-bottom:3px">
+      <span style="width:10px;height:10px;border-radius:2px;background:${x.c};display:inline-block;flex-shrink:0"></span>
+      <span style="flex:1">${x.l}</span>
+      <span style="font-weight:800">${x.v}</span>
+      <span style="min-width:40px;text-align:right;font-weight:800;color:${x.c}">${(x.v/pregCfg.recibidas*100).toFixed(0)}%</span>
+    </div>`).join('') : '';
+  const pregStat = (lbl, val, col) => `<div style="flex:1;min-width:110px;background:var(--surface2);border-radius:10px;padding:10px 12px;text-align:center">
+    <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em">${lbl}</div>
+    <div style="font-size:20px;font-weight:800;font-family:var(--font-b);color:${col||'var(--text)'};margin-top:3px">${val}</div></div>`;
+  const chartsRow3 = pregCfg ? `<div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:20px">
+    <div style="flex:1;min-width:300px;background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:16px 18px">
+      <div style="font-size:13px;font-weight:800;font-family:var(--font-b);margin-bottom:12px">💬 Preguntas — ${pregCfg.refLabel} · ${pregCfg.recibidas} recibidas</div>
+      <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:center">
+        <div style="position:relative;height:180px;width:180px;flex-shrink:0"><canvas id="diagChartPreg"></canvas></div>
+        <div style="flex:1;min-width:220px">
+          ${pregLegend}
+          <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:12px">
+            ${pregStat('⏱ Tiempo promedio', pregCfg.promedio, '#6366f1')}
+            ${pregStat('🛒 Conversión→venta', pregCfg.convPct!=null?pregCfg.convPct.toFixed(1)+'%':'—', '#16a34a')}
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>` : '';
+
   const logisticaHTML = `<div style="margin-bottom:22px">
     <div style="font-size:13px;font-weight:700;font-family:var(--font-b);margin-bottom:10px">🚚 Logística — cantidad y facturación por canal</div>
     <div style="display:flex;gap:12px;flex-wrap:wrap">${logiCards}</div>
@@ -10231,7 +10283,7 @@ function diagRender(meses, clientId) {
 
   const detalleHTML = `<details style="margin-top:8px"><summary style="cursor:pointer;font-size:13px;font-weight:700;font-family:var(--font-b);color:var(--muted);padding:8px 0">📋 Ver tabla comparativa completa (3 meses)</summary>${tableHTML}</details>`;
 
-  el.innerHTML = formHTML + heroHTML + chartsRow1 + chartsRow2 + repCard + logisticaHTML + detalleHTML;
+  el.innerHTML = formHTML + heroHTML + chartsRow1 + chartsRow2 + chartsRow3 + repCard + logisticaHTML + detalleHTML;
 
   // Guardar estado para el export a PDF
   const _diagCliente = (document.getElementById('diagClientSel')?.selectedOptions?.[0]?.textContent) || (getActiveClient()?.name) || '';
@@ -10279,6 +10331,8 @@ function diagExportPDF() {
   const chartImg = id => { const cv = document.getElementById(id); try { return cv ? cv.toDataURL('image/png') : null; } catch(e) { return null; } };
   const imgFact = chartImg('diagChartFact'), imgConv = chartImg('diagChartConv');
   const imgQueda = chartImg('diagChartQueda'), imgRoas = chartImg('diagChartRoas');
+  const imgPreg = chartImg('diagChartPreg');
+  const pregCfg = (st.chartConfigs || []).find(c => c.id === 'diagChartPreg');
   const pdfChip = k => {
     const d = k.delta; if (!d) return '';
     if (d.dir==='flat') return '<span class="chip flat">→</span>';
@@ -10366,6 +10420,15 @@ function diagExportPDF() {
   const chartRoasHTML = imgRoas ? `<div class="charts"><div class="chart-card"><div class="pie-title">🏷 Retorno de la publicidad</div><img src="${imgRoas}"></div></div>` : '';
   const notaPubli = story ? `<div class="note">${story.publicidad}</div>` : '';
   const notaLogistica = story ? `<div class="note">${story.logistica}</div>` : '';
+  const pregHTML = (imgPreg && pregCfg) ? `
+    <h2 style="border-left:4px solid #ec4899">💬 Preguntas — ${pregCfg.refLabel}</h2>
+    <div class="charts">
+      <div class="chart-card" style="max-width:320px"><div class="pie-title">${pregCfg.recibidas} recibidas</div><img src="${imgPreg}" style="max-width:230px"></div>
+      <div class="chart-card" style="display:flex;flex-direction:column;justify-content:center;gap:14px">
+        <div><div class="kpi-l">⏱ Tiempo promedio</div><div class="kpi-v">${pregCfg.promedio||'—'}</div></div>
+        <div><div class="kpi-l">🛒 Conversión pregunta→venta</div><div class="kpi-v">${pregCfg.convPct!=null?pregCfg.convPct.toFixed(1)+'%':'—'}</div></div>
+      </div>
+    </div>` : '';
 
   const html = `<!DOCTYPE html><html lang="es"><head><meta charset="utf-8">
     <title>Diagnóstico — ${cliente} — Negocio Redondo</title>
@@ -10447,6 +10510,7 @@ function diagExportPDF() {
       <h2 style="border-left:4px solid #f59e0b">🚚 Logística — cantidad y facturación por canal</h2>
       <div class="pies">${logiCards}</div>
       ${notaLogistica}
+      ${pregHTML}
       ${tbl('📣 Central de Marketing', '#f97316', [
         ['🏷 Ventas con descuento','m.mkt_ordenes_con_descuento',fmtN],
         ['% ventas con descuento','m.mkt_pct_descuento',fmtP],

@@ -3910,25 +3910,21 @@ app.post('/api/diagnostico/calcular', requireAuth, async (req, res) => {
     // ── 3. Visitas y publicaciones ────────────────────────────────────────────
     const daysInMonth = new Date(year, month+1, 0).getDate();
 
-    // Fetch ALL active item IDs (paginated)
-    let allActiveIdsFull = [];
-    let itemOffset = 0;
-    while (true) {
-      const r = await fetch(`${ML_API}/users/${uid}/items/search?status=active&limit=100&offset=${itemOffset}`, { headers }).then(r => r.json());
-      const ids = r.results || [];
-      allActiveIdsFull = allActiveIdsFull.concat(ids);
-      const total = r.paging?.total || 0;
-      if (ids.length < 100 || allActiveIdsFull.length >= total) break;
-      itemOffset += 100;
-      if (itemOffset > 5000) break;
-    }
-    const totalActive = allActiveIdsFull.length;
-
-    const itemsInactRes = await fetch(
-      `${ML_API}/users/${uid}/items/search?status=inactive&limit=1`, { headers }
-    ).then(r => r.json());
-    const totalInactive = (itemsInactRes.paging && itemsInactRes.paging.total) || 0;
-    const pubTotal = totalActive + totalInactive;
+    // Conteo de publicaciones por estado usando paging.total (limit=1). Esto NO sufre el
+    // tope de offset=1000 de items/search (que truncaba las activas en 1000) y captura
+    // TODOS los estados — antes las pausadas quedaban afuera del total por completo.
+    const countStatus = async (status) => {
+      try {
+        const r = await fetch(`${ML_API}/users/${uid}/items/search?status=${status}&limit=1`, { headers }).then(r => r.json());
+        return (r.paging && r.paging.total) || 0;
+      } catch(e) { return 0; }
+    };
+    const [totalActive, totalPaused, cntInactive, cntClosed] = await Promise.all([
+      countStatus('active'), countStatus('paused'), countStatus('inactive'), countStatus('closed'),
+    ]);
+    const totalInactive = cntInactive + cntClosed; // inactivas + finalizadas
+    const pubTotal = totalActive + totalPaused + totalInactive;
+    console.log(`[DIAG PUBS] ${mes} activas=${totalActive} pausadas=${totalPaused} inactivas=${totalInactive} total=${pubTotal}`);
 
     // Visitas del mes — agregado a nivel usuario (matchea el panel de ML).
     // OJO: NO usar fetchVisitsRange (/items/{id}/visits/time_window con date_from+date_to):
@@ -4312,6 +4308,9 @@ app.post('/api/diagnostico/calcular', requireAuth, async (req, res) => {
       preguntas_conversion_venta: preguntasConversionVenta, // conversión real pregunta→venta
       preguntas_compradores:  preguntasCompradores,
       preguntas_convertidos:  preguntasConvertidos,
+      // Publicaciones por estado (auto)
+      pub_pausadas:   totalPaused,
+      pub_inactivas:  totalInactive,
       // Logística (auto)
       full_activo:    logFullActive ? 'SI' : 'NO',
       flex_activo:    logFlexActive ? 'SI' : 'NO',
