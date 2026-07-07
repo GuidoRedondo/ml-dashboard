@@ -4217,8 +4217,9 @@ app.post('/api/diagnostico/calcular', requireAuth, async (req, res) => {
     // ── 7. Tiempos de respuesta + conversión de preguntas ────────────────────
     let tiempos = { lv_business: null, lv_noche: null, finde: null, mediana: null };
     let preguntasTotal = 0, preguntasRespondidas = 0, conversionPreguntas = null;
+    let allQ = [], allQUnans = [];
     try {
-      let allQ = [], offset = 0;
+      let offset = 0;
       while (true) {
         const qUrl = `${ML_API}/questions/search?seller_id=${uid}&status=ANSWERED&sort_fields=date_created&sort_types=DESC&limit=50&offset=${offset}`;
         const qRes = await fetch(qUrl, { headers }).then(r => r.json()).catch(() => ({}));
@@ -4232,7 +4233,7 @@ app.post('/api/diagnostico/calcular', requireAuth, async (req, res) => {
         const oldest = new Date(qs[qs.length-1].date_created);
         if (oldest < dateFrom || qs.length < 50) break;
         offset += 50;
-        if (offset > 500) break;
+        if (offset > 1000) break;
       }
       const respMins = [], bySlot = { lv_b: [], lv_n: [], fin: [] };
       allQ.forEach(q => {
@@ -4255,11 +4256,12 @@ app.post('/api/diagnostico/calcular', requireAuth, async (req, res) => {
         lv_business: fmtT(avg(bySlot.lv_b)),
         lv_noche:    fmtT(avg(bySlot.lv_n)),
         finde:       fmtT(avg(bySlot.fin)),
+        promedio:    fmtT(avg(respMins)),
         mediana:     fmtT(med(respMins)),
       };
       preguntasRespondidas = allQ.length;
       // Fetch unanswered questions in the same period
-      let allQUnans = [], offsetU = 0;
+      let offsetU = 0;
       while (true) {
         const qUrl = `${ML_API}/questions/search?seller_id=${uid}&status=UNANSWERED&sort_fields=date_created&sort_types=DESC&limit=50&offset=${offsetU}`;
         const qRes = await fetch(qUrl, { headers }).then(r => r.json()).catch(() => ({}));
@@ -4270,12 +4272,25 @@ app.post('/api/diagnostico/calcular', requireAuth, async (req, res) => {
         const oldest = new Date(qs[qs.length-1].date_created);
         if (oldest < dateFrom || qs.length < 50) break;
         offsetU += 50;
-        if (offsetU > 300) break;
+        if (offsetU > 1000) break;
       }
       preguntasTotal = preguntasRespondidas + allQUnans.length;
+      // % respondidas (NO es conversión de venta; se mantiene el nombre por compatibilidad de datos)
       conversionPreguntas = preguntasTotal > 0 ? parseFloat(((preguntasRespondidas / preguntasTotal) * 100).toFixed(1)) : null;
-      console.log(`[DIAG TIEMPOS] ${mes} lv=${avg(bySlot.lv_b)}min noche=${avg(bySlot.lv_n)}min finde=${avg(bySlot.fin)}min total_q=${allQ.length} unanswered=${allQUnans.length}`);
+      console.log(`[DIAG TIEMPOS] ${mes} lv=${avg(bySlot.lv_b)}min noche=${avg(bySlot.lv_n)}min finde=${avg(bySlot.fin)}min prom=${avg(respMins)}min total_q=${allQ.length} unanswered=${allQUnans.length}`);
     } catch(e) { console.error('[DIAG TIEMPOS]', e.message); }
+
+    // ── 7b. Conversión REAL pregunta→venta (mismo criterio que la sección Preguntas) ──
+    // Compradores que preguntaron Y compraron en el período ÷ compradores que preguntaron.
+    let preguntasCompradores = 0, preguntasConvertidos = 0, preguntasConversionVenta = null;
+    try {
+      const askerIds = new Set([...allQ, ...allQUnans].map(q => q.from && String(q.from.id)).filter(Boolean));
+      const orderBuyerIds = new Set((orders||[]).map(o => o.buyer && String(o.buyer.id)).filter(Boolean));
+      preguntasCompradores = askerIds.size;
+      preguntasConvertidos = [...askerIds].filter(id => orderBuyerIds.has(id)).length;
+      preguntasConversionVenta = preguntasCompradores > 0 ? parseFloat(((preguntasConvertidos / preguntasCompradores) * 100).toFixed(1)) : null;
+      console.log(`[DIAG PREG CONV] ${mes} askers=${preguntasCompradores} convertidos=${preguntasConvertidos} conv=${preguntasConversionVenta}%`);
+    } catch(e) { console.error('[DIAG PREG CONV]', e.message); }
 
     // ── 8. Guardar en DB ──────────────────────────────────────────────────────
     const mesStr = `${year}-${String(month+1).padStart(2,'0')}-01`;
@@ -4289,9 +4304,14 @@ app.post('/api/diagnostico/calcular', requireAuth, async (req, res) => {
       rep_resp_lv:    tiempos.lv_business || manualesExistentes.rep_resp_lv,
       rep_resp_noche: tiempos.lv_noche    || manualesExistentes.rep_resp_noche,
       rep_resp_finde: tiempos.finde       || manualesExistentes.rep_resp_finde,
+      preguntas_promedio:     tiempos.promedio || manualesExistentes.preguntas_promedio,
+      preguntas_mediana:      tiempos.mediana  || manualesExistentes.preguntas_mediana,
       preguntas_total:        preguntasTotal,
       preguntas_respondidas:  preguntasRespondidas,
-      conversion_preguntas:   conversionPreguntas,
+      conversion_preguntas:   conversionPreguntas,        // = % respondidas (no es conversión de venta)
+      preguntas_conversion_venta: preguntasConversionVenta, // conversión real pregunta→venta
+      preguntas_compradores:  preguntasCompradores,
+      preguntas_convertidos:  preguntasConvertidos,
       // Logística (auto)
       full_activo:    logFullActive ? 'SI' : 'NO',
       flex_activo:    logFlexActive ? 'SI' : 'NO',

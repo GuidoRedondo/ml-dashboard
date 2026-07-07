@@ -10054,9 +10054,11 @@ function diagRender(meses, clientId) {
     ${row('L-V 9 a 18hs', d=>d.manuales?.rep_resp_lv, fmtT)}
     ${row('L-V 18hs a madrugada', d=>d.manuales?.rep_resp_noche, fmtT)}
     ${row('Sáb y Dom', d=>d.manuales?.rep_resp_finde, fmtT)}
+    ${row('Tiempo promedio (general)', d=>d.manuales?.preguntas_promedio, fmtT)}
     ${row('Preguntas recibidas', d=>d.manuales?.preguntas_total||null, fmtN)}
     ${row('Preguntas respondidas', d=>d.manuales?.preguntas_respondidas||null, fmtN)}
-    ${row('Conversión preguntas', d=>d.manuales?.conversion_preguntas||null, fmtP)}
+    ${row('✅ % respondidas', d=>d.manuales?.conversion_preguntas||null, fmtP)}
+    ${row('🛒 Conversión pregunta→venta', d=>d.manuales?.preguntas_conversion_venta||null, fmtP)}
     ${sec('📣 Central de Marketing','#fff7ed')}
     ${row('🏷 Ventas con descuento (promo/oferta)', d=>d.manuales?.mkt_ordenes_con_descuento??null, fmtN)}
     ${row('% ventas con descuento', d=>d.manuales?.mkt_pct_descuento||null, fmtP)}
