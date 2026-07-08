@@ -1012,6 +1012,20 @@ tbody td {
         <div id="weeklyChart" style="width:100%;height:180px;position:relative"></div>
         <div id="chartLegend" style="display:flex;gap:16px;flex-wrap:wrap;margin-top:10px"></div>
       </div>
+
+      <!-- GRÁFICO: Facturación últimos 7 días -->
+      <div class="kpi-card" style="padding:20px;margin-bottom:12px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:8px">
+          <div class="kpi-label">💰 Facturación — últimos 7 días
+            <span id="sevenDaySummary" style="font-weight:400;color:var(--muted);font-size:11px;margin-left:8px"></span>
+          </div>
+          <div style="display:flex;gap:6px">
+            <button id="sevenDayBtnBar" onclick="setSevenDayType('bar')" class="sync-btn" style="padding:4px 12px;font-size:11px">📊 Barras</button>
+            <button id="sevenDayBtnLine" onclick="setSevenDayType('line')" class="sync-btn" style="padding:4px 12px;font-size:11px">📈 Líneas</button>
+          </div>
+        </div>
+        <div style="position:relative;height:220px"><canvas id="sevenDayChart"></canvas></div>
+      </div>
     </div>
 
     <!-- PERFORMANCE -->
@@ -3340,11 +3354,92 @@ function updateDashboard() {
 
   // Gráfico evolución
   try { buildEvolutionChart(); } catch(e) { console.error('Chart error:', e); }
+  try { buildSevenDayChart(); } catch(e) { console.error('7-day chart error:', e); }
 
   // Subpáginas
   loadPublicaciones();
   loadVentas();
   } catch(e) { console.error('Dashboard update error:', e); }
+}
+
+function setSevenDayType(t) {
+  window._sevenDayType = t;
+  try { buildSevenDayChart(); } catch(e) { console.error('7-day chart error:', e); }
+}
+
+// Gráfico de facturación diaria de los últimos 7 días (barras o líneas, toggle).
+// Suma la facturación por día de todas las cuentas conectadas usando by_day_fac
+// (facturación diaria del backend), con fallback a orders_detail.
+function buildSevenDayChart() {
+  const canvas = document.getElementById('sevenDayChart');
+  if (!canvas || !window.Chart) return;
+  const connected = state.accounts.filter(a => a.data);
+  const now = Date.now();
+  const DAYS = 7;
+  const fac = new Array(DAYS).fill(0);
+
+  connected.forEach(acc => {
+    const s = acc.data?.stats;
+    if (s?.by_day_fac?.length) {
+      // by_day_fac va de más viejo (0) a hoy (último) → tomamos los últimos 7
+      const arr = s.by_day_fac;
+      for (let k = 0; k < DAYS; k++) {
+        const idx = arr.length - DAYS + k;
+        if (idx >= 0) fac[k] += parseFloat(arr[idx]) || 0;
+      }
+    } else {
+      (acc.data.orders_detail || []).forEach(o => {
+        const di = Math.floor((now - new Date(o.date).getTime()) / 86400000);
+        if (di >= 0 && di < DAYS) fac[DAYS - 1 - di] += parseFloat(o.facturacion) || 0;
+      });
+    }
+  });
+
+  // Etiquetas: día de la semana + número (ej. "mar 08")
+  const labels = [];
+  for (let i = 0; i < DAYS; i++) {
+    const d = new Date(now - (DAYS - 1 - i) * 86400000);
+    labels.push(d.toLocaleDateString('es-AR', { weekday: 'short', day: '2-digit' }).replace('.', ''));
+  }
+
+  // Resumen: total y promedio/día
+  const total = fac.reduce((a, b) => a + b, 0);
+  const prom  = total / DAYS;
+  const fmt$  = n => '$' + Math.round(n).toLocaleString('es-AR');
+  const sumEl = document.getElementById('sevenDaySummary');
+  if (sumEl) sumEl.textContent = `Total ${fmt$(total)} · Prom ${fmt$(prom)}/día`;
+
+  const type = window._sevenDayType || 'bar';
+  const bBar = document.getElementById('sevenDayBtnBar'), bLine = document.getElementById('sevenDayBtnLine');
+  if (bBar && bLine) {
+    bBar.style.background  = type === 'bar'  ? 'var(--accent)' : 'var(--surface2)';
+    bBar.style.color       = type === 'bar'  ? '#fff' : 'var(--text)';
+    bLine.style.background = type === 'line' ? 'var(--accent)' : 'var(--surface2)';
+    bLine.style.color      = type === 'line' ? '#fff' : 'var(--text)';
+  }
+
+  if (window._sevenDayChartObj) { try { window._sevenDayChartObj.destroy(); } catch(e) {} }
+  window._sevenDayChartObj = new Chart(canvas, {
+    type,
+    data: { labels, datasets: [{
+      label: 'Facturación',
+      data: fac,
+      backgroundColor: type === 'line' ? 'rgba(139,92,246,.15)' : '#8b5cf6',
+      borderColor: '#8b5cf6',
+      borderWidth: type === 'line' ? 3 : 0,
+      borderRadius: 6, maxBarThickness: 54,
+      tension: .3, fill: type === 'line',
+      pointRadius: 4, pointBackgroundColor: '#8b5cf6',
+    }] },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: { callbacks: { label: ctx => '$' + Math.round(ctx.parsed.y || 0).toLocaleString('es-AR') } },
+      },
+      scales: { y: { beginAtZero: true, ticks: { callback: v => '$' + (v / 1000).toFixed(0) + 'k' } } },
+    },
+  });
 }
 
 function buildEvolutionChart() {
