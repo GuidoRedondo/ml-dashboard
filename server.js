@@ -274,6 +274,17 @@ async function initDB() {
       updated_at  TIMESTAMP DEFAULT NOW(),
       UNIQUE(client_id, ref)
     );
+    -- SKU manual por publicación: mapa curado MLA -> SKU cargado por Excel.
+    -- Fuente de verdad cuando la API de ML devuelve el SKU inconsistente (ej. White
+    -- Salud, donde el seller_custom_field del item trae el "Id Aleph" del ERP).
+    CREATE TABLE IF NOT EXISTS sku_manual (
+      id          SERIAL PRIMARY KEY,
+      client_id   INTEGER NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+      mla_id      VARCHAR(30) NOT NULL,
+      sku         VARCHAR(120) NOT NULL,
+      updated_at  TIMESTAMP DEFAULT NOW(),
+      UNIQUE(client_id, mla_id)
+    );
     CREATE TABLE IF NOT EXISTS bitacora (
       id           SERIAL PRIMARY KEY,
       client_id    INTEGER NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
@@ -1169,6 +1180,18 @@ function extractSku(item) {
     || item.seller_custom_field
     || item.seller_sku
     || null;
+}
+
+// Mapa de SKU manual (MLA -> SKU) cargado por Excel para un cliente. Tiene prioridad
+// sobre extractSku() cuando existe: es un listado curado que pisa lo que devuelve ML.
+// Devuelve {} si no hay nada cargado (comportamiento idéntico al de antes).
+async function loadSkuManual(clientId) {
+  try {
+    const { rows } = await pool.query('SELECT mla_id, sku FROM sku_manual WHERE client_id=$1', [clientId]);
+    const map = {};
+    rows.forEach(r => { if (r.sku) map[String(r.mla_id)] = String(r.sku); });
+    return map;
+  } catch (e) { console.error('[SKU_MANUAL]', e.message); return {}; }
 }
 
 async function fetchAllOrders(uid, headers, fromStr, toStr) {
@@ -2871,6 +2894,7 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
     // Fetch SKU for all items in byItem
     const byItemIds = Object.keys(byItem);
     const skuMapDash = {};
+    const manualSkuDash = await loadSkuManual(clientId);
     for (let i = 0; i < byItemIds.length; i += 20) {
       const batch = byItemIds.slice(i, i + 20);
       try {
@@ -2878,7 +2902,7 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
         (Array.isArray(data) ? data : []).forEach(r => {
           if (r.code !== 200 || !r.body) return;
           const b = r.body;
-          skuMapDash[b.id] = extractSku(b);
+          skuMapDash[b.id] = manualSkuDash[b.id] || extractSku(b);
         });
       } catch(e) {}
     }
@@ -3774,6 +3798,7 @@ app.get('/api/items-full', requireAuth, async (req, res) => {
 
     // ── 7. Build final items list ────────────────────────────────────────────
     // Use item detail status as source of truth (more reliable than search endpoint)
+    const manualSkuFull = await loadSkuManual(clientId);
     const itemsWithSales = Object.values(salesByItem).map(item => {
       const ads    = adsByItem[item.id] || {};
       const visits = visitsMap[item.id] || 0;
@@ -3791,7 +3816,7 @@ app.get('/api/items-full', requireAuth, async (req, res) => {
         category_id: detail.category_id || '',
         condition: detail.condition || '',
         catalog_listing: detail.catalog_listing || false,
-        sku: extractSku(detail) || '',
+        sku: manualSkuFull[item.id] || extractSku(detail) || '',
         photo_count: pics.length,
         photo_urls: pics.slice(0,3).map(p => p.url || p.secure_url || ''),
         is_full: isFull,
@@ -4444,6 +4469,7 @@ app.get('/api/reporte/items-vendidos', requireAuth, async (req, res) => {
     // Load SKU for each item
     const itemIds = Object.keys(byMla);
     const skuMap = {};
+    const manualSkuVend = await loadSkuManual(client_id);
     for (let i = 0; i < itemIds.length; i += 20) {
       const batch = itemIds.slice(i, i + 20);
       try {
@@ -4451,7 +4477,7 @@ app.get('/api/reporte/items-vendidos', requireAuth, async (req, res) => {
         (Array.isArray(data) ? data : []).forEach(r => {
           if (r.code !== 200 || !r.body) return;
           const b = r.body;
-          skuMap[b.id] = extractSku(b);
+          skuMap[b.id] = manualSkuVend[b.id] || extractSku(b);
         });
       } catch(e) {}
     }
@@ -4682,6 +4708,7 @@ app.get('/api/reporte/items-activos', requireAuth, async (req, res) => {
 
     // Fetch detalles individuales en paralelo (igual que Umbrales — el batch no devuelve sale_price)
     const itemsMap = {};
+    const manualSkuAct = await loadSkuManual(parseInt(client_id));
     const PARALLEL = 20;
     for (let i = 0; i < allItemIds.length; i += PARALLEL) {
       const batch = allItemIds.slice(i, i + PARALLEL);
@@ -4692,7 +4719,7 @@ app.get('/api/reporte/items-activos', requireAuth, async (req, res) => {
             fetch(`${ML_API}/items/${itemId}/prices`, { headers }).then(r => r.json()).catch(() => null),
           ]);
           if (b.error || !b.id) return;
-          const sku = extractSku(b);
+          const sku = manualSkuAct[b.id] || extractSku(b);
           const basePrice  = parseFloat(b.price) || 0;
           const origPrice  = b.original_price ? parseFloat(b.original_price) : null;
           const saleRaw    = b.sale_price;
@@ -5112,6 +5139,7 @@ app.get('/api/reporte/devoluciones-analisis', requireAuth, async (req, res) => {
     // SKU por MLA (mismo patrón que /api/reporte/items-vendidos)
     const itemIds = Object.keys(byMla);
     const skuMap = {};
+    const manualSkuDev = await loadSkuManual(parseInt(client_id));
     for (let i = 0; i < itemIds.length; i += 20) {
       const batch = itemIds.slice(i, i + 20);
       try {
@@ -5119,7 +5147,7 @@ app.get('/api/reporte/devoluciones-analisis', requireAuth, async (req, res) => {
         (Array.isArray(data) ? data : []).forEach(r => {
           if (r.code !== 200 || !r.body) return;
           const b = r.body;
-          skuMap[b.id] = extractSku(b);
+          skuMap[b.id] = manualSkuDev[b.id] || extractSku(b);
         });
       } catch(e) {}
     }
@@ -7790,6 +7818,7 @@ app.get('/api/logistica/full-stock', requireAuth, async (req, res) => {
     // ── 2. Datos de cada ítem (todos, no solo FULL) ──────────────────────────
     //     Batches de 20 procesados con concurrencia (cuentas grandes: 2300+ ítems).
     const allItems = [];
+    const manualSkuLog = await loadSkuManual(clientId);
     const detailBatches = [];
     for (let i = 0; i < allIds.length; i += 20) detailBatches.push(allIds.slice(i, i + 20));
     const DETAIL_CONCURRENCY = 8;
@@ -7802,7 +7831,8 @@ app.get('/api/logistica/full-stock', requireAuth, async (req, res) => {
           if (r.code !== 200 || !r.body) return;
           const b = r.body;
           const lt       = b.shipping?.logistic_type || '';
-          const itemSku  = extractSku(b);
+          const mSku     = manualSkuLog[b.id] || null;   // SKU manual (por MLA) pisa lo de ML
+          const itemSku  = mSku || extractSku(b);
           // FULL se determina por la presencia de inventory_id (el inventario de
           // fulfillment), NO por el logistic_type del nivel ítem: un ítem puede tener
           // logistic_type 'cross_docking' arriba y variaciones SÍ en FULL (cada
@@ -7812,7 +7842,7 @@ app.get('/api/logistica/full-stock', requireAuth, async (req, res) => {
             // Ítem con variaciones → una fila por variante
             b.variations.forEach(v => {
               const varName = (v.attribute_combinations || []).map(a => a.value_name).join(' / ') || `Var ${v.id}`;
-              const varSku  = v.attributes?.find(a => a.id === 'SELLER_SKU')?.value_name || v.seller_custom_field || itemSku || null;
+              const varSku  = mSku || v.attributes?.find(a => a.id === 'SELLER_SKU')?.value_name || v.seller_custom_field || itemSku || null;
               const varInv  = v.inventory_id || null;
               allItems.push({
                 id:           b.id,
@@ -8078,6 +8108,48 @@ app.delete('/api/pvp', requireAuth, async (req, res) => {
     const client_id = parseInt(req.query.client_id);
     if (!client_id) return res.status(400).json({ error: 'client_id requerido' });
     await pool.query('DELETE FROM pvp_sugerido WHERE client_id = $1', [client_id]);
+    res.json({ ok: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── SKU MANUAL (mapa curado MLA -> SKU cargado por Excel) ──────────────────────
+app.get('/api/sku-manual', requireAuth, async (req, res) => {
+  try {
+    const client_id = parseInt(req.query.client_id);
+    if (!client_id) return res.status(400).json({ error: 'client_id requerido' });
+    const { rows } = await pool.query('SELECT mla_id, sku FROM sku_manual WHERE client_id=$1', [client_id]);
+    const map = {};
+    rows.forEach(r => { map[String(r.mla_id)] = r.sku; });
+    res.json({ map, count: rows.length });
+  } catch(e) { console.error('[SKU_MANUAL_GET]', e.message); res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/sku-manual', requireAuth, async (req, res) => {
+  try {
+    const { client_id, rows, replace } = req.body;
+    if (!client_id) return res.status(400).json({ error: 'client_id requerido' });
+    if (!Array.isArray(rows)) return res.status(400).json({ error: 'rows requerido' });
+    if (replace) await pool.query('DELETE FROM sku_manual WHERE client_id = $1', [client_id]);
+    let saved = 0;
+    for (const r of rows) {
+      const mla = String(r.mla || r.mla_id || '').trim();
+      const sku = String(r.sku || '').trim();
+      if (!/^MLA\d+$/i.test(mla) || !sku) continue;
+      await pool.query(`
+        INSERT INTO sku_manual (client_id, mla_id, sku, updated_at) VALUES ($1,$2,$3,NOW())
+        ON CONFLICT (client_id, mla_id) DO UPDATE SET sku = EXCLUDED.sku, updated_at = NOW()
+      `, [client_id, mla.toUpperCase(), sku]);
+      saved++;
+    }
+    res.json({ ok: true, saved });
+  } catch(e) { console.error('[SKU_MANUAL_POST]', e.message); res.status(500).json({ error: e.message }); }
+});
+
+app.delete('/api/sku-manual', requireAuth, async (req, res) => {
+  try {
+    const client_id = parseInt(req.query.client_id);
+    if (!client_id) return res.status(400).json({ error: 'client_id requerido' });
+    await pool.query('DELETE FROM sku_manual WHERE client_id = $1', [client_id]);
     res.json({ ok: true });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });

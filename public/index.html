@@ -4376,6 +4376,8 @@ async function loadPublicaciones() {
       <button onclick="pubPvpFilter('pvp_under')" id="pvpBtnUnder" style="padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:#00bcd4;font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap">▼ Precio &lt; PVP <span style="opacity:.7">(${allItems.filter(i=>i._pvpdiff<-0.01).length})</span></button>
       <label style="padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:#fff952;color:#292929;font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap">📤 Cargar PVP<input type="file" accept=".xlsx,.xls,.csv" onchange="importPvpExcel(this)" style="display:none"></label>
       <button onclick="clearPvp()" title="Borrar los PVP cargados" style="padding:8px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--muted);font-size:12px;cursor:pointer">🗑</button>
+      <label style="padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:#292929;color:#fff952;font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap" title="Excel con columnas MLA y SKU: pisa el SKU que devuelve ML">🏷️ Cargar SKU<input type="file" accept=".xlsx,.xls,.csv" onchange="importSkuManual(this)" style="display:none"></label>
+      <button onclick="clearSkuManual()" title="Borrar el mapa de SKU manual" style="padding:8px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--muted);font-size:12px;cursor:pointer">🗑</button>
       <div id="pubCount" style="font-size:12px;color:var(--muted)">${allItems.length} publicaciones</div>
     </div>
     <div id="pvpHint" style="font-size:11px;color:var(--muted);margin:-6px 0 12px">${Object.keys(window._pvpMap||{}).length ? Object.keys(window._pvpMap).length + ' PVP cargados · Excel con columna MLA o SKU + columna PVP/precio sugerido' : 'Sin PVP cargados. Subí un Excel con una columna MLA o SKU y otra con el PVP (precio sugerido).'}</div>
@@ -4576,6 +4578,51 @@ async function clearPvp() {
   try {
     await apiCall('DELETE', `/api/pvp?client_id=${client.id}`);
     showToast('PVP borrados');
+    loadPublicaciones();
+  } catch(e) { showToast('Error: ' + e.message); }
+}
+
+// ── SKU manual: sube un Excel MLA -> SKU que pisa el SKU que devuelve ML ──
+async function importSkuManual(input) {
+  const file = input.files?.[0];
+  input.value = '';
+  if (!file) return;
+  const client = getActiveClient();
+  if (!client) { showToast('Seleccioná una cuenta primero'); return; }
+  try {
+    const buf = await file.arrayBuffer();
+    const wb = XLSX.read(buf, { type: 'array' });
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    const json = XLSX.utils.sheet_to_json(ws, { defval: '' });
+    if (!json.length) { showToast('El Excel está vacío'); return; }
+    const keys = Object.keys(json[0]);
+    const norm = s => String(s).toLowerCase().replace(/[^a-z0-9]/g,'');
+    const findKey = (...frags) => keys.find(k => frags.some(f => norm(k).includes(f)));
+    const mlaKey = findKey('mla','publicacion');
+    const skuKey = findKey('sku','codigo');
+    if (!mlaKey || !skuKey) { showToast('El Excel necesita una columna MLA y una columna SKU'); return; }
+    const rows = [];
+    json.forEach(r => {
+      const mla = String(r[mlaKey]).trim();
+      const sku = String(r[skuKey]).trim();
+      if (/^MLA\d+$/i.test(mla) && sku) rows.push({ mla, sku });
+    });
+    if (!rows.length) { showToast('No pude leer filas válidas (revisá columnas MLA y SKU)'); return; }
+    const res = await apiCall('POST', '/api/sku-manual', { client_id: client.id, rows, replace: true });
+    showToast(`✅ ${res?.saved || rows.length} SKU cargados`);
+    loadPublicaciones();
+  } catch(e) {
+    showToast('Error al leer el Excel: ' + e.message);
+  }
+}
+
+async function clearSkuManual() {
+  const client = getActiveClient();
+  if (!client) return;
+  if (!confirm('¿Borrar el mapa de SKU manual de esta cuenta? Vuelve a usarse el SKU que devuelve ML.')) return;
+  try {
+    await apiCall('DELETE', `/api/sku-manual?client_id=${client.id}`);
+    showToast('SKU manual borrado');
     loadPublicaciones();
   } catch(e) { showToast('Error: ' + e.message); }
 }
