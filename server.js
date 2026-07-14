@@ -3300,6 +3300,29 @@ app.get('/api/dashboard/evolucion-semanal', requireAuth, async (req, res) => {
   }
 });
 
+// Endpoint liviano: solo suma la facturación (órdenes pagadas) de un rango de fechas.
+// Se usa para la proyección de facturación del mes en la sección Publicidad, sin
+// pagar el costo de /api/dashboard (que además trae visitas, ads, items, CMV, etc).
+app.get('/api/facturacion-rango', requireAuth, async (req, res) => {
+  try {
+    const clientId = parseInt(req.query.client_id);
+    if (!clientId) return res.status(400).json({ error: 'client_id requerido' });
+    if (!req.query.date_from || !req.query.date_to) return res.status(400).json({ error: 'date_from y date_to requeridos' });
+    const token = await getClientToken(clientId);
+    if (!token) return res.status(403).json({ error: 'Cliente no conectado' });
+    const headers = { 'Authorization': `Bearer ${token}` };
+    const user = await fetch(`${ML_API}/users/me`, { headers }).then(r => r.json());
+    if (user.error) return res.status(403).json({ error: 'token invalido' });
+    const fromStr = req.query.date_from + 'T00:00:00.000-00:00';
+    const toStr   = req.query.date_to   + 'T23:59:59.000-00:00';
+    const data = await fetchAllOrders(user.id, headers, fromStr, toStr);
+    res.json({ amount: data.amount, orders: data.orders.length });
+  } catch (e) {
+    console.error('[FACTURACION-RANGO]', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.get('/api/ads', requireAuth, async (req, res) => {
   try {
     const clientId = parseInt(req.query.client_id);
