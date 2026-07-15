@@ -5698,9 +5698,10 @@ function exportDescuentosExcel() {
       'Facturación': Math.round(p.revenue || 0),
       'Precio': Math.round(p.precio), 'CMV': Math.round(p.costo),
       'Comisión %': comPct, 'Envío $': envioUnit,
-      'Margen actual %': calcM(p, p.precio, comPct, envioUnit),
       'Contrib. Marginal $': p.costo > 0 ? calcCM(p, p.precio, comPct, envioUnit) : '',
       'Contrib. Marginal %': p.costo > 0 ? parseFloat((calcCM(p, p.precio, comPct, envioUnit) / p.precio * 100).toFixed(1)) : '',
+      'Costos fijos $': Math.round(p.precio * cfPct/100),
+      'Margen actual %': calcM(p, p.precio, comPct, envioUnit),
       'Stock': p.stock ?? '', 'Cobertura (días)': p.cobertura ?? '',
     };
     DESCUENTOS_PRESETS.forEach(pct => {
@@ -6238,16 +6239,22 @@ function renderDescuentos() {
       + '<div style="font-size:9px;color:' + (p.envioSource === 'ML' ? '#00e676' : p.envioSource === 'hist.' ? '#f59e0b' : '#ff5252') + ';margin-top:1px">' + (p.envioSource === 'ML' ? '✓ ML' : p.envioSource === 'hist.' ? '≈ hist.' : '≈ est.') + '</div>'
       + '</td>';
     html += p.hasCMV
+      ? '<td style="padding:6px 8px;text-align:right;white-space:nowrap" title="Contribución marginal = precio − costos variables (comisión, cargo, envío, imp, TACOS, IVA neto, CMV), sin gastos fijos de estructura">'
+        + '<span style="font-size:12px;font-weight:700;color:' + cmColor + '">$' + Math.round(mg.cm).toLocaleString('es-AR') + '</span>'
+        + '<div style="font-size:10px;color:var(--muted)">' + mg.cmPct.toFixed(1) + '%</div>'
+        + '</td>'
+      : '<td style="padding:6px 8px;text-align:center;color:var(--muted);font-size:11px">—</td>';
+    html += p.hasCMV
+      ? '<td style="padding:6px 8px;text-align:right;white-space:nowrap" title="Costos fijos de estructura asignados = precio × Costos fijos %">'
+        + '<span style="font-size:12px;font-weight:700;color:#ff9100">$' + Math.round(mg.cf).toLocaleString('es-AR') + '</span>'
+        + (mg.cf > 0 ? '<div style="font-size:10px;color:var(--muted)">' + (mg.cf / p.precio * 100).toFixed(1) + '%</div>' : '')
+        + '</td>'
+      : '<td style="padding:6px 8px;text-align:center;color:var(--muted);font-size:11px">—</td>';
+    html += p.hasCMV
       ? '<td style="padding:6px 8px;text-align:center;cursor:help" title="' + tooltip + '">'
         + '<span style="font-size:12px;font-weight:700;color:' + margenColor + '">' + margenActual.toFixed(1) + '%</span>'
         + '<span style="font-size:9px;color:var(--muted);margin-left:3px">ℹ️</span>'
         + (mg.sCosto != null ? '<div style="font-size:10px;color:var(--muted)">s/c: <span style="font-weight:700;color:' + (mg.sCosto >= 0 ? '#00e676' : '#ff5252') + '">' + mg.sCosto.toFixed(1) + '%</span></div>' : '')
-        + '</td>'
-      : '<td style="padding:6px 8px;text-align:center;color:var(--muted);font-size:11px">—</td>';
-    html += p.hasCMV
-      ? '<td style="padding:6px 8px;text-align:right;white-space:nowrap" title="Contribución marginal = precio − costos variables (comisión, cargo, envío, imp, TACOS, IVA neto, CMV), sin gastos fijos de estructura">'
-        + '<span style="font-size:12px;font-weight:700;color:' + cmColor + '">$' + Math.round(mg.cm).toLocaleString('es-AR') + '</span>'
-        + '<div style="font-size:10px;color:var(--muted)">' + mg.cmPct.toFixed(1) + '%</div>'
         + '</td>'
       : '<td style="padding:6px 8px;text-align:center;color:var(--muted);font-size:11px">—</td>';
     html += '<td style="padding:6px 8px;text-align:center;font-size:12px;color:' + stockColor + '">' + stockStr + '</td>';
@@ -6287,7 +6294,7 @@ function renderDescuentos() {
     + '<table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr style="background:var(--surface2)">'
     + dscTh('id','MLA','left') + dscTh('title','Título','left') + dscTh('revenue','Facturación') + dscTh('precio','Precio') + dscTh('costo','CMV')
     + '<th style="' + thS() + '">Comisión</th><th style="' + thS() + '">Envío $</th>'
-    + dscTh('margen','Margen actual') + dscTh('cm','Contrib. Marginal') + dscTh('stock','Stock') + dscTh('cobertura','Cobertura')
+    + dscTh('cm','Contrib. Marginal') + '<th style="' + thS() + '" title="Costos fijos de estructura asignados (precio × Costos fijos %). Se restan de la contribución marginal para llegar al margen actual.">Costos fijos</th>' + dscTh('margen','Margen actual') + dscTh('stock','Stock') + dscTh('cobertura','Cobertura')
     + presetHeaders
     + '<th style="' + thS() + ';background:#1e2240;color:#a78bfa;font-weight:700">Libre %</th>'
     + '</tr></thead><tbody>' + rows + '</tbody></table></div>';
