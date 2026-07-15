@@ -6827,14 +6827,16 @@ function calcularSimulador() {
       { label: 'IIBB (' + fmtPn(iibb*100) + ')', monto: d.iibbM,   color: '#ff9100' },
       { label: 'Deb/Cred (' + fmtPn(debCred*100) + ')', monto: d.debCredM, color: '#ff9100' },
       { label: 'Ads (TACOS)',                monto: d.tacosM,       color: '#ff9100' },
-      { label: 'Costos fijos (' + (costoFijo*100).toFixed(1) + '%)', monto: d.costoFijoM, color: '#ff9100' },
       { label: 'Costo envio',               monto: envio,          color: '#ff9100' },
       { label: 'CMV',                        monto: cmv,            color: '#ff5252' },
       { label: 'Otros costos',              monto: extra,          color: '#ff5252' },
       { label: 'IVA ventas',               monto: d.ivaVentasM,   color: '#8b5cf6' },
       { label: 'IVA compras (acreditable)', monto: -d.ivaComprasM, color: '#059669', credito: true },
       { label: 'IVA neto a pagar',          monto: d.ivaNetoM,     color: '#8b5cf6' },
+      // Contribución marginal: subtotal ANTES de gastos fijos de estructura.
       { label: 'Contribución Marginal',     monto: d.cm,           color: '#22d3ee', cm: true },
+      // Los costos fijos van DEBAJO de la CM: son el puente entre CM y utilidad neta.
+      { label: 'Costos fijos (' + (costoFijo*100).toFixed(1) + '%)', monto: d.costoFijoM, color: '#ff9100' },
       { label: 'Utilidad neta',            monto: d.utilidad,     color: '#00e676', utilidad: true },
     ].filter(x => x.cm || x.utilidad || Math.abs(x.monto) > 0.5);
     return items.map(x => {
