@@ -5698,6 +5698,7 @@ function exportDescuentosExcel() {
       'Facturación': Math.round(p.revenue || 0),
       'Precio': Math.round(p.precio), 'CMV': Math.round(p.costo),
       'Comisión %': comPct, 'Envío $': envioUnit,
+      'Envío fuente': p.envioSource === 'real' ? 'real' : p.envioSource === 'ML' ? 'ML' : p.envioSource === 'hist.' ? 'histórico' : 'estimado',
       'Contrib. Marginal $': p.costo > 0 ? calcCM(p, p.precio, comPct, envioUnit) : '',
       'Contrib. Marginal %': p.costo > 0 ? parseFloat((calcCM(p, p.precio, comPct, envioUnit) / p.precio * 100).toFixed(1)) : '',
       'Costos fijos $': Math.round(p.precio * cfPct/100),
@@ -6014,6 +6015,7 @@ async function registrarAccionUmbral(mla, titulo, precioActual, precioSugerido, 
 
 async function loadDescuentos() {
   window._dscSearchVal = '';
+  window._dscEnvioReal = false;  // datos frescos = envío estimado; se activa al aplicar envío real
   const el = document.getElementById('descuentosContent');
   if (!el) return;
 
@@ -6235,8 +6237,8 @@ function renderDescuentos() {
       + '<div style="font-size:9px;color:' + (p.comSource === 'ML' ? '#00e676' : p.comSource === 'hist.' ? '#f59e0b' : '#ff5252') + ';margin-top:1px">' + (p.comSource === 'ML' ? '✓ ML' : p.comSource === 'hist.' ? '≈ hist.' : '≈ est.') + '</div>'
       + '</td>';
     html += '<td style="padding:4px 6px;text-align:center">'
-      + '<input id="dsc_env_' + p.id + '" type="number" value="' + envioUnit + '" min="0" step="10" onchange="renderDescuentos()" style="width:64px;padding:3px 5px;border-radius:5px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:11px;text-align:center">'
-      + '<div style="font-size:9px;color:' + (p.envioSource === 'ML' ? '#00e676' : p.envioSource === 'hist.' ? '#f59e0b' : '#ff5252') + ';margin-top:1px">' + (p.envioSource === 'ML' ? '✓ ML' : p.envioSource === 'hist.' ? '≈ hist.' : '≈ est.') + '</div>'
+      + '<input id="dsc_env_' + p.id + '" type="number" value="' + envioUnit + '" min="0" step="10" onchange="renderDescuentos()" style="width:64px;padding:3px 5px;border-radius:5px;border:1px solid ' + (p.envioSource === 'real' ? '#22d3ee' : 'var(--border)') + ';background:var(--surface2);color:var(--text);font-size:11px;text-align:center">'
+      + '<div style="font-size:9px;color:' + (p.envioSource === 'real' ? '#22d3ee' : p.envioSource === 'ML' ? '#00e676' : p.envioSource === 'hist.' ? '#f59e0b' : '#ff5252') + ';margin-top:1px" title="' + (p.envioSource === 'real' ? 'Envío vendedor REAL del período (prom. por unidad vendida)' : p.envioSource === 'ML' ? 'Estimado por ML (listing_prices)' : p.envioSource === 'hist.' ? 'Promedio histórico de ventas' : 'Estimado') + '">' + (p.envioSource === 'real' ? '🚚 real' : p.envioSource === 'ML' ? '✓ ML' : p.envioSource === 'hist.' ? '≈ hist.' : '≈ est.') + '</div>'
       + '</td>';
     html += p.hasCMV
       ? '<td style="padding:6px 8px;text-align:right;white-space:nowrap" title="Contribución marginal = precio − costos variables (comisión, cargo, envío, imp, TACOS, IVA neto, CMV), sin gastos fijos de estructura">'
@@ -6286,8 +6288,11 @@ function renderDescuentos() {
     return '<th style="' + thS() + ';background:#1e2240;color:#60a5fa;font-weight:700">-' + p + '%</th>';
   }).join('');
 
+  const envioRealAplicado = !!window._dscEnvioReal;
   tableEl.innerHTML = '<div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">'
-    + '<div style="font-size:11px;color:var(--muted);flex:1">' + products.length + ' productos · ' + products.filter(p=>p.hasCMV).length + ' con CMV · Hover en margen para ver detalle</div>'
+    + '<div style="font-size:11px;color:var(--muted);flex:1">' + products.length + ' productos · ' + products.filter(p=>p.hasCMV).length + ' con CMV'
+    + (envioRealAplicado ? ' · <span style="color:#22d3ee;font-weight:700">🚚 envío real aplicado (CM verídica)</span>' : '') + ' · Hover en margen para ver detalle</div>'
+    + '<button id="dscEnvioRealBtn" onclick="aplicarEnvioRealDescuentos()" title="Trae el envío vendedor REAL por producto del período (llamadas extra a ML, tarda 1-2 min) y reemplaza el envío estimado. La contribución marginal pasa a ser verídica." style="padding:5px 14px;border:none;border-radius:7px;background:' + (envioRealAplicado ? '#0e7490' : '#f59e0b') + ';color:#fff;font-size:12px;font-weight:600;cursor:pointer">🚚 ' + (envioRealAplicado ? 'Recalcular envío real' : 'Envío real (CM verídica)') + '</button>'
     + '<button onclick="exportDescuentosExcel()" style="padding:5px 14px;border:none;border-radius:7px;background:#16a34a;color:#fff;font-size:12px;font-weight:600;cursor:pointer">📥 Excel</button>'
     + '</div>'
     + '<div style="overflow-x:auto;max-height:620px;overflow-y:auto;border-radius:10px;border:1px solid var(--border)">'
@@ -6298,6 +6303,50 @@ function renderDescuentos() {
     + presetHeaders
     + '<th style="' + thS() + ';background:#1e2240;color:#a78bfa;font-weight:700">Libre %</th>'
     + '</tr></thead><tbody>' + rows + '</tbody></table></div>';
+}
+
+// Trae el envío vendedor REAL por producto (mismo endpoint que Rentabilidad) y reemplaza
+// el envío estimado de cada fila → la contribución marginal de Descuentos pasa a ser verídica.
+// Es lento (llamadas extra a ML por cada envío del período), por eso va bajo demanda.
+async function aplicarEnvioRealDescuentos() {
+  const client = getActiveClient();
+  if (!client) { showToast('Seleccioná una cuenta'); return; }
+  if (!_descuentosData?.length) { showToast('Cargá Descuentos primero'); return; }
+
+  const btn = document.getElementById('dscEnvioRealBtn');
+  if (btn) { btn.disabled = true; btn.style.opacity = '0.7'; btn.innerHTML = '⏳ Calculando envío real… (1-2 min)'; }
+  showToast('🚚 Trayendo envío real por producto… puede tardar 1-2 min');
+
+  try {
+    const { date_from, date_to } = getDateRange();
+    const data  = await apiCall('GET', `/api/reporte/margen-real-producto?client_id=${client.id}&date_from=${date_from}&date_to=${date_to}`);
+    const items = data?.items || [];
+
+    // Envío real promedio por unidad vendida, por MLA
+    const realMap = {};
+    items.forEach(it => { if (it.units > 0) realMap[it.mla_id] = Math.round((it.envio_real || 0) / it.units); });
+
+    let n = 0;
+    _descuentosData.forEach(p => {
+      if (realMap[p.id] == null) return;
+      p.envioUnit   = realMap[p.id];
+      p.envioSource = 'real';
+      // Sincronizar el input existente: renderDescuentos lee el valor del DOM si el input
+      // todavía existe, así que sin esto se perdería el patch.
+      const inp = document.getElementById('dsc_env_' + p.id);
+      if (inp) inp.value = realMap[p.id];
+      n++;
+    });
+
+    window._dscEnvioReal = true;
+    renderDescuentos();
+    showToast(n > 0
+      ? `✅ Envío real aplicado a ${n} productos con ventas — contribución marginal verídica`
+      : 'No hubo ventas en el período para calcular envío real');
+  } catch (e) {
+    showToast('Error trayendo envío real: ' + (e?.message || e));
+    if (btn && document.body.contains(btn)) { btn.disabled = false; btn.style.opacity = '1'; btn.innerHTML = '🚚 Envío real (CM verídica)'; }
+  }
 }
 
 function _dscInput(id, label, def) {
