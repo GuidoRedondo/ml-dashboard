@@ -5677,6 +5677,19 @@ function exportDescuentosExcel() {
     return parseFloat(((precio - p.costo - com - cargo - envio - imp - tacos - cf - ivaDif) / precio * 100).toFixed(1));
   }
 
+  // Contribución marginal ($) = utilidad SIN el costo fijo de estructura (cf)
+  function calcCM(p, precio, comPct, envioUnit) {
+    const cf = precio * cfPct/100, imp = precio * impPct/100, tacos = precio * tacosPct/100;
+    const com = precio * comPct/100, cargo = cargoFijoML(precio);
+    const envio = precio >= 33000 ? envioUnit : 0;
+    const iva21 = 0.21;
+    const alic = (p.alicuota_iva ?? 21) / 100;
+    const ivaDif = esMonotributistaActivo()
+      ? 0
+      : Math.max(0, precio/(1+alic)*alic - ( p.costo/(1+alic)*alic + (com+envio)/(1+iva21)*iva21 ));
+    return Math.round(precio - p.costo - com - cargo - envio - imp - tacos - ivaDif);
+  }
+
   const rows = [..._descuentosData].sort((a,b) => (b.revenue||0) - (a.revenue||0)).map(p => {
     const comPct    = parseFloat(document.getElementById(`dsc_com_${p.id}`)?.value ?? p.comPct);
     const envioUnit = parseFloat(document.getElementById(`dsc_env_${p.id}`)?.value ?? p.envioUnit);
@@ -5686,6 +5699,8 @@ function exportDescuentosExcel() {
       'Precio': Math.round(p.precio), 'CMV': Math.round(p.costo),
       'Comisión %': comPct, 'Envío $': envioUnit,
       'Margen actual %': calcM(p, p.precio, comPct, envioUnit),
+      'Contrib. Marginal $': p.costo > 0 ? calcCM(p, p.precio, comPct, envioUnit) : '',
+      'Contrib. Marginal %': p.costo > 0 ? parseFloat((calcCM(p, p.precio, comPct, envioUnit) / p.precio * 100).toFixed(1)) : '',
       'Stock': p.stock ?? '', 'Cobertura (días)': p.cobertura ?? '',
     };
     DESCUENTOS_PRESETS.forEach(pct => {
@@ -6111,6 +6126,10 @@ function renderDescuentos() {
       va = calcMargen(a, a.precio, a.comPct, a.envioUnit).margen;
       vb = calcMargen(b, b.precio, b.comPct, b.envioUnit).margen;
     }
+    else if (sCol === 'cm') {
+      va = calcMargen(a, a.precio, a.comPct, a.envioUnit).cm;
+      vb = calcMargen(b, b.precio, b.comPct, b.envioUnit).cm;
+    }
     else { va = a[sCol] ?? 0; vb = b[sCol] ?? 0; }
     return sAsc ? va - vb : vb - va;
   });
@@ -6131,7 +6150,11 @@ function renderDescuentos() {
     const utilidad = precio - costoTotal;
     const margen = (utilidad / precio * 100);
     const sCosto = p.costo > 0 ? utilidad / p.costo * 100 : null;
-    return { margen: parseFloat(margen.toFixed(1)), sCosto: sCosto != null ? parseFloat(sCosto.toFixed(1)) : null, costoTotal, com, cargo, envio, imp, tacos, cf, ivaDif };
+    // Contribución marginal = utilidad SIN el costo fijo de estructura (cf). El resto
+    // (comisión, cargo fijo ML, envío, imp/IIBB, TACOS, IVA neto, CMV) son variables.
+    const cm    = utilidad + cf;
+    const cmPct = precio > 0 ? cm / precio * 100 : 0;
+    return { margen: parseFloat(margen.toFixed(1)), sCosto: sCosto != null ? parseFloat(sCosto.toFixed(1)) : null, cm: Math.round(cm), cmPct: parseFloat(cmPct.toFixed(1)), costoTotal, com, cargo, envio, imp, tacos, cf, ivaDif };
   }
 
   function celdaDescuento(p, pct, comPct, envioUnit) {
@@ -6181,7 +6204,8 @@ function renderDescuentos() {
     const stockColor   = p.stock == null ? 'var(--muted)' : p.stock === 0 ? '#ff5252' : p.stock <= 5 ? '#ff9100' : 'var(--text)';
     const mlaNums      = p.id.replace(/^MLA/i, '');
     const mlaLink      = 'MLA-' + mlaNums;
-    const tooltip      = 'CMV:$' + Math.round(p.costo) + ' Com:$' + Math.round(mg.com) + ' Cargo:$' + Math.round(mg.cargo) + ' Envío:$' + Math.round(mg.envio) + ' Imp:$' + Math.round(mg.imp) + ' TACOS:$' + Math.round(mg.tacos) + ' CF:$' + Math.round(mg.cf) + ' IVA:$' + Math.round(mg.ivaDif);
+    const tooltip      = 'CMV:$' + Math.round(p.costo) + ' Com:$' + Math.round(mg.com) + ' Cargo:$' + Math.round(mg.cargo) + ' Envío:$' + Math.round(mg.envio) + ' Imp:$' + Math.round(mg.imp) + ' TACOS:$' + Math.round(mg.tacos) + ' CF:$' + Math.round(mg.cf) + ' IVA:$' + Math.round(mg.ivaDif) + ' → Contrib.Marginal:$' + Math.round(mg.cm);
+    const cmColor      = mg.cm >= 0 ? '#22d3ee' : '#ff5252';
     const bg = idx % 2 === 0 ? 'background:rgba(255,255,255,.015)' : '';
 
     let html = '<tr style="border-bottom:1px solid var(--border);' + bg + '">';
@@ -6218,6 +6242,12 @@ function renderDescuentos() {
         + '<span style="font-size:12px;font-weight:700;color:' + margenColor + '">' + margenActual.toFixed(1) + '%</span>'
         + '<span style="font-size:9px;color:var(--muted);margin-left:3px">ℹ️</span>'
         + (mg.sCosto != null ? '<div style="font-size:10px;color:var(--muted)">s/c: <span style="font-weight:700;color:' + (mg.sCosto >= 0 ? '#00e676' : '#ff5252') + '">' + mg.sCosto.toFixed(1) + '%</span></div>' : '')
+        + '</td>'
+      : '<td style="padding:6px 8px;text-align:center;color:var(--muted);font-size:11px">—</td>';
+    html += p.hasCMV
+      ? '<td style="padding:6px 8px;text-align:right;white-space:nowrap" title="Contribución marginal = precio − costos variables (comisión, cargo, envío, imp, TACOS, IVA neto, CMV), sin gastos fijos de estructura">'
+        + '<span style="font-size:12px;font-weight:700;color:' + cmColor + '">$' + Math.round(mg.cm).toLocaleString('es-AR') + '</span>'
+        + '<div style="font-size:10px;color:var(--muted)">' + mg.cmPct.toFixed(1) + '%</div>'
         + '</td>'
       : '<td style="padding:6px 8px;text-align:center;color:var(--muted);font-size:11px">—</td>';
     html += '<td style="padding:6px 8px;text-align:center;font-size:12px;color:' + stockColor + '">' + stockStr + '</td>';
@@ -6257,7 +6287,7 @@ function renderDescuentos() {
     + '<table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr style="background:var(--surface2)">'
     + dscTh('id','MLA','left') + dscTh('title','Título','left') + dscTh('revenue','Facturación') + dscTh('precio','Precio') + dscTh('costo','CMV')
     + '<th style="' + thS() + '">Comisión</th><th style="' + thS() + '">Envío $</th>'
-    + dscTh('margen','Margen actual') + dscTh('stock','Stock') + dscTh('cobertura','Cobertura')
+    + dscTh('margen','Margen actual') + dscTh('cm','Contrib. Marginal') + dscTh('stock','Stock') + dscTh('cobertura','Cobertura')
     + presetHeaders
     + '<th style="' + thS() + ';background:#1e2240;color:#a78bfa;font-weight:700">Libre %</th>'
     + '</tr></thead><tbody>' + rows + '</tbody></table></div>';
@@ -6771,7 +6801,11 @@ function calcularSimulador() {
     const ivaNetoM    = Math.max(0, ivaVentasM - ivaComprasM);
     const utilidad    = precio - comisionM - cf - iibbM - tacosM - costoFijoM - debCredM - ivaNetoM - cmv - envio - extra;
     const margenReal  = precio > 0 ? utilidad / precio * 100 : 0;
-    return { cf, comisionM, iibbM, tacosM, debCredM, costoFijoM, ivaVentasM, ivaComprasM, ivaNetoM, utilidad, margenReal };
+    // Contribución marginal = facturación − TODOS los costos variables (comisión, cargo fijo ML,
+    // IIBB, TACOS, déb/créd, IVA neto, CMV, envío, otros), SIN los gastos fijos de estructura.
+    const cm          = utilidad + costoFijoM;
+    const cmPct       = precio > 0 ? cm / precio * 100 : 0;
+    return { cf, comisionM, iibbM, tacosM, debCredM, costoFijoM, ivaVentasM, ivaComprasM, ivaNetoM, utilidad, margenReal, cm, cmPct };
   }
 
   function calcPrecioDesdeMargen(margen) {
@@ -6800,19 +6834,28 @@ function calcularSimulador() {
       { label: 'IVA ventas',               monto: d.ivaVentasM,   color: '#8b5cf6' },
       { label: 'IVA compras (acreditable)', monto: -d.ivaComprasM, color: '#059669', credito: true },
       { label: 'IVA neto a pagar',          monto: d.ivaNetoM,     color: '#8b5cf6' },
+      { label: 'Contribución Marginal',     monto: d.cm,           color: '#22d3ee', cm: true },
       { label: 'Utilidad neta',            monto: d.utilidad,     color: '#00e676', utilidad: true },
-    ].filter(x => Math.abs(x.monto) > 0.5);
+    ].filter(x => x.cm || x.utilidad || Math.abs(x.monto) > 0.5);
     return items.map(x => {
       // El "+" verde es solo para créditos (IVA compras acreditable). La utilidad
       // muestra su signo real: roja con "−" si es pérdida, verde si es ganancia.
       let sign = '', color = x.color;
       if (x.credito)        { sign = '+'; }
+      else if (x.cm)        { color = x.monto >= 0 ? '#22d3ee' : '#ff5252'; sign = x.monto < 0 ? '−' : ''; }
       else if (x.utilidad)  { color = x.monto >= 0 ? '#00e676' : '#ff5252'; sign = x.monto < 0 ? '−' : ''; }
+      const esSubtotal = x.cm || x.utilidad;
+      const labelStyle = esSubtotal
+        ? `font-size:12px;font-weight:800;color:${color}`
+        : 'font-size:12px;color:var(--muted)';
+      const rowStyle = x.cm
+        ? 'display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-top:2px solid var(--border);border-bottom:1px solid var(--border)'
+        : 'display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--border)';
       return `
-      <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--border)">
-        <span style="font-size:12px;color:var(--muted)">${x.label}</span>
+      <div style="${rowStyle}">
+        <span style="${labelStyle}">${x.label}${x.cm ? ' <span style="font-size:9px;color:var(--muted);font-weight:400">(antes de gastos fijos)</span>' : ''}</span>
         <div>
-          <span style="font-size:12px;font-weight:600;color:${color}">${sign}${fmt(Math.abs(x.monto))}</span>
+          <span style="font-size:${esSubtotal?'13px':'12px'};font-weight:${esSubtotal?'800':'600'};color:${color}">${sign}${fmt(Math.abs(x.monto))}</span>
           <span style="font-size:10px;color:var(--muted);margin-left:4px">${precio > 0 ? fmtPn(Math.abs(x.monto) / precio * 100) : ''}</span>
         </div>
       </div>`;
@@ -6882,6 +6925,11 @@ function calcularSimulador() {
               <div style="height:100%;width:${Math.max(0,Math.min(mr,100))}%;background:${mColor};border-radius:4px"></div>
             </div>
           </div>
+          <div title="Contribución marginal por unidad = precio − todos los costos variables (sin gastos fijos de estructura)">
+            <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">Contrib. Marginal / ud.</div>
+            <div style="font-size:20px;font-weight:700;color:${d.cm>=0?'#22d3ee':'#ff5252'}">${fmt(d.cm)} <span style="font-size:12px;color:var(--muted)">(${d.cmPct.toFixed(1)}%)</span></div>
+          </div>
+          <div style="width:1px;height:44px;background:var(--border)"></div>
           <div>
             <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">Utilidad / ud.</div>
             <div style="font-size:20px;font-weight:700;color:${d.utilidad>=0?'#00e676':'#ff5252'}">${fmt(d.utilidad)}</div>
@@ -7011,7 +7059,7 @@ function renderMargenReal(data) {
   }).join('');
   cont.innerHTML = `<div class="kpi-card" style="padding:16px;margin:16px 0;border:1px solid rgba(245,158,11,.35)">
     <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:10px">
-      <div class="kpi-label">🚚 MARGEN REAL POR PRODUCTO (envío real por MLA)</div>
+      <div class="kpi-label">🚚 CONTRIBUCIÓN MARGINAL POR PRODUCTO (verídica · envío real por MLA)</div>
       <span style="font-size:11px;color:var(--muted)">${items.length} productos · ${m.skus_que_pierden || 0} pierden · Flex ${f(m.flex_por_unidad_ff)}/u s/FULL-FLEX${m.es_monotributista ? ' · monotributo (sin IVA)' : ''}</span>
     </div>
     <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:11px">
@@ -7021,7 +7069,7 @@ function renderMargenReal(data) {
         <th style="text-align:right;padding:6px">CMV</th><th style="text-align:right;padding:6px">Envío real</th>
         <th style="text-align:right;padding:6px">Flex</th><th style="text-align:right;padding:6px">Publicidad</th>
         <th style="text-align:right;padding:6px">IVA dif</th><th style="text-align:right;padding:6px">IIBB</th>
-        <th style="text-align:right;padding:6px">Margen real</th><th style="text-align:right;padding:6px">%</th>
+        <th style="text-align:right;padding:6px" title="Contribución marginal verídica = facturación − comisión − CMV − envío real − Flex − publicidad − IVA neto − IIBB (sin gastos fijos)">Contrib. Marginal</th><th style="text-align:right;padding:6px">%</th>
       </tr></thead><tbody>${rows}</tbody></table></div>
     <div style="font-size:10px;color:var(--muted);margin-top:8px;font-style:italic">Envío vendedor REAL atribuido por MLA (no prorrateado). Flex/FULL prorrateado solo sobre unidades FULL/FLEX. Publicidad real (PADS). No incluye gastos fijos (no atribuibles a un producto).</div>
   </div>`;
@@ -7119,10 +7167,11 @@ function renderRentabilidad(R, allProducts, costsMap) {
     return sa ? va - vb : vb - va;
   });
 
-  const th = (col, label, align='right') => {
+  const th = (col, label, align='right', title='') => {
     const active = window._rentSort.col === col;
     const arrow = active ? (window._rentSort.asc ? ' ↑' : ' ↓') : '';
-    return `<th onclick="sortRent('${col}')" style="text-align:${align};padding:8px 10px;color:${active?'var(--text)':'var(--muted)'};font-weight:600;cursor:pointer;user-select:none;white-space:nowrap">${label}${arrow}</th>`;
+    const t = title ? ` title="${title}"` : '';
+    return `<th onclick="sortRent('${col}')"${t} style="text-align:${align};padding:8px 10px;color:${active?'var(--text)':'var(--muted)'};font-weight:600;cursor:pointer;user-select:none;white-space:nowrap">${label}${arrow}</th>`;
   };
 
   // KPI cards
@@ -7153,7 +7202,7 @@ function renderRentabilidad(R, allProducts, costsMap) {
         <div class="kpi-label">📋 DESGLOSE POR PRODUCTO</div>
         <div style="display:flex;align-items:center;gap:8px">
           <span style="font-size:11px;color:var(--muted)">${products.length} productos · ${Object.keys(costsMap).length} con CMV</span>
-          <button onclick="calcularMargenReal()" title="Calcula el envío vendedor REAL por producto (no prorrateado) + Flex sobre FULL/FLEX + IVA + IIBB. Es lento: hace llamadas extra a ML." style="padding:5px 12px;border:none;border-radius:6px;background:#f59e0b;color:#fff;font-size:12px;font-weight:600;cursor:pointer">🚚 Calcular envío real</button>
+          <button onclick="calcularMargenReal()" title="Recalcula la Contribución Marginal VERÍDICA: envío vendedor REAL por producto (no prorrateado) + Flex sobre FULL/FLEX + publicidad + IVA neto + IIBB. Es lento: hace llamadas extra a ML." style="padding:5px 12px;border:none;border-radius:6px;background:#f59e0b;color:#fff;font-size:12px;font-weight:600;cursor:pointer">🚚 CM verídica (envío real)</button>
           <button onclick="descargarTablaRentabilidad()" style="padding:5px 12px;border:none;border-radius:6px;background:#0ea5e9;color:#fff;font-size:12px;font-weight:600;cursor:pointer">📊 Excel tabla</button>
           <button onclick="descargarCMVRentabilidad()" style="padding:5px 12px;border:none;border-radius:6px;background:#6366f1;color:#fff;font-size:12px;font-weight:600;cursor:pointer">📥 Excel CMV</button>
           <label style="padding:5px 12px;border:none;border-radius:6px;background:#16a34a;color:#fff;font-size:12px;font-weight:600;cursor:pointer">
@@ -7177,8 +7226,8 @@ function renderRentabilidad(R, allProducts, costsMap) {
               ${th('impuestos',   'Impuestos')}
               ${th('_ads',        'Inv. Ads')}
               ${th('resultado_envio', 'Res. Envío')}
-              ${th('utilidad',    'Utilidad $')}
-              ${th('margen',      'Margen %')}
+              ${th('utilidad',    'Contrib. Marginal $', 'right', 'Contribución marginal estimada = facturación − costos variables (comisión, impuestos, CMV, envío, ads), sin gastos fijos de estructura. Para la versión verídica con envío real por producto, tocá &quot;Calcular envío real&quot;.')}
+              ${th('margen',      'CM %', 'right', 'Contribución marginal / facturación')}
               ${th('rentabilidad','% s/Costo')}
               ${th('pct_total',   '% Total')}
             </tr>
@@ -7478,8 +7527,8 @@ async function descargarTablaRentabilidad() {
       'Impuestos':       Math.round(p.impuestos || 0),
       'Inv. Ads':        Math.round(p.ads || 0),
       'Res. Envío':      Math.round(p.resultado_envio || 0),
-      'Utilidad $':      utilidad != null ? Math.round(utilidad) : '',
-      'Margen %':        margen,
+      'Contrib. Marginal $': utilidad != null ? Math.round(utilidad) : '',
+      'CM %':            margen,
       '% s/Costo':       rentabilidad,
       '% Total':         base > 0 ? (p.revenue / base * 100).toFixed(1) : '—',
     };
