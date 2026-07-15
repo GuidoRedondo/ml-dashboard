@@ -7066,6 +7066,10 @@ app.get('/api/item-fees', requireAuth, async (req, res) => {
 // Competencia > Categoría — módulo aparte (backend_competencia_categoria.js)
 require('./backend_competencia_categoria')(app, { pool, requireAuth, getClientToken, getAppToken, ML_API });
 
+// Mapeo MLA -> SKU (seller_custom_field) — módulo aparte (backend_ml_skus.js).
+// Crea su propia tabla ml_sku_cache (idempotente) y monta las rutas en /api/ml.
+require('./backend_ml_skus')(app, { pool, requireAuth, getClientToken });
+
 app.get('/api/competencia/categorias', requireAuth, async (req, res) => {
   try {
     const { client_id } = req.query;
