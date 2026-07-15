@@ -3095,6 +3095,16 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
       }
     });
 
+    // Visitas reales por día (desde uv.byDay) — mismo índice diario que ventas/fac, para
+    // que el gráfico diario calcule conversión verídica (ventas/visitas) por día.
+    const byDayVisitas = new Array(totalDays).fill(0);
+    if (uv && uv.byDay) {
+      Object.entries(uv.byDay).forEach(([day, n]) => {
+        const idx = Math.floor((new Date(day + 'T12:00:00') - fromDate) / dayMs);
+        if (idx >= 0 && idx < totalDays) byDayVisitas[idx] += n;
+      });
+    }
+
     res.json({
       user,
       stats: {
@@ -3136,8 +3146,9 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
           utilidad: utilidadDash != null && prevUtilidad != null ? pct(utilidadDash, prevUtilidad) : null,
           margen_pct: margenDash != null && prevMargen != null ? parseFloat((margenDash - prevMargen).toFixed(1)) : null,
         },
-        by_day_ventas: byDayVentas,
-        by_day_fac:    byDayFac,
+        by_day_ventas:  byDayVentas,
+        by_day_fac:     byDayFac,
+        by_day_visitas: byDayVisitas,
         date_from:     curFrom.toISOString().slice(0,10),
       },
       top_items: topItems,
@@ -3226,6 +3237,8 @@ app.get('/api/dashboard/evolucion-semanal', requireAuth, async (req, res) => {
         unidades: 0,
         ordenes: 0,
         ticket_promedio: 0,
+        visitas: 0,
+        conversion: null,
         inversion_publi: 0,
         ventas_publi: 0,
         tacos: null,
@@ -3286,10 +3299,25 @@ app.get('/api/dashboard/evolucion-semanal', requireAuth, async (req, res) => {
       console.warn('[EVO-SEMANAL] PADS fetch falló:', e.message);
     }
 
+    // Visitas por semana — una sola llamada al rango completo (byDay), se reparte por semana.
+    try {
+      const uv = await fetchUserVisits(uid, ymdLocal(startMonday), ymdLocal(now), headers);
+      if (uv && uv.byDay) {
+        Object.entries(uv.byDay).forEach(([day, n]) => {
+          const b = buckets.find(bk => day >= bk.week_start && day <= bk.week_end);
+          if (b) b.visitas += n;
+        });
+      }
+    } catch (e) {
+      console.warn('[EVO-SEMANAL] visitas fetch falló:', e.message);
+    }
+
     buckets.forEach(b => {
       b.ticket_promedio = b.ordenes > 0 ? b.facturacion / b.ordenes : 0;
       b.tacos = b.facturacion > 0 ? (b.inversion_publi / b.facturacion) * 100 : null;
       b.roas  = b.inversion_publi > 0 ? (b.ventas_publi / b.inversion_publi) : null;
+      // Conversión = órdenes / visitas × 100 (mismo criterio que la KPI del dashboard).
+      b.conversion = b.visitas > 0 ? (b.ordenes / b.visitas) * 100 : null;
       delete b._startMs; delete b._endMs;
     });
 

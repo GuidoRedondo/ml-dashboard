@@ -923,11 +923,13 @@ tbody td {
       <div style="font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.08em;margin-bottom:8px">📅 EVOLUCIÓN SEMANAL · ÚLTIMAS 8 SEMANAS</div>
       <div class="kpi-card" style="padding:18px 20px 20px;margin-bottom:16px">
         <div id="evoCurrentWeekNote" style="display:none;margin-bottom:12px;padding:7px 12px;background:rgba(255,145,0,.12);border-radius:8px;border:1px solid rgba(255,145,0,.3);font-size:11px;color:#ff9100;font-weight:600;line-height:1.5"></div>
-        <div id="evoKpis" style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px">
+        <div id="evoKpis" style="display:grid;grid-template-columns:repeat(6,1fr);gap:12px;margin-bottom:16px">
           <div class="evo-kpi"><div class="evo-kpi-label">🧾 Facturación</div><div class="evo-kpi-value" id="evoKpiFac">—</div><div class="evo-kpi-deltas"><span id="evoKpiFacWoW" class="evo-delta">—</span><span id="evoKpiFacAvg" class="evo-delta evo-delta-sub">—</span></div></div>
           <div class="evo-kpi"><div class="evo-kpi-label">📦 Unidades</div><div class="evo-kpi-value" id="evoKpiUni">—</div><div class="evo-kpi-deltas"><span id="evoKpiUniWoW" class="evo-delta">—</span><span id="evoKpiUniAvg" class="evo-delta evo-delta-sub">—</span></div></div>
           <div class="evo-kpi"><div class="evo-kpi-label">🛒 Órdenes</div><div class="evo-kpi-value" id="evoKpiOrd">—</div><div class="evo-kpi-deltas"><span id="evoKpiOrdWoW" class="evo-delta">—</span><span id="evoKpiOrdAvg" class="evo-delta evo-delta-sub">—</span></div></div>
           <div class="evo-kpi"><div class="evo-kpi-label">🎯 Ticket prom.</div><div class="evo-kpi-value" id="evoKpiTkt">—</div><div class="evo-kpi-deltas"><span id="evoKpiTktWoW" class="evo-delta">—</span><span id="evoKpiTktAvg" class="evo-delta evo-delta-sub">—</span></div></div>
+          <div class="evo-kpi"><div class="evo-kpi-label">👁 Visitas</div><div class="evo-kpi-value" id="evoKpiVis">—</div><div class="evo-kpi-deltas"><span id="evoKpiVisWoW" class="evo-delta">—</span><span id="evoKpiVisAvg" class="evo-delta evo-delta-sub">—</span></div></div>
+          <div class="evo-kpi"><div class="evo-kpi-label">📊 Conversión</div><div class="evo-kpi-value" id="evoKpiConv">—</div><div class="evo-kpi-deltas"><span id="evoKpiConvWoW" class="evo-delta">—</span><span id="evoKpiConvAvg" class="evo-delta evo-delta-sub">—</span></div></div>
         </div>
         <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px">
           <div id="evoMetricSelector" style="display:flex;gap:4px;background:var(--surface2);padding:3px;border-radius:8px">
@@ -935,6 +937,8 @@ tbody td {
             <button class="evo-metric-btn" data-metric="unidades">Unidades</button>
             <button class="evo-metric-btn" data-metric="ordenes">Órdenes</button>
             <button class="evo-metric-btn" data-metric="ticket_promedio">Ticket prom.</button>
+            <button class="evo-metric-btn" data-metric="visitas">Visitas</button>
+            <button class="evo-metric-btn" data-metric="conversion">Conversión</button>
           </div>
           <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);cursor:pointer;user-select:none">
             <input type="checkbox" id="evoTogglePubli" checked style="cursor:pointer">
@@ -3482,13 +3486,21 @@ function buildEvolutionChart() {
         }
       });
     }
-    // Visitas distribuidas uniformemente
-    const totalVisits = s.total_visits || 0;
-    if (totalVisits > 0 && days > 0) {
-      const dv = totalVisits / days;
-      for (let i = 0; i < days; i++) visitasByDay[i] += dv;
+    // Visitas: reales por día si el backend las trae (by_day_visitas); si no, uniforme.
+    if (Array.isArray(s.by_day_visitas) && s.by_day_visitas.some(v => v > 0)) {
+      s.by_day_visitas.forEach((v, i) => { if (i < days) visitasByDay[i] += v; });
+    } else {
+      const totalVisits = s.total_visits || 0;
+      if (totalVisits > 0 && days > 0) {
+        const dv = totalVisits / days;
+        for (let i = 0; i < days; i++) visitasByDay[i] += dv;
+      }
     }
   });
+
+  // Conversión diaria = ventas (órdenes) / visitas × 100. Con visitas reales por día
+  // es verídica; con el fallback uniforme queda proporcional a las ventas del día.
+  const convByDay = ventasByDay.map((v, i) => visitasByDay[i] > 0 ? (v / visitasByDay[i]) * 100 : 0);
 
   // Labels de fechas
   const labels = [];
@@ -3498,7 +3510,8 @@ function buildEvolutionChart() {
   }
 
   // Estado activo de series (persistente)
-  if (!window._chartSeries) window._chartSeries = { fac: true, ventas: true, visitas: true };
+  if (!window._chartSeries) window._chartSeries = { fac: true, ventas: true, visitas: true, conversion: true };
+  if (window._chartSeries.conversion === undefined) window._chartSeries.conversion = true;
 
   const W = chartEl.clientWidth || 900;
   const H = 220;
@@ -3510,6 +3523,7 @@ function buildEvolutionChart() {
   const maxFac    = Math.max(...facByDay, 1);
   const maxVentas = Math.max(...ventasByDay, 1);
   const maxVisitas= Math.max(...visitasByDay, 1);
+  const maxConv   = Math.max(...convByDay, 0.01);
 
   // Determinar cuántas etiquetas mostrar
   const step = days <= 14 ? 1 : days <= 31 ? Math.ceil(days/10) : Math.ceil(days/8);
@@ -3563,6 +3577,27 @@ function buildEvolutionChart() {
     visitasPath = `<polyline points="${pts.join(' ')}" fill="none" stroke="#6366f1" stroke-width="1.5" stroke-dasharray="4 3" stroke-linejoin="round"/>`;
   }
 
+  // Línea de conversión (eje propio, normalizada a su máximo)
+  let convPath = '', convDots = '';
+  if (series.conversion && convByDay.some(v => v > 0)) {
+    const barSpacingConv = innerW / days;
+    const pts = convByDay.map((v, i) => {
+      const x = padL + (i + 0.5) * barSpacingConv;
+      const y = padT + innerH - (v / maxConv) * innerH;
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    });
+    convPath = `<polyline points="${pts.join(' ')}" fill="none" stroke="#22d3ee" stroke-width="2" stroke-linejoin="round"/>`;
+    // Punto en el pico de conversión con su valor
+    const maxConvVal = Math.max(...convByDay);
+    const maxConvIdx = convByDay.indexOf(maxConvVal);
+    if (maxConvVal > 0) {
+      const x = padL + (maxConvIdx + 0.5) * barSpacingConv;
+      const y = padT + innerH - (maxConvVal / maxConv) * innerH;
+      convDots = `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="3" fill="#22d3ee"/>`
+        + `<text x="${x.toFixed(1)}" y="${(y - 6).toFixed(1)}" text-anchor="middle" font-size="9" fill="#22d3ee" font-family="sans-serif" font-weight="700">${maxConvVal.toFixed(1)}%</text>`;
+    }
+  }
+
   // Grid horizontal
   let grid = '';
   for (let g = 0; g <= 4; g++) {
@@ -3607,27 +3642,35 @@ function buildEvolutionChart() {
   // Línea vertical de hover
   const hoverLine = `<line id="chartHoverLine" x1="-1" y1="${padT}" x2="-1" y2="${padT+innerH}" stroke="rgba(255,255,255,.3)" stroke-width="1" pointer-events="none"/>`;
   const hoverTip  = `<g id="chartTip" opacity="0" pointer-events="none">
-    <rect id="chartTipBg" x="0" y="0" width="120" height="52" rx="6" fill="rgba(20,20,30,.9)" stroke="rgba(255,255,255,.1)" stroke-width="1"/>
+    <rect id="chartTipBg" x="0" y="0" width="132" height="82" rx="6" fill="rgba(20,20,30,.92)" stroke="rgba(255,255,255,.1)" stroke-width="1"/>
     <text id="chartTipDate" x="8" y="14" font-size="10" fill="rgba(255,255,255,.6)" font-family="sans-serif"></text>
-    <text id="chartTipFac"  x="8" y="28" font-size="11" fill="#FFD700" font-family="sans-serif" font-weight="600"></text>
-    <text id="chartTipVent" x="8" y="43" font-size="11" fill="#00e676" font-family="sans-serif"></text>
+    <text id="chartTipFac"  x="8" y="30" font-size="11" fill="#FFD700" font-family="sans-serif" font-weight="600"></text>
+    <text id="chartTipVent" x="8" y="45" font-size="11" fill="#00e676" font-family="sans-serif"></text>
+    <text id="chartTipVis"  x="8" y="60" font-size="11" fill="#8ea2ff" font-family="sans-serif"></text>
+    <text id="chartTipConv" x="8" y="75" font-size="11" fill="#22d3ee" font-family="sans-serif" font-weight="600"></text>
   </g>`;
 
   // Overlay transparente para capturar hover
+  const visitasRound = visitasByDay.map(v => Math.round(v));
+  const convRound    = convByDay.map(v => +v.toFixed(2));
   const overlay = `<rect x="${padL}" y="${padT}" width="${innerW}" height="${innerH}" fill="transparent"
-    onmousemove="chartHover(event, this, ${days}, ${padL}, ${innerW}, ${JSON.stringify(labels)}, ${JSON.stringify(facByDay)}, ${JSON.stringify(ventasByDay)})"
+    onmousemove="chartHover(event, this, ${days}, ${padL}, ${innerW}, ${JSON.stringify(labels)}, ${JSON.stringify(facByDay)}, ${JSON.stringify(ventasByDay)}, ${JSON.stringify(visitasRound)}, ${JSON.stringify(convRound)})"
     onmouseleave="document.getElementById('chartTip').setAttribute('opacity','0');document.getElementById('chartHoverLine').setAttribute('x1','-1');document.getElementById('chartHoverLine').setAttribute('x2','-1')"/>`;
 
   chartEl.innerHTML = `<svg width="100%" height="${H}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
-    ${grid}${barsSvg}${facArea}${facPath}${visitasPath}${xLabels}${peakLabels}${hoverLine}${hoverTip}${overlay}
+    ${grid}${barsSvg}${facArea}${facPath}${visitasPath}${convPath}${convDots}${xLabels}${peakLabels}${hoverLine}${hoverTip}${overlay}
   </svg>`;
 
   // Leyenda clickeable
   const fmt = n => '$' + Math.round(n/1000).toLocaleString('es-AR') + 'K';
+  const totVisitas = visitasByDay.reduce((a,b)=>a+b,0);
+  const totVentas  = ventasByDay.reduce((a,b)=>a+b,0);
+  const convProm   = totVisitas > 0 ? (totVentas / totVisitas * 100) : 0;
   const legends = [
-    { key: 'fac',     color: '#FFD700', label: '— Facturación', total: fmt(facByDay.reduce((a,b)=>a+b,0)), type: 'line' },
-    { key: 'ventas',  color: '#00e676', label: '█ Ventas',       total: ventasByDay.reduce((a,b)=>a+b,0).toLocaleString('es-AR') + ' órd.', type: 'bar' },
-    { key: 'visitas', color: '#6366f1', label: '- - Visitas',    total: '', type: 'dash' },
+    { key: 'fac',        color: '#FFD700', label: '— Facturación', total: fmt(facByDay.reduce((a,b)=>a+b,0)), type: 'line' },
+    { key: 'ventas',     color: '#00e676', label: '█ Ventas',       total: totVentas.toLocaleString('es-AR') + ' órd.', type: 'bar' },
+    { key: 'visitas',    color: '#6366f1', label: '- - Visitas',    total: totVisitas > 0 ? Math.round(totVisitas).toLocaleString('es-AR') : '', type: 'dash' },
+    { key: 'conversion', color: '#22d3ee', label: '— Conversión',   total: totVisitas > 0 ? convProm.toFixed(1) + '%' : '', type: 'line' },
   ];
   legendEl.innerHTML = legends.map(l => `
     <div onclick="toggleChartSeries('${l.key}')" style="display:flex;align-items:center;gap:6px;cursor:pointer;opacity:${series[l.key]?1:0.35};user-select:none;transition:opacity .15s">
@@ -3667,13 +3710,14 @@ async function loadEvolucionSemanal() {
         if (!merged[i]) {
           merged[i] = {
             week_start: w.week_start, week_end: w.week_end,
-            facturacion: 0, unidades: 0, ordenes: 0,
+            facturacion: 0, unidades: 0, ordenes: 0, visitas: 0,
             inversion_publi: 0, ventas_publi: 0,
           };
         }
         merged[i].facturacion    += w.facturacion || 0;
         merged[i].unidades       += w.unidades || 0;
         merged[i].ordenes        += w.ordenes || 0;
+        merged[i].visitas        += w.visitas || 0;
         merged[i].inversion_publi+= w.inversion_publi || 0;
         merged[i].ventas_publi   += w.ventas_publi || 0;
       });
@@ -3681,6 +3725,7 @@ async function loadEvolucionSemanal() {
 
     merged.forEach(w => {
       w.ticket_promedio = w.ordenes > 0 ? w.facturacion / w.ordenes : 0;
+      w.conversion = w.visitas > 0 ? (w.ordenes / w.visitas) * 100 : null;
       w.tacos = w.facturacion > 0 ? (w.inversion_publi / w.facturacion) * 100 : null;
       w.roas  = w.inversion_publi > 0 ? (w.ventas_publi / w.inversion_publi) : null;
     });
@@ -3757,6 +3802,8 @@ function renderEvoKpis() {
   setKpi('evoKpiUni', 'evoKpiUniWoW', 'evoKpiUniAvg', cur.unidades,    prev.unidades,    avg('unidades'),    _evoFmtNum);
   setKpi('evoKpiOrd', 'evoKpiOrdWoW', 'evoKpiOrdAvg', cur.ordenes,     prev.ordenes,     avg('ordenes'),     _evoFmtNum);
   setKpi('evoKpiTkt', 'evoKpiTktWoW', 'evoKpiTktAvg', cur.ticket_promedio, prev.ticket_promedio, avg('ticket_promedio'), _evoFmtMoney);
+  setKpi('evoKpiVis', 'evoKpiVisWoW', 'evoKpiVisAvg', cur.visitas,     prev.visitas,     avg('visitas'),     _evoFmtNum);
+  setKpi('evoKpiConv','evoKpiConvWoW','evoKpiConvAvg',cur.conversion,  prev.conversion,  avg('conversion'),  _evoFmtPct);
 }
 
 function renderEvoWeekCards() {
@@ -3792,7 +3839,9 @@ function renderEvoWeekCards() {
     const tooltip = `Sem ${i+1} · ${w.week_start} a ${w.week_end}
 Facturación: ${_evoFmtMoney(curFac)}
 Órdenes: ${_evoFmtNum(w.ordenes)}
-Ticket prom.: ${_evoFmtMoney(w.ticket_promedio)}` + (prev ? `
+Ticket prom.: ${_evoFmtMoney(w.ticket_promedio)}
+Visitas: ${_evoFmtNum(w.visitas)}
+Conversión: ${w.conversion != null ? w.conversion.toFixed(1) + '%' : '—'}` + (prev ? `
 Sem. anterior: ${_evoFmtMoney(prevFac)}` : '');
 
     return `
@@ -3814,7 +3863,11 @@ const _EVO_METRIC_STYLE = {
   unidades:        { label: 'Unidades',       top: '#34e89e', bot: '#0bab64', money: false },
   ordenes:         { label: 'Órdenes',        top: '#5ea9ff', bot: '#1565c0', money: false },
   ticket_promedio: { label: 'Ticket prom.',   top: '#c08bff', bot: '#7c4dff', money: true  },
+  visitas:         { label: 'Visitas',        top: '#8ea2ff', bot: '#4f46e5', money: false },
+  conversion:      { label: 'Conversión',     top: '#5eead4', bot: '#0e7490', money: false, pct: true },
 };
+function _evoFmtPct(n) { return n == null ? '—' : n.toFixed(1) + '%'; }
+function _evoFmtVal(style, v) { return style.money ? _evoFmtMoney(v) : style.pct ? _evoFmtPct(v) : _evoFmtNum(v); }
 const _EVO_PUBLI_COLOR = '#ff5d8f';
 
 // Plugin: dibuja el valor arriba de cada barra (etiquetas siempre visibles)
@@ -3825,7 +3878,7 @@ const _evoBarLabels = {
     const meta = chart.getDatasetMeta(0);
     if (!meta || meta.hidden) return;
     const ds = chart.data.datasets[0];
-    const isMoney = chart.$evoMoney;
+    const fmtVal = chart.$evoFmt || (chart.$evoMoney ? _evoFmtMoney : _evoFmtNum);
     ctx.save();
     ctx.font = '700 10px sans-serif';
     ctx.textAlign = 'center';
@@ -3833,7 +3886,7 @@ const _evoBarLabels = {
     meta.data.forEach((bar, i) => {
       const v = ds.data[i];
       if (v == null || v === 0) return;
-      const txt = isMoney ? _evoFmtMoney(v) : _evoFmtNum(v);
+      const txt = fmtVal(v);
       const y = bar.y - 5;
       ctx.fillStyle = 'rgba(0,0,0,.55)';
       ctx.fillText(txt, bar.x + 0.5, y + 0.5);
@@ -3855,6 +3908,7 @@ function renderEvoChart() {
   const showPubli = window._evoState.showPubli;
   const style = _EVO_METRIC_STYLE[metric] || _EVO_METRIC_STYLE.facturacion;
   const isMoney = style.money;
+  const fmtVal = (v) => _evoFmtVal(style, v);
 
   // reset del canvas
   if (window._evoChart) { try { window._evoChart.destroy(); } catch(e){} window._evoChart = null; }
@@ -3939,7 +3993,7 @@ function renderEvoChart() {
             color: 'rgba(255,255,255,.45)',
             font: { size: 9 },
             maxTicksLimit: 5,
-            callback: (v) => isMoney ? _evoFmtMoney(v) : _evoFmtNum(v),
+            callback: (v) => fmtVal(v),
           },
         },
         yPubli: {
@@ -3980,6 +4034,8 @@ function renderEvoChart() {
                 `📦 Unidades: ${_evoFmtNum(w.unidades)}`,
                 `🛒 Órdenes: ${_evoFmtNum(w.ordenes)}`,
                 `🎯 Ticket prom.: ${_evoFmtMoney(w.ticket_promedio)}`,
+                `👁 Visitas: ${_evoFmtNum(w.visitas)}`,
+                w.conversion != null ? `📊 Conversión: ${w.conversion.toFixed(1)}%` : '📊 Conversión: —',
                 `💸 Inv. publi: ${_evoFmtMoney(w.inversion_publi)}`,
                 w.tacos != null ? `📣 TACOS: ${w.tacos.toFixed(1)}%` : '📣 TACOS: —',
                 w.roas  != null ? `🔄 ROAS: ${w.roas.toFixed(2)}`   : '🔄 ROAS: —',
@@ -3991,6 +4047,7 @@ function renderEvoChart() {
     },
   });
   window._evoChart.$evoMoney = isMoney;
+  window._evoChart.$evoFmt = fmtVal;
 
   legendEl.innerHTML = `
     <span style="display:inline-flex;align-items:center;gap:6px"><span style="width:14px;height:10px;background:linear-gradient(${style.top},${style.bot});border-radius:3px"></span>${style.label}</span>
@@ -4027,31 +4084,34 @@ function _initEvoControls() {
   });
 }
 
-function chartHover(e, el, days, padL, innerW, labels, facByDay, ventasByDay) {
+function chartHover(e, el, days, padL, innerW, labels, facByDay, ventasByDay, visitasByDay, convByDay) {
   const rect = el.closest('svg').getBoundingClientRect();
   const xRel = e.clientX - rect.left;
   const idx  = Math.min(days-1, Math.max(0, Math.round((xRel - padL) / innerW * (days-1))));
-  const svgW = rect.width;
-  const svgH = rect.height;
-  const scaleX = 900 / svgW; // viewBox width
 
   const xPos = padL + (idx / (days-1||1)) * innerW;
   document.getElementById('chartHoverLine').setAttribute('x1', xPos);
   document.getElementById('chartHoverLine').setAttribute('x2', xPos);
 
   const tip = document.getElementById('chartTip');
-  const tipBg = document.getElementById('chartTipBg');
   const tipDate = document.getElementById('chartTipDate');
   const tipFac  = document.getElementById('chartTipFac');
   const tipVent = document.getElementById('chartTipVent');
+  const tipVis  = document.getElementById('chartTipVis');
+  const tipConv = document.getElementById('chartTipConv');
+
+  const vis  = visitasByDay ? (visitasByDay[idx] || 0) : 0;
+  const conv = convByDay ? (convByDay[idx] || 0) : 0;
 
   tipDate.textContent = labels[idx] || '';
   tipFac.textContent  = facByDay[idx] > 0 ? '$' + Math.round(facByDay[idx]).toLocaleString('es-AR') : '—';
   tipVent.textContent = (ventasByDay[idx] || 0) + ' ventas';
+  if (tipVis)  tipVis.textContent  = vis > 0 ? vis.toLocaleString('es-AR') + ' visitas' : '— visitas';
+  if (tipConv) tipConv.textContent = conv > 0 ? 'Conv. ' + conv.toFixed(1) + '%' : 'Conv. —';
 
   let tipX = xPos + 8;
-  if (tipX + 125 > 900) tipX = xPos - 130;
-  tip.setAttribute('transform', `translate(${tipX}, 20)`);
+  if (tipX + 140 > 900) tipX = xPos - 142;
+  tip.setAttribute('transform', `translate(${tipX}, 16)`);
   tip.setAttribute('opacity', '1');
 }
 
