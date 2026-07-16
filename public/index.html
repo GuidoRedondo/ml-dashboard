@@ -1064,6 +1064,10 @@ tbody td {
           style="padding:8px 18px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-2px;font-family:var(--font-b)">
           💬 Opiniones
         </button>
+        <button id="tab-perf-formas-pago" onclick="switchPerfTab('formas-pago')"
+          style="padding:8px 18px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-2px;font-family:var(--font-b)">
+          💳 Formas de pago
+        </button>
       </div>
       <!-- Tab Análisis -->
       <div id="perf-tab-analisis">
@@ -1148,6 +1152,14 @@ tbody td {
       <!-- Tab Opiniones -->
       <div id="perf-tab-opiniones" style="display:none">
         <div id="opinionesContent"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Seleccioná la pestaña Opiniones para cargar.</div></div>
+      </div>
+      <!-- Tab Formas de pago -->
+      <div id="perf-tab-formas-pago" style="display:none">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap">
+          <div style="font-size:12px;color:var(--muted)">Cómo pagó el comprador (forma de pago + cuotas) en el período seleccionado — no es el tipo de publicación.</div>
+          <button onclick="loadFormasPago(true)" class="sync-btn" style="margin-left:auto">🔄 Actualizar</button>
+        </div>
+        <div id="formasPagoContent"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Seleccioná la pestaña Formas de pago para cargar.</div></div>
       </div>
     </div>
 
@@ -2572,6 +2584,7 @@ async function selectClient(clientId, el) {
   _escData = null;
   _catVentasLoaded = false;
   window._abcFilter = 'todos';
+  window._formasPagoData = null;
   document.querySelectorAll('#clientSelector .nav-item').forEach(n => n.classList.remove('active'));
   if (el) el.classList.add('active');
   syncCondicionIvaSelectores();
@@ -4710,7 +4723,7 @@ let _perfPubModeFilter = null;
 
 function switchPerfTab(tab) {
   _perfActiveTab = tab;
-  ['analisis','publicaciones','conversion','ventas-hora','seguimiento','opiniones'].forEach(t => {
+  ['analisis','publicaciones','conversion','ventas-hora','seguimiento','opiniones','formas-pago'].forEach(t => {
     const el  = document.getElementById(`perf-tab-${t}`);
     const btn = document.getElementById(`tab-perf-${t}`);
     if (el)  el.style.display  = t === tab ? '' : 'none';
@@ -4720,11 +4733,12 @@ function switchPerfTab(tab) {
     }
   });
   const btnExport = document.getElementById('btnExportPerf');
-  if (btnExport) btnExport.style.display = (tab === 'publicaciones' || tab === 'ventas-hora' || tab === 'conversion' || tab === 'opiniones') ? 'none' : '';
+  if (btnExport) btnExport.style.display = (tab === 'publicaciones' || tab === 'ventas-hora' || tab === 'conversion' || tab === 'opiniones' || tab === 'formas-pago') ? 'none' : '';
   if (tab === 'publicaciones') { window._perfPubSearch = ''; loadSeguimientoMap(); renderPerfPublicaciones(); }
   if (tab === 'seguimiento') loadSeguimiento();
   if (tab === 'conversion') initConversionTab();
   if (tab === 'opiniones' && !_opinionesData) loadOpiniones();
+  if (tab === 'formas-pago' && !window._formasPagoData) loadFormasPago(false);
   if (tab === 'ventas-hora') {
     const client = getActiveClient();
     const iframe = document.getElementById('iframe-ventas-hora');
@@ -4734,6 +4748,108 @@ function switchPerfTab(tab) {
       iframe.src = target; // siempre recargar para reflejar cambios de período
     }
   }
+}
+
+// ── TAB FORMAS DE PAGO ───────────────────────────────────────────────────────
+// Cómo pagó el comprador (forma de pago + cuotas), leído de order.payments[].
+// No es el tipo de publicación: es la elección real del comprador al pagar.
+async function loadFormasPago(force) {
+  const el = document.getElementById('formasPagoContent');
+  if (!el) return;
+  const client = getActiveClient();
+  if (!client) { el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Seleccioná un cliente</div>'; return; }
+  const { date_from, date_to } = getDateRange();
+  el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">⏳ Analizando formas de pago del período… (recorre las órdenes)</div>';
+  try {
+    const data = await apiCall('GET', `/api/formas-pago?client_id=${client.id}&date_from=${date_from}&date_to=${date_to}`);
+    window._formasPagoData = data;
+    renderFormasPago(data);
+  } catch (e) {
+    el.innerHTML = '<div style="color:#ff5252;font-size:13px;padding:40px;text-align:center">Error analizando formas de pago: ' + (e?.message || e) + '</div>';
+  }
+}
+
+const _FP_TIPO_LABEL = {
+  credit_card:   '💳 Tarjeta de crédito',
+  debit_card:    '💳 Tarjeta de débito',
+  account_money: '💰 Dinero en cuenta (Mercado Pago)',
+  ticket:        '🎫 Efectivo (Rapipago / Pago Fácil)',
+  bank_transfer: '🏦 Transferencia',
+  atm:           '🏧 Cajero',
+  digital_currency: '🪙 Cripto',
+  'sin dato':    '— Sin dato de pago',
+  desconocido:   '— Desconocido',
+};
+function _fpTipoLabel(k) { return _FP_TIPO_LABEL[k] || k; }
+function _fpCuotasLabel(k) { return k === '1' ? '1 pago (sin cuotas)' : isNaN(parseInt(k)) ? k : k + ' cuotas'; }
+function _fpMoney(n) { return '$' + Math.round(n || 0).toLocaleString('es-AR'); }
+
+function renderFormasPago(d) {
+  const el = document.getElementById('formasPagoContent');
+  if (!el) return;
+  if (!d || !d.total_ordenes) {
+    el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">No hay órdenes en el período seleccionado.</div>';
+    return;
+  }
+  const totMonto = d.total_monto || 1;
+
+  // Barra horizontal por fila con % sobre el monto total
+  const barRow = (label, ordenes, monto, color) => {
+    const pct = totMonto > 0 ? (monto / totMonto * 100) : 0;
+    return `<div style="margin-bottom:10px">
+      <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px">
+        <span style="color:var(--text);font-weight:600">${label}</span>
+        <span style="color:var(--muted)">${_fpMoney(monto)} · ${ordenes.toLocaleString('es-AR')} órd · <span style="color:${color};font-weight:700">${pct.toFixed(1)}%</span></span>
+      </div>
+      <div style="background:var(--surface2);border-radius:5px;height:9px;overflow:hidden">
+        <div style="height:100%;width:${Math.max(1, Math.min(pct,100)).toFixed(1)}%;background:${color};border-radius:5px"></div>
+      </div>
+    </div>`;
+  };
+
+  const kpi = (icon, label, value, color, sub) => `
+    <div class="kpi-card" style="border-top:3px solid ${color};padding:16px">
+      <div class="kpi-label" style="margin-bottom:6px">${icon} ${label}</div>
+      <div style="font-size:22px;font-weight:800;color:${color};font-family:var(--font-b)">${value}</div>
+      <div style="font-size:11px;color:var(--muted);margin-top:4px">${sub}</div>
+    </div>`;
+
+  const cuotasColors = ['#22d3ee','#34e89e','#5ea9ff','#c08bff','#ffb84d','#ff7d9c','#ff5252'];
+  const cuotasRows = (d.por_cuotas || []).map((c, i) =>
+    barRow(_fpCuotasLabel(c.cuotas), c.ordenes, c.monto, cuotasColors[i % cuotasColors.length])).join('');
+  const tipoColors = { credit_card:'#5ea9ff', debit_card:'#34e89e', account_money:'#22d3ee', ticket:'#ffb84d', bank_transfer:'#c08bff' };
+  const tipoRows = (d.por_tipo || []).map(t =>
+    barRow(_fpTipoLabel(t.key), t.ordenes, t.monto, tipoColors[t.key] || '#9aa0a6')).join('');
+  const metodoRows = (d.por_metodo || []).slice(0, 12).map(m =>
+    barRow(m.key, m.ordenes, m.monto, '#8ea2ff')).join('');
+
+  el.innerHTML = `
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px">
+      ${kpi('💰','FACTURACIÓN', _fpMoney(d.total_monto), '#00e676', d.total_ordenes.toLocaleString('es-AR') + ' órdenes')}
+      ${kpi('💳','% EN CUOTAS ($)', d.pct_monto_cuotas + '%', '#22d3ee', _fpMoney(d.monto_cuotas) + ' pagado en cuotas')}
+      ${kpi('🛒','% ÓRDENES EN CUOTAS', d.pct_ordenes_cuotas + '%', '#5ea9ff', d.ordenes_cuotas.toLocaleString('es-AR') + ' de ' + d.total_ordenes.toLocaleString('es-AR') + ' órdenes')}
+      ${kpi('🔢','CUOTAS PROMEDIO', d.promedio_cuotas, '#c08bff', 'sobre órdenes con dato de pago')}
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px">
+      <div class="kpi-card" style="padding:18px">
+        <div class="kpi-label" style="margin-bottom:14px">🔢 POR CANTIDAD DE CUOTAS</div>
+        ${cuotasRows || '<div style="color:var(--muted);font-size:12px">Sin datos</div>'}
+      </div>
+      <div class="kpi-card" style="padding:18px">
+        <div class="kpi-label" style="margin-bottom:14px">💳 POR FORMA DE PAGO</div>
+        ${tipoRows || '<div style="color:var(--muted);font-size:12px">Sin datos</div>'}
+      </div>
+    </div>
+
+    <div class="kpi-card" style="padding:18px">
+      <div class="kpi-label" style="margin-bottom:14px">🏷️ POR MEDIO DE PAGO (marca)</div>
+      ${metodoRows || '<div style="color:var(--muted);font-size:12px">Sin datos</div>'}
+    </div>
+
+    ${d.sin_dato > 0 ? `<div style="font-size:11px;color:var(--muted);margin-top:10px;font-style:italic">⚠️ ${d.sin_dato} órden(es) sin datos de pago en la API (no se pudieron clasificar).</div>` : ''}
+    <div style="font-size:11px;color:var(--muted);margin-top:6px">Las barras muestran el % sobre la facturación del período. La cantidad de cuotas es la que eligió el comprador al pagar (order.payments.installments).</div>
+  `;
 }
 
 // ── TAB CONVERSIÓN (Eje 4 de Steve) ──────────────────────────────────────────

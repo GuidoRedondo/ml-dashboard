@@ -3351,6 +3351,96 @@ app.get('/api/facturacion-rango', requireAuth, async (req, res) => {
   }
 });
 
+// GET /api/formas-pago — cómo pagó el comprador (forma de pago + cuotas), NO el
+// listing_type. Sale del array order.payments[] que ya trae cada orden:
+//   installments (cuotas elegidas), payment_type (credit/debit/account_money/ticket),
+//   payment_method_id (visa/master/…). Agrega por cuotas, por tipo y por método.
+app.get('/api/formas-pago', requireAuth, async (req, res) => {
+  try {
+    const { client_id, date_from, date_to } = req.query;
+    if (!client_id) return res.status(400).json({ error: 'client_id requerido' });
+    if (!date_from || !date_to) return res.status(400).json({ error: 'date_from y date_to requeridos' });
+    const token = await getClientToken(parseInt(client_id));
+    if (!token) return res.status(403).json({ error: 'Cliente no conectado o token expirado' });
+    const headers = { 'Authorization': `Bearer ${token}` };
+    const user = await fetch(`${ML_API}/users/me`, { headers }).then(r => r.json());
+    if (user.error) return res.status(403).json({ error: 'token invalido' });
+
+    const fromStr = date_from + 'T00:00:00.000-00:00';
+    const toStr   = date_to   + 'T23:59:59.000-00:00';
+    const { orders } = await fetchAllOrders(user.id, headers, fromStr, toStr);
+
+    const porCuotas = {};   // cuotas -> { ordenes, monto }
+    const porTipo   = {};   // payment_type -> { ordenes, monto }
+    const porMetodo = {};   // payment_method_id -> { ordenes, monto }
+    const bump = (map, key, monto) => {
+      if (!map[key]) map[key] = { ordenes: 0, monto: 0 };
+      map[key].ordenes += 1;
+      map[key].monto   += monto;
+    };
+
+    let totalOrdenes = 0, totalMonto = 0;
+    let ordenesCuotas = 0, montoCuotas = 0;   // installments > 1
+    let sinDato = 0;
+    let sumaCuotasPonderada = 0;              // para promedio de cuotas (solo con dato)
+
+    orders.forEach(o => {
+      const monto = (o.order_items || []).reduce(
+        (s, oi) => s + (parseFloat(oi.unit_price) || 0) * (oi.quantity || 0), 0);
+      const pmts = o.payments || [];
+      const pmt  = pmts.find(p => p.status === 'approved') || pmts[0] || null;
+
+      totalOrdenes += 1;
+      totalMonto   += monto;
+
+      if (!pmt) { sinDato += 1; bump(porCuotas, 'sin dato', monto); bump(porTipo, 'sin dato', monto); bump(porMetodo, 'sin dato', monto); return; }
+
+      const cuotas = parseInt(pmt.installments) > 0 ? parseInt(pmt.installments) : 1;
+      const tipo   = pmt.payment_type || pmt.payment_type_id || 'desconocido';
+      const metodo = pmt.payment_method_id || 'desconocido';
+
+      bump(porCuotas, String(cuotas), monto);
+      bump(porTipo, tipo, monto);
+      bump(porMetodo, metodo, monto);
+
+      sumaCuotasPonderada += cuotas;
+      if (cuotas > 1) { ordenesCuotas += 1; montoCuotas += monto; }
+    });
+
+    const toArr = (map) => Object.entries(map)
+      .map(([k, v]) => ({ key: k, ordenes: v.ordenes, monto: Math.round(v.monto) }))
+      .sort((a, b) => b.monto - a.monto);
+    // Cuotas ordenadas numéricamente (1,2,3,6…) dejando "sin dato" al final
+    const porCuotasArr = Object.entries(porCuotas)
+      .map(([k, v]) => ({ cuotas: k, ordenes: v.ordenes, monto: Math.round(v.monto) }))
+      .sort((a, b) => {
+        const na = parseInt(a.cuotas), nb = parseInt(b.cuotas);
+        if (isNaN(na)) return 1; if (isNaN(nb)) return -1;
+        return na - nb;
+      });
+
+    res.json({
+      total_ordenes: totalOrdenes,
+      total_monto: Math.round(totalMonto),
+      ordenes_cuotas: ordenesCuotas,
+      monto_cuotas: Math.round(montoCuotas),
+      ordenes_un_pago: totalOrdenes - ordenesCuotas - sinDato,
+      monto_un_pago: Math.round(totalMonto - montoCuotas),
+      pct_ordenes_cuotas: totalOrdenes > 0 ? +(ordenesCuotas / totalOrdenes * 100).toFixed(1) : 0,
+      pct_monto_cuotas: totalMonto > 0 ? +(montoCuotas / totalMonto * 100).toFixed(1) : 0,
+      promedio_cuotas: (totalOrdenes - sinDato) > 0 ? +(sumaCuotasPonderada / (totalOrdenes - sinDato)).toFixed(1) : 0,
+      sin_dato: sinDato,
+      por_cuotas: porCuotasArr,
+      por_tipo: toArr(porTipo),
+      por_metodo: toArr(porMetodo),
+      generated_at: new Date().toISOString(),
+    });
+  } catch (e) {
+    console.error('[FORMAS-PAGO]', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.get('/api/ads', requireAuth, async (req, res) => {
   try {
     const clientId = parseInt(req.query.client_id);
@@ -7374,6 +7464,8 @@ app.get('/api/debug/order', requireAuth, async (req, res) => {
         id: p.id, status: p.status, total_paid_amount: p.total_paid_amount,
         shipping_cost: p.shipping_cost, overpaid_amount: p.overpaid_amount,
         marketplace_fee: p.marketplace_fee, coupon_amount: p.coupon_amount,
+        installments: p.installments, payment_type: p.payment_type || p.payment_type_id,
+        payment_method_id: p.payment_method_id,
       })) : [],
       shipment: shipment ? {
         id: shipment.id,
