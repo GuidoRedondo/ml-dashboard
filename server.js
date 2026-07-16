@@ -3373,6 +3373,7 @@ app.get('/api/formas-pago', requireAuth, async (req, res) => {
     const porCuotas = {};   // cuotas -> { ordenes, monto }
     const porTipo   = {};   // payment_type -> { ordenes, monto }
     const porMetodo = {};   // payment_method_id -> { ordenes, monto }
+    const porItem   = {};   // mla_id -> desglose de cuotas por publicación
     const bump = (map, key, monto) => {
       if (!map[key]) map[key] = { ordenes: 0, monto: 0 };
       map[key].ordenes += 1;
@@ -3393,18 +3394,41 @@ app.get('/api/formas-pago', requireAuth, async (req, res) => {
       totalOrdenes += 1;
       totalMonto   += monto;
 
-      if (!pmt) { sinDato += 1; bump(porCuotas, 'sin dato', monto); bump(porTipo, 'sin dato', monto); bump(porMetodo, 'sin dato', monto); return; }
+      // El pago (cuotas/tipo) es a nivel ORDEN. Si la orden tiene varios ítems,
+      // cada ítem hereda la forma de pago de la orden por su parte de la facturación.
+      const cuotas = pmt ? (parseInt(pmt.installments) > 0 ? parseInt(pmt.installments) : 1) : null;
+      const tipo   = pmt ? (pmt.payment_type || pmt.payment_type_id || 'desconocido') : 'sin dato';
+      const metodo = pmt ? (pmt.payment_method_id || 'desconocido') : 'sin dato';
 
-      const cuotas = parseInt(pmt.installments) > 0 ? parseInt(pmt.installments) : 1;
-      const tipo   = pmt.payment_type || pmt.payment_type_id || 'desconocido';
-      const metodo = pmt.payment_method_id || 'desconocido';
-
-      bump(porCuotas, String(cuotas), monto);
+      bump(porCuotas, cuotas == null ? 'sin dato' : String(cuotas), monto);
       bump(porTipo, tipo, monto);
       bump(porMetodo, metodo, monto);
 
-      sumaCuotasPonderada += cuotas;
-      if (cuotas > 1) { ordenesCuotas += 1; montoCuotas += monto; }
+      if (cuotas == null) { sinDato += 1; }
+      else {
+        sumaCuotasPonderada += cuotas;
+        if (cuotas > 1) { ordenesCuotas += 1; montoCuotas += monto; }
+      }
+
+      // Desglose por publicación
+      (o.order_items || []).forEach(oi => {
+        const id = oi.item?.id; if (!id) return;
+        const lineMonto = (parseFloat(oi.unit_price) || 0) * (oi.quantity || 0);
+        if (!porItem[id]) porItem[id] = {
+          mla_id: id, title: oi.item?.title || id,
+          ordenes: 0, unidades: 0, monto: 0,
+          ordenes_cuotas: 0, monto_cuotas: 0, suma_cuotas: 0, con_dato: 0,
+        };
+        const it = porItem[id];
+        it.ordenes  += 1;
+        it.unidades += (oi.quantity || 0);
+        it.monto    += lineMonto;
+        if (cuotas != null) {
+          it.con_dato    += 1;
+          it.suma_cuotas += cuotas;
+          if (cuotas > 1) { it.ordenes_cuotas += 1; it.monto_cuotas += lineMonto; }
+        }
+      });
     });
 
     const toArr = (map) => Object.entries(map)
@@ -3418,6 +3442,18 @@ app.get('/api/formas-pago', requireAuth, async (req, res) => {
         if (isNaN(na)) return 1; if (isNaN(nb)) return -1;
         return na - nb;
       });
+
+    // Por publicación: % de su facturación pagada en cuotas + cuotas promedio.
+    const porItemArr = Object.values(porItem).map(it => ({
+      mla_id: it.mla_id, title: it.title,
+      ordenes: it.ordenes, unidades: it.unidades,
+      monto: Math.round(it.monto),
+      ordenes_cuotas: it.ordenes_cuotas,
+      monto_cuotas: Math.round(it.monto_cuotas),
+      pct_monto_cuotas: it.monto > 0 ? +(it.monto_cuotas / it.monto * 100).toFixed(1) : 0,
+      pct_ordenes_cuotas: it.ordenes > 0 ? +(it.ordenes_cuotas / it.ordenes * 100).toFixed(1) : 0,
+      cuotas_promedio: it.con_dato > 0 ? +(it.suma_cuotas / it.con_dato).toFixed(1) : 0,
+    })).sort((a, b) => b.monto - a.monto);
 
     res.json({
       total_ordenes: totalOrdenes,
@@ -3433,6 +3469,7 @@ app.get('/api/formas-pago', requireAuth, async (req, res) => {
       por_cuotas: porCuotasArr,
       por_tipo: toArr(porTipo),
       por_metodo: toArr(porMetodo),
+      por_item: porItemArr,
       generated_at: new Date().toISOString(),
     });
   } catch (e) {
