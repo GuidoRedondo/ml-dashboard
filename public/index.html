@@ -4850,12 +4850,23 @@ function renderFormasPago(d) {
     <div class="kpi-card" style="padding:18px;margin-top:16px">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px">
         <div class="kpi-label">🔎 POR PUBLICACIÓN — ¿se justifica la cuota?</div>
-        <input id="fpItemSearch" type="text" placeholder="Buscar por MLA o título..."
-          oninput="renderFormasPagoItems(this.value)"
-          onkeydown="if(event.key==='Escape'){this.value='';renderFormasPagoItems('')}"
-          style="width:280px;max-width:100%;padding:7px 12px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:12px;outline:none">
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+          <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);cursor:pointer;user-select:none">
+            <input type="checkbox" id="fpSoloCandidatos" onchange="window._fpSoloCandidatos=this.checked;renderFormasPagoItems(document.getElementById('fpItemSearch')?.value||'')" style="cursor:pointer">
+            <span>⚠️ Solo candidatos a revisar</span>
+          </label>
+          <input id="fpItemSearch" type="text" placeholder="Buscar por MLA o título..."
+            oninput="renderFormasPagoItems(this.value)"
+            onkeydown="if(event.key==='Escape'){this.value='';renderFormasPagoItems('')}"
+            style="width:240px;max-width:100%;padding:7px 12px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:12px;outline:none">
+        </div>
       </div>
-      <div style="font-size:11px;color:var(--muted);margin-bottom:10px">% en cuotas alto = mucha de la facturación de ese producto se pagó en cuotas (vos absorbés el costo financiero). Cruzalo con el margen para decidir si conviene seguir ofreciéndolas.</div>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:10px">
+        <b>Premium</b> ofrece cuotas sin interés y paga más comisión; <b>Clásica</b> no.
+        El caso a revisar: publicación <b>Premium</b> pero el comprador igual paga en 1 pago (poco uso de cuotas) →
+        estás pagando comisión de más por una cuota que casi nadie usa. Ahí conviene <b>bajar a Clásica</b> y/o <b>bajar el precio</b>.
+        Cruzalo con el margen antes de decidir.
+      </div>
       <div id="fpItemsTableWrap"></div>
     </div>
 
@@ -4875,14 +4886,25 @@ function sortFormasPagoItems(col) {
   renderFormasPagoItems(q);
 }
 
+// Candidato a revisar: Premium (ofrece cuotas sin interés y paga más comisión) pero el
+// comprador casi no usa cuotas (paga en 1) y tiene ventas suficientes para no ser ruido.
+function fpEsCandidato(it) {
+  return it.es_premium && it.ordenes >= 3 && it.pct_ordenes_cuotas < 30;
+}
+
 function renderFormasPagoItems(q) {
   const wrap = document.getElementById('fpItemsTableWrap');
   if (!wrap) return;
   const all = (window._formasPagoData?.por_item) || [];
   const query = (q || '').trim().toLowerCase();
-  let items = query
-    ? all.filter(it => it.mla_id.toLowerCase().includes(query) || (it.title || '').toLowerCase().includes(query))
-    : all.slice();
+  const soloCand = !!window._fpSoloCandidatos;
+  const totalCand = all.filter(fpEsCandidato).length;
+
+  let items = all.filter(it => {
+    if (soloCand && !fpEsCandidato(it)) return false;
+    if (!query) return true;
+    return it.mla_id.toLowerCase().includes(query) || (it.title || '').toLowerCase().includes(query);
+  });
 
   const s = window._fpItemSort;
   items.sort((a, b) => {
@@ -4892,39 +4914,55 @@ function renderFormasPagoItems(q) {
     return s.asc ? va - vb : vb - va;
   });
 
-  if (!items.length) {
-    wrap.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:24px;text-align:center">Sin publicaciones para ese filtro.</div>';
-    return;
-  }
-
   // Color del % en cuotas: cuanto más alto, más "expuesto" a costo financiero
   const pctColor = p => p >= 50 ? '#ff5252' : p >= 25 ? '#ffb84d' : p >= 10 ? '#22d3ee' : 'var(--muted)';
   const arrow = col => s.col === col ? (s.asc ? ' ↑' : ' ↓') : '';
   const th = (col, label, align='right') =>
     `<th onclick="sortFormasPagoItems('${col}')" style="text-align:${align};padding:8px 8px;color:${s.col===col?'var(--text)':'var(--muted)'};font-weight:600;cursor:pointer;user-select:none;white-space:nowrap;position:sticky;top:0;background:var(--surface2)">${label}${arrow(col)}</th>`;
 
-  const rows = items.map((it, i) => `
-    <tr style="border-bottom:1px solid rgba(255,255,255,.05);${i%2===0?'background:rgba(255,255,255,.02)':''}">
+  const tipoPubBadge = it => {
+    if (it.es_premium) return '<span style="font-size:10px;font-weight:700;color:#ffb84d;background:rgba(255,184,77,.14);padding:2px 7px;border-radius:5px">Premium</span>';
+    if (it.listing_type_id) return '<span style="font-size:10px;color:var(--muted);background:var(--surface2);padding:2px 7px;border-radius:5px">Clásica</span>';
+    return '<span style="font-size:10px;color:var(--muted)">—</span>';
+  };
+
+  const resumen = totalCand > 0
+    ? `<span style="color:#ffb84d;font-weight:700">⚠️ ${totalCand} candidato(s) a revisar</span> (Premium con &lt;30% de ventas en cuotas)`
+    : 'Sin candidatos claros a revisar en el período.';
+
+  if (!items.length) {
+    wrap.innerHTML = `<div style="font-size:11px;color:var(--muted);margin-bottom:6px">${resumen}</div>`
+      + '<div style="color:var(--muted);font-size:12px;padding:24px;text-align:center">Sin publicaciones para ese filtro.</div>';
+    return;
+  }
+
+  const rows = items.map((it, i) => {
+    const cand = fpEsCandidato(it);
+    return `
+    <tr style="border-bottom:1px solid rgba(255,255,255,.05);${cand ? 'background:rgba(255,184,77,.07)' : (i%2===0?'background:rgba(255,255,255,.02)':'')}">
       <td style="padding:7px 8px;color:var(--muted)">${i+1}</td>
-      <td style="padding:7px 8px;max-width:280px">
-        <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${(it.title||'').replace(/"/g,'&quot;')}">${it.title||''}</div>
+      <td style="padding:7px 8px;max-width:260px">
+        <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${(it.title||'').replace(/"/g,'&quot;')}">${cand ? '⚠️ ' : ''}${it.title||''}</div>
         <div style="font-size:10px;color:var(--muted);cursor:pointer" onclick="copyMLA(this,'${it.mla_id}')">${it.mla_id}</div>
       </td>
+      <td style="padding:7px 8px;text-align:center">${tipoPubBadge(it)}</td>
       <td style="padding:7px 8px;text-align:right">${it.ordenes.toLocaleString('es-AR')}<span style="color:var(--muted);font-size:10px"> · ${it.unidades}u</span></td>
       <td style="padding:7px 8px;text-align:right;font-weight:700">${_fpMoney(it.monto)}</td>
       <td style="padding:7px 8px;text-align:right;font-weight:700;color:${pctColor(it.pct_monto_cuotas)}">${it.pct_monto_cuotas}%</td>
       <td style="padding:7px 8px;text-align:right;color:${pctColor(it.pct_ordenes_cuotas)}">${it.pct_ordenes_cuotas}%</td>
       <td style="padding:7px 8px;text-align:right">${it.cuotas_promedio}</td>
       <td style="padding:7px 8px;text-align:right;color:var(--muted)">${_fpMoney(it.monto_cuotas)}</td>
-    </tr>`).join('');
+    </tr>`;
+  }).join('');
 
   wrap.innerHTML = `
-    <div style="font-size:11px;color:var(--muted);margin-bottom:6px">${items.length} publicación(es)${query ? ' · filtro "' + q + '"' : ''}</div>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:6px">${items.length} publicación(es)${query ? ' · filtro "' + q + '"' : ''} · ${resumen}</div>
     <div style="overflow-x:auto;max-height:520px;overflow-y:auto;border-radius:8px;border:1px solid var(--border)">
       <table style="width:100%;border-collapse:collapse;font-size:12px">
         <thead><tr style="border-bottom:2px solid rgba(255,255,255,.1)">
           <th style="text-align:left;padding:8px 8px;color:var(--muted);position:sticky;top:0;background:var(--surface2)">#</th>
           ${th('title','Publicación','left')}
+          ${th('es_premium','Tipo pub.','center')}
           ${th('ordenes','Ventas')}
           ${th('monto','Facturación')}
           ${th('pct_monto_cuotas','% en cuotas ($)')}

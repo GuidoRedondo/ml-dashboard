@@ -3443,17 +3443,37 @@ app.get('/api/formas-pago', requireAuth, async (req, res) => {
         return na - nb;
       });
 
-    // Por publicación: % de su facturación pagada en cuotas + cuotas promedio.
-    const porItemArr = Object.values(porItem).map(it => ({
-      mla_id: it.mla_id, title: it.title,
-      ordenes: it.ordenes, unidades: it.unidades,
-      monto: Math.round(it.monto),
-      ordenes_cuotas: it.ordenes_cuotas,
-      monto_cuotas: Math.round(it.monto_cuotas),
-      pct_monto_cuotas: it.monto > 0 ? +(it.monto_cuotas / it.monto * 100).toFixed(1) : 0,
-      pct_ordenes_cuotas: it.ordenes > 0 ? +(it.ordenes_cuotas / it.ordenes * 100).toFixed(1) : 0,
-      cuotas_promedio: it.con_dato > 0 ? +(it.suma_cuotas / it.con_dato).toFixed(1) : 0,
-    })).sort((a, b) => b.monto - a.monto);
+    // Tipo de publicación por MLA vendido: Premium (gold_pro/gold_premium) OFRECE cuotas
+    // sin interés y paga más comisión; Clásica no. Se cruza con el uso real de cuotas
+    // para detectar Premium donde el comprador igual paga en 1 pago (comisión pagada de más).
+    const soldIds = Object.keys(porItem);
+    const ltMap = {};
+    for (let i = 0; i < soldIds.length; i += 20) {
+      const batch = soldIds.slice(i, i + 20);
+      try {
+        const arr = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,listing_type_id`, { headers }).then(r => r.json());
+        (Array.isArray(arr) ? arr : []).forEach(el => {
+          if (el.code === 200 && el.body) ltMap[el.body.id] = el.body.listing_type_id || '';
+        });
+      } catch (_) { /* tipo de publicación es best-effort */ }
+    }
+
+    // Por publicación: % de su facturación pagada en cuotas + cuotas promedio + tipo pub.
+    const porItemArr = Object.values(porItem).map(it => {
+      const lt = ltMap[it.mla_id] || '';
+      return {
+        mla_id: it.mla_id, title: it.title,
+        listing_type_id: lt,
+        es_premium: ['gold_pro', 'gold_premium'].includes(lt),
+        ordenes: it.ordenes, unidades: it.unidades,
+        monto: Math.round(it.monto),
+        ordenes_cuotas: it.ordenes_cuotas,
+        monto_cuotas: Math.round(it.monto_cuotas),
+        pct_monto_cuotas: it.monto > 0 ? +(it.monto_cuotas / it.monto * 100).toFixed(1) : 0,
+        pct_ordenes_cuotas: it.ordenes > 0 ? +(it.ordenes_cuotas / it.ordenes * 100).toFixed(1) : 0,
+        cuotas_promedio: it.con_dato > 0 ? +(it.suma_cuotas / it.con_dato).toFixed(1) : 0,
+      };
+    }).sort((a, b) => b.monto - a.monto);
 
     res.json({
       total_ordenes: totalOrdenes,
