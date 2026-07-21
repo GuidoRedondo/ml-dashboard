@@ -9991,6 +9991,8 @@ async function loadAds() {
   }
 
   let allCampaigns = [], totalSpend = 0, totalSales = 0, totalClicks = 0, totalImpr = 0, totalUnitsAds = 0;
+  // Período anterior (mismo largo, justo antes del filtrado) — lo devuelve /api/ads
+  let prevSpend = 0, prevSales = 0, prevClicks = 0, prevImpr = 0, prevUnits = 0, prevPeriodo = null;
   let hasError = false, errorMsg = '';
 
   await Promise.all(connected.map(async acc => {
@@ -10009,6 +10011,14 @@ async function loadAds() {
         totalImpr   += data.summary.impressions || 0;
         totalUnitsAds += data.summary.units || 0;
       }
+      if (data.prev_summary) {
+        prevSpend  += data.prev_summary.spend || 0;
+        prevSales  += data.prev_summary.sales || 0;
+        prevClicks += data.prev_summary.clicks || 0;
+        prevImpr   += data.prev_summary.impressions || 0;
+        prevUnits  += data.prev_summary.units || 0;
+      }
+      if (data.prev_periodo && !prevPeriodo) prevPeriodo = data.prev_periodo;
       (data.campaigns || []).forEach(c => allCampaigns.push({ ...c, cuenta: acc.name, color: acc.color }));
     } catch(e) {
       hasError = true;
@@ -10135,18 +10145,49 @@ async function loadAds() {
   const roasNumExact = totalSpend && totalSales ? (totalSales / totalSpend) : null;
   if (kpiRoasDeltaEl2) kpiRoasDeltaEl2.innerHTML = (roasNumExact != null && prevRoasNum2 != null) ? _deltaHtml(((roasNumExact - prevRoasNum2)/prevRoasNum2*100).toFixed(1)) : '<span style="color:var(--muted);font-size:11px">vs período anterior</span>';
 
+  // ── Comparación vs período anterior ───────────────────────────────────────
+  // Los totales del período anterior vienen de /api/ads (prev_summary): mismo
+  // largo que el filtrado, terminando el día anterior. La facturación total del
+  // período anterior sale de state.accounts (ML no la da por PADS).
+  const prevAcosNum  = prevSpend && prevSales ? (prevSpend / prevSales) * 100 : null;
+  const prevRoasNum  = prevSpend && prevSales ? (prevSales / prevSpend) : null;
+  const prevTacos    = prevSpend && prevRevTotal ? (prevSpend / prevRevTotal) * 100 : null;
+  const prevConvAds  = prevClicks && prevUnits ? (prevUnits / prevClicks) * 100 : null;
+  const prevShareAds = prevSales && prevRevTotal ? (prevSales / prevRevTotal) * 100 : null;
+  const roasNum      = totalSpend && totalSales ? (totalSales / totalSpend) : null;
+
+  const _sinPrev = '<div class="kpi-sub" style="opacity:.6">sin período anterior</div>';
+  // dir: 1 = subir es bueno · -1 = subir es malo · 0 = informativo (sin color)
+  const _cmpWrap = (d, txt, dir) => {
+    const cls = dir === 0 ? '' : ((d >= 0) === (dir === 1) ? 'up' : 'down');
+    const style = dir === 0 ? ' style="color:var(--muted)"' : '';
+    return `<div><span class="kpi-delta ${cls}"${style}>${d >= 0 ? '▲' : '▼'} ${txt} vs ant.</span></div>`;
+  };
+  const cmpPct = (actual, previo, dir = 0) => {
+    if (actual == null || !previo) return _sinPrev;
+    const d = (actual - previo) / Math.abs(previo) * 100;
+    return _cmpWrap(d, Math.abs(d).toFixed(1) + '%', dir);
+  };
+  const cmpPts = (actual, previo, dir = 0) => {
+    if (actual == null || previo == null) return _sinPrev;
+    const d = actual - previo;
+    return _cmpWrap(d, Math.abs(d).toFixed(1) + ' pts', dir);
+  };
+  const prevRangoTxt = prevPeriodo ? `${prevPeriodo.from} → ${prevPeriodo.to}` : null;
+
   // Build KPI cards HTML inline
   const kpiCardsHtml = `
+    ${prevRangoTxt ? `<div style="font-size:11px;color:var(--muted);margin-bottom:8px">Comparando contra el período anterior: <b>${prevRangoTxt}</b> (mismo largo)</div>` : ''}
     <div class="kpi-grid" style="margin-bottom:20px">
-      <div class="kpi-card"><div class="kpi-label">💸 GASTO TOTAL</div><div class="kpi-value">${fmt(totalSpend)}</div><div class="kpi-sub">${range.date_from} → ${range.date_to}</div></div>
-      <div class="kpi-card"><div class="kpi-label">🛒 VENTAS ADS</div><div class="kpi-value">${fmt(totalSales)}</div><div class="kpi-sub">${totalUnitsAds > 0 ? totalUnitsAds.toLocaleString('es-AR') + ' unidades' : ''}</div></div>
-      <div class="kpi-card"><div class="kpi-label">📊 ACOS</div><div class="kpi-value">${acos}</div><div class="kpi-sub">${acosNum ? (acosNum <= 15 ? '✅ Excelente' : acosNum <= 25 ? '⚠️ Aceptable' : '🔴 Alto') : ''}</div></div>
-      <div class="kpi-card"><div class="kpi-label">📈 TACOS</div><div class="kpi-value">${tacos}</div><div class="kpi-sub">${tacosNum ? (tacosNum <= 8 ? '✅ Excelente' : tacosNum <= 15 ? '⚠️ Aceptable' : '🔴 Alto') : 'Gasto / Facturación total'}</div></div>
-      <div class="kpi-card"><div class="kpi-label">🔄 ROAS</div><div class="kpi-value">${roas}</div></div>
-      <div class="kpi-card"><div class="kpi-label">👆 CLICKS</div><div class="kpi-value">${totalClicks.toLocaleString('es-AR')}</div><div class="kpi-sub">CTR: ${ctrNum ? ctrNum.toFixed(2)+'%' : '—'} · CPC: ${cpcNum ? '$'+Math.round(cpcNum).toLocaleString('es-AR') : '—'}</div></div>
-      <div class="kpi-card"><div class="kpi-label">🎯 CONV. ADS</div><div class="kpi-value">${convAdsNum ? convAdsNum.toFixed(1)+'%' : '—'}</div><div class="kpi-sub">Ventas Ads / Clics</div></div>
-      <div class="kpi-card"><div class="kpi-label">👁 IMPRESIONES</div><div class="kpi-value">${totalImpr >= 1000000 ? Math.round(totalImpr/1000000)+'M' : totalImpr >= 1000 ? Math.round(totalImpr/1000)+'K' : totalImpr.toLocaleString('es-AR')}</div></div>
-      <div class="kpi-card"><div class="kpi-label">💰 % VENTAS CON ADS</div><div class="kpi-value">${salesShareNum ? salesShareNum.toFixed(1)+'%' : '—'}</div><div class="kpi-sub">${salesShareNum ? (salesShareNum >= 50 ? '🔥 Muy dependiente de Ads' : salesShareNum >= 30 ? '⚠️ Moderado' : '✅ Saludable') : 'Ventas Ads / Facturación total'}</div></div>
+      <div class="kpi-card"><div class="kpi-label">💸 GASTO TOTAL</div><div class="kpi-value">${fmt(totalSpend)}</div><div class="kpi-sub">${range.date_from} → ${range.date_to}</div>${cmpPct(totalSpend, prevSpend, 0)}</div>
+      <div class="kpi-card"><div class="kpi-label">🛒 VENTAS ADS</div><div class="kpi-value">${fmt(totalSales)}</div><div class="kpi-sub">${totalUnitsAds > 0 ? totalUnitsAds.toLocaleString('es-AR') + ' unidades' : ''}</div>${cmpPct(totalSales, prevSales, 1)}</div>
+      <div class="kpi-card"><div class="kpi-label">📊 ACOS</div><div class="kpi-value">${acos}</div><div class="kpi-sub">${acosNum ? (acosNum <= 15 ? '✅ Excelente' : acosNum <= 25 ? '⚠️ Aceptable' : '🔴 Alto') : ''}</div>${cmpPts(acosNum, prevAcosNum, -1)}</div>
+      <div class="kpi-card"><div class="kpi-label">📈 TACOS</div><div class="kpi-value">${tacos}</div><div class="kpi-sub">${tacosNum ? (tacosNum <= 8 ? '✅ Excelente' : tacosNum <= 15 ? '⚠️ Aceptable' : '🔴 Alto') : 'Gasto / Facturación total'}</div>${cmpPts(tacosNum, prevTacos, -1)}</div>
+      <div class="kpi-card"><div class="kpi-label">🔄 ROAS</div><div class="kpi-value">${roas}</div>${cmpPct(roasNum, prevRoasNum, 1)}</div>
+      <div class="kpi-card"><div class="kpi-label">👆 CLICKS</div><div class="kpi-value">${totalClicks.toLocaleString('es-AR')}</div><div class="kpi-sub">CTR: ${ctrNum ? ctrNum.toFixed(2)+'%' : '—'} · CPC: ${cpcNum ? '$'+Math.round(cpcNum).toLocaleString('es-AR') : '—'}</div>${cmpPct(totalClicks, prevClicks, 0)}</div>
+      <div class="kpi-card"><div class="kpi-label">🎯 CONV. ADS</div><div class="kpi-value">${convAdsNum ? convAdsNum.toFixed(1)+'%' : '—'}</div><div class="kpi-sub">Ventas Ads / Clics</div>${cmpPts(convAdsNum, prevConvAds, 1)}</div>
+      <div class="kpi-card"><div class="kpi-label">👁 IMPRESIONES</div><div class="kpi-value">${totalImpr >= 1000000 ? Math.round(totalImpr/1000000)+'M' : totalImpr >= 1000 ? Math.round(totalImpr/1000)+'K' : totalImpr.toLocaleString('es-AR')}</div>${cmpPct(totalImpr, prevImpr, 0)}</div>
+      <div class="kpi-card"><div class="kpi-label">💰 % VENTAS CON ADS</div><div class="kpi-value">${salesShareNum ? salesShareNum.toFixed(1)+'%' : '—'}</div><div class="kpi-sub">${salesShareNum ? (salesShareNum >= 50 ? '🔥 Muy dependiente de Ads' : salesShareNum >= 30 ? '⚠️ Moderado' : '✅ Saludable') : 'Ventas Ads / Facturación total'}</div>${cmpPts(salesShareNum, prevShareAds, -1)}</div>
       <div class="kpi-card" style="border:1px solid var(--yellow);background:linear-gradient(135deg,rgba(255,145,0,.08),transparent)"><div class="kpi-label">🔮 PROY. INVERSIÓN ${_monthName.toUpperCase()}</div><div class="kpi-value" style="color:var(--yellow)">${fmt(projMonthly)}</div><div class="kpi-sub">Van ${fmt(monthSpend)}${_dayOfMonth>1?' hasta ayer':''} · promedio sobre ${_diasCompletos}/${_daysInMonth} días · ${fmt(dailyAvgSpend)}/día · faltan ${fmt(projRemaining)}</div></div>
       <div class="kpi-card" style="border:1px solid var(--green);background:linear-gradient(135deg,rgba(0,200,120,.08),transparent)"><div class="kpi-label">🔮 PROY. FACTURACIÓN ${_monthName.toUpperCase()}</div><div class="kpi-value" style="color:var(--green)">${projMonthlyRevenue ? fmt(projMonthlyRevenue) : '—'}</div><div class="kpi-sub">${projMonthlyRevenue ? `Van ${fmt(monthRevenue)}${_dayOfMonth>1?' hasta ayer':''} · ${fmt(dailyAvgRevenue)}/día · faltan ${fmt(projRemainingRevenue)}${projTacosNum!=null?` · TACOS proy. ${projTacosNum.toFixed(1)}%`:''}` : 'Sin datos de facturación del mes'}</div></div>
     </div>`;

@@ -3562,6 +3562,9 @@ app.get('/api/ads', requireAuth, async (req, res) => {
     res.json({
       summary: buildSummary(summary),
       prev_summary: buildSummary(prevSummary),
+      // Período anterior = mismo largo, terminando el día antes del from actual.
+      periodo: { from: fromDate, to: toDate },
+      prev_periodo: { from: prevFromDate, to: prevToDate },
       campaigns: campaigns.map(c => {
         const m = c.metrics || {};
         const spend = m.cost||0, sales = m.total_amount||0;
