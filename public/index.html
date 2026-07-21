@@ -12035,6 +12035,14 @@ async function ejecutarComparacion() {
       const diff = {
         facturacion:       diff_fn(pylA.ingresos?.facturacion,    pylB.ingresos?.facturacion),
         ordenes:           diff_fn(pylA.ordenes,                   pylB.ordenes),
+        comision:          diff_fn(pylA.egresos_ml?.comision,     pylB.egresos_ml?.comision),
+        imp_operacion:     diff_fn(pylA.egresos_ml?.impuestos,    pylB.egresos_ml?.impuestos),
+        envio_total:       diff_fn(pylA.egresos_ml?.envio_total ?? pylA.egresos_ml?.envio_vendedor,
+                                   pylB.egresos_ml?.envio_total ?? pylB.egresos_ml?.envio_vendedor),
+        publicidad:        diff_fn(pylA.egresos_ml?.publicidad,   pylB.egresos_ml?.publicidad),
+        reembolsos:        diff_fn(pylA.egresos_ml?.reembolsos,   pylB.egresos_ml?.reembolsos),
+        iva_neto:          diff_fn(pylA.iva?.neto,                pylB.iva?.neto),
+        iibb:              diff_fn(pylA.egresos_ml?.iibb_estimado, pylB.egresos_ml?.iibb_estimado),
         total_egresos_ml:  diff_fn(pylA.egresos_ml?.total,        pylB.egresos_ml?.total),
         resultado_neto:    diff_fn(pylA.resultado_neto_ml,         pylB.resultado_neto_ml),
         cmv:               diff_fn(pylA.cmv?.total,               pylB.cmv?.total),
@@ -12163,9 +12171,15 @@ function renderComparacion(data, mes_a, mes_b) {
   const factA = a?.ingresos?.facturacion;
   const factB = b?.ingresos?.facturacion;
 
-  // Total impuestos por mes = IVA neto + impuestos manuales
-  const totalImpA = (parseFloat(a?.iva?.neto)||0) + (parseFloat(a?.impuestos_manuales?.total)||0);
-  const totalImpB = (parseFloat(b?.iva?.neto)||0) + (parseFloat(b?.impuestos_manuales?.total)||0);
+  // Egresos ML: los 7 sumandos de total_egresos_ml. El envío es el total
+  // (API + Flex manual); los snapshots viejos sin envio_total caen a envio_vendedor.
+  const envioA = a?.egresos_ml?.envio_total ?? a?.egresos_ml?.envio_vendedor;
+  const envioB = b?.egresos_ml?.envio_total ?? b?.egresos_ml?.envio_vendedor;
+  const ivaNetoA = a?.egresos_ml?.iva_neto ?? a?.iva?.neto;
+  const ivaNetoB = b?.egresos_ml?.iva_neto ?? b?.iva?.neto;
+  const iibbTasa = (+a?.egresos_ml?.iibb_tasa_pct) || (+b?.egresos_ml?.iibb_tasa_pct) || 0;
+  const iibbLbl  = `IIBB estimado${iibbTasa ? ` (${iibbTasa}%)` : ''}`;
+  const hay = (x, y) => (parseFloat(x)||0) !== 0 || (parseFloat(y)||0) !== 0;
 
   // Margen de contribución % = Contribución Marginal / Facturación
   const cmPctA = parseFloat(factA) ? (parseFloat(a?.utilidad_antes_gf)||0) / parseFloat(factA) * 100 : null;
@@ -12188,9 +12202,13 @@ function renderComparacion(data, mes_a, mes_b) {
             ${row('Ingreso envío comprador',  a?.ingresos?.envio_comprador, b?.ingresos?.envio_comprador, null, true)}
             ${row('TOTAL INGRESOS',           a?.ingresos?.total,           b?.ingresos?.total,           diff?.facturacion,   false, true)}
             ${sec('📤 Lo que se va en Mercado Libre')}
-            ${row('Comisión ML',              a?.egresos_ml?.comision,      b?.egresos_ml?.comision,      null, true, false, false, factA, factB)}
-            ${row('Costo envío vendedor',     a?.egresos_ml?.envio_vendedor,b?.egresos_ml?.envio_vendedor,null, true, false, false, factA, factB)}
-            ${row('Publicidad (PADS)',        a?.egresos_ml?.publicidad,    b?.egresos_ml?.publicidad,    null, true, false, false, factA, factB)}
+            ${row('Comisión ML',              a?.egresos_ml?.comision,      b?.egresos_ml?.comision,      diff?.comision,   true, false, false, factA, factB)}
+            ${row('Costo envío vendedor',     envioA,                       envioB,                       diff?.envio_total, true, false, false, factA, factB)}
+            ${row('Publicidad (PADS)',        a?.egresos_ml?.publicidad,    b?.egresos_ml?.publicidad,    diff?.publicidad, true, false, false, factA, factB)}
+            ${hay(a?.egresos_ml?.impuestos, b?.egresos_ml?.impuestos) ? row('Impuestos / retenciones', a?.egresos_ml?.impuestos, b?.egresos_ml?.impuestos, diff?.imp_operacion, true, false, false, factA, factB) : ''}
+            ${hay(a?.egresos_ml?.reembolsos, b?.egresos_ml?.reembolsos) ? row('Reembolsos', a?.egresos_ml?.reembolsos, b?.egresos_ml?.reembolsos, diff?.reembolsos, true, false, false, factA, factB) : ''}
+            ${hay(ivaNetoA, ivaNetoB) ? row('IVA neto a pagar', ivaNetoA, ivaNetoB, diff?.iva_neto, true, false, false, factA, factB) : ''}
+            ${hay(a?.egresos_ml?.iibb_estimado, b?.egresos_ml?.iibb_estimado) ? row(iibbLbl, a?.egresos_ml?.iibb_estimado, b?.egresos_ml?.iibb_estimado, diff?.iibb, true, false, false, factA, factB) : ''}
             ${row('TOTAL EGRESOS ML',         a?.egresos_ml?.total,         b?.egresos_ml?.total,         diff?.total_egresos_ml, false, true, false, factA, factB)}
             ${row('RESULTADO NETO ML',        a?.resultado_neto_ml,         b?.resultado_neto_ml,         diff?.resultado_neto, false, true, true, factA, factB)}
             ${rowPct('% Recibido',            a?.margenes?.pct_recibido,    b?.margenes?.pct_recibido,    diff?.pct_recibido)}
@@ -12201,10 +12219,9 @@ function renderComparacion(data, mes_a, mes_b) {
             ${rowPct('Margen de contribución %', cmPctA,                    cmPctB,                       cmPctD)}
             ${sec('🏢 Gastos Fijos')}
             ${row('TOTAL GASTOS FIJOS',       a?.gastos_fijos?.total,       b?.gastos_fijos?.total,       diff?.gastos_fijos,  false, true, false, factA, factB)}
-            ${sec('🧾 Impuestos', '#fef9ec')}
-            ${row('IVA neto a pagar',         a?.iva?.neto,                 b?.iva?.neto,                 diff?.iva_neto,      true, false, false, factA, factB)}
-            ${(a?.impuestos_manuales?.total || b?.impuestos_manuales?.total) ? row('Impuestos manuales', a?.impuestos_manuales?.total, b?.impuestos_manuales?.total, diff?.impuestos_manuales, true, false, false, factA, factB) : ''}
-            ${row('TOTAL IMPUESTOS',          totalImpA,                    totalImpB,                    totalImpA - totalImpB, false, true, false, factA, factB)}
+            ${hay(a?.impuestos_manuales?.total, b?.impuestos_manuales?.total) ? `
+            ${sec('🧾 Impuestos manuales', '#fef9ec')}
+            ${row('TOTAL IMPUESTOS MANUALES', a?.impuestos_manuales?.total, b?.impuestos_manuales?.total, diff?.impuestos_manuales, false, true, false, factA, factB)}` : ''}
             ${sec('📊 Resultado Final')}
             ${row('UTILIDAD FINAL',           a?.utilidad_final,            b?.utilidad_final,            diff?.utilidad_final, false, true, true, factA, factB)}
             ${rowPct('Margen %',              a?.margenes?.margen,          b?.margenes?.margen,          diff?.margen)}
@@ -12270,8 +12287,14 @@ function descargarComparacionPDF(mes_a, mes_b) {
         <div style="text-align:right"><div class="kpi-m">${fmtMes(mes_b)}</div><div class="kpi-v mut">${f(vb)}</div></div>
       </div></div>`;
 
-  const totalImpA = (parseFloat(a?.iva?.neto)||0) + (parseFloat(a?.impuestos_manuales?.total)||0);
-  const totalImpB = (parseFloat(b?.iva?.neto)||0) + (parseFloat(b?.impuestos_manuales?.total)||0);
+  // Mismo desglose de egresos ML que el comparativo en pantalla (7 sumandos)
+  const envioA = a?.egresos_ml?.envio_total ?? a?.egresos_ml?.envio_vendedor;
+  const envioB = b?.egresos_ml?.envio_total ?? b?.egresos_ml?.envio_vendedor;
+  const ivaNetoA = a?.egresos_ml?.iva_neto ?? a?.iva?.neto;
+  const ivaNetoB = b?.egresos_ml?.iva_neto ?? b?.iva?.neto;
+  const iibbTasa = (+a?.egresos_ml?.iibb_tasa_pct) || (+b?.egresos_ml?.iibb_tasa_pct) || 0;
+  const iibbLbl  = `IIBB estimado${iibbTasa ? ` (${iibbTasa}%)` : ''}`;
+  const hay = (x, y) => (parseFloat(x)||0) !== 0 || (parseFloat(y)||0) !== 0;
   const cmPctA = parseFloat(factA) ? (parseFloat(a?.utilidad_antes_gf)||0) / parseFloat(factA) * 100 : null;
   const cmPctB = parseFloat(factB) ? (parseFloat(b?.utilidad_antes_gf)||0) / parseFloat(factB) * 100 : null;
   const cmPctD = (cmPctA != null && cmPctB != null) ? cmPctA - cmPctB : null;
@@ -12295,9 +12318,13 @@ function descargarComparacionPDF(mes_a, mes_b) {
       ${R('Ingreso envío comprador', a?.ingresos?.envio_comprador, b?.ingresos?.envio_comprador, null, {indent:true})}
       ${R('TOTAL INGRESOS', a?.ingresos?.total, b?.ingresos?.total, diff?.facturacion, {bold:true})}
       ${S('📤 Lo que se va en Mercado Libre')}
-      ${R('Comisión ML', a?.egresos_ml?.comision, b?.egresos_ml?.comision, null, {indent:true, pos:false, pctFact:true})}
-      ${R('Costo envío vendedor', a?.egresos_ml?.envio_vendedor, b?.egresos_ml?.envio_vendedor, null, {indent:true, pos:false, pctFact:true})}
-      ${R('Publicidad (PADS)', a?.egresos_ml?.publicidad, b?.egresos_ml?.publicidad, null, {indent:true, pos:false, pctFact:true})}
+      ${R('Comisión ML', a?.egresos_ml?.comision, b?.egresos_ml?.comision, diff?.comision, {indent:true, pos:false, pctFact:true})}
+      ${R('Costo envío vendedor', envioA, envioB, diff?.envio_total, {indent:true, pos:false, pctFact:true})}
+      ${R('Publicidad (PADS)', a?.egresos_ml?.publicidad, b?.egresos_ml?.publicidad, diff?.publicidad, {indent:true, pos:false, pctFact:true})}
+      ${hay(a?.egresos_ml?.impuestos, b?.egresos_ml?.impuestos) ? R('Impuestos / retenciones', a?.egresos_ml?.impuestos, b?.egresos_ml?.impuestos, diff?.imp_operacion, {indent:true, pos:false, pctFact:true}) : ''}
+      ${hay(a?.egresos_ml?.reembolsos, b?.egresos_ml?.reembolsos) ? R('Reembolsos', a?.egresos_ml?.reembolsos, b?.egresos_ml?.reembolsos, diff?.reembolsos, {indent:true, pos:false, pctFact:true}) : ''}
+      ${hay(ivaNetoA, ivaNetoB) ? R('IVA neto a pagar', ivaNetoA, ivaNetoB, diff?.iva_neto, {indent:true, pos:false, pctFact:true}) : ''}
+      ${hay(a?.egresos_ml?.iibb_estimado, b?.egresos_ml?.iibb_estimado) ? R(iibbLbl, a?.egresos_ml?.iibb_estimado, b?.egresos_ml?.iibb_estimado, diff?.iibb, {indent:true, pos:false, pctFact:true}) : ''}
       ${R('TOTAL EGRESOS ML', a?.egresos_ml?.total, b?.egresos_ml?.total, diff?.total_egresos_ml, {bold:true, pos:false, pctFact:true})}
       ${R('RESULTADO NETO ML', a?.resultado_neto_ml, b?.resultado_neto_ml, diff?.resultado_neto, {bold:true, pctFact:true})}
       ${RP('% Recibido', a?.margenes?.pct_recibido, b?.margenes?.pct_recibido, diff?.pct_recibido)}
@@ -12308,10 +12335,9 @@ function descargarComparacionPDF(mes_a, mes_b) {
       ${RP('Margen de contribución %', cmPctA, cmPctB, cmPctD)}
       ${S('🏢 Gastos Fijos')}
       ${R('TOTAL GASTOS FIJOS', a?.gastos_fijos?.total, b?.gastos_fijos?.total, diff?.gastos_fijos, {bold:true, pos:false, pctFact:true})}
-      ${S('🧾 Impuestos')}
-      ${R('IVA neto a pagar', a?.iva?.neto, b?.iva?.neto, diff?.iva_neto, {indent:true, pos:false, pctFact:true})}
-      ${(a?.impuestos_manuales?.total || b?.impuestos_manuales?.total) ? R('Impuestos manuales', a?.impuestos_manuales?.total, b?.impuestos_manuales?.total, diff?.impuestos_manuales, {indent:true, pos:false, pctFact:true}) : ''}
-      ${R('TOTAL IMPUESTOS', totalImpA, totalImpB, totalImpA - totalImpB, {bold:true, pos:false, pctFact:true})}
+      ${hay(a?.impuestos_manuales?.total, b?.impuestos_manuales?.total) ? `
+      ${S('🧾 Impuestos manuales')}
+      ${R('TOTAL IMPUESTOS MANUALES', a?.impuestos_manuales?.total, b?.impuestos_manuales?.total, diff?.impuestos_manuales, {bold:true, pos:false, pctFact:true})}` : ''}
       ${S('📊 Resultado Final')}
       ${R('UTILIDAD FINAL', a?.utilidad_final, b?.utilidad_final, diff?.utilidad_final, {bold:true, pctFact:true})}
       ${RP('Margen %', a?.margenes?.margen, b?.margenes?.margen, diff?.margen)}
@@ -12834,6 +12860,7 @@ function renderPyL(pyl) {
         ${pyl.egresos_ml.impuestos ? detalleRow('Impuestos / retenciones', pyl.egresos_ml.impuestos, pyl.ingresos.facturacion) : ''}
         ${pyl.egresos_ml.reembolsos ? detalleRow('Reembolsos', pyl.egresos_ml.reembolsos, pyl.ingresos.facturacion) : ''}
         ${pyl.egresos_ml.iva_neto ? detalleRow('IVA neto a pagar', pyl.egresos_ml.iva_neto, pyl.ingresos.facturacion) : ''}
+        ${pyl.egresos_ml.iibb_estimado > 0 ? detalleRow(`IIBB estimado (${(+pyl.egresos_ml.iibb_tasa_pct || 0)}%)`, pyl.egresos_ml.iibb_estimado, pyl.ingresos.facturacion) : ''}
       </div>
 
       <!-- Detalle CMV -->
@@ -12925,16 +12952,27 @@ async function exportarReporteExcel() {
     ['Ingreso por envío (comprador)', pyl.ingresos.envio_comprador],
     ['TOTAL INGRESOS', pyl.ingresos.total],
     [],
+    // Mismas filas y mismo orden que el panel de Costos ML: los 7 sumandos de
+    // total_egresos_ml. La columna B suma exacto el TOTAL EGRESOS ML; los
+    // desgloses informativos van en la columna C para no romper esa suma.
     ['EGRESOS MERCADO LIBRE', ''],
     ['Comisión ML', -pyl.egresos_ml.comision],
-    ['Impuestos (retenciones)', -pyl.egresos_ml.impuestos],
-    ['Costo envío vendedor (API ML)', -pyl.egresos_ml.envio_vendedor],
-    ...(pyl.egresos_ml.envios_flex_manual > 0 ? [['Envíos Flex/Full (manual)', -pyl.egresos_ml.envios_flex_manual]] : []),
+    ['Envío vendedor (total)', -(pyl.egresos_ml.envio_total ?? pyl.egresos_ml.envio_vendedor ?? 0)],
+    ...(pyl.egresos_ml.envios_flex_manual > 0 ? [
+      ['   └ API ML', '', -pyl.egresos_ml.envio_vendedor],
+      ['   └ Flex/Full (manual)', '', -pyl.egresos_ml.envios_flex_manual],
+    ] : []),
     ['Publicidad (PADS)', -pyl.egresos_ml.publicidad],
+    ...(pyl.egresos_ml.impuestos ? [['Impuestos / retenciones', -pyl.egresos_ml.impuestos]] : []),
     ...(pyl.egresos_ml.reembolsos ? [['Reembolsos', -pyl.egresos_ml.reembolsos]] : []),
-    ['IVA ventas (débito fiscal)', -(pyl.iva?.ventas ?? 0)],
-    ['IVA compras acreditable', pyl.iva?.compras ?? 0],
-    ['IVA NETO A PAGAR', -(pyl.iva?.neto ?? 0)],
+    ...(pyl.egresos_ml.iva_neto ? [
+      ['IVA neto a pagar', -pyl.egresos_ml.iva_neto],
+      ['   └ IVA ventas (débito fiscal)', '', -(pyl.iva?.ventas ?? 0)],
+      ['   └ IVA compras acreditable', '', pyl.iva?.compras ?? 0],
+    ] : []),
+    ...(pyl.egresos_ml.iibb_estimado > 0 ? [
+      [`IIBB estimado (${(+pyl.egresos_ml.iibb_tasa_pct || 0)}%)`, -pyl.egresos_ml.iibb_estimado]
+    ] : []),
     ['TOTAL EGRESOS ML', -pyl.egresos_ml.total],
     [],
     ['RESULTADO NETO ML', pyl.resultado_neto_ml],
@@ -12947,9 +12985,9 @@ async function exportarReporteExcel() {
     ['TOTAL GASTOS FIJOS', -pyl.gastos_fijos.total],
     [],
     ...((pyl.impuestos_manuales?.items||[]).length ? [
-      ['IMPUESTOS', ''],
+      ['IMPUESTOS MANUALES', ''],
       ...(pyl.impuestos_manuales.items||[]).map(g => [g.concepto, -g.monto]),
-      ['TOTAL IMPUESTOS', -pyl.impuestos_manuales.total],
+      ['TOTAL IMPUESTOS MANUALES', -pyl.impuestos_manuales.total],
       [],
     ] : []),
     ['UTILIDAD FINAL', pyl.utilidad_final],

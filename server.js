@@ -5453,11 +5453,19 @@ app.get('/api/reporte/comparar', requireAuth, async (req, res) => {
       mes_a, mes_b,
       pyl_a: pylA,
       pyl_b: pylB,
-      // TODO(IIBB): agregar fila diff.iibb — total_egresos_ml ya incluye IIBB pero
-      // el delta de IIBB no se expone como fila propia en este comparativo.
+      // Deltas de los 7 sumandos de total_egresos_ml (ver total_egresos_ml en
+      // /api/reporte/pyl) — el comparativo los muestra fila por fila, así que el
+      // desglose visible reconstruye el total.
       diff: {
         facturacion:       diffN(pylA.ingresos?.facturacion,    pylB.ingresos?.facturacion),
         ordenes:           diffN(pylA.ordenes,                   pylB.ordenes),
+        comision:          diffN(pylA.egresos_ml?.comision,     pylB.egresos_ml?.comision),
+        imp_operacion:     diffN(pylA.egresos_ml?.impuestos,    pylB.egresos_ml?.impuestos),
+        envio_total:       diffN(pylA.egresos_ml?.envio_total ?? pylA.egresos_ml?.envio_vendedor,
+                                 pylB.egresos_ml?.envio_total ?? pylB.egresos_ml?.envio_vendedor),
+        publicidad:        diffN(pylA.egresos_ml?.publicidad,   pylB.egresos_ml?.publicidad),
+        reembolsos:        diffN(pylA.egresos_ml?.reembolsos,   pylB.egresos_ml?.reembolsos),
+        iibb:              diffN(pylA.egresos_ml?.iibb_estimado, pylB.egresos_ml?.iibb_estimado),
         total_egresos_ml:  diffN(pylA.egresos_ml?.total,        pylB.egresos_ml?.total),
         resultado_neto:    diffN(pylA.resultado_neto_ml,         pylB.resultado_neto_ml),
         cmv:               diffN(pylA.cmv?.total,               pylB.cmv?.total),
