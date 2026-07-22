@@ -15821,7 +15821,7 @@ function renderPromoDesglose(d) {
 
   // Avisos de datos faltantes
   const avisos = [];
-  if (!d.costo_cargado) avisos.push('⚠️ Sin costo cargado en Rentabilidad → no se puede cerrar el margen neto.');
+  if (!d.costo_cargado) avisos.push('⚠️ Sin costo cargado en Rentabilidad → no se puede cerrar la contribución marginal.');
   if (!d.comision_disponible) avisos.push('⚠️ ML no devolvió la comisión estimada para este ítem.');
   if (d.envio == null) avisos.push('ℹ️ Sin muestra de envío reciente (sin ventas en 180 días) → envío asumido $0.');
   else if (d.envio_fuente) avisos.push(`ℹ️ Envío tomado de: ${d.envio_fuente}.`);
@@ -15848,7 +15848,7 @@ function renderPromoDesglose(d) {
       ${line('Publicidad (imputada)', d.publicidad, '#ff9100', true)}
       ${line('Costo (CMV)', d.costo, '#ff9100', true)}
       <div style="display:flex;justify-content:space-between;padding:9px 0;margin-top:2px;border-top:2px solid var(--border)">
-        <span style="font-weight:700">Margen neto / unidad</span>
+        <span style="font-weight:700">Contribución marginal / unidad</span>
         <span style="font-weight:800;font-size:15px;color:${rentColor};font-variant-numeric:tabular-nums">${fmt(d.margen_neto)}${d.rentabilidad_neta_pct != null ? ` &nbsp;(${d.rentabilidad_neta_pct}%)` : ''}</span>
       </div>
     </div>
