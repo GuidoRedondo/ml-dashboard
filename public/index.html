@@ -963,6 +963,15 @@ tbody td {
         <div class="kpi-card"><div class="kpi-label">📊 CONVERSIÓN</div><div class="kpi-value" id="kpiConv">—</div><div class="kpi-delta" id="kpiConvDelta"></div><div class="kpi-sub" id="kpiConvSub">Ventas / Visitas</div></div>
       </div>
 
+      <!-- BLOQUE 1.5: Proyección fin de mes -->
+      <div style="font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.08em;margin-bottom:8px">🔮 PROYECCIÓN FIN DE MES · <span id="proyMesNombre">—</span></div>
+      <div class="kpi-grid" style="grid-template-columns:repeat(3,1fr);margin-bottom:6px">
+        <div class="kpi-card"><div class="kpi-label">🧾 FACTURACIÓN PROYECTADA</div><div class="kpi-value" id="kpiProyFact">—</div><div class="kpi-sub" id="kpiProyFactSub">Estimada a fin de mes</div></div>
+        <div class="kpi-card"><div class="kpi-label">💸 INVERSIÓN ADS PROYECTADA</div><div class="kpi-value" id="kpiProyInv">—</div><div class="kpi-sub" id="kpiProyInvSub">Gasto en Ads a fin de mes</div></div>
+        <div class="kpi-card"><div class="kpi-label">📣 TACOS PROYECTADO</div><div class="kpi-value" id="kpiProyTacos">—</div><div class="kpi-sub">Inversión / Facturación proy.</div></div>
+      </div>
+      <div id="proyMesNota" style="font-size:11px;color:var(--muted);margin-bottom:16px"></div>
+
       <!-- BLOQUE 2: Publicidad -->
       <div style="font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.08em;margin-bottom:8px">📣 PUBLICIDAD</div>
       <div class="kpi-grid" style="grid-template-columns:repeat(5,1fr);margin-bottom:16px">
@@ -2638,6 +2647,7 @@ async function loadDashboardData() {
 
   updateDashboard();
   loadEvolucionSemanal();
+  loadProyeccionMes();
   showToast('✅ Datos actualizados');
   if (document.getElementById('page-ads')?.classList.contains('active')) loadAds();
 }
@@ -3189,6 +3199,60 @@ async function loadAllData() {
 
   updateDashboard();
   showToast('✅ Datos actualizados');
+}
+
+// Proyección fin de mes (facturación + inversión en Ads) para el dashboard principal.
+// Independiente del período filtrado: toma lo REAL del 1° del mes hasta AYER (días
+// completos), saca el ritmo diario y lo proyecta a fin de mes. El día en curso se
+// excluye por estar parcial y distorsionar el promedio. Mismo criterio que Publicidad.
+async function loadProyeccionMes() {
+  const elFact = document.getElementById('kpiProyFact');
+  if (!elFact) return;
+  const cuentas = state.accounts.filter(a => a.id);
+  const setTxt = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
+  const fmt$ = n => (n > 0 ? '$' + Math.round(n).toLocaleString('es-AR') : '$0');
+  if (!cuentas.length) {
+    ['kpiProyFact','kpiProyInv','kpiProyTacos'].forEach(id => setTxt(id, '—'));
+    return;
+  }
+
+  const today = new Date();
+  const yr = today.getFullYear(), mo = today.getMonth();
+  const daysInMonth = new Date(yr, mo + 1, 0).getDate();
+  const dayOfMonth  = today.getDate();
+  const pad = n => String(n).padStart(2, '0');
+  const diasCompletos = Math.max(1, dayOfMonth - 1);   // hasta ayer; si es día 1, usa el día 1
+  const cutoffDay = Math.max(1, dayOfMonth - 1);
+  const monthFrom = `${yr}-${pad(mo + 1)}-01`;
+  const monthTo   = `${yr}-${pad(mo + 1)}-${pad(cutoffDay)}`;
+  const meses = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
+  setTxt('proyMesNombre', meses[mo].toUpperCase());
+
+  let monthSpend = 0, monthRevenue = 0;
+  await Promise.all(cuentas.map(async acc => {
+    try {
+      const d = await apiCall('GET', `/api/ads?client_id=${acc.id}&date_from=${monthFrom}&date_to=${monthTo}`);
+      if (d?.summary) monthSpend += d.summary.spend || 0;
+    } catch(e) { /* best-effort */ }
+    try {
+      const rf = await apiCall('GET', `/api/facturacion-rango?client_id=${acc.id}&date_from=${monthFrom}&date_to=${monthTo}`);
+      if (rf?.amount) monthRevenue += rf.amount || 0;
+    } catch(e) { /* best-effort */ }
+  }));
+
+  const ritmoFact = monthRevenue / diasCompletos;
+  const ritmoInv  = monthSpend  / diasCompletos;
+  const projFact  = ritmoFact * daysInMonth;
+  const projInv   = ritmoInv  * daysInMonth;
+  const projTacos = projFact ? (projInv / projFact) * 100 : null;
+
+  setTxt('kpiProyFact', fmt$(projFact));
+  setTxt('kpiProyFactSub', `Ya facturado ${fmt$(monthRevenue)} · ritmo ${fmt$(ritmoFact)}/día`);
+  setTxt('kpiProyInv', fmt$(projInv));
+  setTxt('kpiProyInvSub', `Ya invertido ${fmt$(monthSpend)} · ritmo ${fmt$(ritmoInv)}/día`);
+  setTxt('kpiProyTacos', projTacos != null ? projTacos.toFixed(1) + '%' : '—');
+  const nota = document.getElementById('proyMesNota');
+  if (nota) nota.textContent = `Base: ${diasCompletos} ${diasCompletos === 1 ? 'día completo' : 'días completos'} (1° al ${cutoffDay} de ${meses[mo]}) proyectados a ${daysInMonth} días. El día en curso se excluye por estar parcial.`;
 }
 
 function updateDashboard() {
