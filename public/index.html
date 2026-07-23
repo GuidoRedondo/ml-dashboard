@@ -2526,8 +2526,18 @@ function renderClientSelector() {
     if (syncBtn) syncBtn.style.display = '';
     if (dropdown) {
       const activeClients = allClients.filter(c => c.active && c.ml_user_id);
-      dropdown.innerHTML = '<option value="">— Seleccioná una cuenta —</option>'
-        + activeClients.map(c => `<option value="${c.id}">${c.name}${!c.ml_user_id ? ' ⚠' : ''}</option>`).join('');
+      const opt = c => `<option value="${c.id}">${c.name}${!c.ml_user_id ? ' ⚠' : ''}</option>`;
+      const clientes   = activeClients.filter(c => c.tipo_cuenta !== 'prospecto');
+      const prospectos = activeClients.filter(c => c.tipo_cuenta === 'prospecto');
+      let html = '<option value="">— Seleccioná una cuenta —</option>';
+      if (prospectos.length) {
+        // Prospectos aparte y arriba: son el foco pre-reunión de conversión.
+        html += `<optgroup label="🔍 Prospectos (diagnóstico)">${prospectos.map(opt).join('')}</optgroup>`;
+        html += `<optgroup label="👥 Clientes">${clientes.map(opt).join('')}</optgroup>`;
+      } else {
+        html += clientes.map(opt).join('');
+      }
+      dropdown.innerHTML = html;
       // Restore selected if exists
       if (activeClientId) dropdown.value = activeClientId;
     }
@@ -2687,28 +2697,52 @@ function renderClientsList() {
       </div>
     </div>` : '';
 
-  const rows = allClients.map(c => {
+  // Prospectos primero para que salten a la vista (foco pre-conversión), luego clientes.
+  const ordenados = [...allClients].sort((a, b) => {
+    const pa = a.tipo_cuenta === 'prospecto' ? 0 : 1;
+    const pb = b.tipo_cuenta === 'prospecto' ? 0 : 1;
+    return pa !== pb ? pa - pb : (a.name || '').localeCompare(b.name || '');
+  });
+
+  const rows = ordenados.map(c => {
+    const esProspecto = c.tipo_cuenta === 'prospecto';
     const connected = c.ml_user_id ? `<span class="status s-ok">● Conectado</span>` : `<span class="status s-off">● Sin conectar</span>`;
     const expires = c.token_expires_at ? new Date(c.token_expires_at).toLocaleString('es-AR') : '—';
     const tokenStatus = !c.ml_user_id ? '—'
       : c.refresh_token
         ? `<span style="color:#16a34a;font-size:11px;font-weight:600">✓ Permanente</span>`
         : `<span style="color:#dc2626;font-size:11px;font-weight:600">⚠ Expira 6hs</span>`;
-    return `<tr>
+    const tipoBadge = esProspecto
+      ? `<span style="background:#ede9fe;color:#6d28d9;border:1px solid #c4b5fd;border-radius:999px;padding:2px 9px;font-size:11px;font-weight:700">🔍 Prospecto</span>`
+      : `<span style="background:#dcfce7;color:#15803d;border:1px solid #86efac;border-radius:999px;padding:2px 9px;font-size:11px;font-weight:700">👥 Cliente</span>`;
+    const tipoBtn = esProspecto
+      ? `<button class="sync-btn" style="color:#15803d;border-color:#15803d" onclick="setTipoCuenta(${c.id}, '${c.name.replace(/'/g,"\\'")}', 'cliente')">✅ Convertir en cliente</button>`
+      : `<button class="sync-btn" style="color:#6d28d9;border-color:#6d28d9" onclick="setTipoCuenta(${c.id}, '${c.name.replace(/'/g,"\\'")}', 'prospecto')">🔍 Marcar prospecto</button>`;
+    return `<tr${esProspecto ? ' style="background:rgba(109,40,217,0.04)"' : ''}>
       <td style="font-weight:600">${c.name}</td>
+      <td>${tipoBadge}</td>
       <td>${connected}</td>
       <td style="color:var(--muted);font-size:11px">${c.ml_user_id || '—'}</td>
       <td style="color:var(--muted);font-size:11px">${expires}</td>
       <td>${tokenStatus}</td>
-      <td style="display:flex;gap:8px">
+      <td style="display:flex;gap:8px;flex-wrap:wrap">
+        ${tipoBtn}
         ${!c.ml_user_id ? `<button class="sync-btn" onclick="generateAuthLink(${c.id})">🔗 Generar Link</button>` : `<button class="sync-btn" onclick="generateAuthLink(${c.id})">🔄 Reconectar</button>`}
-        <button class="sync-btn" style="color:#ff4d4d;border-color:#ff4d4d" onclick="deleteClient(${c.id}, '${c.name}')">🗑</button>
+        <button class="sync-btn" style="color:#ff4d4d;border-color:#ff4d4d" onclick="deleteClient(${c.id}, '${c.name.replace(/'/g,"\\'")}')">🗑</button>
       </td>
     </tr>`;
   }).join('');
 
-  el.innerHTML = warningBanner + `<div style="overflow-x:auto"><table>
-    <thead><tr><th>Cliente</th><th>Estado</th><th>ML User ID</th><th>Token expira</th><th>Renovación</th><th>Acciones</th></tr></thead>
+  const nProspectos = allClients.filter(c => c.tipo_cuenta === 'prospecto').length;
+  const infoProspectos = nProspectos ? `
+    <div style="background:#f5f3ff;border:1px solid #ddd6fe;border-radius:10px;padding:12px 16px;margin-bottom:16px;font-size:12px;color:#5b21b6">
+      <strong>🔍 ${nProspectos} ${nProspectos === 1 ? 'prospecto en diagnóstico' : 'prospectos en diagnóstico'}.</strong>
+      No corren procesos automáticos (alertas, bitácora, TACOS, publi) sobre ellos y solo vos los ves.
+      Cuando cierres la conversión, tocá <strong>✅ Convertir en cliente</strong>.
+    </div>` : '';
+
+  el.innerHTML = warningBanner + infoProspectos + `<div style="overflow-x:auto"><table>
+    <thead><tr><th>Cliente</th><th>Tipo</th><th>Estado</th><th>ML User ID</th><th>Token expira</th><th>Renovación</th><th>Acciones</th></tr></thead>
     <tbody>${rows}</tbody>
   </table></div>`;
 }
@@ -2740,6 +2774,18 @@ function copyAuthLink() {
 
 function openAuthLink() {
   window.open(document.getElementById('authLinkText').value, '_blank');
+}
+
+async function setTipoCuenta(id, name, tipo) {
+  const msg = tipo === 'prospecto'
+    ? `¿Marcar "${name}" como PROSPECTO?\n\nSe saca de todos los procesos automáticos (alertas, bitácora, TACOS, publi) y pasa a verse solo desde tu cuenta admin, agrupado aparte. El diagnóstico manual (dashboard, Warren, Steve, P&L) sigue funcionando igual.`
+    : `¿Convertir "${name}" en CLIENTE pleno?\n\nEntra a todos los procesos automáticos de control de métricas y pasa a ser visible para todo el equipo.`;
+  if (!confirm(msg)) return;
+  const r = await apiCall('PATCH', `/api/clients/${id}/tipo-cuenta`, { tipo_cuenta: tipo });
+  if (r && r.ok) {
+    showToast(tipo === 'prospecto' ? '🔍 Marcado como prospecto' : '✅ Convertido en cliente');
+    await loadClients();
+  }
 }
 
 async function deleteClient(id, name) {

@@ -381,6 +381,13 @@ async function initDB() {
       -- Gate por cliente: el motor solo procesa clientes con publi_activa=true.
       -- Default false => se activa de a uno, nadie entra sin prenderlo.
       ALTER TABLE clients ADD COLUMN IF NOT EXISTS publi_activa BOOLEAN DEFAULT false;
+      -- Prospectos: cuentas que habilitaron vista en la app pero todavía NO son clientes.
+      -- Objetivo único = diagnosticarlas antes de la reunión de conversión. Quedan afuera de
+      -- TODOS los procesos automáticos de control de métricas (alertas, bitácora, TACOS, publi),
+      -- pero conservan dashboard/Warren/Steve/P&L manual y el refresh de token (infra, no control).
+      -- 'cliente' (default) => cuenta plena. 'prospecto' => en diagnóstico. Solo admin las ve.
+      ALTER TABLE clients ADD COLUMN IF NOT EXISTS tipo_cuenta VARCHAR(20) DEFAULT 'cliente';
+      UPDATE clients SET tipo_cuenta = 'cliente' WHERE tipo_cuenta IS NULL;
       -- Valores estructurados para poder EJECUTAR (hoy solo hay accion_sugerida en texto libre).
       -- valor_actual:    estado de la campaña al generar la sugerencia, ej {"budget":5000,"acos_target":15,"status":"active"}
       -- valor_propuesto: SOLO el campo que cambia, ej {"budget":5750}  ← esto es lo que se PUTea a ML
@@ -705,15 +712,17 @@ app.get('/api/clients', requireAuth, async (req, res) => {
     if (req.user.role === 'cliente' && req.user.client_id) {
       // Cliente solo ve su propia cuenta
       query = `SELECT id, name, ml_user_id, site_id, active, token_expires_at, updated_at,
-               roas_target, tasa_iibb_pct, condicion_iva, publi_activa,
+               roas_target, tasa_iibb_pct, condicion_iva, publi_activa, tipo_cuenta,
                (refresh_token IS NOT NULL AND refresh_token != '') AS has_refresh_token
                FROM clients WHERE id = $1`;
       params = [req.user.client_id];
     } else {
+      // Los prospectos (cuentas en diagnóstico pre-conversión) solo son visibles para admin.
+      const soloClientes = req.user.role === 'admin' ? '' : `WHERE tipo_cuenta = 'cliente'`;
       query = `SELECT id, name, ml_user_id, site_id, active, token_expires_at, updated_at,
-               roas_target, tasa_iibb_pct, condicion_iva, publi_activa,
+               roas_target, tasa_iibb_pct, condicion_iva, publi_activa, tipo_cuenta,
                (refresh_token IS NOT NULL AND refresh_token != '') AS has_refresh_token
-               FROM clients ORDER BY name`;
+               FROM clients ${soloClientes} ORDER BY name`;
     }
     const result = await pool.query(query, params);
     const rows = result.rows.map(r => ({ ...r, refresh_token: r.has_refresh_token }));
@@ -2310,7 +2319,7 @@ async function runAlertEngine({ forceNotify = false, tipo = 'auto' } = {}) {
   console.log('[ALERTAS] Iniciando evaluación —', new Date().toISOString());
   try {
     const clients = await pool.query(
-      `SELECT * FROM clients WHERE active = true AND access_token IS NOT NULL ORDER BY name`
+      `SELECT * FROM clients WHERE active = true AND access_token IS NOT NULL AND tipo_cuenta = 'cliente' ORDER BY name`
     );
     const evaluators = [
       evalRuleCaidaVentas,
@@ -9891,7 +9900,8 @@ async function checkBitacoraVencimientos() {
        JOIN clients c ON c.id = b.client_id
        WHERE b.fecha_venc::DATE = $1
          AND b.estado != 'resuelto'
-         AND b.asignado_a IS NOT NULL`,
+         AND b.asignado_a IS NOT NULL
+         AND c.tipo_cuenta = 'cliente'`,
       [hoy]
     );
     for (const entry of r.rows) {
@@ -10987,7 +10997,7 @@ async function runPubliAnalyzer({ tipo = 'auto' } = {}) {
   try {
     // Gate opt-in: solo clientes con publi_activa=true (default false). Arranca apagado para todos
     // hasta que se prenda cliente por cliente vía PATCH /api/clients/:id/publi-activa.
-    const clients = await pool.query(`SELECT * FROM clients WHERE active=true AND access_token IS NOT NULL AND publi_activa = true ORDER BY name`);
+    const clients = await pool.query(`SELECT * FROM clients WHERE active=true AND access_token IS NOT NULL AND publi_activa = true AND tipo_cuenta = 'cliente' ORDER BY name`);
     const runStart = (await pool.query('SELECT NOW() AS now')).rows[0].now;   // reloj de la DB para contar lo nuevo
     let totalDecisiones = 0;
     for (const client of clients.rows) {
@@ -11135,6 +11145,20 @@ app.patch('/api/clients/:id/publi-activa', requireAuth, async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
+// Tipo de cuenta: 'cliente' (plena) o 'prospecto' (en diagnóstico pre-conversión).
+// Solo admin. Marcar 'prospecto' la saca de todos los automáticos de control de métricas;
+// volver a 'cliente' ("Convertir en cliente") la reintegra a todos los procesos.
+app.patch('/api/clients/:id/tipo-cuenta', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { tipo_cuenta } = req.body;
+    if (!['cliente', 'prospecto'].includes(tipo_cuenta)) {
+      return res.status(400).json({ error: "tipo_cuenta debe ser 'cliente' o 'prospecto'" });
+    }
+    await pool.query('UPDATE clients SET tipo_cuenta=$1, updated_at=NOW() WHERE id=$2', [tipo_cuenta, req.params.id]);
+    res.json({ ok: true, tipo_cuenta });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
 app.patch('/api/clients/:id/iibb-tasa', requireAuth, async (req, res) => {
   try {
     const { tasa_iibb_pct } = req.body;
@@ -11186,7 +11210,7 @@ app.all('/api/publi-analyzer/cron', async (req, res) => {
 // ── ANÁLISIS TACOS 90 DÍAS — todos los clientes ────────────────────────────
 app.get('/api/admin/tacos-report', requireAuth, requireAdmin, async (req, res) => {
   try {
-    const clients = (await pool.query(`SELECT id, name FROM clients ORDER BY name`)).rows;
+    const clients = (await pool.query(`SELECT id, name FROM clients WHERE tipo_cuenta = 'cliente' ORDER BY name`)).rows;
     const now = new Date();
     const from90 = new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000);
     const fmt = d => d.toISOString().slice(0,10);
