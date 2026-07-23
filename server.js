@@ -1207,6 +1207,12 @@ async function fetchAllOrders(uid, headers, fromStr, toStr) {
   try {
     const base = `${ML_API}/orders/search?seller=${uid}&order.status=paid&sort=date_desc&limit=50&order.date_created.from=${encodeURIComponent(fromStr)}&order.date_created.to=${encodeURIComponent(toStr)}`;
     const first = await fetch(base, { headers }).then(r => r.json());
+    // ok = la API respondió una búsqueda válida (trae paging y no es un error).
+    // Un resultado legítimamente vacío trae paging:{total:0} => ok:true, amount 0.
+    // Un token caído / error de ML NO trae paging => ok:false. Sirve para que los
+    // consumidores distingan "no vendió" de "no pude leer" y no confundan $0 real
+    // con $0 por falla (ver alerta caida_ventas).
+    const ok = !first.error && !!first.paging;
     const total = (first.paging && first.paging.total) || 0;
     let all = first.results || [];
     let amount = 0;
@@ -1221,8 +1227,8 @@ async function fetchAllOrders(uid, headers, fromStr, toStr) {
         batch.forEach(p => { if (p.results) { p.results.forEach(o => { amount += parseFloat(o.total_amount)||0; }); all = all.concat(p.results); } });
       }
     }
-    return { orders: all, amount };
-  } catch(e) { return { orders: [], amount: 0 }; }
+    return { orders: all, amount, ok };
+  } catch(e) { return { orders: [], amount: 0, ok: false }; }
 }
 
 // ── P&L ORDERS — criterio Método Redondo ──────────────────────────────────────
@@ -1686,6 +1692,13 @@ async function evalRuleCaidaVentas(client) {
       fetchAllOrders(uid, headers, fmt(cur7From), fmt(now)),
       fetchAllOrders(uid, headers, fmt(prev28From), fmt(cur7From)),
     ]);
+    // No alarmar si la lectura de órdenes falló (token caído, error de ML, rate limit):
+    // ahí el $0 no es una caída real sino datos que no se pudieron leer, y daría el
+    // clásico "caída 100%" fantasma. Solo evaluamos con ambas ventanas leídas OK.
+    if (!cur.ok || !prev.ok) {
+      console.warn(`[ALERTA caida_ventas] ${client.name}: lectura de órdenes incompleta (cur.ok=${cur.ok}, prev.ok=${prev.ok}) — se saltea para no generar falsa alarma`);
+      return null;
+    }
     const cur7Rev = cur.orders.reduce((s,o) => s + (parseFloat(o.total_amount)||0), 0);
     const prev4Avg = prev.orders.reduce((s,o) => s + (parseFloat(o.total_amount)||0), 0) / 4;
     if (prev4Avg <= 0) return null;
