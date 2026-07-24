@@ -476,6 +476,23 @@ async function initDB() {
       PRIMARY KEY (client_id, mla_id, date_from, date_to)
     );
     CREATE INDEX IF NOT EXISTS idx_ml_visitas_fetched ON ml_visitas_cache(fetched_at);
+    CREATE TABLE IF NOT EXISTS ml_stock_cache (
+      client_id     INTEGER NOT NULL,
+      mla_id        VARCHAR(20) NOT NULL,
+      available_qty INTEGER,
+      logistic_type VARCHAR(30),
+      title         TEXT,
+      date_created  TIMESTAMP,
+      stock_error   BOOLEAN DEFAULT FALSE,
+      fetched_at    TIMESTAMP DEFAULT NOW(),
+      PRIMARY KEY (client_id, mla_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_ml_stock_fetched ON ml_stock_cache(fetched_at);
+    CREATE TABLE IF NOT EXISTS ciclo_vida_cache (
+      client_id  INTEGER PRIMARY KEY,
+      data       JSONB NOT NULL,
+      fetched_at TIMESTAMP DEFAULT NOW()
+    );
   `);
 
   // Create default admin if not exists (password: admin123 - change after first login)
@@ -5885,6 +5902,278 @@ app.get('/api/reporte/visitas', requireAuth, async (req, res) => {
     });
   } catch(e) {
     console.error('[/api/reporte/visitas]', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── CICLO DE VIDA DE PUBLICACIONES — Performance > Ciclo de Vida ──────────────
+// Segmenta cada publicación por su ritmo de ventas en una ventana móvil de 30 días
+// y la cruza con stock disponible para detectar riesgo de quiebre y capital
+// inmovilizado. Todo el cálculo vive acá: el front solo pinta.
+//
+// Órdenes por item_id NO están persistidas: se derivan en vivo de fetchAllOrders
+// (mismo patrón que /api/reporte/visitas). Para no golpear TODA la paginación de
+// órdenes de ML en cada carga (lento + rate limit en cuentas Platinum), el
+// RESULTADO COMPLETO ya segmentado se cachea en ciclo_vida_cache (TTL 12h). El
+// stock (available_quantity + logística + date_created) se cachea aparte en
+// ml_stock_cache (TTL 12h) porque cambia a otro ritmo. ?force_refresh=true saltea
+// ambos caches (botón 🔄 de la UI, para forzar datos frescos en una call).
+//
+// Umbrales configurables (punto de partida; se afinan con datos reales de un
+// cliente). NO hardcodear estos números en el medio de la lógica.
+const CV_UMBRAL_NACIENTE_MAX  = 5;    // 1..5 órdenes/30d  → naciente
+const CV_UMBRAL_NEGOCIO_MIN   = 6;    // 6+ órdenes/30d    → negocio
+const CV_COB_CRITICA_NEGOCIO  = 15;   // < 15 días cobertura → alerta quiebre
+const CV_COB_CRITICA_NACIENTE = 10;   // < 10 días cobertura → alerta corte de envión
+const CV_STOCK_TTL_MS         = 12 * 60 * 60 * 1000;
+const CV_RESULT_TTL_MS        = 12 * 60 * 60 * 1000;
+
+app.get('/api/publicaciones/ciclo-vida', requireAuth, async (req, res) => {
+  try {
+    const clientId = parseInt(req.query.client_id);
+    if (!clientId) return res.status(400).json({ error: 'client_id requerido' });
+    const forceRefresh = String(req.query.force_refresh || '').toLowerCase() === 'true';
+
+    // 0. Cache del resultado completo ya segmentado (TTL 12h).
+    if (!forceRefresh) {
+      const cached = await pool.query(
+        'SELECT data, fetched_at FROM ciclo_vida_cache WHERE client_id=$1', [clientId]
+      );
+      if (cached.rows.length) {
+        const age = Date.now() - new Date(cached.rows[0].fetched_at).getTime();
+        if (age < CV_RESULT_TTL_MS) {
+          const data = cached.rows[0].data;
+          data.metadatos = data.metadatos || {};
+          data.metadatos.desde_cache = true;
+          data.metadatos.cache_age_hours = +(age / 3600000).toFixed(2);
+          return res.json(data);
+        }
+      }
+    }
+
+    const token = await getClientToken(clientId);
+    if (!token) return res.status(403).json({ error: 'Cliente sin token ML' });
+    const headers = { Authorization: `Bearer ${token}` };
+    const cr = await pool.query('SELECT ml_user_id FROM clients WHERE id=$1', [clientId]);
+    const uid = cr.rows[0] && cr.rows[0].ml_user_id;
+    if (!uid) return res.status(400).json({ error: 'Cliente sin ml_user_id' });
+
+    const nowMs   = Date.now();
+    const today   = new Date(nowMs).toISOString().slice(0, 10);
+    const from30  = new Date(nowMs - 30 * 86400000).toISOString().slice(0, 10);
+    const win30Ms = nowMs - 30 * 86400000;
+    const fmt = d => new Date(d).toISOString().slice(0, 19) + '.000-00:00';
+
+    // 1. Órdenes de los últimos 30 días → agregado por item_id.
+    //    ordenes = órdenes distintas que contienen el ítem; unidades = suma quantity.
+    const { orders, ok: ordersOk } = await fetchAllOrders(
+      uid, headers, fmt(from30 + 'T00:00:00'), fmt(today + 'T23:59:59')
+    );
+    const salesByMla = {};
+    const orderIdsByMla = {};
+    orders.forEach(o => {
+      const orderId = o.id;
+      (o.order_items || []).forEach(oi => {
+        const id = oi.item && oi.item.id;
+        if (!id) return;
+        if (!salesByMla[id]) salesByMla[id] = { ordenes: 0, unidades: 0, title: (oi.item && oi.item.title) || id };
+        if (!orderIdsByMla[id]) orderIdsByMla[id] = new Set();
+        if (!orderIdsByMla[id].has(orderId)) { orderIdsByMla[id].add(orderId); salesByMla[id].ordenes += 1; }
+        salesByMla[id].unidades += oi.quantity || 0;
+      });
+    });
+
+    // 2. Universo = activos + pausados ∪ los que vendieron en la ventana.
+    async function paginateItems(status) {
+      const ids = []; let off = 0;
+      while (true) {
+        const r = await fetch(`${ML_API}/users/${uid}/items/search?status=${status}&limit=100&offset=${off}`, { headers })
+          .then(r => r.json()).catch(() => ({}));
+        const batch = r.results || [];
+        ids.push(...batch);
+        const total = (r.paging && r.paging.total) || 0;
+        if (batch.length < 100 || ids.length >= total) break;
+        off += 100; if (off > 5000) break;
+      }
+      return ids;
+    }
+    const [activeOnly, pausedOnly] = await Promise.all([paginateItems('active'), paginateItems('paused')]);
+    const universo = [...new Set([...activeOnly, ...pausedOnly, ...Object.keys(salesByMla)])];
+
+    // 3. Stock + logística + date_created — cache 12h en ml_stock_cache.
+    //    Un ítem que falla en el multiget se devuelve igual con stock null y
+    //    stock_error=true; NUNCA rompe el response completo (limitaciones de app
+    //    no certificada: algunos ítems tiran 403/no traen body).
+    const stockRows = await pool.query(
+      `SELECT mla_id, available_qty, logistic_type, title, date_created, stock_error, fetched_at
+         FROM ml_stock_cache WHERE client_id=$1 AND mla_id = ANY($2)`,
+      [clientId, universo]
+    );
+    const stockMap = {};
+    stockRows.rows.forEach(r => {
+      const age = nowMs - new Date(r.fetched_at).getTime();
+      if (!forceRefresh && age < CV_STOCK_TTL_MS && !r.stock_error) {
+        stockMap[r.mla_id] = {
+          stock: r.available_qty, logistic_type: r.logistic_type,
+          title: r.title, date_created: r.date_created, error: false,
+        };
+      }
+    });
+    const faltantes = universo.filter(id => stockMap[id] === undefined);
+    const nuevos = {}; // solo lo refrescado, para el upsert
+    const batches = [];
+    for (let i = 0; i < faltantes.length; i += 20) batches.push(faltantes.slice(i, i + 20));
+    const BATCH_CONCURRENCY = 5;
+    for (let i = 0; i < batches.length; i += BATCH_CONCURRENCY) {
+      const group = batches.slice(i, i + BATCH_CONCURRENCY);
+      await Promise.all(group.map(async batch => {
+        const url = `${ML_API}/items?ids=${batch.join(',')}&attributes=id,title,available_quantity,shipping,date_created`;
+        let arr = null;
+        try { arr = await fetch(url, { headers }).then(r => r.json()); } catch(_) { arr = null; }
+        const byId = {};
+        (Array.isArray(arr) ? arr : []).forEach(entry => {
+          if (entry && entry.code === 200 && entry.body && entry.body.id) byId[entry.body.id] = entry.body;
+        });
+        batch.forEach(id => {
+          const b = byId[id];
+          if (b) {
+            stockMap[id] = {
+              stock: b.available_quantity ?? null,
+              logistic_type: (b.shipping && b.shipping.logistic_type) || null,
+              title: b.title || null,
+              date_created: b.date_created || null,
+              error: false,
+            };
+          } else {
+            stockMap[id] = { stock: null, logistic_type: null, title: null, date_created: null, error: true };
+          }
+          nuevos[id] = stockMap[id];
+        });
+      }));
+    }
+    // Upsert de los refrescados al cache de stock.
+    const nuevosEntries = Object.entries(nuevos);
+    for (let i = 0; i < nuevosEntries.length; i += 100) {
+      const chunk = nuevosEntries.slice(i, i + 100);
+      const ph = chunk.map((_, k) =>
+        `($${k*7+1},$${k*7+2},$${k*7+3},$${k*7+4},$${k*7+5},$${k*7+6},$${k*7+7},NOW())`).join(',');
+      const flat = chunk.flatMap(([id, v]) => [clientId, id, v.stock, v.logistic_type, v.title, v.date_created, v.error]);
+      await pool.query(
+        `INSERT INTO ml_stock_cache (client_id, mla_id, available_qty, logistic_type, title, date_created, stock_error, fetched_at)
+         VALUES ${ph}
+         ON CONFLICT (client_id, mla_id) DO UPDATE SET
+           available_qty=EXCLUDED.available_qty, logistic_type=EXCLUDED.logistic_type,
+           title=EXCLUDED.title, date_created=EXCLUDED.date_created,
+           stock_error=EXCLUDED.stock_error, fetched_at=NOW()`,
+        flat
+      );
+    }
+
+    // 4. Segmentar + cobertura + acción sugerida (todo en backend).
+    const items = universo.map(id => {
+      const s  = salesByMla[id] || { ordenes: 0, unidades: 0, title: null };
+      const st = stockMap[id]   || { stock: null, logistic_type: null, title: null, date_created: null, error: true };
+      const ordenes30d  = s.ordenes;
+      const unidades30d = s.unidades;
+      const stock       = st.error ? null : st.stock;
+      const logistic    = st.logistic_type;
+      const title       = s.title || st.title || id;
+
+      // esNueva = publicación creada dentro de la ventana (proxy de "primera venta
+      // reciente" — decisión de producto). Solo cuenta si además tuvo ≥1 venta:
+      // una pub nueva sin ventas es capital que todavía no rota → dormida.
+      const esNueva = ordenes30d >= 1 && st.date_created
+        ? (new Date(st.date_created).getTime() >= win30Ms)
+        : false;
+
+      // Segmento (ventana móvil 30d). Precedencia: negocio > naciente > dormida.
+      // NACIENTE_MAX documenta el tope "sano" de naciente; con los umbrales
+      // contiguos por defecto (5/6) equivale a NEGOCIO_MIN-1. Si se configura un
+      // hueco entre umbrales, los ítems del hueco con ventas caen igual en naciente
+      // (aún no llegan a negocio) para no perder ninguna publicación con rotación.
+      let segmento;
+      if (ordenes30d >= CV_UMBRAL_NEGOCIO_MIN) segmento = 'negocio';
+      else if (ordenes30d >= 1 && (ordenes30d <= CV_UMBRAL_NACIENTE_MAX || esNueva)) segmento = 'naciente';
+      else if (ordenes30d >= 1) segmento = 'naciente';
+      else segmento = 'dormida';
+
+      // Cobertura en días = stock / (unidades30d / 30).
+      // Sin rotación (unidades30d === 0) → cobertura ∞ (null + flag).
+      // Stock ilegible (stock === null) → cobertura null (no se pudo calcular).
+      let cobertura_dias = null;
+      let sin_rotacion = false;
+      if (unidades30d === 0) sin_rotacion = true;
+      else if (stock != null) cobertura_dias = +(stock / (unidades30d / 30)).toFixed(1);
+
+      // Logística legible.
+      let logistica;
+      if (logistic === 'fulfillment') logistica = 'Full';
+      else if (logistic === 'flex' || logistic === 'self_service') logistica = 'Flex';
+      else if (logistic) logistica = 'Otro';
+      else logistica = '—';
+
+      // Acción sugerida (alertas cruzadas segmento × cobertura × logística).
+      let accion = '';
+      if (segmento === 'negocio' && cobertura_dias != null && cobertura_dias < CV_COB_CRITICA_NEGOCIO) {
+        accion = '⚠️ Riesgo de quiebre — reponer YA';
+      } else if (segmento === 'naciente' && cobertura_dias != null && cobertura_dias < CV_COB_CRITICA_NACIENTE) {
+        accion = 'Reponer antes de cortar el envión';
+      } else if (segmento === 'dormida' && stock != null && stock > 0) {
+        accion = 'Capital inmovilizado — corregir publicación o liquidar';
+        if (logistic === 'fulfillment') accion += ' (paga almacenamiento)';
+      }
+
+      return {
+        mla_id: id, title, segmento,
+        ordenes_30d: ordenes30d, unidades_30d: unidades30d,
+        stock, stock_error: st.error,
+        cobertura_dias, sin_rotacion,
+        logistica, logistic_type: logistic, es_nueva: esNueva,
+        accion,
+      };
+    });
+
+    const resumen = {
+      dormidas:  items.filter(i => i.segmento === 'dormida').length,
+      nacientes: items.filter(i => i.segmento === 'naciente').length,
+      negocio:   items.filter(i => i.segmento === 'negocio').length,
+    };
+
+    const payload = {
+      items,
+      resumen,
+      metadatos: {
+        total_items: items.length,
+        con_error_stock: items.filter(i => i.stock_error).length,
+        orders_ok: ordersOk,
+        ventana_dias: 30,
+        umbrales: {
+          naciente_max: CV_UMBRAL_NACIENTE_MAX,
+          negocio_min: CV_UMBRAL_NEGOCIO_MIN,
+          cob_critica_negocio: CV_COB_CRITICA_NEGOCIO,
+          cob_critica_naciente: CV_COB_CRITICA_NACIENTE,
+        },
+        fetched_at: new Date(nowMs).toISOString(),
+        desde_cache: false,
+        cache_age_hours: 0,
+      },
+    };
+
+    // Solo cacheamos si pudimos leer las órdenes. Si la lectura de órdenes falló
+    // (ordersOk=false), TODO se vería como "dormida" (0 órdenes) → falso positivo
+    // masivo; no persistimos ese estado y dejamos que el próximo intento reintente
+    // (mismo criterio que la alerta de caída de ventas).
+    if (ordersOk) {
+      await pool.query(
+        `INSERT INTO ciclo_vida_cache (client_id, data, fetched_at) VALUES ($1,$2,NOW())
+         ON CONFLICT (client_id) DO UPDATE SET data=EXCLUDED.data, fetched_at=NOW()`,
+        [clientId, JSON.stringify(payload)]
+      );
+    }
+
+    res.json(payload);
+  } catch(e) {
+    console.error('[/api/publicaciones/ciclo-vida]', e.message);
     res.status(500).json({ error: e.message });
   }
 });

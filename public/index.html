@@ -1077,6 +1077,10 @@ tbody td {
           style="padding:8px 18px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-2px;font-family:var(--font-b)">
           💳 Formas de pago
         </button>
+        <button id="tab-perf-ciclo-vida" onclick="switchPerfTab('ciclo-vida')"
+          style="padding:8px 18px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-2px;font-family:var(--font-b)">
+          🔄 Ciclo de Vida
+        </button>
       </div>
       <!-- Tab Análisis -->
       <div id="perf-tab-analisis">
@@ -1169,6 +1173,25 @@ tbody td {
           <button onclick="loadFormasPago(true)" class="sync-btn" style="margin-left:auto">🔄 Actualizar</button>
         </div>
         <div id="formasPagoContent"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Seleccioná la pestaña Formas de pago para cargar.</div></div>
+      </div>
+      <!-- Tab Ciclo de Vida -->
+      <div id="perf-tab-ciclo-vida" style="display:none">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap">
+          <div style="font-size:12px;color:var(--muted);max-width:640px">Segmenta cada publicación por su ritmo de ventas (ventana móvil de 30 días) y lo cruza con el stock para detectar riesgo de quiebre y capital inmovilizado.</div>
+          <button onclick="loadCicloVida(true)" class="sync-btn" style="margin-left:auto">🔄 Refrescar datos</button>
+          <span id="cvLastUpdate" style="font-size:11px;color:var(--muted)"></span>
+        </div>
+        <div id="cvCards" style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px"></div>
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap">
+          <input id="cvSearch" type="text" placeholder="Buscar por título o MLA…"
+            oninput="renderCicloVidaTable()"
+            style="flex:1;min-width:200px;padding:7px 12px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px;outline:none">
+          <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);cursor:pointer">
+            <input id="cvSoloAccion" type="checkbox" onchange="renderCicloVidaTable()" style="margin:0"> Solo con acción sugerida
+          </label>
+          <span id="cvCount" style="font-size:11px;color:var(--muted)"></span>
+        </div>
+        <div id="cvTableWrap"></div>
       </div>
     </div>
 
@@ -4833,7 +4856,7 @@ let _perfPubModeFilter = null;
 
 function switchPerfTab(tab) {
   _perfActiveTab = tab;
-  ['analisis','publicaciones','conversion','ventas-hora','seguimiento','opiniones','formas-pago'].forEach(t => {
+  ['analisis','publicaciones','conversion','ventas-hora','seguimiento','opiniones','formas-pago','ciclo-vida'].forEach(t => {
     const el  = document.getElementById(`perf-tab-${t}`);
     const btn = document.getElementById(`tab-perf-${t}`);
     if (el)  el.style.display  = t === tab ? '' : 'none';
@@ -4843,12 +4866,13 @@ function switchPerfTab(tab) {
     }
   });
   const btnExport = document.getElementById('btnExportPerf');
-  if (btnExport) btnExport.style.display = (tab === 'publicaciones' || tab === 'ventas-hora' || tab === 'conversion' || tab === 'opiniones' || tab === 'formas-pago') ? 'none' : '';
+  if (btnExport) btnExport.style.display = (tab === 'publicaciones' || tab === 'ventas-hora' || tab === 'conversion' || tab === 'opiniones' || tab === 'formas-pago' || tab === 'ciclo-vida') ? 'none' : '';
   if (tab === 'publicaciones') { window._perfPubSearch = ''; loadSeguimientoMap(); renderPerfPublicaciones(); }
   if (tab === 'seguimiento') loadSeguimiento();
   if (tab === 'conversion') initConversionTab();
   if (tab === 'opiniones' && !_opinionesData) loadOpiniones();
   if (tab === 'formas-pago' && !window._formasPagoData) loadFormasPago(false);
+  if (tab === 'ciclo-vida' && !window._cvData) loadCicloVida(false);
   if (tab === 'ventas-hora') {
     const client = getActiveClient();
     const iframe = document.getElementById('iframe-ventas-hora');
@@ -5365,6 +5389,187 @@ function exportConversionExcel() {
   const dTo   = document.getElementById('convDateTo').value;
   const fname = `Conversion_${(client?.name||'cliente').replace(/\s+/g,'_')}_${dFrom}_a_${dTo}.xlsx`;
   XLSX.writeFile(wb, fname);
+}
+
+// ── TAB CICLO DE VIDA DE PUBLICACIONES ───────────────────────────────────────
+// Todo lo calcula el backend (/api/publicaciones/ciclo-vida). Acá solo pintamos:
+// 3 cards-filtro por segmento, tabla ordenable y acciones sugeridas.
+// Orden por defecto: cobertura ascendente → menor cobertura (mayor riesgo de
+// quiebre) arriba. Los "Sin rotación" (cobertura ∞) van SIEMPRE al fondo, tanto
+// asc como desc, para no ensuciar el top cuando buscás riesgo.
+let _cvSort = { col: 'cobertura_dias', dir: 1 };
+let _cvSegFilter = null; // 'dormida' | 'naciente' | 'negocio' | null
+
+const _CV_SEG = {
+  dormida:  { label: 'Dormidas',  emoji: '😴', bg: '#f1f5f9', color: '#64748b', badgeBg: '#e2e8f0' },
+  naciente: { label: 'Nacientes', emoji: '🌱', bg: '#fef9c3', color: '#a16207', badgeBg: '#fef08a' },
+  negocio:  { label: 'Negocio',   emoji: '🚀', bg: '#dcfce7', color: '#15803d', badgeBg: '#bbf7d0' },
+};
+
+async function loadCicloVida(force) {
+  const client = getActiveClient();
+  const cards = document.getElementById('cvCards');
+  const wrap  = document.getElementById('cvTableWrap');
+  const lastUpd = document.getElementById('cvLastUpdate');
+  if (!client) {
+    cards.innerHTML = '';
+    wrap.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Seleccioná un cliente</div>';
+    return;
+  }
+  cards.innerHTML = '';
+  lastUpd.textContent = '';
+  wrap.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">⏳ Segmentando publicaciones y cruzando stock… puede tardar la primera vez (recorre las órdenes de los últimos 30 días)</div>';
+  try {
+    const qs = `client_id=${client.id}${force ? '&force_refresh=true' : ''}`;
+    const data = await apiCall('GET', `/api/publicaciones/ciclo-vida?${qs}`);
+    if (!data || data.error) {
+      wrap.innerHTML = `<div style="color:#ef4444;font-size:13px;padding:20px">Error: ${(data && data.error) || 'sin respuesta'}</div>`;
+      return;
+    }
+    window._cvData = data;
+    _cvSegFilter = null;
+    renderCicloVidaCards();
+    renderCicloVidaTable();
+    const m = data.metadatos || {};
+    let msg = '';
+    if (m.fetched_at) {
+      msg = m.desde_cache
+        ? `Última actualización hace ${(m.cache_age_hours||0).toFixed(1)}h (cache)`
+        : 'Última actualización ahora';
+    }
+    if (m.orders_ok === false) msg = '⚠️ No pude leer las órdenes (token?) — segmentación no confiable. Revisá el token del cliente.';
+    if (m.con_error_stock > 0) msg += `${msg ? ' · ' : ''}${m.con_error_stock} ítem(s) sin stock legible`;
+    lastUpd.textContent = msg;
+    lastUpd.style.color = m.orders_ok === false ? '#ef4444' : 'var(--muted)';
+  } catch(e) {
+    wrap.innerHTML = `<div style="color:#ef4444;font-size:13px;padding:20px">Error: ${e.message}</div>`;
+  }
+}
+
+function _cvSetFilter(seg) {
+  _cvSegFilter = (_cvSegFilter === seg) ? null : seg;
+  renderCicloVidaCards();
+  renderCicloVidaTable();
+}
+
+function renderCicloVidaCards() {
+  const el = document.getElementById('cvCards');
+  const r = (window._cvData && window._cvData.resumen) || { dormidas: 0, nacientes: 0, negocio: 0 };
+  const counts = { dormida: r.dormidas, naciente: r.nacientes, negocio: r.negocio };
+  el.innerHTML = ['negocio','naciente','dormida'].map(seg => {
+    const cfg = _CV_SEG[seg];
+    const active = _cvSegFilter === seg;
+    return `
+      <div onclick="_cvSetFilter('${seg}')" title="Click para filtrar la tabla"
+        style="flex:1;min-width:180px;cursor:pointer;background:${active ? cfg.bg : 'var(--surface)'};
+        border:${active ? '2px' : '1px'} solid ${active ? cfg.color : 'var(--border)'};
+        border-radius:12px;padding:14px 16px;transition:all .12s">
+        <div style="font-size:11px;color:var(--muted);margin-bottom:4px">${cfg.emoji} ${cfg.label}${active ? ' · filtrando' : ''}</div>
+        <div style="font-size:26px;font-weight:700;color:${cfg.color};font-family:var(--font-b)">${(counts[seg]||0).toLocaleString('es-AR')}</div>
+      </div>`;
+  }).join('');
+}
+
+function _cvSortClick(col) {
+  if (_cvSort.col === col) _cvSort.dir = -_cvSort.dir;
+  else { _cvSort.col = col; _cvSort.dir = col === 'cobertura_dias' ? 1 : -1; }
+  renderCicloVidaTable();
+}
+
+function _cvCobColor(i) {
+  if (i.cobertura_dias == null) return 'var(--muted)';
+  if (i.segmento === 'negocio'  && i.cobertura_dias < 15) return '#ef4444';
+  if (i.segmento === 'naciente' && i.cobertura_dias < 10) return '#ef4444';
+  if (i.cobertura_dias < 30) return '#f59e0b';
+  return '#10b981';
+}
+
+function renderCicloVidaTable() {
+  const wrap = document.getElementById('cvTableWrap');
+  const count = document.getElementById('cvCount');
+  if (!window._cvData) { wrap.innerHTML = ''; return; }
+  let items = (window._cvData.items || []).slice();
+  if (_cvSegFilter) items = items.filter(i => i.segmento === _cvSegFilter);
+  const search = (document.getElementById('cvSearch').value || '').trim().toLowerCase();
+  if (search) items = items.filter(i => (i.title || '').toLowerCase().includes(search) || (i.mla_id || '').toLowerCase().includes(search));
+  if (document.getElementById('cvSoloAccion').checked) items = items.filter(i => i.accion);
+
+  items.sort((a, b) => {
+    if (_cvSort.col === 'cobertura_dias') {
+      // ∞ (sin rotación / stock ilegible → cobertura null) SIEMPRE al fondo.
+      const na = a.cobertura_dias == null, nb = b.cobertura_dias == null;
+      if (na && nb) return 0;
+      if (na) return 1;
+      if (nb) return -1;
+      return _cvSort.dir * (a.cobertura_dias - b.cobertura_dias);
+    }
+    const ca = a[_cvSort.col], cb = b[_cvSort.col];
+    if (typeof ca === 'string') return _cvSort.dir * ca.localeCompare(cb || '');
+    return _cvSort.dir * ((ca || 0) - (cb || 0));
+  });
+
+  count.textContent = `${items.length} publicaciones`;
+  if (!items.length) {
+    wrap.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Sin resultados</div>';
+    return;
+  }
+
+  const esc = s => String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+  const arrow = col => _cvSort.col === col ? (_cvSort.dir < 0 ? ' ↓' : ' ↑') : '';
+  const th = (label, col, align) => col
+    ? `<th onclick="_cvSortClick('${col}')" style="padding:8px 10px;text-align:${align||'left'};cursor:pointer;user-select:none">${label}${arrow(col)}</th>`
+    : `<th style="padding:8px 10px;text-align:${align||'left'}">${label}</th>`;
+
+  const rows = items.map(i => {
+    const cfg = _CV_SEG[i.segmento] || _CV_SEG.dormida;
+    const badge = `<span style="background:${cfg.badgeBg};color:${cfg.color};border-radius:5px;padding:2px 8px;font-size:10px;font-weight:700;white-space:nowrap">${cfg.emoji} ${cfg.label}</span>${i.es_nueva ? ' <span style="background:#dbeafe;color:#1d4ed8;border-radius:5px;padding:2px 6px;font-size:9px;font-weight:700;white-space:nowrap">🆕 NUEVA</span>' : ''}`;
+    const link = `https://articulo.mercadolibre.com.ar/${i.mla_id.replace('MLA','MLA-')}`;
+    // Cobertura.
+    let cobCell;
+    if (i.sin_rotacion) cobCell = '<span style="color:var(--muted)" title="0 unidades vendidas en 30 días">Sin rotación</span>';
+    else if (i.cobertura_dias == null) cobCell = '<span style="color:var(--muted)" title="No se pudo leer el stock">—</span>';
+    else cobCell = `<span style="font-weight:700;color:${_cvCobColor(i)}">${i.cobertura_dias.toLocaleString('es-AR')} d</span>`;
+    // Stock.
+    const stockCell = i.stock_error
+      ? '<span style="color:#f59e0b" title="Stock ilegible (403 / sin body)">⚠️ s/dato</span>'
+      : (i.stock != null ? i.stock.toLocaleString('es-AR') : '—');
+    // Logística.
+    const logColor = i.logistica === 'Full' ? '#6d28d9' : i.logistica === 'Flex' ? '#2563eb' : 'var(--muted)';
+    // Acción.
+    const accColor = /quiebre/.test(i.accion) ? '#ef4444' : /envión/.test(i.accion) ? '#f59e0b' : /inmovilizado/.test(i.accion) ? '#b45309' : 'var(--muted)';
+    return `
+      <tr style="border-top:1px solid var(--border)">
+        <td style="padding:8px 10px;max-width:340px"><a href="${link}" target="_blank" style="color:var(--text);text-decoration:none" title="Abrir en ML">${esc(i.title)}</a></td>
+        <td style="padding:8px 10px;font-size:11px;white-space:nowrap"><span style="color:var(--muted);cursor:pointer" title="Click para copiar" onclick="copyMLA(this,'${i.mla_id}')">${i.mla_id}</span></td>
+        <td style="padding:8px 10px">${badge}</td>
+        <td style="padding:8px 10px;text-align:right">${(i.ordenes_30d||0).toLocaleString('es-AR')}</td>
+        <td style="padding:8px 10px;text-align:right">${(i.unidades_30d||0).toLocaleString('es-AR')}</td>
+        <td style="padding:8px 10px;text-align:right">${stockCell}</td>
+        <td style="padding:8px 10px;text-align:right">${cobCell}</td>
+        <td style="padding:8px 10px;text-align:center"><span style="color:${logColor};font-weight:600;font-size:12px">${i.logistica}</span></td>
+        <td style="padding:8px 10px;font-size:12px;color:${accColor};font-weight:${i.accion ? '600' : '400'}">${i.accion ? esc(i.accion) : '—'}</td>
+      </tr>`;
+  }).join('');
+
+  wrap.innerHTML = `
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden;overflow-x:auto;max-height:640px;overflow-y:auto">
+      <table style="width:100%;border-collapse:collapse;font-size:13px;color:var(--text)">
+        <thead style="position:sticky;top:0;background:var(--surface2);z-index:1">
+          <tr style="color:var(--muted);font-size:10px;text-transform:uppercase">
+            ${th('Título', 'title', 'left')}
+            ${th('MLA', 'mla_id', 'left')}
+            ${th('Segmento', 'segmento', 'left')}
+            ${th('Órdenes 30d', 'ordenes_30d', 'right')}
+            ${th('Unidades 30d', 'unidades_30d', 'right')}
+            ${th('Stock', 'stock', 'right')}
+            ${th('Cobertura', 'cobertura_dias', 'right')}
+            ${th('Logística', null, 'center')}
+            ${th('Acción sugerida', null, 'left')}
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
 }
 
 function renderPerfPublicaciones() {
