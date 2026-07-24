@@ -1179,6 +1179,7 @@ tbody td {
         <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap">
           <div style="font-size:12px;color:var(--muted);max-width:640px">Segmenta cada publicación por su ritmo de ventas (ventana móvil de 30 días) y lo cruza con el stock para detectar riesgo de quiebre y capital inmovilizado.</div>
           <button onclick="loadCicloVida(true)" class="sync-btn" style="margin-left:auto">🔄 Refrescar datos</button>
+          <button onclick="exportCicloVidaExcel()" class="sync-btn">📥 Excel</button>
           <span id="cvLastUpdate" style="font-size:11px;color:var(--muted)"></span>
         </div>
         <div id="cvCards" style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px"></div>
@@ -5570,6 +5571,51 @@ function renderCicloVidaTable() {
         <tbody>${rows}</tbody>
       </table>
     </div>`;
+}
+
+// Excel — exporta las publicaciones visibles (mismos filtros y orden que la tabla).
+function exportCicloVidaExcel() {
+  if (!window._cvData || !(window._cvData.items || []).length) { alert('No hay datos para exportar'); return; }
+  let items = (window._cvData.items || []).slice();
+  if (_cvSegFilter) items = items.filter(i => i.segmento === _cvSegFilter);
+  const search = (document.getElementById('cvSearch').value || '').trim().toLowerCase();
+  if (search) items = items.filter(i => (i.title || '').toLowerCase().includes(search) || (i.mla_id || '').toLowerCase().includes(search));
+  if (document.getElementById('cvSoloAccion').checked) items = items.filter(i => i.accion);
+  items.sort((a, b) => {
+    if (_cvSort.col === 'cobertura_dias') {
+      const na = a.cobertura_dias == null, nb = b.cobertura_dias == null;
+      if (na && nb) return 0;
+      if (na) return 1;
+      if (nb) return -1;
+      return _cvSort.dir * (a.cobertura_dias - b.cobertura_dias);
+    }
+    const ca = a[_cvSort.col], cb = b[_cvSort.col];
+    if (typeof ca === 'string') return _cvSort.dir * ca.localeCompare(cb || '');
+    return _cvSort.dir * ((ca || 0) - (cb || 0));
+  });
+  if (!items.length) { alert('No hay datos para exportar'); return; }
+
+  const segLabel = { dormida: 'Dormida', naciente: 'Naciente', negocio: 'Negocio' };
+  const rows = items.map(i => ({
+    'Título':        i.title || '',
+    'MLA':           i.mla_id,
+    'Link':          `https://articulo.mercadolibre.com.ar/${i.mla_id.replace('MLA','MLA-')}`,
+    'Segmento':      segLabel[i.segmento] || i.segmento,
+    'Nueva':         i.es_nueva ? 'Sí' : 'No',
+    'Órdenes 30d':   i.ordenes_30d || 0,
+    'Unidades 30d':  i.unidades_30d || 0,
+    'Stock':         i.stock_error ? 's/dato' : (i.stock != null ? i.stock : ''),
+    'Cobertura (días)': i.sin_rotacion ? 'Sin rotación' : (i.cobertura_dias != null ? i.cobertura_dias : ''),
+    'Logística':     i.logistica,
+    'Acción sugerida': i.accion || '',
+  }));
+  const ws = XLSX.utils.json_to_sheet(rows);
+  ws['!cols'] = [{wch:60},{wch:14},{wch:50},{wch:11},{wch:7},{wch:12},{wch:13},{wch:9},{wch:16},{wch:11},{wch:48}];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Ciclo de Vida');
+  const client = getActiveClient();
+  const fecha = new Date().toISOString().slice(0, 10);
+  XLSX.writeFile(wb, `CicloVida_${(client?.name||'cliente').replace(/\s+/g,'_')}_${fecha}.xlsx`);
 }
 
 function renderPerfPublicaciones() {
