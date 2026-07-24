@@ -6309,7 +6309,7 @@ function recalcFees() {
 // ── DESCUENTOS (Hotsale / Campañas) ────────────────────────────────────────
 let _descuentosData = null;
 let _descuentosSort = { col: 'revenue', asc: false };
-const DESCUENTOS_PRESETS = [3, 5, 10, 15, 20];
+const DESCUENTOS_PRESETS = [5, 10, 15, 20];
 
 function sortDescuentos(col) {
   if (_descuentosSort.col === col) _descuentosSort.asc = !_descuentosSort.asc;
