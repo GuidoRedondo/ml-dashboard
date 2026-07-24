@@ -4974,9 +4974,13 @@ app.get('/api/reporte/items-activos', requireAuth, async (req, res) => {
           const price      = Math.min(...candidates);
           const precioLista = origPrice && origPrice > price ? origPrice : (price < basePrice ? basePrice : null);
 
-          // Comisión + envío del vendedor desde listing_prices. La comisión ya viene
-          // "con cuotas" cuando el listing_type es Premium (gold_pro): ML codifica el
-          // costo del financiamiento en el tipo de publicación, no en un extra aparte.
+          // Comisión + envío del vendedor desde listing_prices.
+          // OJO: comPct = percentage_fee (la comisión PORCENTUAL pura), NO
+          // sale_fee_amount. El sale_fee_amount incluye el cargo fijo por venta
+          // (fixed_fee) que ML le carga a los ítems baratos (≤ $33k), y ese cargo
+          // fijo ya se computa aparte en el front (cargoFijoML). Usar el total
+          // duplicaba el cargo fijo e inflaba la comisión: una Clásica de precio
+          // bajo se veía ~24% (14.35% real + fijo), "como si tuviera cuotas".
           let comPct = null, envioUnit = null, comSource = null, envioSource = null;
           if (withFees && b.listing_type_id && price > 0) {
             try {
@@ -4991,8 +4995,10 @@ app.get('/api/reporte/items-activos', requireAuth, async (req, res) => {
               if (b.category_id) lp.set('category_id', b.category_id);
               const lpData = await fetch(`${ML_API}/sites/MLA/listing_prices?${lp}`, { headers }).then(r => r.json()).catch(() => null);
               if (lpData && !lpData.error) {
+                const pctFee   = lpData.sale_fee_details?.percentage_fee;
                 const totalFee = lpData.sale_fee_amount;
-                if (totalFee != null) { comPct = parseFloat((totalFee / price * 100).toFixed(2)); comSource = 'ML'; }
+                if (pctFee != null) { comPct = parseFloat(parseFloat(pctFee).toFixed(2)); comSource = 'ML'; }
+                else if (totalFee != null) { comPct = parseFloat((totalFee / price * 100).toFixed(2)); comSource = 'ML'; }
                 const costs = lpData.shipping?.costs;
                 const sellerCost = Array.isArray(costs)
                   ? (costs.find(c => c.type === 'seller')?.amount ?? null)
