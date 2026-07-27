@@ -5400,12 +5400,35 @@ function exportConversionExcel() {
 // asc como desc, para no ensuciar el top cuando buscás riesgo.
 let _cvSort = { col: 'cobertura_dias', dir: 1 };
 let _cvSegFilter = null; // 'dormida' | 'naciente' | 'negocio' | null
+let _cvMovFilter = false; // true → mostrar solo los que se movieron de segmento
+const CV_MOV_LOOKBACK_DIAS = 14; // ventana de "movimiento reciente"
 
 const _CV_SEG = {
-  dormida:  { label: 'Dormidas',  emoji: '😴', bg: '#f1f5f9', color: '#64748b', badgeBg: '#e2e8f0' },
-  naciente: { label: 'Nacientes', emoji: '🌱', bg: '#fef9c3', color: '#a16207', badgeBg: '#fef08a' },
-  negocio:  { label: 'Negocio',   emoji: '🚀', bg: '#dcfce7', color: '#15803d', badgeBg: '#bbf7d0' },
+  dormida:  { label: 'Dormidas',  sing: 'Dormida',  emoji: '😴', bg: '#f1f5f9', color: '#64748b', badgeBg: '#e2e8f0' },
+  naciente: { label: 'Nacientes', sing: 'Naciente', emoji: '🌱', bg: '#fef9c3', color: '#a16207', badgeBg: '#fef08a' },
+  negocio:  { label: 'Negocio',   sing: 'Negocio',  emoji: '🚀', bg: '#dcfce7', color: '#15803d', badgeBg: '#bbf7d0' },
 };
+
+// Info de movimiento reciente de un ítem (o null si no se movió dentro de la ventana).
+function _cvDiasDesde(fechaStr) {
+  if (!fechaStr) return null;
+  const d = Math.floor((Date.now() - new Date(fechaStr + 'T00:00:00').getTime()) / 86400000);
+  return d < 0 ? 0 : d;
+}
+function _cvMovInfo(i) {
+  const m = i.movimiento;
+  if (!m || !m.fecha) return null;
+  const dias = _cvDiasDesde(m.fecha);
+  if (dias == null || dias > CV_MOV_LOOKBACK_DIAS) return null;
+  const sube = m.direccion === 'sube';
+  const desdeLabel = (_CV_SEG[m.desde] || {}).sing || m.desde;
+  return {
+    sube, dias,
+    arrow: sube ? '⬆️' : '⬇️',
+    color: sube ? '#15803d' : '#dc2626',
+    txt: `${sube ? 'subió' : 'bajó'} de ${desdeLabel} · ${dias === 0 ? 'hoy' : 'hace ' + dias + 'd'}`,
+  };
+}
 
 async function loadCicloVida(force) {
   const client = getActiveClient();
@@ -5453,22 +5476,45 @@ function _cvSetFilter(seg) {
   renderCicloVidaTable();
 }
 
+function _cvSetMovFilter() {
+  _cvMovFilter = !_cvMovFilter;
+  renderCicloVidaCards();
+  renderCicloVidaTable();
+}
+
 function renderCicloVidaCards() {
   const el = document.getElementById('cvCards');
   const r = (window._cvData && window._cvData.resumen) || { dormidas: 0, nacientes: 0, negocio: 0 };
   const counts = { dormida: r.dormidas, naciente: r.nacientes, negocio: r.negocio };
-  el.innerHTML = ['negocio','naciente','dormida'].map(seg => {
+  let html = ['negocio','naciente','dormida'].map(seg => {
     const cfg = _CV_SEG[seg];
     const active = _cvSegFilter === seg;
     return `
       <div onclick="_cvSetFilter('${seg}')" title="Click para filtrar la tabla"
-        style="flex:1;min-width:180px;cursor:pointer;background:${active ? cfg.bg : 'var(--surface)'};
+        style="flex:1;min-width:160px;cursor:pointer;background:${active ? cfg.bg : 'var(--surface)'};
         border:${active ? '2px' : '1px'} solid ${active ? cfg.color : 'var(--border)'};
         border-radius:12px;padding:14px 16px;transition:all .12s">
         <div style="font-size:11px;color:var(--muted);margin-bottom:4px">${cfg.emoji} ${cfg.label}${active ? ' · filtrando' : ''}</div>
         <div style="font-size:26px;font-weight:700;color:${cfg.color};font-family:var(--font-b)">${(counts[seg]||0).toLocaleString('es-AR')}</div>
       </div>`;
   }).join('');
+
+  // 4º card: movimientos de segmento en los últimos N días (sube/baja).
+  const items = (window._cvData && window._cvData.items) || [];
+  let subieron = 0, bajaron = 0;
+  items.forEach(i => { const mv = _cvMovInfo(i); if (mv) { if (mv.sube) subieron++; else bajaron++; } });
+  const totalMov = subieron + bajaron;
+  const active = _cvMovFilter;
+  html += `
+    <div onclick="_cvSetMovFilter()" title="Publicaciones que cambiaron de segmento en los últimos ${CV_MOV_LOOKBACK_DIAS} días"
+      style="flex:1;min-width:160px;cursor:pointer;background:${active ? '#eef2ff' : 'var(--surface)'};
+      border:${active ? '2px' : '1px'} solid ${active ? '#6366f1' : 'var(--border)'};
+      border-radius:12px;padding:14px 16px;transition:all .12s">
+      <div style="font-size:11px;color:var(--muted);margin-bottom:4px">🔀 Movimientos (${CV_MOV_LOOKBACK_DIAS}d)${active ? ' · filtrando' : ''}</div>
+      <div style="font-size:26px;font-weight:700;color:#6366f1;font-family:var(--font-b)">${totalMov.toLocaleString('es-AR')}</div>
+      <div style="font-size:10px;margin-top:3px"><span style="color:#15803d;font-weight:700">⬆️ ${subieron}</span> &nbsp; <span style="color:#dc2626;font-weight:700">⬇️ ${bajaron}</span></div>
+    </div>`;
+  el.innerHTML = html;
 }
 
 function _cvSortClick(col) {
@@ -5491,6 +5537,7 @@ function renderCicloVidaTable() {
   if (!window._cvData) { wrap.innerHTML = ''; return; }
   let items = (window._cvData.items || []).slice();
   if (_cvSegFilter) items = items.filter(i => i.segmento === _cvSegFilter);
+  if (_cvMovFilter) items = items.filter(i => _cvMovInfo(i));
   const search = (document.getElementById('cvSearch').value || '').trim().toLowerCase();
   if (search) items = items.filter(i => (i.title || '').toLowerCase().includes(search) || (i.mla_id || '').toLowerCase().includes(search));
   if (document.getElementById('cvSoloAccion').checked) items = items.filter(i => i.accion);
@@ -5524,6 +5571,8 @@ function renderCicloVidaTable() {
   const rows = items.map(i => {
     const cfg = _CV_SEG[i.segmento] || _CV_SEG.dormida;
     const badge = `<span style="background:${cfg.badgeBg};color:${cfg.color};border-radius:5px;padding:2px 8px;font-size:10px;font-weight:700;white-space:nowrap">${cfg.emoji} ${cfg.label}</span>${i.es_nueva ? ' <span style="background:#dbeafe;color:#1d4ed8;border-radius:5px;padding:2px 6px;font-size:9px;font-weight:700;white-space:nowrap">🆕 NUEVA</span>' : ''}`;
+    const mv = _cvMovInfo(i);
+    const movBadge = mv ? `<div style="font-size:10px;font-weight:700;color:${mv.color};margin-top:3px">${mv.arrow} ${mv.txt}</div>` : '';
     const link = `https://articulo.mercadolibre.com.ar/${i.mla_id.replace('MLA','MLA-')}`;
     // Cobertura.
     let cobCell;
@@ -5542,7 +5591,7 @@ function renderCicloVidaTable() {
       <tr style="border-top:1px solid var(--border)">
         <td style="padding:8px 10px;max-width:340px"><a href="${link}" target="_blank" style="color:var(--text);text-decoration:none" title="Abrir en ML">${esc(i.title)}</a></td>
         <td style="padding:8px 10px;font-size:11px;white-space:nowrap"><span style="color:var(--muted);cursor:pointer" title="Click para copiar" onclick="copyMLA(this,'${i.mla_id}')">${i.mla_id}</span></td>
-        <td style="padding:8px 10px">${badge}</td>
+        <td style="padding:8px 10px">${badge}${movBadge}</td>
         <td style="padding:8px 10px;text-align:right">${(i.ordenes_30d||0).toLocaleString('es-AR')}</td>
         <td style="padding:8px 10px;text-align:right">${(i.unidades_30d||0).toLocaleString('es-AR')}</td>
         <td style="padding:8px 10px;text-align:right">${stockCell}</td>
@@ -5578,6 +5627,7 @@ function exportCicloVidaExcel() {
   if (!window._cvData || !(window._cvData.items || []).length) { alert('No hay datos para exportar'); return; }
   let items = (window._cvData.items || []).slice();
   if (_cvSegFilter) items = items.filter(i => i.segmento === _cvSegFilter);
+  if (_cvMovFilter) items = items.filter(i => _cvMovInfo(i));
   const search = (document.getElementById('cvSearch').value || '').trim().toLowerCase();
   if (search) items = items.filter(i => (i.title || '').toLowerCase().includes(search) || (i.mla_id || '').toLowerCase().includes(search));
   if (document.getElementById('cvSoloAccion').checked) items = items.filter(i => i.accion);
@@ -5607,10 +5657,16 @@ function exportCicloVidaExcel() {
     'Stock':         i.stock_error ? 's/dato' : (i.stock != null ? i.stock : ''),
     'Cobertura (días)': i.sin_rotacion ? 'Sin rotación' : (i.cobertura_dias != null ? i.cobertura_dias : ''),
     'Logística':     i.logistica,
+    'Movimiento':    (() => {
+      const m = i.movimiento;
+      if (!m || !m.fecha) return '';
+      const desde = (_CV_SEG[m.desde] || {}).sing || m.desde;
+      return `${m.direccion === 'sube' ? 'subió' : 'bajó'} de ${desde} (${m.fecha})`;
+    })(),
     'Acción sugerida': i.accion || '',
   }));
   const ws = XLSX.utils.json_to_sheet(rows);
-  ws['!cols'] = [{wch:60},{wch:14},{wch:50},{wch:11},{wch:7},{wch:12},{wch:13},{wch:9},{wch:16},{wch:11},{wch:48}];
+  ws['!cols'] = [{wch:60},{wch:14},{wch:50},{wch:11},{wch:7},{wch:12},{wch:13},{wch:9},{wch:16},{wch:11},{wch:26},{wch:48}];
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Ciclo de Vida');
   const client = getActiveClient();

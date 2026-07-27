@@ -493,6 +493,19 @@ async function initDB() {
       data       JSONB NOT NULL,
       fetched_at TIMESTAMP DEFAULT NOW()
     );
+    -- Estado de segmento por publicación (1 fila por ítem) para detectar
+    -- movimientos de segmento (dormida/naciente/negocio) en el tiempo.
+    CREATE TABLE IF NOT EXISTS ciclo_vida_estado (
+      client_id         INTEGER NOT NULL,
+      mla_id            VARCHAR(20) NOT NULL,
+      segmento          VARCHAR(12) NOT NULL,
+      segmento_anterior VARCHAR(12),
+      desde_fecha       DATE NOT NULL,   -- cuándo entró al segmento actual
+      cambio_fecha      DATE,            -- fecha del último cambio de segmento (null si nunca cambió desde la 1ra observación)
+      actualizado_at    TIMESTAMP DEFAULT NOW(),
+      PRIMARY KEY (client_id, mla_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_cv_estado_cambio ON ciclo_vida_estado(client_id, cambio_fecha);
   `);
 
   // Create default admin if not exists (password: admin123 - change after first login)
@@ -5933,13 +5946,14 @@ const CV_COB_CRITICA_NEGOCIO  = 15;   // < 15 días cobertura → alerta quiebre
 const CV_COB_CRITICA_NACIENTE = 10;   // < 10 días cobertura → alerta corte de envión
 const CV_STOCK_TTL_MS         = 12 * 60 * 60 * 1000;
 const CV_RESULT_TTL_MS        = 12 * 60 * 60 * 1000;
+// Orden de segmentos para determinar la dirección de un movimiento (sube/baja).
+const CV_SEG_ORDEN = { dormida: 0, naciente: 1, negocio: 2 };
 
-app.get('/api/publicaciones/ciclo-vida', requireAuth, async (req, res) => {
-  try {
-    const clientId = parseInt(req.query.client_id);
-    if (!clientId) return res.status(400).json({ error: 'client_id requerido' });
-    const forceRefresh = String(req.query.force_refresh || '').toLowerCase() === 'true';
-
+// Cálculo central del Ciclo de Vida de un cliente. Lo usan el endpoint (on-open) y
+// el cron diario. Devuelve el payload ya segmentado + movimientos de segmento.
+// forceRefresh saltea los caches (resultado + stock) y fuerza recálculo.
+async function computeCicloVida(clientId, { forceRefresh = false } = {}) {
+  {
     // 0. Cache del resultado completo ya segmentado (TTL 12h).
     if (!forceRefresh) {
       const cached = await pool.query(
@@ -5952,17 +5966,17 @@ app.get('/api/publicaciones/ciclo-vida', requireAuth, async (req, res) => {
           data.metadatos = data.metadatos || {};
           data.metadatos.desde_cache = true;
           data.metadatos.cache_age_hours = +(age / 3600000).toFixed(2);
-          return res.json(data);
+          return data;
         }
       }
     }
 
     const token = await getClientToken(clientId);
-    if (!token) return res.status(403).json({ error: 'Cliente sin token ML' });
+    if (!token) { const e = new Error('Cliente sin token ML'); e.status = 403; throw e; }
     const headers = { Authorization: `Bearer ${token}` };
     const cr = await pool.query('SELECT ml_user_id FROM clients WHERE id=$1', [clientId]);
     const uid = cr.rows[0] && cr.rows[0].ml_user_id;
-    if (!uid) return res.status(400).json({ error: 'Cliente sin ml_user_id' });
+    if (!uid) { const e = new Error('Cliente sin ml_user_id'); e.status = 400; throw e; }
 
     const nowMs   = Date.now();
     const today   = new Date(nowMs).toISOString().slice(0, 10);
@@ -6139,10 +6153,72 @@ app.get('/api/publicaciones/ciclo-vida', requireAuth, async (req, res) => {
       };
     });
 
+    // 4.5. Movimientos de segmento — comparar cada ítem contra su estado guardado.
+    //      ciclo_vida_estado tiene 1 fila por publicación (segmento actual, anterior
+    //      y cuándo cambió). Solo se toca si pudimos leer órdenes (ordersOk): con un
+    //      token caído todo se vería como "dormida" y registraríamos falsos "cayó a
+    //      dormida". La 1ra observación de un ítem NO es un movimiento (recién
+    //      empezamos a trackearlo).
+    if (ordersOk) {
+      const estRows = await pool.query(
+        `SELECT mla_id, segmento, segmento_anterior, desde_fecha, cambio_fecha
+           FROM ciclo_vida_estado WHERE client_id=$1 AND mla_id = ANY($2)`,
+        [clientId, universo]
+      );
+      const estMap = {};
+      estRows.rows.forEach(r => { estMap[r.mla_id] = r; });
+      const ymd = d => d ? new Date(d).toISOString().slice(0, 10) : null;
+      const estUpserts = [];
+      items.forEach(it => {
+        const prev = estMap[it.mla_id];
+        let segAnterior, cambioFecha, desdeFecha;
+        if (!prev) {
+          // Primera vez que vemos el ítem: arrancamos a trackear, no es movimiento.
+          segAnterior = null; cambioFecha = null; desdeFecha = today;
+        } else if (prev.segmento === it.segmento) {
+          // Sigue en el mismo segmento: preservamos anterior/cambio/desde.
+          segAnterior = prev.segmento_anterior;
+          cambioFecha = ymd(prev.cambio_fecha);
+          desdeFecha  = ymd(prev.desde_fecha) || today;
+        } else {
+          // Cambió de segmento: registramos la transición con fecha de hoy.
+          segAnterior = prev.segmento; cambioFecha = today; desdeFecha = today;
+        }
+        it.segmento_anterior = segAnterior;
+        it.cambio_fecha = cambioFecha;
+        it.desde_fecha = desdeFecha;
+        if (cambioFecha && segAnterior && segAnterior !== it.segmento) {
+          const dir = (CV_SEG_ORDEN[it.segmento] ?? 0) > (CV_SEG_ORDEN[segAnterior] ?? 0) ? 'sube' : 'baja';
+          it.movimiento = { direccion: dir, desde: segAnterior, hacia: it.segmento, fecha: cambioFecha };
+        } else {
+          it.movimiento = null;
+        }
+        estUpserts.push([clientId, it.mla_id, it.segmento, segAnterior, desdeFecha, cambioFecha]);
+      });
+      for (let i = 0; i < estUpserts.length; i += 100) {
+        const chunk = estUpserts.slice(i, i + 100);
+        const ph = chunk.map((_, k) => `($${k*6+1},$${k*6+2},$${k*6+3},$${k*6+4},$${k*6+5},$${k*6+6},NOW())`).join(',');
+        const flat = chunk.flat();
+        await pool.query(
+          `INSERT INTO ciclo_vida_estado (client_id, mla_id, segmento, segmento_anterior, desde_fecha, cambio_fecha, actualizado_at)
+           VALUES ${ph}
+           ON CONFLICT (client_id, mla_id) DO UPDATE SET
+             segmento=EXCLUDED.segmento, segmento_anterior=EXCLUDED.segmento_anterior,
+             desde_fecha=EXCLUDED.desde_fecha, cambio_fecha=EXCLUDED.cambio_fecha,
+             actualizado_at=NOW()`,
+          flat
+        );
+      }
+    } else {
+      items.forEach(it => { it.segmento_anterior = null; it.cambio_fecha = null; it.desde_fecha = null; it.movimiento = null; });
+    }
+
     const resumen = {
       dormidas:  items.filter(i => i.segmento === 'dormida').length,
       nacientes: items.filter(i => i.segmento === 'naciente').length,
       negocio:   items.filter(i => i.segmento === 'negocio').length,
+      subieron:  items.filter(i => i.movimiento?.direccion === 'sube').length,
+      bajaron:   items.filter(i => i.movimiento?.direccion === 'baja').length,
     };
 
     const payload = {
@@ -6177,11 +6253,50 @@ app.get('/api/publicaciones/ciclo-vida', requireAuth, async (req, res) => {
       );
     }
 
+    return payload;
+  }
+}
+
+app.get('/api/publicaciones/ciclo-vida', requireAuth, async (req, res) => {
+  try {
+    const clientId = parseInt(req.query.client_id);
+    if (!clientId) return res.status(400).json({ error: 'client_id requerido' });
+    const forceRefresh = String(req.query.force_refresh || '').toLowerCase() === 'true';
+    const payload = await computeCicloVida(clientId, { forceRefresh });
     res.json(payload);
   } catch(e) {
     console.error('[/api/publicaciones/ciclo-vida]', e.message);
-    res.status(500).json({ error: e.message });
+    res.status(e.status || 500).json({ error: e.message });
   }
+});
+
+// Corrida diaria del Ciclo de Vida: recalcula y persiste estado/movimientos de
+// segmento de todos los clientes activos (excluye 'prospecto', aislados de los
+// automáticos). Corre por node-cron (~6am ART) para capturar transiciones aunque
+// nadie abra el tab; también expuesto para cron externo / disparo manual.
+async function runCicloVidaDiario() {
+  const cl = await pool.query(
+    `SELECT id, name FROM clients
+       WHERE active = true AND access_token IS NOT NULL
+         AND (tipo_cuenta IS NULL OR tipo_cuenta <> 'prospecto')
+       ORDER BY id`
+  );
+  let ok = 0, fail = 0;
+  for (const c of cl.rows) {
+    try { await computeCicloVida(c.id, { forceRefresh: true }); ok++; }
+    catch(e) { fail++; console.warn(`[CICLO-VIDA][cron] cliente ${c.id} (${c.name}) falló: ${e.message}`); }
+    await new Promise(r => setTimeout(r, 1500)); // respiro entre clientes (rate limit ML)
+  }
+  console.log(`[CICLO-VIDA][cron] corrida diaria: ${ok} ok, ${fail} error de ${cl.rows.length}`);
+  return { ok, fail, total: cl.rows.length };
+}
+
+app.all('/api/publicaciones/ciclo-vida/cron', async (req, res) => {
+  const secret = process.env.CRON_SECRET;
+  const provided = req.query.secret || req.headers['x-cron-secret'];
+  if (secret && provided !== secret) return res.status(403).json({ error: 'forbidden' });
+  try { res.json({ ok: true, ...(await runCicloVidaDiario()) }); }
+  catch(e) { res.status(500).json({ error: e.message }); }
 });
 
 // ── REPORTE ADS — endpoint para Steve eje 6 (Publicidad) ─────────────────────
@@ -12440,5 +12555,12 @@ initDB().then(() => {
       } catch(e) { console.error('[HOTSALE] Cron error:', e.message); }
     }, { timezone: 'America/Argentina/Buenos_Aires' });
     console.log('[CRON] Reporte Hotsale programado: 23:59 ART');
+
+    // 06:00 ART (09:00 UTC) — snapshot diario del Ciclo de Vida: persiste el estado
+    // de segmento por publicación y detecta movimientos (sube/baja de segmento).
+    nodeCron.schedule('0 9 * * *', () => {
+      runCicloVidaDiario().catch(e => console.error('[CICLO-VIDA][cron] Error:', e.message));
+    }, { timezone: 'UTC' });
+    console.log('[CRON] Ciclo de Vida programado: 06:00 ART');
   }
 }).catch(e => { console.error('DB init error:', e); process.exit(1); });
