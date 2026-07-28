@@ -4905,7 +4905,13 @@ async function calcularMargenRealPorMla(client_id, date_from, date_to) {
   const totFF = Object.values(byMla).reduce((s,m)=>s+m.units_full+m.units_flex,0);
   const flexU = totFF ? flexManual/totFF : 0;
 
-  // Publicidad por MLA (PADS) — opcional, degradable
+  // Publicidad por MLA (PADS) — opcional, degradable.
+  // Además del costo se traen los ingresos y unidades que ML ATRIBUYE al anuncio
+  // (total_amount = directo + indirecto). Ese es el numerador del ACOS/ROAS que el vendedor
+  // ve en el panel de ML, y casi nunca coincide con la facturación real del ítem: incluye
+  // ventas de otros productos compradas después del click y ventas de la ventana de
+  // atribución que caen fuera del período. Guardarlo permite mostrar la diferencia en vez
+  // de que el número del P&L parezca un error.
   const adsByItem = {};
   try {
     const advData = await fetch(`${ML_API}/advertising/advertisers?product_id=PADS`,
@@ -4913,13 +4919,22 @@ async function calcularMargenRealPorMla(client_id, date_from, date_to) {
     const adv = (advData.advertisers||[])[0];
     if (adv) {
       const siteId = 'MLA', fromDate = date_from, toDate = date_to;
+      const metrics = 'cost,total_amount,direct_amount,indirect_amount,units_quantity';
       let offset = 0, limit = 50, total = 999;
       while (offset < total) {
-        const url = `${ML_API}/advertising/${siteId}/advertisers/${adv.advertiser_id}/product_ads/ads/search?date_from=${fromDate}&date_to=${toDate}&metrics=cost&limit=${limit}&offset=${offset}`;
+        const url = `${ML_API}/advertising/${siteId}/advertisers/${adv.advertiser_id}/product_ads/ads/search?date_from=${fromDate}&date_to=${toDate}&metrics=${metrics}&limit=${limit}&offset=${offset}`;
         const data = await fetch(url, { headers: { ...headers, 'api-version': '2' } }).then(r=>r.json()).catch(()=>({}));
         total = data.paging?.total || 0;
         (data.results||[]).forEach(ad => {
-          if (ad.item_id && ad.metrics?.cost > 0) adsByItem[ad.item_id] = (adsByItem[ad.item_id]||0) + parseFloat(ad.metrics.cost);
+          const mt = ad.metrics || {};
+          if (!ad.item_id || !(mt.cost > 0)) return;
+          // Un mismo ítem puede estar en varias campañas: se acumula.
+          const a = adsByItem[ad.item_id] || (adsByItem[ad.item_id] = { cost: 0, total_amount: 0, direct_amount: 0, indirect_amount: 0, units: 0 });
+          a.cost            += parseFloat(mt.cost)            || 0;
+          a.total_amount    += parseFloat(mt.total_amount)    || 0;
+          a.direct_amount   += parseFloat(mt.direct_amount)   || 0;
+          a.indirect_amount += parseFloat(mt.indirect_amount) || 0;
+          a.units           += parseFloat(mt.units_quantity)  || 0;
         });
         offset += limit;
         if ((data.results||[]).length < limit) break;
@@ -4933,7 +4948,8 @@ async function calcularMargenRealPorMla(client_id, date_from, date_to) {
     const cmv = (costsMap[m.mla_id] != null) ? costsMap[m.mla_id] * m.units : 0;
     const envReal = Math.round(m.envio_real);
     const flexImp = Math.round((m.units_full + m.units_flex) * flexU);
-    const publi = Math.round(adsByItem[m.mla_id] || 0);
+    const ads   = adsByItem[m.mla_id] || null;
+    const publi = Math.round(ads?.cost || 0);
     const alic = alicMap[m.mla_id] ?? 21;
     // Débito sobre la venta y crédito sobre el CMV a la alícuota del producto; comisión,
     // envío y flex son servicios de ML → 21%.
@@ -4951,6 +4967,17 @@ async function calcularMargenRealPorMla(client_id, date_from, date_to) {
       margen_x_unidad: m.units > 0 ? Math.round(margen / m.units) : 0,
       // Retorno sobre la mercadería: cuánto deja cada peso puesto en stock.
       retorno_cmv_pct: cmv > 0 ? +(margen / cmv * 100).toFixed(1) : null,
+      // Margen antes de pauta: separa "el producto no sirve" de "la pauta se lo come".
+      margen_sin_publi: margen + publi,
+      margen_sin_publi_pct: fact ? +((margen + publi)/fact*100).toFixed(1) : 0,
+      // Lo que ML atribuye al anuncio (directo + indirecto) y el ACOS que muestra su panel,
+      // para contrastarlo con el peso real de la pauta sobre la facturación del ítem.
+      publi_ingresos_ml: ads ? Math.round(ads.total_amount) : null,
+      publi_directo_ml:  ads ? Math.round(ads.direct_amount) : null,
+      publi_indirecto_ml: ads ? Math.round(ads.indirect_amount) : null,
+      publi_unidades_ml: ads ? Math.round(ads.units) : null,
+      acos_ml:  ads && ads.total_amount > 0 ? +(ads.cost / ads.total_amount * 100).toFixed(1) : null,
+      tacos_item: ads && fact > 0 ? +(ads.cost / fact * 100).toFixed(1) : null,
     };
   }).sort((a,b) => a.margen_real - b.margen_real);
 

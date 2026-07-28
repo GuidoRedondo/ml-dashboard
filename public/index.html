@@ -9313,7 +9313,12 @@ function diagnosticoGanancia(p) {
     { val: p.envio_real, umbral: Math.max(15, ctx.envio + 5), label: 'El envío',
       texto: v => `se lleva el ${v.toFixed(0)}% de cada venta: $${Math.round(p.envio_real / u).toLocaleString('es-AR')} por unidad sobre un ticket de $${Math.round(fact / u).toLocaleString('es-AR')}. Ticket bajo con envío gratis — subí precio, armá pack o sacalo del umbral.` },
     { val: p.publi_real, umbral: 20, label: 'La publicidad',
-      texto: v => `se come el ${v.toFixed(0)}% de la facturación (ACOS ${v.toFixed(0)}%). Está comprando ventas que no dejan.` },
+      // Si ML atribuyó al anuncio más ingresos que la facturación real del ítem, el ACOS del
+      // panel de ML se ve sano y el del P&L no. Hay que decirlo acá o el número parece un error.
+      texto: v => `se lleva el ${v.toFixed(0)}% de lo que facturó este producto.`
+        + (p.acos_ml != null && p.publi_ingresos_ml > p.revenue
+            ? ` En el panel de ML ves ACOS ${p.acos_ml}% porque mide contra $${p.publi_ingresos_ml.toLocaleString('es-AR')} de ventas atribuidas — más que los $${Math.round(p.revenue).toLocaleString('es-AR')} que facturó el ítem, porque incluye ventas indirectas de otros productos y compras de la ventana de atribución que caen fuera del período.`
+            : ` Está comprando ventas que no dejan.`) },
     { val: p.sale_fee,   umbral: Math.max(20, ctx.comision + 4), label: 'La comisión de ML',
       texto: v => `está en ${v.toFixed(0)}%, contra ${ctx.comision.toFixed(0)}% de mediana en la cuenta. Fijate si es Premium o cuotas sin interés — en Clásica bajaría.` },
     { val: p.flex_imp,   umbral: 10, label: 'El costo Flex/FULL',
@@ -9342,7 +9347,7 @@ function desgloseGananciaHTML(p) {
     { label: 'CMV',             val: p.cmv_total,  color: '#ff9100', tip: 'Costo de la mercadería vendida (costo unitario × unidades)' },
     { label: 'Envío real',      val: p.envio_real, color: '#22d3ee', tip: 'Costo de envío que pagó el vendedor, atribuido a esta publicación (no prorrateado)' },
     { label: 'Flex/FULL',       val: p.flex_imp,   color: '#0e7490', tip: 'Bolo manual de Flex/FULL repartido solo sobre las unidades FULL/FLEX' },
-    { label: 'Publicidad',      val: p.publi_real, color: '#facc15', tip: 'Inversión real de Product Ads sobre esta publicación' },
+    { label: 'Publicidad',      val: p.publi_real, color: '#facc15', tip: 'Inversión real de Product Ads sobre esta publicación', subtotalAntes: true },
     { label: 'IVA neto',        val: p.iva_dif,    color: '#a78bfa', tip: 'IVA débito de la venta menos el crédito del CMV y de los servicios de ML' },
     { label: 'IIBB',            val: p.iibb,       color: '#6366f1', tip: 'Ingresos brutos estimados sobre la facturación' },
   ];
@@ -9359,7 +9364,20 @@ function desgloseGananciaHTML(p) {
   ).join('');
   const restoPct = Math.max(0, (fact - sumaCost) / escala * 100);
 
+  // Subtotal antes de la pauta: si el producto es rentable hasta acá y negativo después,
+  // el problema no es el producto.
+  const subtotalPubli = `
+    <tr style="background:rgba(255,255,255,.04)">
+      <td style="padding:5px 6px;font-weight:600;color:${p.margen_sin_publi >= 0 ? '#00e676' : '#ff5252'}" title="Contribución marginal antes de descontar la publicidad">
+        = Margen antes de pauta
+      </td>
+      <td style="padding:5px 6px;text-align:right;font-weight:600;color:${p.margen_sin_publi >= 0 ? '#00e676' : '#ff5252'}">${f(p.margen_sin_publi)}</td>
+      <td style="padding:5px 6px;text-align:right;font-weight:600;color:${p.margen_sin_publi >= 0 ? '#00e676' : '#ff5252'}">${p.margen_sin_publi_pct}%</td>
+      <td style="padding:5px 6px;text-align:right;color:var(--muted)">${f(p.margen_sin_publi / u)}</td>
+    </tr>`;
+
   const filas = conceptos.map(c => `
+    ${c.subtotalAntes && p.publi_real > 0 ? subtotalPubli : ''}
     <tr style="border-bottom:1px solid rgba(255,255,255,.04)">
       <td style="padding:4px 6px;color:var(--muted)" title="${c.tip}">
         <span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:${c.color};margin-right:6px"></span>${c.val < 0 ? '+' : '−'} ${c.label}
@@ -9407,6 +9425,15 @@ function desgloseGananciaHTML(p) {
         : 'Cada segmento es un costo sobre la facturación; el verde es lo que queda.'}
     </div>
 
+    ${neg && p.margen_sin_publi > 0 ? `<div style="background:rgba(250,204,21,.1);border:1px solid rgba(250,204,21,.35);border-radius:8px;padding:10px 12px;margin-bottom:12px">
+      <div style="font-size:12px;font-weight:700;color:#facc15;margin-bottom:4px">📣 No es el producto: es la pauta</div>
+      <div style="font-size:11px;color:var(--text)">
+        Antes de publicidad deja <strong>${f(p.margen_sin_publi)}</strong> (${p.margen_sin_publi_pct}% de margen).
+        La pauta se lleva ${f(p.publi_real)} y lo da vuelta a ${f(p.margen_real)}.
+        Bajando la inversión a ${f(p.margen_sin_publi)} el producto queda en cero; por debajo de eso, empieza a dejar.
+      </div>
+    </div>` : ''}
+
     ${hallazgos.length ? `<div style="background:${enRiesgo ? 'rgba(255,145,0,.08)' : 'rgba(255,255,255,.03)'};border:1px solid ${enRiesgo ? 'rgba(255,145,0,.25)' : 'var(--border)'};border-radius:8px;padding:10px 12px;margin-bottom:12px">
       <div style="font-size:10px;font-weight:700;color:${enRiesgo ? '#ff9100' : 'var(--muted)'};text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px">${enRiesgo ? '🔎 Dónde se va la plata' : '👁 Puntos a mirar (el producto igual deja plata)'}</div>
       ${hallazgos.map(h => `<div style="font-size:11px;color:var(--text);margin-bottom:4px">• ${h}</div>`).join('')}
@@ -9452,11 +9479,22 @@ function desgloseGananciaHTML(p) {
           <div>Costo unitario</div><div style="text-align:right;color:var(--text)">${f(p.cmv_total / u)}</div>
           <div>Envío por unidad</div><div style="text-align:right;color:var(--text)">${f(p.envio_real / u)}</div>
           <div>Unidades vendidas</div><div style="text-align:right;color:var(--text)">${p.units}</div>
-          <div>ACOS del producto</div><div style="text-align:right;color:${acos && parseFloat(acos) > 20 ? '#ff5252' : 'var(--text)'}">${acos ? acos + '%' : 'sin pauta'}</div>
+          <div title="Inversión de pauta sobre la facturación REAL de este ítem en el período">Pauta s/facturación</div><div style="text-align:right;color:${acos && parseFloat(acos) > 20 ? '#ff5252' : 'var(--text)'}">${acos ? acos + '%' : 'sin pauta'}</div>
           <div>Retorno sobre CMV</div><div style="text-align:right;color:var(--text)">${p.retorno_cmv_pct != null ? p.retorno_cmv_pct + '%' : '—'}</div>
           <div>Mix logístico</div><div style="text-align:right;color:var(--text)">${mixFF > 0 ? `${p.units_full || 0} FULL · ${p.units_flex || 0} Flex` : 'sin FULL/Flex'}</div>
           <div>Puesto en facturación</div><div style="text-align:right;color:var(--text)">#${p.rank_facturacion} de ${(window._topGanData?.items || []).length}</div>
         </div>
+        ${p.acos_ml != null ? `<div style="margin-top:10px;padding-top:8px;border-top:1px solid rgba(255,255,255,.08)">
+          <div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px">Lo que muestra el panel de ML</div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px 12px;color:var(--muted)">
+            <div>ACOS según ML</div><div style="text-align:right;color:var(--text)">${p.acos_ml}%</div>
+            <div>Ventas atribuidas</div><div style="text-align:right;color:var(--text)">${f(p.publi_ingresos_ml)}${p.publi_unidades_ml != null ? ` · ${p.publi_unidades_ml} u` : ''}</div>
+            ${p.publi_indirecto_ml ? `<div>— de las cuales indirectas</div><div style="text-align:right;color:#facc15">${f(p.publi_indirecto_ml)}</div>` : ''}
+          </div>
+          ${p.publi_ingresos_ml > p.revenue ? `<div style="font-size:10px;color:#facc15;margin-top:6px">
+            ⚠️ ML atribuye ${f(p.publi_ingresos_ml - p.revenue)} más de lo que este ítem facturó: son ventas indirectas (otros productos comprados después del click) y compras de la ventana de atribución que caen fuera del período. Por eso el ACOS del panel se ve mejor que el peso real de la pauta acá.
+          </div>` : ''}
+        </div>` : ''}
         ${aFavor.length ? `<div style="margin-top:10px;font-size:10px;color:#00e676">
           A favor: ${aFavor.map(c => `${c.label} ${f(Math.abs(c.val))}`).join(' · ')} (más crédito fiscal que débito).
         </div>` : ''}
