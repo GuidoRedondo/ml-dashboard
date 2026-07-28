@@ -9050,8 +9050,9 @@ async function loadTopGanancia() {
   if (!client) { cont.innerHTML = ''; return; }
 
   // Descartar lo que haya quedado de otra cuenta o de otro rango de fechas.
-  window._topGanData  = null;
-  window._topGanTodos = false;
+  window._topGanData   = null;
+  window._topGanTodos  = false;
+  window._topGanFiltro = null;
 
   const { date_from, date_to } = getDateRange();
   try {
@@ -9112,6 +9113,11 @@ function toggleTopGananciaTodos() {
   renderTopGanancia();
 }
 
+function toggleTopGananciaPierden() {
+  window._topGanFiltro = window._topGanFiltro === 'pierden' ? null : 'pierden';
+  renderTopGanancia();
+}
+
 function renderTopGanancia() {
   const cont = document.getElementById('topGananciaCard');
   const data = window._topGanData;
@@ -9119,8 +9125,14 @@ function renderTopGanancia() {
 
   const m     = data.meta || {};
   const all   = data.items || [];
-  const items = window._topGanTodos ? all : all.slice(0, 15);
   const f     = n => (n < 0 ? '-' : '') + '$' + Math.round(Math.abs(n || 0)).toLocaleString('es-AR');
+
+  // Filtro "solo los que pierden": van al final del ranking (está ordenado desc), así que
+  // sin el filtro hay que paginar hasta el fondo para encontrarlos.
+  // Con el filtro activo se ordenan del peor al menos malo: primero el que más destruye.
+  const perdedores = all.filter(i => i.margen_real < 0).sort((a,b) => a.margen_real - b.margen_real);
+  const base  = window._topGanFiltro === 'pierden' ? perdedores : all;
+  const items = window._topGanTodos || window._topGanFiltro === 'pierden' ? base : base.slice(0, 15);
 
   if (!all.length) {
     cont.innerHTML = `<div class="kpi-card" style="padding:18px">
@@ -9152,10 +9164,11 @@ function renderTopGanancia() {
       : d < 0
         ? `Rankea ${Math.abs(d)} puestos peor en ganancia (#${p.rank_ganancia}) que en facturación (#${p.rank_facturacion}) — factura más de lo que deja`
         : `Misma posición en facturación y en ganancia (#${p.rank_ganancia})`;
-    return `<tr style="border-bottom:1px solid var(--border);${neg ? 'background:rgba(255,82,82,.06)' : ''}">
-      <td style="padding:6px 4px;color:var(--muted)">${p.rank_ganancia}</td>
+    return `<tr style="border-bottom:1px solid var(--border);cursor:pointer;${neg ? 'background:rgba(255,82,82,.06)' : ''}"
+        onclick="toggleDesgloseGanancia('${p.mla_id}')" title="Click para ver el desglose de dónde se fue la plata">
+      <td style="padding:6px 4px;color:var(--muted);white-space:nowrap"><span id="dgarrow_${p.mla_id}" style="color:var(--muted);font-size:9px">▶</span> ${p.rank_ganancia}</td>
       <td style="padding:6px 4px;white-space:nowrap">
-        <span style="color:var(--muted);cursor:pointer;font-size:11px" title="Click para copiar" onclick="copyMLA(this,'${p.mla_id}')">${p.mla_id}</span>
+        <span style="color:var(--muted);cursor:pointer;font-size:11px" title="Click para copiar" onclick="event.stopPropagation();copyMLA(this,'${p.mla_id}')">${p.mla_id}</span>
       </td>
       <td style="padding:6px 4px;font-size:11px;color:var(--muted);max-width:90px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${(p.sku || '').replace(/"/g,'&quot;')}">${p.sku || '—'}</td>
       <td style="padding:6px 4px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${(p.title || '').replace(/"/g,'&quot;')}">${p.title || ''}</td>
@@ -9167,6 +9180,9 @@ function renderTopGanancia() {
       <td style="padding:6px 4px;text-align:right;color:var(--muted)">${f(p.margen_x_unidad)}</td>
       <td style="padding:6px 4px;text-align:right;color:var(--muted)">${p.retorno_cmv_pct != null ? p.retorno_cmv_pct + '%' : '—'}</td>
       <td style="padding:6px 4px;text-align:right;font-weight:700;color:${dColor}" title="${dTitle}">${dStr}</td>
+    </tr>
+    <tr id="dgrow_${p.mla_id}" style="display:none">
+      <td colspan="12" style="padding:0" id="dgcell_${p.mla_id}"></td>
     </tr>`;
   }).join('');
 
@@ -9182,13 +9198,17 @@ function renderTopGanancia() {
           <div class="kpi-label">🏆 Top por ganancia — la plata que queda</div>
           <div style="font-size:10px;color:var(--muted);margin-top:3px">
             Contribución marginal = facturación − comisión − CMV − envío real − Flex − publicidad − IVA neto − IIBB. No incluye gastos fijos.
+            <span style="color:#FFD700">Click en cualquier fila para ver el desglose de dónde se fue la plata.</span>
           </div>
         </div>
         <div style="display:flex;align-items:center;gap:8px">
           ${fecha ? `<span style="font-size:10px;color:var(--muted)">${data.cached ? '💾 cache' : '✅ recién calculado'} ${fecha}</span>` : ''}
-          <button onclick="toggleTopGananciaTodos()" style="padding:5px 12px;border:none;border-radius:6px;background:var(--surface2);color:var(--text);font-size:12px;font-weight:600;cursor:pointer">
+          ${perdedores.length ? `<button onclick="toggleTopGananciaPierden()" title="Filtrar los productos con ganancia negativa" style="padding:5px 12px;border:none;border-radius:6px;background:${window._topGanFiltro === 'pierden' ? '#ff5252' : 'var(--surface2)'};color:${window._topGanFiltro === 'pierden' ? '#fff' : '#ff5252'};font-size:12px;font-weight:600;cursor:pointer">
+            🔴 ${window._topGanFiltro === 'pierden' ? 'Ver todos' : `Los que pierden (${perdedores.length})`}
+          </button>` : ''}
+          ${window._topGanFiltro === 'pierden' ? '' : `<button onclick="toggleTopGananciaTodos()" style="padding:5px 12px;border:none;border-radius:6px;background:var(--surface2);color:var(--text);font-size:12px;font-weight:600;cursor:pointer">
             ${window._topGanTodos ? 'Ver top 15' : `Ver los ${all.length}`}
-          </button>
+          </button>`}
           <button onclick="exportTopGananciaExcel()" style="padding:5px 12px;border:none;border-radius:6px;background:#16a34a;color:#fff;font-size:12px;font-weight:600;cursor:pointer">📥 Excel</button>
           <button onclick="calcularTopGanancia(true)" title="Recalcula ignorando el cache de 12h" style="padding:5px 12px;border:none;border-radius:6px;background:#f59e0b;color:#fff;font-size:12px;font-weight:600;cursor:pointer">🔄 Recalcular</button>
         </div>
@@ -9227,6 +9247,222 @@ function renderTopGanancia() {
         Solo productos con CMV cargado. Envío vendedor REAL atribuido por publicación (no prorrateado); Flex/FULL repartido solo sobre unidades FULL/FLEX; publicidad real de PADS.
       </div>
     </div>`;
+}
+
+// Abre/cierra el desglose de una fila del ranking. El detalle se arma al primer click
+// (no se pre-renderiza: con "ver todos" serían cientos de bloques al pedo).
+function toggleDesgloseGanancia(mlaId) {
+  const row  = document.getElementById('dgrow_' + mlaId);
+  const cell = document.getElementById('dgcell_' + mlaId);
+  const arrow = document.getElementById('dgarrow_' + mlaId);
+  if (!row || !cell) return;
+
+  const abierto = row.style.display !== 'none';
+  if (abierto) {
+    row.style.display = 'none';
+    if (arrow) { arrow.textContent = '▶'; arrow.style.color = 'var(--muted)'; }
+    return;
+  }
+
+  if (!cell.innerHTML) {
+    const p = (window._topGanData?.items || []).find(i => i.mla_id === mlaId);
+    if (!p) return;
+    cell.innerHTML = desgloseGananciaHTML(p);
+  }
+  row.style.display = '';
+  if (arrow) { arrow.textContent = '▼'; arrow.style.color = 'var(--text)'; }
+}
+
+// Medianas de la cuenta, para que el diagnóstico compare cada producto contra el resto del
+// catálogo y no contra un número fijo. Sin esto, una cuenta que vende toda en Premium con
+// cuotas dispara "comisión alta" en el 70% de los productos y el hallazgo pasa a ser ruido.
+function _topGanCtx() {
+  const data = window._topGanData;
+  if (!data) return null;
+  if (data._ctx) return data._ctx;
+
+  const conVenta = (data.items || []).filter(i => i.revenue > 0);
+  const mediana = fn => {
+    const vals = conVenta.map(fn).filter(v => isFinite(v)).sort((a,b) => a - b);
+    if (!vals.length) return 0;
+    const mid = Math.floor(vals.length / 2);
+    return vals.length % 2 ? vals[mid] : (vals[mid-1] + vals[mid]) / 2;
+  };
+  data._ctx = {
+    comision: mediana(i => i.sale_fee   / i.revenue * 100),
+    cmv:      mediana(i => i.cmv_total  / i.revenue * 100),
+    envio:    mediana(i => i.envio_real / i.revenue * 100),
+  };
+  return data._ctx;
+}
+
+// Diagnóstico de por qué el producto deja lo que deja. Compara cada costo contra su umbral
+// y ordena por exceso, así el primer hallazgo es siempre el que más duele. Los umbrales de
+// costo del producto, envío y comisión se corren con la mediana de la cuenta: lo que importa
+// es que ESTE producto se despegue del resto, no que supere un número universal.
+function diagnosticoGanancia(p) {
+  const fact = p.revenue || 0;
+  if (!fact) return [];
+  const pc  = v => v / fact * 100;
+  const ctx = _topGanCtx() || { comision: 0, cmv: 0, envio: 0 };
+  const u   = p.units || 1;
+
+  const reglas = [
+    { val: p.cmv_total,  umbral: Math.max(65, ctx.cmv + 8), label: 'El costo del producto',
+      texto: v => `se lleva el ${v.toFixed(0)}% de la venta (la mediana de la cuenta es ${ctx.cmv.toFixed(0)}%). O el precio quedó viejo o el costo subió y no lo trasladaste.` },
+    { val: p.envio_real, umbral: Math.max(15, ctx.envio + 5), label: 'El envío',
+      texto: v => `se lleva el ${v.toFixed(0)}% de cada venta: $${Math.round(p.envio_real / u).toLocaleString('es-AR')} por unidad sobre un ticket de $${Math.round(fact / u).toLocaleString('es-AR')}. Ticket bajo con envío gratis — subí precio, armá pack o sacalo del umbral.` },
+    { val: p.publi_real, umbral: 20, label: 'La publicidad',
+      texto: v => `se come el ${v.toFixed(0)}% de la facturación (ACOS ${v.toFixed(0)}%). Está comprando ventas que no dejan.` },
+    { val: p.sale_fee,   umbral: Math.max(20, ctx.comision + 4), label: 'La comisión de ML',
+      texto: v => `está en ${v.toFixed(0)}%, contra ${ctx.comision.toFixed(0)}% de mediana en la cuenta. Fijate si es Premium o cuotas sin interés — en Clásica bajaría.` },
+    { val: p.flex_imp,   umbral: 10, label: 'El costo Flex/FULL',
+      texto: v => `pesa ${v.toFixed(0)}% de la venta (bolo manual repartido sobre las unidades FULL/FLEX).` },
+    { val: p.iva_dif,    umbral: 14, label: 'El IVA neto',
+      texto: v => `queda en ${v.toFixed(0)}% de la venta. Poco crédito fiscal: compras sin factura o a alícuota menor que la de venta.` },
+  ];
+
+  return reglas
+    .filter(r => r.val > 0 && pc(r.val) > r.umbral)
+    .map(r => ({ ...r, pct: pc(r.val), exceso: pc(r.val) - r.umbral }))
+    .sort((a, b) => b.exceso - a.exceso)
+    .map(r => `<strong>${r.label}</strong> ${r.texto(r.pct)}`);
+}
+
+function desgloseGananciaHTML(p) {
+  const fact  = p.revenue || 0;
+  const u     = p.units || 1;
+  const neg   = p.margen_real < 0;
+  const f     = n => (n < 0 ? '-' : '') + '$' + Math.round(Math.abs(n || 0)).toLocaleString('es-AR');
+  const pc    = v => fact > 0 ? (v / fact * 100) : 0;
+
+  // Conceptos en el orden del P&L. El IVA puede dar a favor (crédito > débito).
+  const conceptos = [
+    { label: 'Comisión ML',     val: p.sale_fee,   color: '#ff5252', tip: 'Comisión por venta de ML (percentage_fee, sin el cargo fijo duplicado)' },
+    { label: 'CMV',             val: p.cmv_total,  color: '#ff9100', tip: 'Costo de la mercadería vendida (costo unitario × unidades)' },
+    { label: 'Envío real',      val: p.envio_real, color: '#22d3ee', tip: 'Costo de envío que pagó el vendedor, atribuido a esta publicación (no prorrateado)' },
+    { label: 'Flex/FULL',       val: p.flex_imp,   color: '#0e7490', tip: 'Bolo manual de Flex/FULL repartido solo sobre las unidades FULL/FLEX' },
+    { label: 'Publicidad',      val: p.publi_real, color: '#facc15', tip: 'Inversión real de Product Ads sobre esta publicación' },
+    { label: 'IVA neto',        val: p.iva_dif,    color: '#a78bfa', tip: 'IVA débito de la venta menos el crédito del CMV y de los servicios de ML' },
+    { label: 'IIBB',            val: p.iibb,       color: '#6366f1', tip: 'Ingresos brutos estimados sobre la facturación' },
+  ];
+
+  const costos    = conceptos.filter(c => c.val > 0);
+  const aFavor    = conceptos.filter(c => c.val < 0);
+  const sumaCost  = costos.reduce((s,c) => s + c.val, 0);
+  // Si los costos superan la facturación, la barra se escala sobre los costos y se marca
+  // dónde quedó la línea de facturación: se ve exactamente cuánto se pasó.
+  const escala    = Math.max(fact, sumaCost) || 1;
+
+  const segmentos = costos.map(c =>
+    `<div title="${c.label}: ${f(c.val)} (${pc(c.val).toFixed(1)}%)" style="width:${(c.val/escala*100).toFixed(2)}%;background:${c.color};height:100%"></div>`
+  ).join('');
+  const restoPct = Math.max(0, (fact - sumaCost) / escala * 100);
+
+  const filas = conceptos.map(c => `
+    <tr style="border-bottom:1px solid rgba(255,255,255,.04)">
+      <td style="padding:4px 6px;color:var(--muted)" title="${c.tip}">
+        <span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:${c.color};margin-right:6px"></span>${c.val < 0 ? '+' : '−'} ${c.label}
+      </td>
+      <td style="padding:4px 6px;text-align:right;color:${c.val < 0 ? '#00e676' : 'var(--text)'}">${f(Math.abs(c.val))}</td>
+      <td style="padding:4px 6px;text-align:right;color:var(--muted)">${Math.abs(pc(c.val)).toFixed(1)}%</td>
+      <td style="padding:4px 6px;text-align:right;color:var(--muted)">${f(Math.abs(c.val) / u)}</td>
+    </tr>`).join('');
+
+  const hallazgos = diagnosticoGanancia(p);
+  // Un producto sano igual puede disparar hallazgos (ACOS alto, comisión por encima de la
+  // mediana). Se muestran, pero en tono neutro: no es lo mismo "acá se te va la plata" que
+  // "mirá esto" en algo que deja 25 puntos de margen.
+  const enRiesgo = neg || p.margen_real_pct < 15;
+
+  // Cuánto habría que subir el precio para llegar a margen cero. Solo comisión e IIBB
+  // escalan con el precio en este cálculo (aprox conservadora: ignora el IVA débito extra).
+  const tasaVariable = fact > 0 ? (p.sale_fee + p.iibb) / fact : 0;
+  const subaNecesaria = neg && tasaVariable < 0.9
+    ? Math.abs(p.margen_real_pct) / (1 - tasaVariable)
+    : null;
+
+  const acos = fact > 0 && p.publi_real > 0 ? (p.publi_real / fact * 100).toFixed(1) : null;
+  const mixFF = (p.units_full || 0) + (p.units_flex || 0);
+
+  return `
+  <div style="background:rgba(0,0,0,.18);border-left:3px solid ${neg ? '#ff5252' : '#00e676'};padding:14px 16px">
+    <div style="font-size:12px;font-weight:700;margin-bottom:10px;color:${neg ? '#ff5252' : '#00e676'}">
+      ${neg ? '🔴 Pierde ' + f(Math.abs(p.margen_real)) + ' en el período (' + f(Math.abs(p.margen_x_unidad)) + ' por unidad)'
+            : '🟢 Deja ' + f(p.margen_real) + ' (' + f(p.margen_x_unidad) + ' por unidad)'}
+    </div>
+
+    <!-- Barra de composición -->
+    <div style="position:relative;margin-bottom:6px">
+      <div style="display:flex;height:22px;border-radius:6px;overflow:hidden;background:rgba(255,255,255,.06)">
+        ${segmentos}
+        ${restoPct > 0 ? `<div title="Ganancia: ${f(p.margen_real)}" style="width:${restoPct.toFixed(2)}%;background:#00e676;height:100%"></div>` : ''}
+      </div>
+      ${sumaCost > fact ? `<div title="Acá terminaba la facturación — todo lo que sigue es pérdida"
+        style="position:absolute;top:-3px;bottom:-3px;left:${(fact/escala*100).toFixed(2)}%;width:2px;background:#fff;box-shadow:0 0 4px #000"></div>` : ''}
+    </div>
+    <div style="font-size:10px;color:var(--muted);margin-bottom:12px">
+      ${sumaCost > fact
+        ? `La línea blanca marca el 100% de la facturación: los costos se pasan ${f(sumaCost - fact)} de lo que entró.`
+        : 'Cada segmento es un costo sobre la facturación; el verde es lo que queda.'}
+    </div>
+
+    ${hallazgos.length ? `<div style="background:${enRiesgo ? 'rgba(255,145,0,.08)' : 'rgba(255,255,255,.03)'};border:1px solid ${enRiesgo ? 'rgba(255,145,0,.25)' : 'var(--border)'};border-radius:8px;padding:10px 12px;margin-bottom:12px">
+      <div style="font-size:10px;font-weight:700;color:${enRiesgo ? '#ff9100' : 'var(--muted)'};text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px">${enRiesgo ? '🔎 Dónde se va la plata' : '👁 Puntos a mirar (el producto igual deja plata)'}</div>
+      ${hallazgos.map(h => `<div style="font-size:11px;color:var(--text);margin-bottom:4px">• ${h}</div>`).join('')}
+      ${subaNecesaria != null ? `<div style="font-size:11px;color:#FFD700;margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,.08)">
+        💡 Para dejar de perder habría que subir el precio <strong>~${subaNecesaria.toFixed(0)}%</strong> (aprox) o bajar el costo en ${f(Math.abs(p.margen_x_unidad))} por unidad.
+      </div>` : ''}
+    </div>` : (neg ? `<div style="font-size:11px;color:var(--muted);margin-bottom:12px">
+      Ningún costo se dispara por sí solo: la pérdida sale de la suma de todos contra un precio que no da.
+      ${subaNecesaria != null ? `Subir el precio ~<strong>${subaNecesaria.toFixed(0)}%</strong> lo llevaría a margen cero.` : ''}
+    </div>` : '')}
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+      <div>
+        <table style="width:100%;border-collapse:collapse;font-size:11px">
+          <thead><tr style="border-bottom:1px solid var(--border);color:var(--muted)">
+            <th style="text-align:left;padding:4px 6px;font-weight:600">Concepto</th>
+            <th style="text-align:right;padding:4px 6px;font-weight:600">Monto</th>
+            <th style="text-align:right;padding:4px 6px;font-weight:600">% s/fact</th>
+            <th style="text-align:right;padding:4px 6px;font-weight:600">Por unidad</th>
+          </tr></thead>
+          <tbody>
+            <tr style="border-bottom:1px solid rgba(255,255,255,.08)">
+              <td style="padding:4px 6px;font-weight:700">Facturación</td>
+              <td style="padding:4px 6px;text-align:right;font-weight:700">${f(fact)}</td>
+              <td style="padding:4px 6px;text-align:right;color:var(--muted)">100%</td>
+              <td style="padding:4px 6px;text-align:right;color:var(--muted)">${f(fact / u)}</td>
+            </tr>
+            ${filas}
+            <tr style="border-top:2px solid rgba(255,255,255,.12)">
+              <td style="padding:6px;font-weight:700;color:${neg ? '#ff5252' : '#00e676'}">= Ganancia</td>
+              <td style="padding:6px;text-align:right;font-weight:700;color:${neg ? '#ff5252' : '#00e676'}">${f(p.margen_real)}</td>
+              <td style="padding:6px;text-align:right;font-weight:700;color:${neg ? '#ff5252' : '#00e676'}">${p.margen_real_pct}%</td>
+              <td style="padding:6px;text-align:right;font-weight:700;color:${neg ? '#ff5252' : '#00e676'}">${f(p.margen_x_unidad)}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div style="font-size:11px">
+        <div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:8px">Contexto</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px 12px;color:var(--muted)">
+          <div>Ticket promedio</div><div style="text-align:right;color:var(--text)">${f(fact / u)}</div>
+          <div>Costo unitario</div><div style="text-align:right;color:var(--text)">${f(p.cmv_total / u)}</div>
+          <div>Envío por unidad</div><div style="text-align:right;color:var(--text)">${f(p.envio_real / u)}</div>
+          <div>Unidades vendidas</div><div style="text-align:right;color:var(--text)">${p.units}</div>
+          <div>ACOS del producto</div><div style="text-align:right;color:${acos && parseFloat(acos) > 20 ? '#ff5252' : 'var(--text)'}">${acos ? acos + '%' : 'sin pauta'}</div>
+          <div>Retorno sobre CMV</div><div style="text-align:right;color:var(--text)">${p.retorno_cmv_pct != null ? p.retorno_cmv_pct + '%' : '—'}</div>
+          <div>Mix logístico</div><div style="text-align:right;color:var(--text)">${mixFF > 0 ? `${p.units_full || 0} FULL · ${p.units_flex || 0} Flex` : 'sin FULL/Flex'}</div>
+          <div>Puesto en facturación</div><div style="text-align:right;color:var(--text)">#${p.rank_facturacion} de ${(window._topGanData?.items || []).length}</div>
+        </div>
+        ${aFavor.length ? `<div style="margin-top:10px;font-size:10px;color:#00e676">
+          A favor: ${aFavor.map(c => `${c.label} ${f(Math.abs(c.val))}`).join(' · ')} (más crédito fiscal que débito).
+        </div>` : ''}
+      </div>
+    </div>
+  </div>`;
 }
 
 function exportTopGananciaExcel() {
