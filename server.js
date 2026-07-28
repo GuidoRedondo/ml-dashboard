@@ -493,6 +493,18 @@ async function initDB() {
       data       JSONB NOT NULL,
       fetched_at TIMESTAMP DEFAULT NOW()
     );
+    -- Margen real por producto (contribución marginal con envío real por MLA).
+    -- Calcularlo tarda 1-2 min porque pide el costo de cada envío a ML, así que el
+    -- resultado se cachea por rango de fechas (TTL 12h, mismo criterio que ciclo_vida_cache).
+    CREATE TABLE IF NOT EXISTS margen_producto_cache (
+      client_id  INTEGER NOT NULL,
+      date_from  DATE NOT NULL,
+      date_to    DATE NOT NULL,
+      data       JSONB NOT NULL,
+      fetched_at TIMESTAMP DEFAULT NOW(),
+      PRIMARY KEY (client_id, date_from, date_to)
+    );
+    CREATE INDEX IF NOT EXISTS idx_margen_prod_fetched ON margen_producto_cache(fetched_at);
     -- Estado de segmento por publicación (1 fila por ítem) para detectar
     -- movimientos de segmento (dormida/naciente/negocio) en el tiempo.
     CREATE TABLE IF NOT EXISTS ciclo_vida_estado (
@@ -4805,130 +4817,267 @@ app.get('/api/reporte/items-vendidos', requireAuth, async (req, res) => {
 // por MLA) − Flex/FULL manual (prorrateado solo sobre unidades FULL/FLEX) − Publicidad real
 // (PADS) − diferencia de IVA − IIBB. No prorratea el envío plano (que sobreestima la pérdida
 // de los productos de bajo ticket). Misma lógica que la skill Warren.
+// Núcleo compartido del cálculo. Lo consumen /api/reporte/margen-real-producto (tabla de
+// Rentabilidad, ordenada por los que pierden) y /api/performance/top-ganancia (ranking de los
+// que más ganancia dejan, en Performance). Tira Error con .status si el cliente no está listo.
+async function calcularMargenRealPorMla(client_id, date_from, date_to) {
+  const token = await getClientToken(parseInt(client_id));
+  if (!token) { const e = new Error('Sin token'); e.status = 403; throw e; }
+  const headers = { 'Authorization': `Bearer ${token}` };
+
+  const cRes = await pool.query(
+    'SELECT ml_user_id, tasa_iibb_pct, condicion_iva FROM clients WHERE id=$1', [client_id]);
+  const uid = cRes.rows[0]?.ml_user_id;
+  if (!uid) { const e = new Error('Cliente sin ML User ID'); e.status = 400; throw e; }
+  const tasaIibb = parseFloat(cRes.rows[0]?.tasa_iibb_pct) || 0;
+  const esMonotrib = (cRes.rows[0]?.condicion_iva || 'responsable_inscripto') === 'monotributista';
+
+  const fmt = d => new Date(d).toISOString().slice(0,19) + '.000-00:00';
+  const { orders } = await fetchAllOrders(uid, headers, fmt(date_from + 'T00:00:00'), fmt(date_to + 'T23:59:59'));
+
+  // Agrupar por MLA
+  const byMla = {};
+  orders.forEach(o => {
+    (o.order_items||[]).forEach(oi => {
+      const id = oi.item?.id; if (!id) return;
+      if (!byMla[id]) byMla[id] = { mla_id: id, title: oi.item?.title || id, units: 0, revenue: 0, sale_fee: 0,
+        envio_real: 0, units_full: 0, units_flex: 0 };
+      byMla[id].units   += oi.quantity || 0;
+      byMla[id].revenue += (parseFloat(oi.unit_price)||0) * (oi.quantity||0);
+      byMla[id].sale_fee += parseFloat(oi.sale_fee)||0;
+    });
+  });
+
+  // Envío real por MLA + modo logístico
+  const shipCostMap = await fetchShippingCosts(orders, headers);
+  orders.forEach(o => {
+    const sc = o.shipping?.id ? shipCostMap[o.shipping.id] : null;
+    const ois = (o.order_items||[]).filter(oi => oi.item?.id);
+    const totalUnits = ois.reduce((s,oi)=>s+(oi.quantity||0),0) || 1;
+    const sellerCost = sc?.sellerCost || 0, mode = sc?.mode || 'Otro';
+    ois.forEach(oi => {
+      const m = byMla[oi.item.id], q = oi.quantity||0; if (!m) return;
+      m.envio_real += sellerCost * (q/totalUnits);
+      if (mode === 'FULL') m.units_full += q; else if (mode === 'FLEX') m.units_flex += q;
+    });
+  });
+
+  // SKU por MLA (mismo patrón que /api/reporte/items-vendidos) — el ranking lo muestra
+  // porque en la call se habla por SKU, no por MLA.
+  const skuMap = {};
+  const manualSku = await loadSkuManual(client_id);
+  const mlaIds = Object.keys(byMla);
+  for (let i = 0; i < mlaIds.length; i += 20) {
+    const batch = mlaIds.slice(i, i + 20);
+    try {
+      const data = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,seller_custom_field,attributes,variations&include_attributes=all`, { headers }).then(r => r.json());
+      (Array.isArray(data) ? data : []).forEach(r => {
+        if (r.code !== 200 || !r.body) return;
+        skuMap[r.body.id] = manualSku[r.body.id] || extractSku(r.body);
+      });
+    } catch(e) {}
+  }
+
+  // CMV por MLA + alícuota de IVA por producto
+  const costsRes = await pool.query('SELECT mla_id, costo_unit, alicuota_iva FROM product_costs WHERE client_id=$1', [client_id]);
+  const costsMap = {}, alicMap = {};
+  costsRes.rows.forEach(r => { costsMap[r.mla_id] = parseFloat(r.costo_unit)||0; alicMap[r.mla_id] = parseFloat(r.alicuota_iva) || 21; });
+
+  // Flex/FULL manual: sumar el de cada mes que toca el rango, escalado por los días
+  // del rango que caen en ese mes (el bolo se carga mensual; si el rango es parcial,
+  // se prorratea para no inflar el Flex). Luego se reparte sobre las unidades FULL/FLEX.
+  const dFrom = new Date(date_from + 'T00:00:00'), dTo = new Date(date_to + 'T00:00:00');
+  let flexManual = 0;
+  for (let cur = new Date(dFrom.getFullYear(), dFrom.getMonth(), 1); cur <= dTo;
+       cur = new Date(cur.getFullYear(), cur.getMonth() + 1, 1)) {
+    const y = cur.getFullYear(), mo = cur.getMonth();
+    const diasMes = new Date(y, mo + 1, 0).getDate();
+    const inicioMes = new Date(y, mo, 1), finMes = new Date(y, mo, diasMes);
+    const desde = dFrom > inicioMes ? dFrom : inicioMes;
+    const hasta = dTo < finMes ? dTo : finMes;
+    const diasRango = Math.round((hasta - desde) / (24 * 3600 * 1000)) + 1;
+    const mesStr = `${y}-${String(mo + 1).padStart(2, '0')}-01`;
+    const gQ = await pool.query(
+      "SELECT monto FROM gastos_fijos WHERE client_id=$1 AND mes=$2 AND categoria='envios_flex'", [client_id, mesStr]);
+    const flexMes = gQ.rows.reduce((s, g) => s + (parseFloat(g.monto) || 0), 0);
+    flexManual += flexMes * (diasRango / diasMes);
+  }
+  const totFF = Object.values(byMla).reduce((s,m)=>s+m.units_full+m.units_flex,0);
+  const flexU = totFF ? flexManual/totFF : 0;
+
+  // Publicidad por MLA (PADS) — opcional, degradable
+  const adsByItem = {};
+  try {
+    const advData = await fetch(`${ML_API}/advertising/advertisers?product_id=PADS`,
+      { headers: { ...headers, 'Content-Type': 'application/json', 'Api-Version': '1' } }).then(r=>r.json());
+    const adv = (advData.advertisers||[])[0];
+    if (adv) {
+      const siteId = 'MLA', fromDate = date_from, toDate = date_to;
+      let offset = 0, limit = 50, total = 999;
+      while (offset < total) {
+        const url = `${ML_API}/advertising/${siteId}/advertisers/${adv.advertiser_id}/product_ads/ads/search?date_from=${fromDate}&date_to=${toDate}&metrics=cost&limit=${limit}&offset=${offset}`;
+        const data = await fetch(url, { headers: { ...headers, 'api-version': '2' } }).then(r=>r.json()).catch(()=>({}));
+        total = data.paging?.total || 0;
+        (data.results||[]).forEach(ad => {
+          if (ad.item_id && ad.metrics?.cost > 0) adsByItem[ad.item_id] = (adsByItem[ad.item_id]||0) + parseFloat(ad.metrics.cost);
+        });
+        offset += limit;
+        if ((data.results||[]).length < limit) break;
+      }
+    }
+  } catch(e) { /* publicidad por item opcional */ }
+
+  // Calcular P&L real por SKU
+  const items = Object.values(byMla).map(m => {
+    const fact = m.revenue, com = m.sale_fee;
+    const cmv = (costsMap[m.mla_id] != null) ? costsMap[m.mla_id] * m.units : 0;
+    const envReal = Math.round(m.envio_real);
+    const flexImp = Math.round((m.units_full + m.units_flex) * flexU);
+    const publi = Math.round(adsByItem[m.mla_id] || 0);
+    const alic = alicMap[m.mla_id] ?? 21;
+    // Débito sobre la venta y crédito sobre el CMV a la alícuota del producto; comisión,
+    // envío y flex son servicios de ML → 21%.
+    const ivaV = esMonotrib ? 0 : ivaContenido(fact, alic);
+    const ivaC = esMonotrib ? 0 : ivaContenido(cmv, alic) + ivaContenido(com + envReal + flexImp, IVA_SERVICIOS_PCT);
+    const ivaDif = Math.round(ivaV - ivaC);
+    const iibb = Math.round(fact * (tasaIibb/100));
+    const margen = Math.round(fact - com - cmv - envReal - flexImp - publi - ivaDif - iibb);
+    return {
+      mla_id: m.mla_id, title: m.title, sku: skuMap[m.mla_id] || null, units: m.units, revenue: fact,
+      sale_fee: Math.round(com), cmv_total: Math.round(cmv), has_cost: costsMap[m.mla_id] != null,
+      envio_real: envReal, flex_imp: flexImp, publi_real: publi, iva_dif: ivaDif, iibb,
+      units_full: m.units_full, units_flex: m.units_flex,
+      margen_real: margen, margen_real_pct: fact ? +(margen/fact*100).toFixed(1) : 0,
+      margen_x_unidad: m.units > 0 ? Math.round(margen / m.units) : 0,
+      // Retorno sobre la mercadería: cuánto deja cada peso puesto en stock.
+      retorno_cmv_pct: cmv > 0 ? +(margen / cmv * 100).toFixed(1) : null,
+    };
+  }).sort((a,b) => a.margen_real - b.margen_real);
+
+  return {
+    items, total_orders: orders.length,
+    meta: { flex_manual: flexManual, flex_por_unidad_ff: Math.round(flexU),
+            unidades_full_flex: totFF, tasa_iibb_pct: tasaIibb, es_monotributista: esMonotrib,
+            skus_que_pierden: items.filter(i=>i.margen_real<0).length },
+  };
+}
+
 app.get('/api/reporte/margen-real-producto', requireAuth, async (req, res) => {
   try {
     const { client_id, date_from, date_to } = req.query;
-    const token = await getClientToken(parseInt(client_id));
-    if (!token) return res.status(403).json({ error: 'Sin token' });
-    const headers = { 'Authorization': `Bearer ${token}` };
+    res.json(await calcularMargenRealPorMla(client_id, date_from, date_to));
+  } catch(e) {
+    console.error('[MARGEN REAL]', e.message);
+    res.status(e.status || 500).json({ error: e.message });
+  }
+});
 
-    const cRes = await pool.query(
-      'SELECT ml_user_id, tasa_iibb_pct, condicion_iva FROM clients WHERE id=$1', [client_id]);
-    const uid = cRes.rows[0]?.ml_user_id;
-    if (!uid) return res.status(400).json({ error: 'Cliente sin ML User ID' });
-    const tasaIibb = parseFloat(cRes.rows[0]?.tasa_iibb_pct) || 0;
-    const esMonotrib = (cRes.rows[0]?.condicion_iva || 'responsable_inscripto') === 'monotributista';
-
-    const fmt = d => new Date(d).toISOString().slice(0,19) + '.000-00:00';
-    const { orders } = await fetchAllOrders(uid, headers, fmt(date_from + 'T00:00:00'), fmt(date_to + 'T23:59:59'));
-
-    // Agrupar por MLA
-    const byMla = {};
-    orders.forEach(o => {
-      (o.order_items||[]).forEach(oi => {
-        const id = oi.item?.id; if (!id) return;
-        if (!byMla[id]) byMla[id] = { mla_id: id, title: oi.item?.title || id, units: 0, revenue: 0, sale_fee: 0,
-          envio_real: 0, units_full: 0, units_flex: 0 };
-        byMla[id].units   += oi.quantity || 0;
-        byMla[id].revenue += (parseFloat(oi.unit_price)||0) * (oi.quantity||0);
-        byMla[id].sale_fee += parseFloat(oi.sale_fee)||0;
-      });
-    });
-
-    // Envío real por MLA + modo logístico
-    const shipCostMap = await fetchShippingCosts(orders, headers);
-    orders.forEach(o => {
-      const sc = o.shipping?.id ? shipCostMap[o.shipping.id] : null;
-      const ois = (o.order_items||[]).filter(oi => oi.item?.id);
-      const totalUnits = ois.reduce((s,oi)=>s+(oi.quantity||0),0) || 1;
-      const sellerCost = sc?.sellerCost || 0, mode = sc?.mode || 'Otro';
-      ois.forEach(oi => {
-        const m = byMla[oi.item.id], q = oi.quantity||0; if (!m) return;
-        m.envio_real += sellerCost * (q/totalUnits);
-        if (mode === 'FULL') m.units_full += q; else if (mode === 'FLEX') m.units_flex += q;
-      });
-    });
-
-    // CMV por MLA + alícuota de IVA por producto
-    const costsRes = await pool.query('SELECT mla_id, costo_unit, alicuota_iva FROM product_costs WHERE client_id=$1', [client_id]);
-    const costsMap = {}, alicMap = {};
-    costsRes.rows.forEach(r => { costsMap[r.mla_id] = parseFloat(r.costo_unit)||0; alicMap[r.mla_id] = parseFloat(r.alicuota_iva) || 21; });
-
-    // Flex/FULL manual: sumar el de cada mes que toca el rango, escalado por los días
-    // del rango que caen en ese mes (el bolo se carga mensual; si el rango es parcial,
-    // se prorratea para no inflar el Flex). Luego se reparte sobre las unidades FULL/FLEX.
-    const dFrom = new Date(date_from + 'T00:00:00'), dTo = new Date(date_to + 'T00:00:00');
-    let flexManual = 0;
-    for (let cur = new Date(dFrom.getFullYear(), dFrom.getMonth(), 1); cur <= dTo;
-         cur = new Date(cur.getFullYear(), cur.getMonth() + 1, 1)) {
-      const y = cur.getFullYear(), mo = cur.getMonth();
-      const diasMes = new Date(y, mo + 1, 0).getDate();
-      const inicioMes = new Date(y, mo, 1), finMes = new Date(y, mo, diasMes);
-      const desde = dFrom > inicioMes ? dFrom : inicioMes;
-      const hasta = dTo < finMes ? dTo : finMes;
-      const diasRango = Math.round((hasta - desde) / (24 * 3600 * 1000)) + 1;
-      const mesStr = `${y}-${String(mo + 1).padStart(2, '0')}-01`;
-      const gQ = await pool.query(
-        "SELECT monto FROM gastos_fijos WHERE client_id=$1 AND mes=$2 AND categoria='envios_flex'", [client_id, mesStr]);
-      const flexMes = gQ.rows.reduce((s, g) => s + (parseFloat(g.monto) || 0), 0);
-      flexManual += flexMes * (diasRango / diasMes);
+// GET /api/performance/top-ganancia — ranking de los productos que MÁS ganancia dejaron.
+// Es el espejo del top por facturación: mismo período, misma cuenta, pero ordenado por
+// contribución marginal en pesos. Devuelve además la posición de cada producto en el ranking
+// de facturación para exponer el desfasaje (el #1 que factura y es #14 en ganancia).
+//
+// Solo entran los productos CON CMV cargado: sin costo, la ganancia sería la facturación menos
+// los cargos de ML y el producto treparía al tope del ranking por un dato faltante.
+//
+// Cachea 12h en margen_producto_cache porque el cálculo pide el costo de cada envío a ML
+// (1-2 min). ?solo_cache=1 responde solo si hay cache fresco (para no colgar el render inicial);
+// ?force_refresh=1 recalcula.
+app.get('/api/performance/top-ganancia', requireAuth, async (req, res) => {
+  try {
+    const clientId = parseInt(req.query.client_id);
+    const { date_from, date_to } = req.query;
+    if (!clientId || !date_from || !date_to) {
+      return res.status(400).json({ error: 'client_id, date_from y date_to son requeridos' });
     }
-    const totFF = Object.values(byMla).reduce((s,m)=>s+m.units_full+m.units_flex,0);
-    const flexU = totFF ? flexManual/totFF : 0;
+    const soloCache = req.query.solo_cache === '1' || req.query.solo_cache === 'true';
+    const force     = req.query.force_refresh === '1' || req.query.force_refresh === 'true';
 
-    // Publicidad por MLA (PADS) — opcional, degradable
-    const adsByItem = {};
-    try {
-      const advData = await fetch(`${ML_API}/advertising/advertisers?product_id=PADS`,
-        { headers: { ...headers, 'Content-Type': 'application/json', 'Api-Version': '1' } }).then(r=>r.json());
-      const adv = (advData.advertisers||[])[0];
-      if (adv) {
-        const siteId = 'MLA', fromDate = date_from, toDate = date_to;
-        let offset = 0, limit = 50, total = 999;
-        while (offset < total) {
-          const url = `${ML_API}/advertising/${siteId}/advertisers/${adv.advertiser_id}/product_ads/ads/search?date_from=${fromDate}&date_to=${toDate}&metrics=cost&limit=${limit}&offset=${offset}`;
-          const data = await fetch(url, { headers: { ...headers, 'api-version': '2' } }).then(r=>r.json()).catch(()=>({}));
-          total = data.paging?.total || 0;
-          (data.results||[]).forEach(ad => {
-            if (ad.item_id && ad.metrics?.cost > 0) adsByItem[ad.item_id] = (adsByItem[ad.item_id]||0) + parseFloat(ad.metrics.cost);
-          });
-          offset += limit;
-          if ((data.results||[]).length < limit) break;
-        }
-      }
-    } catch(e) { /* publicidad por item opcional */ }
+    let payload = null, cached = false, fetchedAt = null;
 
-    // Calcular P&L real por SKU
-    const items = Object.values(byMla).map(m => {
-      const fact = m.revenue, com = m.sale_fee;
-      const cmv = (costsMap[m.mla_id] != null) ? costsMap[m.mla_id] * m.units : 0;
-      const envReal = Math.round(m.envio_real);
-      const flexImp = Math.round((m.units_full + m.units_flex) * flexU);
-      const publi = Math.round(adsByItem[m.mla_id] || 0);
-      const alic = alicMap[m.mla_id] ?? 21;
-      // Débito sobre la venta y crédito sobre el CMV a la alícuota del producto; comisión,
-      // envío y flex son servicios de ML → 21%.
-      const ivaV = esMonotrib ? 0 : ivaContenido(fact, alic);
-      const ivaC = esMonotrib ? 0 : ivaContenido(cmv, alic) + ivaContenido(com + envReal + flexImp, IVA_SERVICIOS_PCT);
-      const ivaDif = Math.round(ivaV - ivaC);
-      const iibb = Math.round(fact * (tasaIibb/100));
-      const margen = Math.round(fact - com - cmv - envReal - flexImp - publi - ivaDif - iibb);
-      return {
-        mla_id: m.mla_id, title: m.title, sku: null, units: m.units, revenue: fact,
-        sale_fee: Math.round(com), cmv_total: Math.round(cmv), has_cost: costsMap[m.mla_id] != null,
-        envio_real: envReal, flex_imp: flexImp, publi_real: publi, iva_dif: ivaDif, iibb,
-        units_full: m.units_full, units_flex: m.units_flex,
-        margen_real: margen, margen_real_pct: fact ? +(margen/fact*100).toFixed(1) : 0,
-      };
-    }).sort((a,b) => a.margen_real - b.margen_real);
+    if (!force) {
+      const c = await pool.query(
+        `SELECT data, fetched_at FROM margen_producto_cache
+          WHERE client_id=$1 AND date_from=$2 AND date_to=$3
+            AND fetched_at > NOW() - INTERVAL '12 hours'`,
+        [clientId, date_from, date_to]
+      );
+      if (c.rows[0]) { payload = c.rows[0].data; cached = true; fetchedAt = c.rows[0].fetched_at; }
+    }
+
+    if (!payload) {
+      if (soloCache) return res.json({ disponible: false, cached: false, items: [], meta: {} });
+      payload = await calcularMargenRealPorMla(clientId, date_from, date_to);
+      fetchedAt = new Date();
+      await pool.query(
+        `INSERT INTO margen_producto_cache (client_id, date_from, date_to, data, fetched_at)
+         VALUES ($1,$2,$3,$4,NOW())
+         ON CONFLICT (client_id, date_from, date_to)
+         DO UPDATE SET data=$4, fetched_at=NOW()`,
+        [clientId, date_from, date_to, JSON.stringify(payload)]
+      );
+    }
+
+    const todos   = payload.items || [];
+    const conCosto = todos.filter(i => i.has_cost);
+    const sinCosto = todos.filter(i => !i.has_cost);
+
+    // Ranking de facturación sobre el MISMO universo, para que el Δ posición sea comparable.
+    const rankFact = {};
+    [...conCosto].sort((a,b) => b.revenue - a.revenue)
+      .forEach((i, idx) => { rankFact[i.mla_id] = idx + 1; });
+
+    const gananciaTotal = conCosto.reduce((s,i) => s + i.margen_real, 0);
+    const facturaTotal  = conCosto.reduce((s,i) => s + i.revenue, 0);
+
+    const ranking = [...conCosto]
+      .sort((a,b) => b.margen_real - a.margen_real)
+      .map((i, idx) => ({
+        ...i,
+        rank_ganancia:    idx + 1,
+        rank_facturacion: rankFact[i.mla_id],
+        // Positivo = rinde mejor de lo que factura; negativo = factura más de lo que deja.
+        delta_rank:       rankFact[i.mla_id] - (idx + 1),
+        pct_ganancia:     gananciaTotal > 0 ? +(i.margen_real / gananciaTotal * 100).toFixed(1) : 0,
+        pct_facturacion:  facturaTotal  > 0 ? +(i.revenue     / facturaTotal  * 100).toFixed(1) : 0,
+      }));
+
+    // Pareto de la ganancia: cuántos productos hacen el 80% de la utilidad. Se acumula solo
+    // sobre los que ganan — si se mezclaran los que pierden, el acumulado bajaría y el corte
+    // del 80% daría un número inflado.
+    const ganadores = ranking.filter(i => i.margen_real > 0);
+    const totalGanadores = ganadores.reduce((s,i) => s + i.margen_real, 0);
+    let acum = 0, skus80 = 0;
+    for (const i of ganadores) {
+      acum += i.margen_real;
+      skus80++;
+      if (totalGanadores > 0 && acum / totalGanadores >= 0.8) break;
+    }
+    const top10Ganancia = ganadores.slice(0, 10).reduce((s,i) => s + i.margen_real, 0);
 
     res.json({
-      items, total_orders: orders.length,
-      meta: { flex_manual: flexManual, flex_por_unidad_ff: Math.round(flexU),
-              unidades_full_flex: totFF, tasa_iibb_pct: tasaIibb, es_monotributista: esMonotrib,
-              skus_que_pierden: items.filter(i=>i.margen_real<0).length },
+      disponible: true,
+      cached,
+      fetched_at: fetchedAt,
+      items: ranking,
+      meta: {
+        ...payload.meta,
+        ganancia_total:      Math.round(gananciaTotal),
+        facturacion_total:   Math.round(facturaTotal),
+        margen_promedio_pct: facturaTotal > 0 ? +(gananciaTotal / facturaTotal * 100).toFixed(1) : 0,
+        skus_con_cmv:        conCosto.length,
+        skus_sin_cmv:        sinCosto.length,
+        // Facturación que queda fuera del ranking por no tener el costo cargado.
+        facturacion_sin_cmv: Math.round(sinCosto.reduce((s,i) => s + i.revenue, 0)),
+        skus_que_ganan:      ganadores.length,
+        skus_80_ganancia:    skus80,
+        pareto_top10_pct:    totalGanadores > 0 ? +(top10Ganancia / totalGanadores * 100).toFixed(1) : 0,
+      },
     });
-  } catch(e) { console.error('[MARGEN REAL]', e.message); res.status(500).json({ error: e.message }); }
+  } catch(e) {
+    console.error('[TOP GANANCIA]', e.message);
+    res.status(e.status || 500).json({ error: e.message });
+  }
 });
 
 // POST /api/reporte/costos — guardar costos de productos

@@ -9009,10 +9009,261 @@ function loadPerformance() {
       ${hourChart(byHour)}
     </div>
 
+    <!-- ROW 4: Rankings por facturación y unidades -->
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
+      <div class="kpi-card" style="padding:18px">
+        <div class="kpi-label" style="margin-bottom:14px">💰 Top 15 por facturación</div>
+        ${top15Table(top15Rev, 'revenue', fmt, 'Facturación', totalRevenue)}
+      </div>
+      <div class="kpi-card" style="padding:18px">
+        <div class="kpi-label" style="margin-bottom:14px">📦 Top 15 por unidades</div>
+        ${top15Table(top15Units, 'units', n => Math.round(n).toLocaleString('es-AR'), 'Unidades', totalUnitsAll)}
+      </div>
+    </div>
+
+    <!-- ROW 5: Ranking por ganancia (async — el cálculo real tarda, se cachea 12h) -->
+    <div id="topGananciaCard" style="margin-bottom:12px">
+      <div class="kpi-card" style="padding:18px">
+        <div style="color:var(--muted);font-size:12px;text-align:center">⏳ Buscando ranking de ganancia…</div>
+      </div>
+    </div>
+
   `;
 
   // Load preguntas async after render
   setTimeout(loadPreguntasCard, 50);
+  setTimeout(loadTopGanancia, 60);
+}
+
+// ── TOP POR GANANCIA ────────────────────────────────────────────────────────
+// Espejo del top por facturación, pero ordenado por contribución marginal en pesos:
+// facturación − comisión − CMV − envío real por MLA − Flex − publicidad − IVA neto − IIBB.
+// El cálculo pide el costo de cada envío a ML (1-2 min), así que el backend lo cachea 12h.
+// En la carga de Performance solo se consulta el cache; si no hay, se ofrece el botón.
+window._topGanData  = null;
+window._topGanTodos = false;
+
+async function loadTopGanancia() {
+  const cont = document.getElementById('topGananciaCard');
+  if (!cont) return;
+  const client = getActiveClient();
+  if (!client) { cont.innerHTML = ''; return; }
+
+  // Descartar lo que haya quedado de otra cuenta o de otro rango de fechas.
+  window._topGanData  = null;
+  window._topGanTodos = false;
+
+  const { date_from, date_to } = getDateRange();
+  try {
+    const data = await apiCall('GET',
+      `/api/performance/top-ganancia?client_id=${client.id}&date_from=${date_from}&date_to=${date_to}&solo_cache=1`);
+    if (data?.disponible) { window._topGanData = data; renderTopGanancia(); }
+    else renderTopGananciaVacio();
+  } catch (e) {
+    renderTopGananciaVacio(e?.message || e);
+  }
+}
+
+function renderTopGananciaVacio(err) {
+  const cont = document.getElementById('topGananciaCard');
+  if (!cont) return;
+  cont.innerHTML = `
+    <div class="kpi-card" style="padding:18px">
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px">
+        <div>
+          <div class="kpi-label" style="margin-bottom:4px">🏆 Top por ganancia</div>
+          <div style="font-size:11px;color:var(--muted);max-width:560px">
+            Ranking por la plata que <strong>queda</strong>, no por la que entra: descuenta comisión, CMV,
+            envío real por publicación, Flex, publicidad, IVA neto e IIBB.
+            ${err ? `<span style="color:#ff5252">— ${err}</span>` : 'Se calcula bajo demanda (1-2 min) y queda cacheado 12 horas.'}
+          </div>
+        </div>
+        <button onclick="calcularTopGanancia()" style="padding:8px 16px;border:none;border-radius:8px;background:#f59e0b;color:#fff;font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap">
+          🏆 Calcular ganancia por producto
+        </button>
+      </div>
+    </div>`;
+}
+
+async function calcularTopGanancia(force) {
+  const cont = document.getElementById('topGananciaCard');
+  if (!cont) return;
+  const client = getActiveClient();
+  if (!client) { showToast('⚠ Seleccioná una cuenta'); return; }
+
+  const { date_from, date_to } = getDateRange();
+  cont.innerHTML = `<div class="kpi-card" style="padding:18px;text-align:center;color:#f59e0b;font-size:13px">
+    ⏳ Calculando ganancia real por producto… puede tardar 1-2 min (pide el costo de cada envío a ML).
+    <div style="font-size:11px;color:var(--muted);margin-top:6px">Después queda cacheado 12 horas y abre al instante.</div>
+  </div>`;
+
+  try {
+    const data = await apiCall('GET',
+      `/api/performance/top-ganancia?client_id=${client.id}&date_from=${date_from}&date_to=${date_to}${force ? '&force_refresh=1' : ''}`);
+    window._topGanData = data;
+    renderTopGanancia();
+  } catch (e) {
+    renderTopGananciaVacio(e?.message || e);
+  }
+}
+
+function toggleTopGananciaTodos() {
+  window._topGanTodos = !window._topGanTodos;
+  renderTopGanancia();
+}
+
+function renderTopGanancia() {
+  const cont = document.getElementById('topGananciaCard');
+  const data = window._topGanData;
+  if (!cont || !data) return;
+
+  const m     = data.meta || {};
+  const all   = data.items || [];
+  const items = window._topGanTodos ? all : all.slice(0, 15);
+  const f     = n => (n < 0 ? '-' : '') + '$' + Math.round(Math.abs(n || 0)).toLocaleString('es-AR');
+
+  if (!all.length) {
+    cont.innerHTML = `<div class="kpi-card" style="padding:18px">
+      <div class="kpi-label" style="margin-bottom:8px">🏆 Top por ganancia</div>
+      <div style="font-size:12px;color:var(--muted)">
+        No hay productos con CMV cargado en el período. Cargá los costos en Rentabilidad → Importar CMV
+        y volvé a calcular: sin costo no se puede saber cuánto deja cada venta.
+      </div>
+    </div>`;
+    return;
+  }
+
+  const kpi = (label, value, color, sub) => `
+    <div style="text-align:center;background:rgba(255,255,255,.03);border:1px solid var(--border);border-radius:10px;padding:10px 6px">
+      <div style="font-size:9px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.04em;margin-bottom:3px">${label}</div>
+      <div style="font-size:18px;font-weight:700;color:${color}">${value}</div>
+      <div style="font-size:9px;color:var(--muted)">${sub}</div>
+    </div>`;
+
+  const rows = items.map(p => {
+    const neg = p.margen_real < 0;
+    const color = neg ? '#ff5252' : '#00e676';
+    // Δ posición: cuántos puestos mejor (o peor) rankea en ganancia que en facturación.
+    const d = p.delta_rank;
+    const dStr = d > 0 ? `▲ ${d}` : d < 0 ? `▼ ${Math.abs(d)}` : '=';
+    const dColor = d > 0 ? '#00e676' : d < 0 ? '#ff9100' : 'var(--muted)';
+    const dTitle = d > 0
+      ? `Rankea ${d} puestos mejor en ganancia (#${p.rank_ganancia}) que en facturación (#${p.rank_facturacion}) — rinde más de lo que aparenta`
+      : d < 0
+        ? `Rankea ${Math.abs(d)} puestos peor en ganancia (#${p.rank_ganancia}) que en facturación (#${p.rank_facturacion}) — factura más de lo que deja`
+        : `Misma posición en facturación y en ganancia (#${p.rank_ganancia})`;
+    return `<tr style="border-bottom:1px solid var(--border);${neg ? 'background:rgba(255,82,82,.06)' : ''}">
+      <td style="padding:6px 4px;color:var(--muted)">${p.rank_ganancia}</td>
+      <td style="padding:6px 4px;white-space:nowrap">
+        <span style="color:var(--muted);cursor:pointer;font-size:11px" title="Click para copiar" onclick="copyMLA(this,'${p.mla_id}')">${p.mla_id}</span>
+      </td>
+      <td style="padding:6px 4px;font-size:11px;color:var(--muted);max-width:90px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${(p.sku || '').replace(/"/g,'&quot;')}">${p.sku || '—'}</td>
+      <td style="padding:6px 4px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${(p.title || '').replace(/"/g,'&quot;')}">${p.title || ''}</td>
+      <td style="padding:6px 4px;text-align:right;color:var(--muted)">${p.units}</td>
+      <td style="padding:6px 4px;text-align:right;color:var(--muted)">${f(p.revenue)}</td>
+      <td style="padding:6px 4px;text-align:right;font-weight:700;color:${color}">${f(p.margen_real)}</td>
+      <td style="padding:6px 4px;text-align:right;color:${color}">${p.pct_ganancia}%</td>
+      <td style="padding:6px 4px;text-align:right;color:${p.margen_real_pct >= 20 ? '#00e676' : p.margen_real_pct >= 10 ? '#FFD700' : '#ff9100'}">${p.margen_real_pct}%</td>
+      <td style="padding:6px 4px;text-align:right;color:var(--muted)">${f(p.margen_x_unidad)}</td>
+      <td style="padding:6px 4px;text-align:right;color:var(--muted)">${p.retorno_cmv_pct != null ? p.retorno_cmv_pct + '%' : '—'}</td>
+      <td style="padding:6px 4px;text-align:right;font-weight:700;color:${dColor}" title="${dTitle}">${dStr}</td>
+    </tr>`;
+  }).join('');
+
+  const th = (label, align, title) =>
+    `<th style="text-align:${align};padding:6px 4px;color:var(--muted);font-weight:600;white-space:nowrap"${title ? ` title="${title}"` : ''}>${label}</th>`;
+
+  const fecha = data.fetched_at ? new Date(data.fetched_at).toLocaleString('es-AR', { day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit' }) : '';
+
+  cont.innerHTML = `
+    <div class="kpi-card" style="padding:18px">
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:14px">
+        <div>
+          <div class="kpi-label">🏆 Top por ganancia — la plata que queda</div>
+          <div style="font-size:10px;color:var(--muted);margin-top:3px">
+            Contribución marginal = facturación − comisión − CMV − envío real − Flex − publicidad − IVA neto − IIBB. No incluye gastos fijos.
+          </div>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px">
+          ${fecha ? `<span style="font-size:10px;color:var(--muted)">${data.cached ? '💾 cache' : '✅ recién calculado'} ${fecha}</span>` : ''}
+          <button onclick="toggleTopGananciaTodos()" style="padding:5px 12px;border:none;border-radius:6px;background:var(--surface2);color:var(--text);font-size:12px;font-weight:600;cursor:pointer">
+            ${window._topGanTodos ? 'Ver top 15' : `Ver los ${all.length}`}
+          </button>
+          <button onclick="exportTopGananciaExcel()" style="padding:5px 12px;border:none;border-radius:6px;background:#16a34a;color:#fff;font-size:12px;font-weight:600;cursor:pointer">📥 Excel</button>
+          <button onclick="calcularTopGanancia(true)" title="Recalcula ignorando el cache de 12h" style="padding:5px 12px;border:none;border-radius:6px;background:#f59e0b;color:#fff;font-size:12px;font-weight:600;cursor:pointer">🔄 Recalcular</button>
+        </div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:14px">
+        ${kpi('Ganancia total', f(m.ganancia_total), m.ganancia_total >= 0 ? '#00e676' : '#ff5252', `${m.margen_promedio_pct}% s/facturación`)}
+        ${kpi('Concentración', `${m.pareto_top10_pct}%`, '#FFD700', 'de la ganancia la hacen el top 10')}
+        ${kpi('Pareto real', m.skus_80_ganancia, '#3b82f6', `SKUs hacen el 80% · ${m.skus_que_ganan} dejan plata`)}
+        ${kpi('Destruyen margen', m.skus_que_pierden || 0, (m.skus_que_pierden || 0) > 0 ? '#ff5252' : 'var(--muted)', 'productos con ganancia negativa')}
+      </div>
+
+      ${m.skus_sin_cmv > 0 ? `<div style="background:rgba(255,145,0,.1);border:1px solid rgba(255,145,0,.3);border-radius:8px;padding:8px 12px;margin-bottom:12px;font-size:11px;color:#ff9100">
+        ⚠️ ${m.skus_sin_cmv} productos quedaron fuera del ranking por no tener CMV cargado (${f(m.facturacion_sin_cmv)} de facturación).
+        Sin el costo, su ganancia sería falsa y encabezarían la lista. Cargalos en Rentabilidad → Importar CMV.
+      </div>` : ''}
+
+      <div style="overflow-x:auto">
+        <table style="width:100%;border-collapse:collapse;font-size:12px">
+          <thead>
+            <tr style="border-bottom:1px solid var(--border)">
+              ${th('#','left')}${th('MLA','left')}${th('SKU','left')}${th('Publicación','left')}
+              ${th('U','right')}${th('Facturación','right')}
+              ${th('Ganancia','right','Contribución marginal en pesos del período')}
+              ${th('% del total','right','Cuánto pesa este producto en la ganancia total')}
+              ${th('Margen','right','Ganancia sobre la facturación del producto')}
+              ${th('$/unidad','right','Cuánto deja cada unidad vendida')}
+              ${th('Ret. s/CMV','right','Cuánto gana por cada peso puesto en mercadería')}
+              ${th('Δ pos.','right','Posición en ganancia vs posición en facturación. ▲ = rinde más de lo que aparenta · ▼ = factura más de lo que deja')}
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+      <div style="font-size:10px;color:var(--muted);margin-top:8px;font-style:italic">
+        Solo productos con CMV cargado. Envío vendedor REAL atribuido por publicación (no prorrateado); Flex/FULL repartido solo sobre unidades FULL/FLEX; publicidad real de PADS.
+      </div>
+    </div>`;
+}
+
+function exportTopGananciaExcel() {
+  const data = window._topGanData;
+  const client = getActiveClient();
+  if (!data?.items?.length || !client) { showToast('⚠ Calculá el ranking primero'); return; }
+
+  const XLSX = window.XLSX;
+  const rows = data.items.map(p => ({
+    '#':                    p.rank_ganancia,
+    'MLA':                  p.mla_id,
+    'SKU':                  p.sku || '',
+    'Publicación':          p.title,
+    'Unidades':             p.units,
+    'Facturación':          Math.round(p.revenue),
+    'Comisión ML':          p.sale_fee,
+    'CMV':                  p.cmv_total,
+    'Envío real':           p.envio_real,
+    'Flex/FULL':            p.flex_imp,
+    'Publicidad':           p.publi_real,
+    'IVA neto':             p.iva_dif,
+    'IIBB':                 p.iibb,
+    'Ganancia $':           p.margen_real,
+    '% de la ganancia':     p.pct_ganancia,
+    'Margen %':             p.margen_real_pct,
+    'Ganancia x unidad':    p.margen_x_unidad,
+    'Retorno s/CMV %':      p.retorno_cmv_pct != null ? p.retorno_cmv_pct : '',
+    'Rank facturación':     p.rank_facturacion,
+    'Δ posición':           p.delta_rank,
+  }));
+
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.json_to_sheet(rows);
+  ws['!cols'] = [4, 15, 14, 45, 9, 14, 13, 13, 12, 11, 12, 11, 10, 14, 14, 10, 15, 14, 15, 11].map(w => ({ wch: w }));
+  XLSX.utils.book_append_sheet(wb, ws, 'Top ganancia');
+  const fecha = new Date().toISOString().slice(0, 10);
+  XLSX.writeFile(wb, `TopGanancia_${client.name.replace(/\s+/g,'_')}_${fecha}.xlsx`);
 }
 
 async function loadPreguntasCard() {
