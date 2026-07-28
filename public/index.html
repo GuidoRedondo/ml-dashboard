@@ -10002,10 +10002,48 @@ function getUserPermissions() {
   return _userPermissions;
 }
 
+// Secciones asignables por usuario. Definido acá arriba (y no junto al ABM de usuarios)
+// porque initApp() llama a applyPermissions() de forma sincrónica durante la carga del
+// script: si la constante viviera más abajo, la lectura caería en la TDZ y rompería el arranque.
+const SECCIONES = [
+  { id: 'dashboard',    label: '📊 Dashboard' },
+  { id: 'performance',  label: '📈 Performance' },
+  { id: 'publicaciones',label: '📋 Publicaciones' },
+  { id: 'ventas',       label: '🛒 Ventas' },
+  { id: 'rentabilidad', label: '💰 Rentabilidad' },
+  { id: 'publicidad',   label: '📣 Publicidad' },
+  { id: 'diagnostico',  label: '🩺 Diagnóstico' },
+  { id: 'fotos',        label: '📷 Fotos' },
+  { id: 'logistica',    label: '🚚 Logística' },
+  { id: 'escalabilidad',label: '🚀 Escalabilidad' },
+  { id: 'competencia',  label: '🏆 Competencia' },
+  { id: 'reporte',      label: '📊 Reporte Financiero' },
+  { id: 'alertas',      label: '🔔 Centro de Inteligencia' },
+  // Secciones de trabajo interno. A diferencia del resto, arrancan OCULTAS para los clientes
+  // y solo se ven si el permiso está explícitamente en true: si heredaran el default
+  // ("sin registro = visible"), habilitarlas se las abriría de una a todos los clientes ya
+  // creados, que no tienen ninguna fila de estas secciones en user_permissions.
+  { id: 'promociones',      label: '🎁 Promociones',          optIn: true },
+  { id: 'preguntas',        label: '❓ Preguntas',             optIn: true },
+  { id: 'plan',             label: '🗓️ Plan de Trabajo',       optIn: true },
+  { id: 'informe-mensual',  label: '📄 Informe Mensual',      optIn: true },
+  { id: 'decisiones-publi', label: '🎛️ Motor de Publicidad',   optIn: true },
+];
+
+// Secciones que requieren permiso explícito (ver comentario arriba).
+const SECCIONES_OPTIN = SECCIONES.filter(s => s.optIn).map(s => s.id);
+
+// El id del permiso no siempre coincide con el data-page del nav: sin este mapa, el
+// querySelector de Publicidad no encontraba nada y el permiso quedaba sin efecto.
+const NAV_DATA_PAGE = { publicidad: 'ads' };
+const navDataPage = id => NAV_DATA_PAGE[id] || id;
+
 function canSeeSection(sectionId) {
   const role = getSessionRole();
   if (role === 'admin' || role === 'consultant' || role === 'colaborador') return true;
   const perms = getUserPermissions();
+  // Las internas no heredan el default permisivo: sin permiso explícito, no se ven.
+  if (SECCIONES_OPTIN.includes(sectionId)) return perms?.[sectionId] === true;
   if (!perms) return true; // sin permisos definidos = todo habilitado
   return perms[sectionId] !== false;
 }
@@ -10027,19 +10065,18 @@ function applyPermissions() {
 
   // Ocultar secciones según permisos para clientes
   if (role === 'cliente') {
-    const secciones = ['dashboard','performance','publicaciones','ventas','rentabilidad',
-      'publicidad','diagnostico','fotos','logistica','escalabilidad','competencia','reporte'];
-    secciones.forEach(s => {
-      const navEl = document.querySelector(`[data-page="${s}"]`);
-      if (navEl) navEl.style.display = canSeeSection(s) ? '' : 'none';
+    SECCIONES.filter(s => !s.optIn && s.id !== 'alertas').forEach(s => {
+      const navEl = document.querySelector(`[data-page="${navDataPage(s.id)}"]`);
+      if (navEl) navEl.style.display = canSeeSection(s.id) ? '' : 'none';
     });
   }
 
-  // Motor de Publicidad, Informe Mensual, Promociones, Preguntas y Plan de Trabajo: solo admins y consultores
+  // Motor de Publicidad, Informe Mensual, Promociones, Preguntas y Plan de Trabajo: siempre
+  // para admins y consultores; a un cliente se le pueden habilitar una por una desde Usuarios.
   const soloConsultores = role === 'admin' || role === 'consultant' || role === 'colaborador';
-  ['decisiones-publi','informe-mensual','promociones','preguntas','plan'].forEach(p => {
-    const el = document.querySelector(`[data-page="${p}"]`);
-    if (el) el.style.display = soloConsultores ? '' : 'none';
+  SECCIONES_OPTIN.forEach(p => {
+    const el = document.querySelector(`[data-page="${navDataPage(p)}"]`);
+    if (el) el.style.display = (soloConsultores || canSeeSection(p)) ? '' : 'none';
   });
   const rentTabFeesEl = document.getElementById('rentTabFees');
   if (rentTabFeesEl) rentTabFeesEl.style.display = soloConsultores ? '' : 'none';
@@ -16804,22 +16841,6 @@ function renderPromoDesglose(d) {
 let _tokenStatusInterval = null;
 
 // ── GESTIÓN DE USUARIOS ────────────────────────────────────────────────────────
-const SECCIONES = [
-  { id: 'dashboard',    label: '📊 Dashboard' },
-  { id: 'performance',  label: '📈 Performance' },
-  { id: 'publicaciones',label: '📋 Publicaciones' },
-  { id: 'ventas',       label: '🛒 Ventas' },
-  { id: 'rentabilidad', label: '💰 Rentabilidad' },
-  { id: 'publicidad',   label: '📣 Publicidad' },
-  { id: 'diagnostico',  label: '🩺 Diagnóstico' },
-  { id: 'fotos',        label: '📷 Fotos' },
-  { id: 'logistica',    label: '🚚 Logística' },
-  { id: 'escalabilidad',label: '🚀 Escalabilidad' },
-  { id: 'competencia',  label: '🏆 Competencia' },
-  { id: 'reporte',      label: '📊 Reporte Financiero' },
-  { id: 'alertas',      label: '🔔 Centro de Inteligencia' },
-];
-
 let _editingUserId = null;
 
 async function loadUsuarios() {
@@ -16898,11 +16919,25 @@ function abrirModalUsuario(user = null) {
   const grid = document.getElementById('uPermsGrid');
   const permsMap = {};
   if (user?.permissions) user.permissions.forEach(p => { permsMap[p.section] = p.enabled; });
-  grid.innerHTML = SECCIONES.map(s => `
+  let separadorPuesto = false;
+  grid.innerHTML = SECCIONES.map(s => {
+    // Las internas arrancan desmarcadas salvo permiso explícito; el resto, marcadas salvo
+    // que estén apagadas. Ver SECCIONES_OPTIN.
+    const checked = s.optIn ? permsMap[s.id] === true : permsMap[s.id] !== false;
+    let sep = '';
+    if (s.optIn && !separadorPuesto) {
+      separadorPuesto = true;
+      sep = `<div style="grid-column:1/-1;margin-top:10px;padding-top:10px;border-top:1px solid var(--border)">
+        <div style="font-size:11px;font-weight:700;color:#ff9100">🔒 Secciones de trabajo interno</div>
+        <div style="font-size:10px;color:var(--muted);margin-top:2px">Ocultas para los clientes salvo que las habilites acá</div>
+      </div>`;
+    }
+    return sep + `
     <label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer">
-      <input type="checkbox" id="perm_${s.id}" ${permsMap[s.id] !== false ? 'checked' : ''}>
+      <input type="checkbox" id="perm_${s.id}" ${checked ? 'checked' : ''}>
       ${s.label}
-    </label>`).join('');
+    </label>`;
+  }).join('');
 
   onRoleChange();
   const modal = document.getElementById('modalUsuario');
