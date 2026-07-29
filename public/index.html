@@ -1411,6 +1411,7 @@ tbody td {
     <div class="page" id="page-tendencia">
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px">
         <h2 style="margin:0;font-family:var(--font-b);flex:1">📡 Tendencia</h2>
+        <button class="sync-btn" onclick="exportTendenciaExcel()" style="background:#16a34a;color:#fff;border:none" title="Descarga un Excel con una hoja por sección">📥 Excel</button>
         <button class="sync-btn" onclick="loadTendencia()">🔄 Actualizar</button>
       </div>
       <div id="tendenciaContent"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Sincronizá primero para ver alertas</div></div>
@@ -14878,6 +14879,8 @@ function renderTendencia(connected, pubMap, costsMap) {
     { id: 'dormido',     emoji: '😴', label: 'Dormidos',      color: '#ff9100', items: dormido,      desc: 'Sin ventas en el período' },
   ];
 
+  window._tendAlertas = alertas;
+
   const cards = alertas.map(a => `
     <div onclick="document.getElementById('tend-${a.id}').scrollIntoView({behavior:'smooth'})"
       style="background:var(--surface);border:2px solid ${a.items.length > 0 ? a.color : 'var(--border)'};border-radius:12px;padding:14px 18px;cursor:pointer">
@@ -14975,6 +14978,90 @@ function renderTendencia(connected, pubMap, costsMap) {
   el.innerHTML = `
     <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:28px">${cards}</div>
     ${secciones}`;
+}
+
+// Exporta Tendencia a Excel: una hoja por sección + hoja Resumen
+function exportTendenciaExcel() {
+  if (typeof XLSX === 'undefined') { alert('La librería de Excel todavía no cargó. Probá de nuevo en unos segundos.'); return; }
+  const alertas = window._tendAlertas;
+  if (!alertas) { alert('Cargá primero la sección Tendencia'); return; }
+
+  const sortState = window._tendSort || {};
+  const sortItems = (items, alertId) => {
+    const s = sortState[alertId] || {};
+    if (!s.col) return items;
+    return [...items].sort((a, b) => {
+      const va = a[s.col] ?? -Infinity;
+      const vb = b[s.col] ?? -Infinity;
+      if (typeof va === 'string') return s.asc ? va.localeCompare(vb) : String(vb).localeCompare(va);
+      return s.asc ? va - vb : vb - va;
+    });
+  };
+
+  const wb = XLSX.utils.book_new();
+
+  // Hoja Resumen
+  const resumenRows = alertas.map(a => ({
+    'Alerta':      a.label,
+    'Productos':   a.items.length,
+    'Criterio':    a.desc,
+    'Facturación': Math.round(a.items.reduce((s, i) => s + (i.revenue || 0), 0)),
+    'Unidades':    a.items.reduce((s, i) => s + (i.units || 0), 0),
+  }));
+  const range = getDateRange();
+  const client = getActiveClient();
+  resumenRows.push({});
+  resumenRows.push({ 'Alerta': 'Período', 'Productos': '', 'Criterio': `${range.date_from} a ${range.date_to}` });
+  resumenRows.push({ 'Alerta': 'Cliente', 'Productos': '', 'Criterio': client?.name || '—' });
+  const wsR = XLSX.utils.json_to_sheet(resumenRows);
+  wsR['!cols'] = [{wch:16},{wch:11},{wch:38},{wch:15},{wch:10}];
+  XLSX.utils.book_append_sheet(wb, wsR, 'Resumen');
+
+  // Una hoja por sección
+  alertas.forEach(a => {
+    const items = sortItems(a.items, a.id);
+    const rows = items.map(i => {
+      const r = {
+        'MLA':         i.id,
+        'Título':      i.title || '',
+        'Link':        `https://articulo.mercadolibre.com.ar/${String(i.id).replace('MLA', 'MLA-')}`,
+        'Facturación': i.revenue > 0 ? Math.round(i.revenue) : '',
+        'Visitas':     i.visits || '',
+        'Ventas':      i.units || '',
+        'Conversión %': i.conversion > 0 ? i.conversion : '',
+      };
+      if (a.id === 'boom' || a.id === 'caida') {
+        r['Facturación anterior'] = i.revenue_prev > 0 ? Math.round(i.revenue_prev) : '';
+        r['Tendencia %'] = i.trend != null ? parseFloat(i.trend.toFixed(1)) : '';
+      }
+      if (a.id === 'dormido') r['Facturación anterior'] = i.revenue_prev > 0 ? Math.round(i.revenue_prev) : '';
+      if (a.id === 'stock')   r['Cobertura (días)'] = i.cobertura ?? '';
+      r['Ads']    = i.hasAds ? 'Sí' : 'No';
+      r['FULL']   = i.is_full ? 'Sí' : 'No';
+      r['Stock']  = i.available_quantity ?? '';
+      r['Margen %'] = i.margen != null ? i.margen : '';
+      return r;
+    });
+
+    // Hoja vacía → dejar constancia igual, para que estén siempre las 5 solapas
+    const ws = rows.length
+      ? XLSX.utils.json_to_sheet(rows)
+      : XLSX.utils.aoa_to_sheet([[a.label], [a.desc], ['Sin alertas en este período']]);
+    if (rows.length) {
+      const base = [{wch:14},{wch:60},{wch:48},{wch:14},{wch:10},{wch:9},{wch:12}];
+      const extra = (a.id === 'boom' || a.id === 'caida') ? [{wch:20},{wch:12}]
+                  : a.id === 'dormido' ? [{wch:20}]
+                  : a.id === 'stock'   ? [{wch:16}] : [];
+      ws['!cols'] = [...base, ...extra, {wch:7},{wch:7},{wch:9},{wch:10}];
+      ws['!autofilter'] = { ref: XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: rows.length, c: Object.keys(rows[0]).length - 1 } }) };
+    } else {
+      ws['!cols'] = [{wch:40}];
+    }
+    XLSX.utils.book_append_sheet(wb, ws, a.label.slice(0, 31));
+  });
+
+  const fecha = new Date().toISOString().slice(0, 10);
+  XLSX.writeFile(wb, `Tendencia_${(client?.name || 'cliente').replace(/\s+/g, '_')}_${fecha}.xlsx`);
 }
 
 // ── ESCALABILIDAD TABS ────────────────────────────────────────────────────────
