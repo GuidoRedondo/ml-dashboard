@@ -2824,10 +2824,16 @@ async function setTipoCuenta(id, name, tipo) {
 }
 
 async function deleteClient(id, name) {
-  if (!confirm(`¿Eliminar cliente "${name}"?`)) return;
-  await apiCall('DELETE', `/api/clients/${id}`);
-  showToast('✅ Cliente eliminado');
-  await loadClients();
+  if (!confirm(`¿Eliminar cliente "${name}"?\n\nSe borran también sus costos, gastos fijos, P&L y diagnósticos.`)) return;
+  try {
+    const res = await apiCall('DELETE', `/api/clients/${id}`);
+    // apiCall no tira excepción en 4xx/5xx: hay que chequear la respuesta a mano
+    if (!res)      throw new Error('Sin permisos o sesión vencida');
+    if (res.error) throw new Error(res.error);
+    if (!res.ok)   throw new Error('El servidor no confirmó el borrado');
+    showToast('✅ Cliente eliminado');
+    await loadClients();
+  } catch(e) { showToast(`❌ No se pudo eliminar: ${e.message}`); }
 }
 
 

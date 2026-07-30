@@ -183,7 +183,7 @@ async function initDB() {
     EXCEPTION WHEN OTHERS THEN NULL; END $$;
     CREATE TABLE IF NOT EXISTS diagnostico_mensual (
       id               SERIAL PRIMARY KEY,
-      client_id        INTEGER NOT NULL REFERENCES clients(id),
+      client_id        INTEGER NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
       mes              DATE NOT NULL,
       facturacion      NUMERIC(14,2),
       ventas           INTEGER,
@@ -228,7 +228,7 @@ async function initDB() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS product_costs (
       id          SERIAL PRIMARY KEY,
-      client_id   INTEGER NOT NULL REFERENCES clients(id),
+      client_id   INTEGER NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
       mla_id      VARCHAR(20) NOT NULL,
       title       TEXT,
       costo_unit  NUMERIC(14,2) NOT NULL DEFAULT 0,
@@ -239,7 +239,7 @@ async function initDB() {
     );
     CREATE TABLE IF NOT EXISTS gastos_fijos (
       id          SERIAL PRIMARY KEY,
-      client_id   INTEGER NOT NULL REFERENCES clients(id),
+      client_id   INTEGER NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
       mes         DATE NOT NULL,
       concepto    VARCHAR(200) NOT NULL,
       monto       NUMERIC(14,2) NOT NULL DEFAULT 0,
@@ -248,7 +248,7 @@ async function initDB() {
     );
     CREATE TABLE IF NOT EXISTS reporte_financiero (
       id          SERIAL PRIMARY KEY,
-      client_id   INTEGER NOT NULL REFERENCES clients(id),
+      client_id   INTEGER NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
       mes         DATE NOT NULL,
       data        JSONB DEFAULT '{}',
       generated_at TIMESTAMP DEFAULT NOW(),
@@ -256,7 +256,7 @@ async function initDB() {
     );
     CREATE TABLE IF NOT EXISTS full_stock_config (
       id                SERIAL PRIMARY KEY,
-      client_id         INTEGER NOT NULL REFERENCES clients(id),
+      client_id         INTEGER NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
       item_id           VARCHAR(30) NOT NULL,
       suggested_quantity INTEGER DEFAULT NULL,
       coverage_days_target INTEGER DEFAULT 30,
@@ -525,6 +525,41 @@ async function initDB() {
     );
     CREATE INDEX IF NOT EXISTS idx_cv_estado_cambio ON ciclo_vida_estado(client_id, cambio_fecha);
   `);
+
+  // ── Migración: FKs hacia clients(id) que quedaron sin ON DELETE CASCADE ──
+  // Varias tablas viejas (product_costs, reporte_financiero, diagnostico_mensual,
+  // gastos_fijos, full_stock_config) se crearon con el FK en NO ACTION. Eso hacía
+  // que borrar un cliente con costos cargados o P&L cacheado fallara con violación
+  // de foreign key. CREATE TABLE IF NOT EXISTS no arregla tablas ya creadas.
+  // Solo toca NO ACTION ('a') y RESTRICT ('r'): respeta el SET NULL de users.client_id.
+  try {
+    const fix = await pool.query(`
+      DO $$
+      DECLARE r RECORD;
+      BEGIN
+        FOR r IN
+          SELECT rel.relname AS tabla, con.conname AS cname, att.attname AS col
+            FROM pg_constraint con
+            JOIN pg_class     rel ON rel.oid = con.conrelid
+            JOIN pg_class     frel ON frel.oid = con.confrelid
+            JOIN pg_attribute att ON att.attrelid = con.conrelid AND att.attnum = con.conkey[1]
+           WHERE con.contype = 'f'
+             AND frel.relname = 'clients'
+             AND con.confdeltype IN ('a','r')
+             AND array_length(con.conkey, 1) = 1
+        LOOP
+          EXECUTE format('ALTER TABLE %I DROP CONSTRAINT %I', r.tabla, r.cname);
+          EXECUTE format(
+            'ALTER TABLE %I ADD CONSTRAINT %I FOREIGN KEY (%I) REFERENCES clients(id) ON DELETE CASCADE',
+            r.tabla, r.cname, r.col);
+          RAISE NOTICE 'FK % (%.%) recreado con ON DELETE CASCADE', r.cname, r.tabla, r.col;
+        END LOOP;
+      END $$;
+    `);
+    if (fix) console.log('[migración] FKs de clients revisados');
+  } catch (e) {
+    console.error('[migración] no se pudieron arreglar los FKs de clients:', e.message);
+  }
 
   // Create default admin if not exists (password: admin123 - change after first login)
   const hash = crypto.createHash('sha256').update('admin123').digest('hex');
@@ -805,10 +840,22 @@ app.post('/api/clients', requireAuth, async (req, res) => {
 });
 
 app.delete('/api/clients/:id', requireAuth, async (req, res) => {
+  const id = parseInt(req.params.id);
+  if (!Number.isInteger(id)) return res.status(400).json({ error: 'ID inválido' });
   try {
-    await pool.query('DELETE FROM clients WHERE id = $1', [req.params.id]);
-    res.json({ ok: true });
-  } catch(e) { res.status(500).json({ error: e.message }); }
+    const { rows } = await pool.query('SELECT name FROM clients WHERE id = $1', [id]);
+    if (!rows.length) return res.status(404).json({ error: 'El cliente no existe' });
+    const del = await pool.query('DELETE FROM clients WHERE id = $1', [id]);
+    if (!del.rowCount) return res.status(500).json({ error: 'No se pudo eliminar el cliente' });
+    res.json({ ok: true, deleted: del.rowCount, name: rows[0].name });
+  } catch(e) {
+    console.error('[clients] delete error:', e.message);
+    // Si algún FK viejo sigue sin CASCADE, el mensaje de Postgres dice qué tabla lo bloquea
+    const msg = /foreign key|violates/i.test(e.message)
+      ? `Hay datos asociados que bloquean el borrado (${e.message})`
+      : e.message;
+    res.status(500).json({ error: msg });
+  }
 });
 
 // Generate OAuth link for a client
