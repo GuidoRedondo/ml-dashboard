@@ -171,10 +171,16 @@ async function initDB() {
     );
     CREATE TABLE IF NOT EXISTS sessions (
       id VARCHAR(64) PRIMARY KEY,
-      user_id INTEGER REFERENCES users(id),
+      user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
       created_at TIMESTAMP DEFAULT NOW(),
       expires_at TIMESTAMP DEFAULT NOW() + INTERVAL '7 days'
     );
+    -- El FK viejo de sessions no tenía ON DELETE CASCADE: bloqueaba eliminar usuarios
+    DO $$ BEGIN
+      ALTER TABLE sessions DROP CONSTRAINT IF EXISTS sessions_user_id_fkey;
+      ALTER TABLE sessions ADD CONSTRAINT sessions_user_id_fkey
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE;
+    EXCEPTION WHEN OTHERS THEN NULL; END $$;
     CREATE TABLE IF NOT EXISTS diagnostico_mensual (
       id               SERIAL PRIMARY KEY,
       client_id        INTEGER NOT NULL REFERENCES clients(id),
@@ -692,11 +698,26 @@ app.put('/api/users/:id', requireAuth, requireAdmin, async (req, res) => {
 
 // Eliminar usuario
 app.delete('/api/users/:id', requireAuth, requireAdmin, async (req, res) => {
+  const id = parseInt(req.params.id);
+  if (!Number.isInteger(id)) return res.status(400).json({ error: 'ID inválido' });
+  if (id === req.user.id) return res.status(400).json({ error: 'No podés eliminarte a vos mismo' });
+  const c = await pool.connect();
   try {
-    if (parseInt(req.params.id) === req.user.id) return res.status(400).json({ error: 'No podés eliminarte a vos mismo' });
-    await pool.query('DELETE FROM users WHERE id = $1', [req.params.id]);
-    res.json({ ok: true });
-  } catch(e) { res.status(500).json({ error: e.message }); }
+    await c.query('BEGIN');
+    const { rows } = await c.query('SELECT username FROM users WHERE id = $1', [id]);
+    if (!rows.length) { await c.query('ROLLBACK'); return res.status(404).json({ error: 'El usuario no existe' }); }
+    // Borrado explícito de dependencias (por si el FK viejo sigue sin CASCADE)
+    await c.query('DELETE FROM sessions WHERE user_id = $1', [id]);
+    await c.query('DELETE FROM user_permissions WHERE user_id = $1', [id]);
+    const del = await c.query('DELETE FROM users WHERE id = $1', [id]);
+    await c.query('COMMIT');
+    if (!del.rowCount) return res.status(500).json({ error: 'No se pudo eliminar el usuario' });
+    res.json({ ok: true, deleted: del.rowCount, username: rows[0].username });
+  } catch(e) {
+    await c.query('ROLLBACK').catch(() => {});
+    console.error('[users] delete error:', e.message);
+    res.status(500).json({ error: e.message });
+  } finally { c.release(); }
 });
 
 // Actualizar permisos de un usuario

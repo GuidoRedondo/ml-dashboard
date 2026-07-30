@@ -17052,13 +17052,20 @@ async function guardarUsuario() {
     permissions[s.id] = document.getElementById(`perm_${s.id}`)?.checked ?? true;
   });
 
+  // apiCall no tira excepción en 4xx/5xx: hay que chequear la respuesta a mano
+  const chk = r => {
+    if (!r)      throw new Error('Sin permisos o sesión vencida');
+    if (r.error) throw new Error(r.error);
+    return r;
+  };
+
   try {
     if (_editingUserId) {
-      await apiCall('PUT', `/api/users/${_editingUserId}`, { username, email, password: password||undefined, role, client_id });
-      await apiCall('PUT', `/api/users/${_editingUserId}/permissions`, { permissions });
+      chk(await apiCall('PUT', `/api/users/${_editingUserId}`, { username, email, password: password||undefined, role, client_id }));
+      chk(await apiCall('PUT', `/api/users/${_editingUserId}/permissions`, { permissions }));
     } else {
-      const res = await apiCall('POST', '/api/users', { username, email, password, role, client_id });
-      if (res?.user?.id) await apiCall('PUT', `/api/users/${res.user.id}/permissions`, { permissions });
+      const res = chk(await apiCall('POST', '/api/users', { username, email, password, role, client_id }));
+      if (res?.user?.id) chk(await apiCall('PUT', `/api/users/${res.user.id}/permissions`, { permissions }));
     }
     showToast('✅ Usuario guardado');
     cerrarModalUsuario();
@@ -17069,9 +17076,13 @@ async function guardarUsuario() {
 async function eliminarUsuario(id, username) {
   if (!confirm(`¿Eliminar usuario "${username}"?`)) return;
   try {
-    await apiCall('DELETE', `/api/users/${id}`);
+    const res = await apiCall('DELETE', `/api/users/${id}`);
+    // apiCall no tira excepción en 4xx/5xx: hay que chequear la respuesta a mano
+    if (!res)           throw new Error('Sin permisos o sesión vencida');
+    if (res.error)      throw new Error(res.error);
+    if (!res.ok)        throw new Error('El servidor no confirmó el borrado');
     showToast('✅ Usuario eliminado');
-    loadUsuarios();
+    await loadUsuarios();
   } catch(e) { showToast(`❌ Error: ${e.message}`); }
 }
 
