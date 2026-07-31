@@ -1281,6 +1281,96 @@ async function fetchShippingCosts(orders, headers) {
   return costMap;
 }
 
+// ── ATRIBUCIÓN DEL ENVÍO POR PRODUCTO ────────────────────────────────────────
+// Umbral de envío gratis de MLA: por encima de este precio el envío pasa a ser costo del
+// vendedor; por debajo lo paga el comprador (y NO debe imputarse al producto).
+const UMBRAL_ENVIO_GRATIS = 33000;
+//
+// Reparte el costo de envío entre los ítems agrupando por ENVÍO, no por orden: en un
+// carrito ML crea una orden por ítem, todas con el mismo shipping.id, y cobra UN solo
+// envío. Sumar el costo por orden lo duplicaba tantas veces como ítems tuviera el carrito.
+//
+// Criterio Método Redondo™ para repartirlo: el costo se le carga al/los ítems que GATILLAN
+// el envío gratis (precio unitario >= UMBRAL_ENVIO_GRATIS), repartido entre ellos por
+// facturación. Un producto barato que viajó de arrastre en el carrito no carga envío: sin
+// el producto caro, ese envío lo hubiera pagado el comprador. Si ningún ítem llega al
+// umbral pero ML igual cobró (envío gratis puesto por el vendedor, promo, etc.), se reparte
+// entre todos por facturación — el costo existe y tiene que impactar en algún producto.
+//
+// El costo del comprador se reparte siempre por facturación (es plata que entra, no un
+// costo que haya que atribuir a un culpable).
+//
+// Devuelve { [`${orderId}|${itemId}`]: { seller, buyer } }. La suma sobre todas las claves
+// da exactamente el costo real del período, sin duplicar ni inventar.
+function repartirEnvioPorItem(orders, shipCostMap) {
+  const porEnvio = {};
+  orders.forEach(o => {
+    const sid = o.shipping && o.shipping.id;
+    const key = sid || `sin_envio_${o.id}`;
+    (porEnvio[key] = porEnvio[key] || []).push(o);
+  });
+
+  const out = {};
+  const add = (orderId, itemId, campo, monto) => {
+    const k = `${orderId}|${itemId}`;
+    if (!out[k]) out[k] = { seller: 0, buyer: 0 };
+    out[k][campo] += monto;
+  };
+
+  Object.values(porEnvio).forEach(ords => {
+    const sid  = ords[0].shipping && ords[0].shipping.id;
+    const data = sid ? shipCostMap[sid] : null;
+    const sellerCost = data ? (data.sellerCost || 0) : 0;
+    const buyerCost  = data ? (data.buyerCost  || 0) : 0;
+
+    const lineas = [];
+    ords.forEach(o => (o.order_items || []).forEach(oi => {
+      const itemId = oi.item && oi.item.id;
+      if (!itemId) return;
+      const precio = parseFloat(oi.unit_price) || 0;
+      lineas.push({ orderId: o.id, itemId, precio, fact: precio * (oi.quantity || 0) });
+    }));
+    if (!lineas.length) return;
+
+    // Registrar todas las líneas aunque no carguen envío, para que el consumidor pueda
+    // distinguir "no le tocó envío" de "no está en el mapa".
+    lineas.forEach(l => add(l.orderId, l.itemId, 'seller', 0));
+
+    if (sellerCost > 0) {
+      const gatillan = lineas.filter(l => l.precio >= UMBRAL_ENVIO_GRATIS);
+      const base     = gatillan.length ? gatillan : lineas;
+      const totFact  = base.reduce((s, l) => s + l.fact, 0);
+      base.forEach(l => {
+        // Sin facturación (ítems a $0) se reparte en partes iguales para no perder el costo.
+        const frac = totFact > 0 ? (l.fact / totFact) : (1 / base.length);
+        add(l.orderId, l.itemId, 'seller', sellerCost * frac);
+      });
+    }
+    if (buyerCost > 0) {
+      const totFact = lineas.reduce((s, l) => s + l.fact, 0);
+      lineas.forEach(l => {
+        const frac = totFact > 0 ? (l.fact / totFact) : (1 / lineas.length);
+        add(l.orderId, l.itemId, 'buyer', buyerCost * frac);
+      });
+    }
+  });
+  return out;
+}
+
+// Costo de envío del vendedor del período SIN duplicar carritos: cada shipment se cuenta
+// una sola vez, aunque el carrito haya generado varias órdenes con el mismo shipping.id.
+function totalEnvioVendedor(orders, shipCostMap) {
+  const vistos = new Set();
+  let total = 0;
+  orders.forEach(o => {
+    const sid = o.shipping && o.shipping.id;
+    if (!sid || vistos.has(sid)) return;
+    vistos.add(sid);
+    total += (shipCostMap[sid] && shipCostMap[sid].sellerCost) || 0;
+  });
+  return total;
+}
+
 // ── DASHBOARD DATA (by client ID) ─────────────────────────────────────────────
 // SKU del ítem: preferir el atributo estructurado SELLER_SKU (el que ML muestra como
 // "SKU" en el editor de la publicación) por sobre seller_custom_field, que es un campo
@@ -2783,12 +2873,16 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
       if (order.taxes && order.taxes.amount) {
         totalTaxes += parseFloat(order.taxes.amount) || 0;
       }
-
-      const shipId = order.shipping && order.shipping.id;
-      if (shipId && shippingCostMap[shipId] !== undefined) {
-        totalSellerShip += shippingCostMap[shipId].sellerCost || 0;
-      }
     });
+
+    // Costo de envío del vendedor: una vez por ENVÍO. Antes se sumaba por orden, y como en
+    // un carrito ML crea una orden por ítem con el mismo shipping.id, el costo se contaba
+    // tantas veces como ítems tuviera el carrito (inflaba el KPI y no cerraba contra el P&L
+    // de Rentabilidad, que siempre lo contó bien).
+    totalSellerShip = totalEnvioVendedor(curData.orders, shippingCostMap);
+
+    // Reparto del envío por producto (dedupe de carritos + criterio de gatillo del umbral).
+    const envioPorItem = repartirEnvioPorItem(curData.orders, shippingCostMap);
 
     // ── PERFORMANCE DATA ──────────────────────────────────────────────────────
     // Log all unique logistic_type values for debugging
@@ -2841,16 +2935,11 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
 
       const orderTax = parseFloat((order.taxes || {}).amount) || 0;
 
-      // Use payments for accurate seller shipping cost
-      let orderSellerShip = 0;
-      const pmts = order.payments || [];
-      if (pmts.length > 0) {
-        pmts.forEach(p => { orderSellerShip += parseFloat(p.shipping_cost) || 0; });
-      }
-      // Fallback to shipment API
-      if (orderSellerShip === 0 && shipData) {
-        orderSellerShip = shipData.sellerCost || 0;
-      }
+      // El envío del vendedor sale de repartirEnvioPorItem (fuente: /shipments/{id}/costs).
+      // NO se usa payments[].shipping_cost: ese campo es el envío que pagó el COMPRADOR,
+      // no el vendedor. Usarlo le cargaba envío a productos de bajo ticket donde el
+      // vendedor no pagaba nada (típico FULL debajo del umbral) y a la vez sub-imputaba los
+      // envíos caros que el vendedor sí absorbe.
 
       (order.order_items || []).forEach(oi => {
         const id    = oi.item && oi.item.id;
@@ -2866,8 +2955,9 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
         const itemSaleFee    = parseFloat(oi.sale_fee) || 0;
         const itemFrac       = itemRevenue / orderItemsRevenue;
         const itemTax        = orderTax * itemFrac;
-        const itemShip       = orderSellerShip * itemFrac;
-        const itemBuyerShip  = shipData ? (shipData.buyerCost || 0) * itemFrac : 0;
+        const envioIt        = envioPorItem[`${order.id}|${id}`] || { seller: 0, buyer: 0 };
+        const itemShip       = envioIt.seller;
+        const itemBuyerShip  = envioIt.buyer;
         const itemNet        = itemRevenue - itemSaleFee - itemTax - itemShip;
 
         // DEBUG — log ALL orders for MLA1144763103 + first 2 of any item
@@ -3175,28 +3265,19 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
       const comision    = (order.order_items||[]).reduce((s,oi) => s+(parseFloat(oi.sale_fee)||0), 0);
       const impuestos   = parseFloat((order.taxes||{}).amount) || 0;
 
-      // Use payments for accurate shipping breakdown
-      // ML payments include: shipping_cost (seller pays), buyer_shipping_cost (buyer pays)
+      // Envío de la orden = la parte del envío que le toca a sus ítems según el reparto
+      // (fuente: /shipments/{id}/costs). Se toma del reparto y no del shipment entero para
+      // que un carrito no muestre el mismo costo repetido en cada una de sus órdenes.
+      // payments[].shipping_cost NO sirve acá: es lo que pagó el comprador, no el vendedor.
       let envio_vendedor = 0, envio_comprador = 0;
-
-      const payments = order.payments || [];
-      if (payments.length > 0) {
-        // Sum across all payments (usually 1)
-        payments.forEach(p => {
-          // shipping_cost in payment = what seller pays for shipping (negative impact)
-          const sc = parseFloat(p.shipping_cost) || 0;
-          // overpaid_amount can indicate buyer-paid shipping
-          const buyerShip = parseFloat(p.overpaid_amount) || 0;
-          if (sc > 0) envio_vendedor += sc;
-          if (buyerShip > 0) envio_comprador += buyerShip;
-        });
-      }
-
-      // Fallback to shipment API data if payments didn't give us shipping info
-      if (envio_vendedor === 0 && envio_comprador === 0 && shipData) {
-        envio_vendedor  = shipData.sellerCost  || 0;
-        envio_comprador = shipData.buyerCost   || 0;
-      }
+      (order.order_items || []).forEach(oi => {
+        const iid = oi.item && oi.item.id;
+        if (!iid) return;
+        const e = envioPorItem[`${order.id}|${iid}`];
+        if (!e) return;
+        envio_vendedor  += e.seller;
+        envio_comprador += e.buyer;
+      });
 
       const neto     = facturacion - comision - impuestos - envio_vendedor;
       const pct_recibido = facturacion > 0 ? ((neto/facturacion)*100).toFixed(1) : '0';
@@ -4766,8 +4847,8 @@ app.post('/api/diagnostico/manuales', requireAuth, async (req, res) => {
 
 // GET /api/reporte/items-vendidos — MLAs vendidos del período con costos guardados
 // Param opcional ?incluir_envio=1 → agrega por MLA: envio_vendedor (costo real de envío
-//   atribuido desde /shipments/{id}/costs, repartido por unidades cuando la orden tiene
-//   varios ítems) y el desglose units_full / units_flex / units_correo / units_otro.
+//   atribuido desde /shipments/{id}/costs con repartirEnvioPorItem) y el desglose
+//   units_full / units_flex / units_correo / units_otro.
 //   Esto permite imputar el envío vendedor REAL por producto y prorratear el bolo manual
 //   Flex/FULL (que ML no expone) solo sobre las unidades FULL/FLEX. Es opt-in porque suma
 //   ~2 llamadas a la API de ML por envío y encarece el endpoint.
@@ -4824,12 +4905,14 @@ app.get('/api/reporte/items-vendidos', requireAuth, async (req, res) => {
     costsRes.rows.forEach(r => { costsMap[r.mla_id] = { costo_unit: parseFloat(r.costo_unit)||0, alicuota_iva: parseFloat(r.alicuota_iva) || 21, notas: r.notas }; });
 
     // ── Envío vendedor REAL por MLA (opt-in) ──────────────────────────────────
-    // Atribuye el senderCost de cada envío a sus ítems (repartido por unidades si la
-    // orden tiene varios) y cuenta unidades por modo logístico, para que el consumidor
-    // pueda prorratear el bolo manual Flex/FULL solo sobre las unidades FULL/FLEX.
+    // Atribuye el senderCost de cada envío a sus ítems vía repartirEnvioPorItem (agrupa por
+    // envío para no duplicar carritos y se lo carga al ítem que gatilla el envío gratis) y
+    // cuenta unidades por modo logístico, para que el consumidor pueda prorratear el bolo
+    // manual Flex/FULL solo sobre las unidades FULL/FLEX.
     const incluirEnvio = req.query.incluir_envio === '1' || req.query.incluir_envio === 'true';
     if (incluirEnvio) {
       const shipCostMap = await fetchShippingCosts(orders, headers);
+      const envioPorItem = repartirEnvioPorItem(orders, shipCostMap);
       Object.values(byMla).forEach(m => {
         m.envio_vendedor = 0; m.units_full = 0; m.units_flex = 0; m.units_correo = 0; m.units_otro = 0;
       });
@@ -4837,13 +4920,11 @@ app.get('/api/reporte/items-vendidos', requireAuth, async (req, res) => {
         const shipId = o.shipping?.id;
         const sc = shipId ? shipCostMap[shipId] : null;
         const ois = (o.order_items||[]).filter(oi => oi.item?.id);
-        const totalUnits = ois.reduce((s,oi) => s + (oi.quantity||0), 0) || 1;
-        const sellerCost = sc?.sellerCost || 0;
         const mode = sc?.mode || 'Otro';
         ois.forEach(oi => {
           const id = oi.item.id, q = oi.quantity || 0;
           if (!byMla[id]) return;
-          byMla[id].envio_vendedor += sellerCost * (q / totalUnits);
+          byMla[id].envio_vendedor += (envioPorItem[`${o.id}|${id}`]?.seller) || 0;
           if (mode === 'FULL')        byMla[id].units_full   += q;
           else if (mode === 'FLEX')   byMla[id].units_flex   += q;
           else if (mode === 'Correo') byMla[id].units_correo += q;
@@ -4916,16 +4997,18 @@ async function calcularMargenRealPorMla(client_id, date_from, date_to) {
     });
   });
 
-  // Envío real por MLA + modo logístico
+  // Envío real por MLA + modo logístico. El reparto agrupa por envío (un carrito es una
+  // orden por ítem con el mismo shipping.id: antes cada una cargaba el envío completo) y le
+  // imputa el costo al ítem que gatilla el envío gratis, no al que viajó de arrastre.
   const shipCostMap = await fetchShippingCosts(orders, headers);
+  const envioPorItem = repartirEnvioPorItem(orders, shipCostMap);
   orders.forEach(o => {
     const sc = o.shipping?.id ? shipCostMap[o.shipping.id] : null;
     const ois = (o.order_items||[]).filter(oi => oi.item?.id);
-    const totalUnits = ois.reduce((s,oi)=>s+(oi.quantity||0),0) || 1;
-    const sellerCost = sc?.sellerCost || 0, mode = sc?.mode || 'Otro';
+    const mode = sc?.mode || 'Otro';
     ois.forEach(oi => {
       const m = byMla[oi.item.id], q = oi.quantity||0; if (!m) return;
-      m.envio_real += sellerCost * (q/totalUnits);
+      m.envio_real += (envioPorItem[`${o.id}|${oi.item.id}`]?.seller) || 0;
       if (mode === 'FULL') m.units_full += q; else if (mode === 'FLEX') m.units_flex += q;
     });
   });

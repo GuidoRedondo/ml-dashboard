@@ -9352,7 +9352,7 @@ function desgloseGananciaHTML(p) {
   const conceptos = [
     { label: 'Comisión ML',     val: p.sale_fee,   color: '#ff5252', tip: 'Comisión por venta de ML (percentage_fee, sin el cargo fijo duplicado)' },
     { label: 'CMV',             val: p.cmv_total,  color: '#ff9100', tip: 'Costo de la mercadería vendida (costo unitario × unidades)' },
-    { label: 'Envío real',      val: p.envio_real, color: '#22d3ee', tip: 'Costo de envío que pagó el vendedor, atribuido a esta publicación (no prorrateado)' },
+    { label: 'Envío real',      val: p.envio_real, color: '#22d3ee', tip: 'Costo de envío que pagó el vendedor. Se imputa al producto que gatilla el envío gratis (precio ≥ $33.000): si viajó de arrastre en un carrito, no carga envío. Lo que paga el comprador nunca se imputa acá.' },
     { label: 'Flex/FULL',       val: p.flex_imp,   color: '#0e7490', tip: 'Bolo manual de Flex/FULL repartido solo sobre las unidades FULL/FLEX' },
     { label: 'Publicidad',      val: p.publi_real, color: '#facc15', tip: 'Inversión real de Product Ads sobre esta publicación', subtotalAntes: true },
     { label: 'IVA neto',        val: p.iva_dif,    color: '#a78bfa', tip: 'IVA débito de la venta menos el crédito del CMV y de los servicios de ML' },
