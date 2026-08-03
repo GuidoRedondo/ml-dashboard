@@ -4957,6 +4957,13 @@ app.get('/api/reporte/items-vendidos', requireAuth, async (req, res) => {
 // por MLA) − Flex/FULL manual (prorrateado solo sobre unidades FULL/FLEX) − Publicidad real
 // (PADS) − diferencia de IVA − IIBB. No prorratea el envío plano (que sobreestima la pérdida
 // de los productos de bajo ticket). Misma lógica que la skill Warren.
+// Versión del cálculo. Subirla invalida todo lo que haya en margen_producto_cache: ese cache
+// guarda el payload entero, y servir números calculados con un bug ya corregido es peor que
+// tardar 1-2 min en recalcular.
+//   1 → original
+//   2 → dedup de anuncios PADS (antes la paginación duplicaba y el gasto salía al doble)
+const MARGEN_CALC_VERSION = 2;
+
 // Núcleo compartido del cálculo. Lo consumen /api/reporte/margen-real-producto (tabla de
 // Rentabilidad, ordenada por los que pierden) y /api/performance/top-ganancia (ranking de los
 // que más ganancia dejan, en Performance). Tira Error con .status si el cliente no está listo.
@@ -5118,7 +5125,7 @@ async function calcularMargenRealPorMla(client_id, date_from, date_to) {
   }).sort((a,b) => a.margen_real - b.margen_real);
 
   return {
-    items, total_orders: orders.length,
+    items, total_orders: orders.length, calc_version: MARGEN_CALC_VERSION,
     meta: { flex_manual: flexManual, flex_por_unidad_ff: Math.round(flexU),
             unidades_full_flex: totFF, tasa_iibb_pct: tasaIibb, es_monotributista: esMonotrib,
             skus_que_pierden: items.filter(i=>i.margen_real<0).length },
@@ -5145,7 +5152,10 @@ app.get('/api/reporte/margen-real-producto', requireAuth, async (req, res) => {
             AND fetched_at > NOW() - INTERVAL '12 hours'`,
         [clientId, date_from, date_to]
       );
-      if (c.rows[0]) { payload = c.rows[0].data; cached = true; fetchedAt = c.rows[0].fetched_at; }
+      // Cache de una versión anterior del cálculo = numeros viejos: se ignora.
+      if (c.rows[0] && c.rows[0].data?.calc_version === MARGEN_CALC_VERSION) {
+        payload = c.rows[0].data; cached = true; fetchedAt = c.rows[0].fetched_at;
+      }
     }
     if (!payload) {
       payload = await calcularMargenRealPorMla(clientId, date_from, date_to);
@@ -5195,7 +5205,10 @@ app.get('/api/performance/top-ganancia', requireAuth, async (req, res) => {
             AND fetched_at > NOW() - INTERVAL '12 hours'`,
         [clientId, date_from, date_to]
       );
-      if (c.rows[0]) { payload = c.rows[0].data; cached = true; fetchedAt = c.rows[0].fetched_at; }
+      // Cache de una versión anterior del cálculo = números viejos: se ignora.
+      if (c.rows[0] && c.rows[0].data?.calc_version === MARGEN_CALC_VERSION) {
+        payload = c.rows[0].data; cached = true; fetchedAt = c.rows[0].fetched_at;
+      }
     }
 
     if (!payload) {
