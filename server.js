@@ -2191,6 +2191,55 @@ async function evalRuleTacosAlto(client) {
   } catch(e) { console.error(`[ALERTA tacos_alto] ${client.name}:`, e.message); return null; }
 }
 
+// ── PADS: traer TODOS los anuncios sin duplicar ───────────────────────────────
+// /product_ads/ads/search pagina SIN orden estable: entre una página y la siguiente ML
+// reordena, así que un mismo anuncio puede volver en dos páginas (y otro perderse).
+// Sumar `cost` a medida que llegan infla el gasto por ítem — en LAPALOMETABAITSHOP
+// devolvía 855 filas para 791 anuncios y el costo de los ítems repetidos salía al doble.
+//
+// La clave real de un anuncio es (item_id, campaign_id): un ítem no puede estar dos veces
+// en la misma campaña. Deduplicamos por ahí y seguimos pidiendo páginas mientras aparezcan
+// anuncios nuevos, para recuperar los que se "corrieron" fuera de su página.
+async function fetchPadsAds(siteId, advId, headersV2, { date_from, date_to, metrics, filters } = {}) {
+  const porAd = new Map();
+  const LIMIT = 100, MAX_OFFSET = 20000;
+  let offset = 0, total = null, secas = 0, duplicados = 0;
+
+  while (offset <= MAX_OFFSET) {
+    const qs = [`limit=${LIMIT}`, `offset=${offset}`];
+    if (date_from && date_to) qs.push(`date_from=${date_from}`, `date_to=${date_to}`);
+    if (metrics) qs.push(`metrics=${metrics}`);
+    if (filters) qs.push(filters);
+    const url = `${ML_API}/advertising/${siteId}/advertisers/${advId}/product_ads/ads/search?${qs.join('&')}`;
+    const data = await fetch(url, { headers: headersV2 }).then(r => r.json()).catch(() => ({}));
+    const results = data.results || [];
+    if (total === null) total = data.paging?.total ?? results.length;
+
+    let nuevos = 0;
+    results.forEach(ad => {
+      if (!ad.item_id) return;
+      const k = `${ad.item_id}|${ad.campaign_id ?? ''}`;
+      if (porAd.has(k)) { duplicados++; return; }
+      porAd.set(k, ad);
+      nuevos++;
+    });
+
+    offset += LIMIT;
+    if (!results.length) break;
+    if (offset >= total) {
+      // Llegamos al final declarado por ML pero faltan anuncios: los que se perdieron por
+      // el reordenamiento. Damos vueltas extra hasta que dos páginas seguidas no traigan nada.
+      if (porAd.size >= total || secas >= 2) break;
+    }
+    if (nuevos === 0) { if (++secas >= 2) break; } else secas = 0;
+  }
+
+  if (duplicados > 0) {
+    console.log(`[PADS] adv ${advId}: ${porAd.size} anuncios únicos · ${duplicados} filas duplicadas descartadas (total declarado por ML: ${total})`);
+  }
+  return Array.from(porAd.values());
+}
+
 // Regla 7b — TACOS alto POR PRODUCTO (detecta SKUs puntuales sobre objetivo,
 // aunque el TACOS de la cuenta esté sano). TACOS de ítem = gasto pauta del ítem /
 // facturación total del ítem (orgánico + ads), no el ACOS.
@@ -2223,19 +2272,10 @@ async function evalRuleTacosProductoAlto(client) {
 
     // 1. Gasto de pauta por ítem
     const spendByItem = {};
-    let offset = 0, total = 999;
-    while (offset < total) {
-      const url = `${ML_API}/advertising/${siteId}/advertisers/${advId}/product_ads/ads/search?date_from=${fromStr}&date_to=${toStr}&metrics=cost&limit=50&offset=${offset}`;
-      const data = await fetch(url, { headers: h2 }).then(r => r.json()).catch(() => ({}));
-      total = data.paging?.total || 0;
-      (data.results || []).forEach(ad => {
-        if (!ad.item_id) return;
-        spendByItem[ad.item_id] = (spendByItem[ad.item_id] || 0) + ((ad.metrics || {}).cost || 0);
-      });
-      if ((data.results || []).length < 50) break;
-      offset += 50;
-      if (offset > 2000) break;
-    }
+    const adsTacos = await fetchPadsAds(siteId, advId, h2, { date_from: fromStr, date_to: toStr, metrics: 'cost' });
+    adsTacos.forEach(ad => {
+      spendByItem[ad.item_id] = (spendByItem[ad.item_id] || 0) + ((ad.metrics || {}).cost || 0);
+    });
     // Solo ítems que superan el piso de gasto
     const candidatos = Object.keys(spendByItem).filter(id => spendByItem[id] >= min_spend);
     if (!candidatos.length) { await resolveAlerta(client.id, 'tacos_producto_alto'); return null; }
@@ -3068,20 +3108,13 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
         const siteId   = user.site_id || 'MLA';
         const fromDate = curFrom.toISOString().slice(0,10);
         const toDate   = curTo.toISOString().slice(0,10);
-        // Paginar todos los ítems con métricas de costo
-        let offset = 0, limit = 50, total = 999;
-        while (offset < total) {
-          const url = `${ML_API}/advertising/${siteId}/advertisers/${adv.advertiser_id}/product_ads/ads/search?date_from=${fromDate}&date_to=${toDate}&metrics=cost&limit=${limit}&offset=${offset}`;
-          const data = await fetch(url, { headers: { ...headers, 'api-version': '2' } }).then(r => r.json()).catch(() => ({}));
-          total = data.paging?.total || 0;
-          (data.results || []).forEach(ad => {
-            if (ad.item_id && ad.metrics?.cost > 0) {
-              adsByItem[ad.item_id] = (adsByItem[ad.item_id] || 0) + parseFloat(ad.metrics.cost);
-            }
-          });
-          offset += limit;
-          if ((data.results || []).length < limit) break;
-        }
+        const adsDash = await fetchPadsAds(siteId, adv.advertiser_id, { ...headers, 'api-version': '2' },
+          { date_from: fromDate, date_to: toDate, metrics: 'cost' });
+        adsDash.forEach(ad => {
+          if (ad.metrics?.cost > 0) {
+            adsByItem[ad.item_id] = (adsByItem[ad.item_id] || 0) + parseFloat(ad.metrics.cost);
+          }
+        });
         // Distribuir ads a byItem
         Object.entries(adsByItem).forEach(([id, cost]) => {
           if (byItem[id]) byItem[id].ads = cost;
@@ -3810,13 +3843,9 @@ app.get('/api/ads-anuncios', requireAuth, async (req, res) => {
     // ── 1. Fetch todos los ítems con anuncios + métricas ─────────────────────
     const metrics = 'clicks,prints,cost,cpc,acos,direct_amount,indirect_amount,total_amount,direct_units_quantity,indirect_units_quantity,units_quantity,cvr,roas,ctr';
     const allItems = [];
-    let offset = 0, total = 999;
-    while (offset < total) {
-      const url = `${ML_API}/advertising/${siteId}/advertisers/${advId}/product_ads/ads/search?date_from=${fromDate}&date_to=${toDate}&metrics=${metrics}&limit=50&offset=${offset}`;
-      const data = await fetch(url, { headers: h2 }).then(r => r.json()).catch(() => ({}));
-      total = data.paging?.total || 0;
-      (data.results || []).forEach(ad => {
-        if (!ad.item_id) return;
+    {
+      const ads = await fetchPadsAds(siteId, advId, h2, { date_from: fromDate, date_to: toDate, metrics });
+      ads.forEach(ad => {
         const m = ad.metrics || {};
         allItems.push({
           item_id:    ad.item_id,
@@ -3835,9 +3864,6 @@ app.get('/api/ads-anuncios', requireAuth, async (req, res) => {
           tacos:      0, // se calcula con facturación total del ítem
         });
       });
-      if ((data.results || []).length < 50) break;
-      offset += 50;
-      if (offset > 2000) break;
     }
 
     if (!allItems.length) return res.json({ items: [] });
@@ -3931,18 +3957,8 @@ app.get('/api/ads-items', requireAuth, async (req, res) => {
     const advertisers = advData.advertisers || [];
     if (!advertisers.length) return res.json({ ads_item_ids: [] });
     const adv = advertisers.find(a => a.site_id === siteId) || advertisers[0];
-    const adsItemIds = new Set();
-    let offset = 0, maxPages = 20;
-    while (maxPages-- > 0) {
-      const url = `${ML_API}/advertising/${siteId}/advertisers/${adv.advertiser_id}/product_ads/ads/search?limit=100&offset=${offset}&filters[statuses]=active,paused`;
-      const text = await fetch(url, { headers: h2 }).then(r => r.text());
-      let data; try { data = JSON.parse(text); } catch(e) { break; }
-      const results = data.results || [];
-      results.forEach(item => { if (item.item_id) adsItemIds.add(item.item_id); });
-      if (results.length < 100) break;
-      offset += 100;
-      if (offset >= 500) break;
-    }
+    const ads = await fetchPadsAds(siteId, adv.advertiser_id, h2, { filters: 'filters[statuses]=active,paused' });
+    const adsItemIds = new Set(ads.map(a => a.item_id));
     res.json({ ads_item_ids: Array.from(adsItemIds) });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
@@ -4157,39 +4173,24 @@ app.get('/api/items-full', requireAuth, async (req, res) => {
     const adsByItem = {};
     if (advId) {
       const metrics = 'clicks,prints,cost,acos,direct_amount,total_amount,units_quantity';
-      // Fetch ALL ads without item_id filter — paginate through all results
-      let offset = 0;
-      const limit = 100;
-      let keepFetching = true;
-      let pageCount = 0;
-      while (keepFetching && pageCount < 50) { // max 5000 ads
-        const url = `${ML_API}/advertising/${siteId}/advertisers/${advId}/product_ads/ads/search?limit=${limit}&offset=${offset}&date_from=${fromDate}&date_to=${toDate}&metrics=${metrics}`;
-        try {
-          const raw = await fetch(url, { headers: h2 }).then(r => r.text());
-          const data = JSON.parse(raw);
-          if (pageCount === 0) console.log(`[ADS] First page response keys: ${Object.keys(data).join(',')} total=${data.paging?.total}`);
-          const results = data.results || [];
-          results.forEach(ad => {
-            if (!ad.item_id) return;
-            const m = ad.metrics || {};
-            adsByItem[ad.item_id] = {
-              hasAds:      true,
-              adsStatus:   ad.status,
-              clicks:      m.clicks         || 0,
-              impressions: m.prints         || 0,
-              adsSales:    m.total_amount   || 0,
-              adsCost:     m.cost           || 0,
-              adsUnits:    m.units_quantity || 0,
-            };
+      try {
+        const ads = await fetchPadsAds(siteId, advId, h2, { date_from: fromDate, date_to: toDate, metrics });
+        // Un ítem puede estar anunciado en varias campañas: las métricas se SUMAN.
+        // Antes se asignaba el objeto y la última campaña pisaba a las anteriores.
+        ads.forEach(ad => {
+          const m = ad.metrics || {};
+          const a = adsByItem[ad.item_id] || (adsByItem[ad.item_id] = {
+            hasAds: true, adsStatus: ad.status,
+            clicks: 0, impressions: 0, adsSales: 0, adsCost: 0, adsUnits: 0,
           });
-          const total = (data.paging && data.paging.total) || 0;
-          offset += limit;
-          pageCount++;
-          keepFetching = results.length === limit && offset < total;
-        } catch(e) {
-          console.error('Ads fetch error:', e.message);
-          keepFetching = false;
-        }
+          a.clicks      += m.clicks         || 0;
+          a.impressions += m.prints         || 0;
+          a.adsSales    += m.total_amount   || 0;
+          a.adsCost     += m.cost           || 0;
+          a.adsUnits    += m.units_quantity || 0;
+        });
+      } catch(e) {
+        console.error('Ads fetch error:', e.message);
       }
     }
     console.log(`[ADS] Found ${Object.keys(adsByItem).length} items with ads out of ${allIds.length} total`);
@@ -4450,25 +4451,15 @@ app.post('/api/diagnostico/calcular', requireAuth, async (req, res) => {
       const advList = advRes.results || advRes.advertisers || (Array.isArray(advRes) ? advRes : []);
       const advId = advList[0]?.advertiser_id || advList[0]?.id || uid;
 
-      // Use ads/search (same as working ads section) — paginate all
-      let offset = 0, keepFetching = true;
-      while (keepFetching) {
-        const url = `${ML_API}/advertising/${siteId}/advertisers/${advId}/product_ads/ads/search?limit=100&offset=${offset}&date_from=${fromStr}&date_to=${toStr}&metrics=${metrics}`;
-        const res = await fetch(url, { headers: h2 }).then(r=>r.json()).catch(()=>({}));
-        const results = res.results || [];
-        results.forEach(ad => {
-          const m = ad.metrics || {};
-          padsInversion   += parseFloat(m.cost||0);
-          padsIngresos    += parseFloat(m.total_amount||0);
-          padsClicks      += parseInt(m.clicks||0);
-          padsVentas      += parseInt(m.units_quantity||0);
-          padsImpresiones += parseInt(m.prints||0);
-        });
-        const total = res.paging?.total || 0;
-        offset += 100;
-        keepFetching = results.length === 100 && offset < total;
-        if (offset > 2000) break;
-      }
+      const adsDiag = await fetchPadsAds(siteId, advId, h2, { date_from: fromStr, date_to: toStr, metrics });
+      adsDiag.forEach(ad => {
+        const m = ad.metrics || {};
+        padsInversion   += parseFloat(m.cost||0);
+        padsIngresos    += parseFloat(m.total_amount||0);
+        padsClicks      += parseInt(m.clicks||0);
+        padsVentas      += parseInt(m.units_quantity||0);
+        padsImpresiones += parseInt(m.prints||0);
+      });
       console.log(`[DIAG ADS] ${mes} advId=${advId} inversion=${padsInversion} ingresos=${padsIngresos} clicks=${padsClicks}`);
     } catch(e) { console.error('[DIAG ADS ERROR]', e.message); }
     const padsAcos = padsIngresos > 0 ? parseFloat(((padsInversion/padsIngresos)*100).toFixed(2)) : 0;
@@ -5071,25 +5062,19 @@ async function calcularMargenRealPorMla(client_id, date_from, date_to) {
     if (adv) {
       const siteId = 'MLA', fromDate = date_from, toDate = date_to;
       const metrics = 'cost,total_amount,direct_amount,indirect_amount,units_quantity';
-      let offset = 0, limit = 50, total = 999;
-      while (offset < total) {
-        const url = `${ML_API}/advertising/${siteId}/advertisers/${adv.advertiser_id}/product_ads/ads/search?date_from=${fromDate}&date_to=${toDate}&metrics=${metrics}&limit=${limit}&offset=${offset}`;
-        const data = await fetch(url, { headers: { ...headers, 'api-version': '2' } }).then(r=>r.json()).catch(()=>({}));
-        total = data.paging?.total || 0;
-        (data.results||[]).forEach(ad => {
-          const mt = ad.metrics || {};
-          if (!ad.item_id || !(mt.cost > 0)) return;
-          // Un mismo ítem puede estar en varias campañas: se acumula.
-          const a = adsByItem[ad.item_id] || (adsByItem[ad.item_id] = { cost: 0, total_amount: 0, direct_amount: 0, indirect_amount: 0, units: 0 });
-          a.cost            += parseFloat(mt.cost)            || 0;
-          a.total_amount    += parseFloat(mt.total_amount)    || 0;
-          a.direct_amount   += parseFloat(mt.direct_amount)   || 0;
-          a.indirect_amount += parseFloat(mt.indirect_amount) || 0;
-          a.units           += parseFloat(mt.units_quantity)  || 0;
-        });
-        offset += limit;
-        if ((data.results||[]).length < limit) break;
-      }
+      const ads = await fetchPadsAds(siteId, adv.advertiser_id, { ...headers, 'api-version': '2' },
+        { date_from: fromDate, date_to: toDate, metrics });
+      ads.forEach(ad => {
+        const mt = ad.metrics || {};
+        if (!(mt.cost > 0)) return;
+        // Un mismo ítem puede estar en varias campañas: se acumula (ya vienen deduplicadas).
+        const a = adsByItem[ad.item_id] || (adsByItem[ad.item_id] = { cost: 0, total_amount: 0, direct_amount: 0, indirect_amount: 0, units: 0 });
+        a.cost            += parseFloat(mt.cost)            || 0;
+        a.total_amount    += parseFloat(mt.total_amount)    || 0;
+        a.direct_amount   += parseFloat(mt.direct_amount)   || 0;
+        a.indirect_amount += parseFloat(mt.indirect_amount) || 0;
+        a.units           += parseFloat(mt.units_quantity)  || 0;
+      });
     }
   } catch(e) { /* publicidad por item opcional */ }
 
@@ -5547,15 +5532,8 @@ app.get('/api/reporte/pyl', requireAuth, async (req, res) => {
       const advRes = await fetch(`${ML_API}/advertising/advertisers?product_id=PADS`, {headers:h2}).then(r=>r.json()).catch(()=>({}));
       const advList = advRes.results || advRes.advertisers || (Array.isArray(advRes)?advRes:[]);
       const advId = advList[0]?.advertiser_id || advList[0]?.id || uid;
-      let offset=0, keep=true;
-      while(keep) {
-        const url = `${ML_API}/advertising/${siteId}/advertisers/${advId}/product_ads/ads/search?limit=100&offset=${offset}&date_from=${date_from}&date_to=${date_to}&metrics=cost`;
-        const r = await fetch(url,{headers:h2}).then(r=>r.json()).catch(()=>({}));
-        (r.results||[]).forEach(ad => { egreso_publicidad += parseFloat(ad.metrics?.cost||0); });
-        const total = r.paging?.total||0;
-        offset+=100;
-        keep = (r.results||[]).length===100 && offset<total && offset<2000;
-      }
+      const adsPyl = await fetchPadsAds(siteId, advId, h2, { date_from, date_to, metrics: 'cost' });
+      adsPyl.forEach(ad => { egreso_publicidad += parseFloat(ad.metrics?.cost||0); });
     } catch(e){}
 
     // ── CMV ───────────────────────────────────────────────────────────────────
@@ -5923,13 +5901,9 @@ async function fetchAdsByItemFull(token, fromDate, toDate) {
     const advId = adv.advertiser_id;
     out.advertiser_found = true;
     const metrics = 'clicks,prints,cost,total_amount,units_quantity,acos,ctr,cvr,roas';
-    let offset = 0, total = 999;
-    while (offset < total) {
-      const url = `${ML_API}/advertising/${siteId}/advertisers/${advId}/product_ads/ads/search?date_from=${fromDate}&date_to=${toDate}&metrics=${metrics}&limit=50&offset=${offset}`;
-      const data = await fetch(url, { headers: h2 }).then(r => r.json()).catch(() => ({}));
-      total = (data && data.paging && data.paging.total) || 0;
-      ((data && data.results) || []).forEach(ad => {
-        if (!ad.item_id) return;
+    {
+      const ads = await fetchPadsAds(siteId, advId, h2, { date_from: fromDate, date_to: toDate, metrics });
+      ads.forEach(ad => {
         out.raw_count += 1;
         const m = ad.metrics || {};
         if (!out.byItem[ad.item_id]) {
@@ -5952,9 +5926,6 @@ async function fetchAdsByItemFull(token, fromDate, toDate) {
         agg.revenue_ad  += m.total_amount   || 0;
         agg.unidades_ad += m.units_quantity || 0;
       });
-      if (((data && data.results) || []).length < 50) break;
-      offset += 50;
-      if (offset > 2000) break;
     }
 
     // Resolver nombres de campañas
@@ -9611,19 +9582,11 @@ async function fetchAdsByItemMap(headers, fromDate, toDate, siteId = 'MLA') {
     const advertisers = advData.advertisers || [];
     if (!advertisers.length) return map;
     const adv = advertisers.find(a => a.site_id === siteId) || advertisers[0];
-    let offset = 0, limit = 50, total = 999;
-    while (offset < total) {
-      const url = `${ML_API}/advertising/${siteId}/advertisers/${adv.advertiser_id}/product_ads/ads/search?date_from=${fromDate}&date_to=${toDate}&metrics=cost&limit=${limit}&offset=${offset}`;
-      const data = await fetch(url, { headers: { ...headers, 'api-version': '2' } }).then(r => r.json()).catch(() => ({}));
-      total = data.paging?.total || 0;
-      (data.results || []).forEach(ad => {
-        if (ad.item_id && ad.metrics?.cost > 0) {
-          map[ad.item_id] = (map[ad.item_id] || 0) + parseFloat(ad.metrics.cost);
-        }
-      });
-      offset += limit;
-      if ((data.results || []).length < limit) break;
-    }
+    const ads = await fetchPadsAds(siteId, adv.advertiser_id, { ...headers, 'api-version': '2' },
+      { date_from: fromDate, date_to: toDate, metrics: 'cost' });
+    ads.forEach(ad => {
+      if (ad.metrics?.cost > 0) map[ad.item_id] = (map[ad.item_id] || 0) + parseFloat(ad.metrics.cost);
+    });
   } catch(_) {}
   return map;
 }
@@ -12054,15 +12017,7 @@ app.get('/api/admin/tacos-report', requireAuth, requireAdmin, async (req, res) =
         }
 
         // Items con ads
-        let adsItems = [], offsetI = 0;
-        while (true) {
-          const url = `${ML_API}/advertising/${siteId}/advertisers/${advId}/product_ads/ads/search?limit=100&offset=${offsetI}&date_from=${dateFrom}&date_to=${dateTo}&metrics=${metrics}`;
-          const d = await fetch(url, { headers: h2 }).then(r => r.json()).catch(() => ({}));
-          const results = d.results || [];
-          adsItems = adsItems.concat(results);
-          if (results.length < 100 || adsItems.length >= (d.paging?.total||0)) break;
-          offsetI += 100;
-        }
+        const adsItems = await fetchPadsAds(siteId, advId, h2, { date_from: dateFrom, date_to: dateTo, metrics });
 
         // Agregar totales de ads
         let gastoTotal = 0, ventasAdsTotal = 0, clicksTotal = 0, impressionsTotal = 0, unitsAds = 0;
