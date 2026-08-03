@@ -9204,7 +9204,7 @@ function renderTopGanancia() {
         <div>
           <div class="kpi-label">🏆 Top por ganancia — la plata que queda</div>
           <div style="font-size:10px;color:var(--muted);margin-top:3px">
-            Contribución marginal = facturación − comisión − CMV − envío real − Flex − publicidad − IVA neto − IIBB. No incluye gastos fijos.
+            Contribución marginal = facturación − comisión − CMV − envío real − Flex − IVA neto − IIBB − publicidad. La pauta es un costo variable más y ya está descontada. No incluye gastos fijos.
             <span style="color:#FFD700">Click en cualquier fila para ver el desglose de dónde se fue la plata.</span>
           </div>
         </div>
@@ -9239,7 +9239,7 @@ function renderTopGanancia() {
             <tr style="border-bottom:1px solid var(--border)">
               ${th('#','left')}${th('MLA','left')}${th('SKU','left')}${th('Publicación','left')}
               ${th('U','right')}${th('Facturación','right')}
-              ${th('Ganancia','right','Contribución marginal en pesos del período')}
+              ${th('Contrib. Marginal','right','Contribución marginal en pesos del período: facturación − comisión − CMV − envío real − Flex − IVA neto − IIBB − publicidad. La pauta ya está descontada acá.')}
               ${th('% del total','right','Cuánto pesa este producto en la ganancia total')}
               ${th('Margen','right','Ganancia sobre la facturación del producto')}
               ${th('$/unidad','right','Cuánto deja cada unidad vendida')}
@@ -9349,14 +9349,17 @@ function desgloseGananciaHTML(p) {
   const pc    = v => fact > 0 ? (v / fact * 100) : 0;
 
   // Conceptos en el orden del P&L. El IVA puede dar a favor (crédito > débito).
+  // La publicidad va ÚLTIMA a propósito: el subtotal "antes de pauta" tiene que cerrar
+  // contra las filas que están arriba (facturación − todo lo anterior), y la pauta queda
+  // como el último costo variable que pega sobre la contribución marginal.
   const conceptos = [
     { label: 'Comisión ML',     val: p.sale_fee,   color: '#ff5252', tip: 'Comisión por venta de ML (percentage_fee, sin el cargo fijo duplicado)' },
     { label: 'CMV',             val: p.cmv_total,  color: '#ff9100', tip: 'Costo de la mercadería vendida (costo unitario × unidades)' },
     { label: 'Envío real',      val: p.envio_real, color: '#22d3ee', tip: 'Costo de envío que pagó el vendedor. Se imputa al producto que gatilla el envío gratis (precio ≥ $33.000): si viajó de arrastre en un carrito, no carga envío. Lo que paga el comprador nunca se imputa acá.' },
     { label: 'Flex/FULL',       val: p.flex_imp,   color: '#0e7490', tip: 'Bolo manual de Flex/FULL repartido solo sobre las unidades FULL/FLEX' },
-    { label: 'Publicidad',      val: p.publi_real, color: '#facc15', tip: 'Inversión real de Product Ads sobre esta publicación', subtotalAntes: true },
     { label: 'IVA neto',        val: p.iva_dif,    color: '#a78bfa', tip: 'IVA débito de la venta menos el crédito del CMV y de los servicios de ML' },
     { label: 'IIBB',            val: p.iibb,       color: '#6366f1', tip: 'Ingresos brutos estimados sobre la facturación' },
+    { label: 'Publicidad',      val: p.publi_real, color: '#facc15', tip: 'Inversión real de Product Ads sobre esta publicación. Es un costo variable más: se descuenta para llegar a la contribución marginal.', subtotalAntes: true },
   ];
 
   const costos    = conceptos.filter(c => c.val > 0);
@@ -9372,10 +9375,11 @@ function desgloseGananciaHTML(p) {
   const restoPct = Math.max(0, (fact - sumaCost) / escala * 100);
 
   // Subtotal antes de la pauta: si el producto es rentable hasta acá y negativo después,
-  // el problema no es el producto.
+  // el problema no es el producto. Va justo arriba de la fila de Publicidad, con todos los
+  // demás costos ya descontados, así la cuenta cierra de arriba hacia abajo.
   const subtotalPubli = `
     <tr style="background:rgba(255,255,255,.04)">
-      <td style="padding:5px 6px;font-weight:600;color:${p.margen_sin_publi >= 0 ? '#00e676' : '#ff5252'}" title="Contribución marginal antes de descontar la publicidad">
+      <td style="padding:5px 6px;font-weight:600;color:${p.margen_sin_publi >= 0 ? '#00e676' : '#ff5252'}" title="Contribución marginal antes de descontar la publicidad: facturación menos todos los costos variables de arriba">
         = Margen antes de pauta
       </td>
       <td style="padding:5px 6px;text-align:right;font-weight:600;color:${p.margen_sin_publi >= 0 ? '#00e676' : '#ff5252'}">${f(p.margen_sin_publi)}</td>
@@ -9470,7 +9474,7 @@ function desgloseGananciaHTML(p) {
             </tr>
             ${filas}
             <tr style="border-top:2px solid rgba(255,255,255,.12)">
-              <td style="padding:6px;font-weight:700;color:${neg ? '#ff5252' : '#00e676'}">= Ganancia</td>
+              <td style="padding:6px;font-weight:700;color:${neg ? '#ff5252' : '#00e676'}" title="Contribución marginal = facturación − todos los costos variables, publicidad incluida. No incluye gastos fijos de estructura.">= Contribución marginal</td>
               <td style="padding:6px;text-align:right;font-weight:700;color:${neg ? '#ff5252' : '#00e676'}">${f(p.margen_real)}</td>
               <td style="padding:6px;text-align:right;font-weight:700;color:${neg ? '#ff5252' : '#00e676'}">${p.margen_real_pct}%</td>
               <td style="padding:6px;text-align:right;font-weight:700;color:${neg ? '#ff5252' : '#00e676'}">${f(p.margen_x_unidad)}</td>
@@ -9527,10 +9531,11 @@ function exportTopGananciaExcel() {
     'CMV':                  p.cmv_total,
     'Envío real':           p.envio_real,
     'Flex/FULL':            p.flex_imp,
-    'Publicidad':           p.publi_real,
     'IVA neto':             p.iva_dif,
     'IIBB':                 p.iibb,
-    'Ganancia $':           p.margen_real,
+    'Margen antes de pauta': p.margen_sin_publi,
+    'Publicidad':           p.publi_real,
+    'Contrib. Marginal $':  p.margen_real,
     '% de la ganancia':     p.pct_ganancia,
     'Margen %':             p.margen_real_pct,
     'Ganancia x unidad':    p.margen_x_unidad,
@@ -9541,7 +9546,7 @@ function exportTopGananciaExcel() {
 
   const wb = XLSX.utils.book_new();
   const ws = XLSX.utils.json_to_sheet(rows);
-  ws['!cols'] = [4, 15, 14, 45, 9, 14, 13, 13, 12, 11, 12, 11, 10, 14, 14, 10, 15, 14, 15, 11].map(w => ({ wch: w }));
+  ws['!cols'] = [4, 15, 14, 45, 9, 14, 13, 13, 12, 11, 11, 10, 20, 12, 18, 14, 10, 15, 14, 15, 11].map(w => ({ wch: w }));
   XLSX.utils.book_append_sheet(wb, ws, 'Top ganancia');
   const fecha = new Date().toISOString().slice(0, 10);
   XLSX.writeFile(wb, `TopGanancia_${client.name.replace(/\s+/g,'_')}_${fecha}.xlsx`);
