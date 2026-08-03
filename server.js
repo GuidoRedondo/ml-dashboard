@@ -5140,10 +5140,40 @@ async function calcularMargenRealPorMla(client_id, date_from, date_to) {
   };
 }
 
+// Comparte el cache de 12h con /api/performance/top-ganancia: es exactamente el mismo
+// payload (el ranking solo lo filtra y ordena). Así "Lo que pasó" y el Top por ganancia
+// se pagan el cálculo lento una sola vez. ?force_refresh=1 recalcula.
 app.get('/api/reporte/margen-real-producto', requireAuth, async (req, res) => {
   try {
-    const { client_id, date_from, date_to } = req.query;
-    res.json(await calcularMargenRealPorMla(client_id, date_from, date_to));
+    const { date_from, date_to } = req.query;
+    const clientId = parseInt(req.query.client_id);
+    if (!clientId || !date_from || !date_to) {
+      return res.status(400).json({ error: 'client_id, date_from y date_to son requeridos' });
+    }
+    const force = req.query.force_refresh === '1' || req.query.force_refresh === 'true';
+
+    let payload = null, cached = false, fetchedAt = null;
+    if (!force) {
+      const c = await pool.query(
+        `SELECT data, fetched_at FROM margen_producto_cache
+          WHERE client_id=$1 AND date_from=$2 AND date_to=$3
+            AND fetched_at > NOW() - INTERVAL '12 hours'`,
+        [clientId, date_from, date_to]
+      );
+      if (c.rows[0]) { payload = c.rows[0].data; cached = true; fetchedAt = c.rows[0].fetched_at; }
+    }
+    if (!payload) {
+      payload = await calcularMargenRealPorMla(clientId, date_from, date_to);
+      fetchedAt = new Date();
+      await pool.query(
+        `INSERT INTO margen_producto_cache (client_id, date_from, date_to, data, fetched_at)
+         VALUES ($1,$2,$3,$4,NOW())
+         ON CONFLICT (client_id, date_from, date_to)
+         DO UPDATE SET data=$4, fetched_at=NOW()`,
+        [clientId, date_from, date_to, JSON.stringify(payload)]
+      );
+    }
+    res.json({ ...payload, cached, fetched_at: fetchedAt });
   } catch(e) {
     console.error('[MARGEN REAL]', e.message);
     res.status(e.status || 500).json({ error: e.message });
