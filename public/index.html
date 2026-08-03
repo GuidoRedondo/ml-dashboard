@@ -4303,6 +4303,10 @@ function exportPubsExcel() {
       'SKU':             i.sku || '',
       'Título':          i.title,
       'Estado':          i.status === 'active' ? 'Activa' : i.status === 'paused' ? 'Pausada' : i.status,
+      // Precio que ve el comprador + el de lista tachado, sólo cuando hay descuento activo
+      'Precio':          Math.round(i._precioReal ?? i.price ?? 0) || '',
+      'Precio lista':    i._precioLista ? Math.round(i._precioLista) : '',
+      'Descuento %':     i._descPct ?? '',
       'FULL':            i.is_full ? 'Sí' : 'No',
       'Stock':           i.available_quantity ?? '',
       'Ritmo/día':       ritmo > 0 ? ritmo : '',
@@ -4321,7 +4325,7 @@ function exportPubsExcel() {
   });
 
   const ws = XLSX.utils.json_to_sheet(rows);
-  ws['!cols'] = [16,14,50,10,6,8,10,16,6,10,14,14,10,10,12,12,12,10].map(w=>({wch:w}));
+  ws['!cols'] = [16,14,50,10,13,13,12,6,8,10,16,6,10,14,14,10,10,12,12,12,10].map(w=>({wch:w}));
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Publicaciones');
   const client = getActiveClient();
@@ -4347,7 +4351,7 @@ async function exportarCMV() {
     'MLA': i.id,
     'SKU': i.sku || '',
     'Título': i.title,
-    'Precio': i.price || '',
+    'Precio': (i._precioReal ?? i.price) || '',
     'Facturación período': Math.round(i.revenue || 0),
     'Unidades período': i.units || 0,
     'Costo unitario (CMV)': costsMap[i.id] != null ? costsMap[i.id] : '',
@@ -4486,12 +4490,31 @@ async function loadPublicaciones() {
       if (d?.map) Object.assign(window._pvpMap, d.map);
     } catch(_){}
   }));
+  // Precio REAL con descuento de promoción/campaña. No viene en /items?ids= (devuelve
+  // original_price:null): vive sólo en /items/{id}/prices, así que sale de su propio
+  // endpoint cacheado. Si no llega, se muestra el precio de lista como siempre.
+  window._promoPriceMap = {};
+  await Promise.all(connected.map(async acc => {
+    try {
+      const d = await apiCall('GET', `/api/precios-promo?client_id=${acc.id}`);
+      if (d?.map) Object.assign(window._promoPriceMap, d.map);
+    } catch(_){}
+  }));
+  const _promoM = window._promoPriceMap || {};
+
   const _pvpM = window._pvpMap || {};
   allItems.forEach(i => {
+    // Precio efectivo: el que ve el comprador. Es el que manda para comparar contra el PVP
+    // del proveedor y para ordenar la tabla — comparar el PVP contra el precio tachado da mal.
+    const promo = _promoM[i.id];
+    i._precioReal  = promo ? promo.precio : (i.price != null ? parseFloat(i.price) : null);
+    i._precioLista = promo ? promo.precio_lista : null;
+    i._descPct     = promo ? promo.descuento_pct : null;
+
     const idNoPfx = (i.id || '').replace(/^MLA-?/i, '');
     const p = _pvpM[i.id] ?? _pvpM[idNoPfx] ?? _pvpM['MLA' + idNoPfx] ?? (i.sku != null ? _pvpM[i.sku] : undefined);
     i._pvp = (p != null && !isNaN(parseFloat(p))) ? parseFloat(p) : null;
-    i._pvpdiff = (i._pvp != null && i.price != null) ? (parseFloat(i.price) - i._pvp) : null;
+    i._pvpdiff = (i._pvp != null && i._precioReal != null) ? (i._precioReal - i._pvp) : null;
   });
 
   window._pubsData = allItems;
@@ -4603,7 +4626,7 @@ async function loadPublicaciones() {
           <th style="text-align:center">★</th>
           <th style="cursor:pointer" onclick="sortPubs('id')">MLA ↕</th>
           <th style="cursor:pointer" onclick="sortPubs('title')">Título ↕</th>
-          <th style="text-align:right;cursor:pointer" onclick="sortPubs('price')">Precio ↕</th>
+          <th style="text-align:right;cursor:pointer" onclick="sortPubs('_precioReal')" title="Precio que ve el comprador. Si hay descuento de promoción o campaña, debajo va el precio de lista tachado.">Precio ↕</th>
           <th style="text-align:right">PVP</th>
           <th style="text-align:right;cursor:pointer" onclick="sortPubs('_pvpdiff')">Dif. PVP ↕</th>
           <th style="cursor:pointer" onclick="sortPubs('status')">Estado ↕</th>
@@ -4672,8 +4695,16 @@ function buildPubRows(items, fmt, dias) {
     const starColorPub = segPub ? '#FFD700' : 'rgba(255,255,255,.45)';
     const clientIdPub = getActiveClient()?.id;
     // ── PVP: precio actual vs sugerido del proveedor ──
-    const _price = item.price != null ? parseFloat(item.price) : null;
+    // _precioReal es el que ve el comprador (ya con el descuento de promoción aplicado);
+    // _precioLista sólo existe si hay descuento y se muestra tachado abajo.
+    const _price = item._precioReal != null ? item._precioReal : (item.price != null ? parseFloat(item.price) : null);
     const _pvp   = item._pvp != null ? item._pvp : null;
+    const _tachado = item._precioLista && item._precioLista > _price
+      ? '<div style="font-size:10px;color:var(--muted);text-decoration:line-through">' + fmt(item._precioLista) + '</div>'
+        + '<div style="font-size:10px;font-weight:700;color:#00e676">-' + item._descPct + '%</div>'
+      : '';
+    const _celdaPrecio = valor =>
+      '<td style="text-align:right;font-weight:600;white-space:nowrap">' + valor + _tachado + '</td>';
     let pvpState = 'none';
     let pvpCells;
     if (_pvp != null && _price != null) {
@@ -4682,12 +4713,12 @@ function buildPubRows(items, fmt, dias) {
       pvpState = Math.abs(diff) < 0.01 ? 'equal' : (diff > 0 ? 'over' : 'under');
       const pcol = pvpState === 'over' ? '#ff9100' : pvpState === 'under' ? '#00bcd4' : 'var(--muted)';
       const sign = diff > 0 ? '+' : '';
-      pvpCells = '<td style="text-align:right;font-weight:600">' + fmt(_price) + '</td>'
+      pvpCells = _celdaPrecio(fmt(_price))
         + '<td style="text-align:right;color:var(--muted)">' + fmt(_pvp) + '</td>'
         + '<td style="text-align:right;font-weight:700;color:' + pcol + ';white-space:nowrap">' + sign + fmt(diff)
         + '<div style="font-size:10px;font-weight:600">' + sign + diffPct.toFixed(0) + '%</div></td>';
     } else {
-      pvpCells = '<td style="text-align:right;font-weight:600">' + (_price != null ? fmt(_price) : '—') + '</td>'
+      pvpCells = _celdaPrecio(_price != null ? fmt(_price) : '—')
         + '<td style="text-align:right;color:var(--muted)">—</td>'
         + '<td style="text-align:center;color:var(--muted)">—</td>';
     }

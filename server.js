@@ -511,6 +511,14 @@ async function initDB() {
       PRIMARY KEY (client_id, date_from, date_to)
     );
     CREATE INDEX IF NOT EXISTS idx_margen_prod_fetched ON margen_producto_cache(fetched_at);
+    -- Precio REAL (con descuento de promoción/campaña) por publicación. El descuento no viene
+    -- ni en el multiget /items?ids= ni en /items/{id}: sólo en /items/{id}/prices, que es una
+    -- llamada por ítem. Con cuentas de 800+ publicaciones eso es carísimo, así que se cachea.
+    CREATE TABLE IF NOT EXISTS precios_promo_cache (
+      client_id  INTEGER PRIMARY KEY,
+      data       JSONB NOT NULL,
+      fetched_at TIMESTAMP DEFAULT NOW()
+    );
     -- Estado de segmento por publicación (1 fila por ítem) para detectar
     -- movimientos de segmento (dormida/naciente/negocio) en el tiempo.
     CREATE TABLE IF NOT EXISTS ciclo_vida_estado (
@@ -4042,6 +4050,88 @@ app.get('/api/item/conversion-diaria', requireAuth, async (req, res) => {
     });
   } catch(e) {
     console.error('[CONVERSION_DIARIA]', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// GET /api/precios-promo — precio REAL (con descuento) de cada publicación activa.
+//
+// El descuento por promoción/campaña NO viaja ni en el multiget /items?ids=...&attributes=
+// (devuelve original_price:null) ni en /items/{id}. Vive únicamente en /items/{id}/prices,
+// en las entradas type='promotion'. Verificado contra LAPALOMETABAITSHOP: MLA1396683811
+// figura a $98.402 en ambos lados y el comprador lo ve a $90.677 (−8%).
+//
+// Como es 1 request por ítem, se cachea 6h. ?force_refresh=1 lo regenera.
+const PRECIOS_PROMO_TTL_HORAS = 6;
+
+app.get('/api/precios-promo', requireAuth, async (req, res) => {
+  try {
+    const clientId = parseInt(req.query.client_id);
+    if (!clientId) return res.status(400).json({ error: 'client_id requerido' });
+    const force = req.query.force_refresh === '1' || req.query.force_refresh === 'true';
+
+    if (!force) {
+      const c = await pool.query(
+        `SELECT data, fetched_at FROM precios_promo_cache
+          WHERE client_id=$1 AND fetched_at > NOW() - INTERVAL '${PRECIOS_PROMO_TTL_HORAS} hours'`,
+        [clientId]
+      );
+      if (c.rows[0]) return res.json({ map: c.rows[0].data, cached: true, fetched_at: c.rows[0].fetched_at });
+    }
+
+    const token = await getClientToken(clientId);
+    if (!token) return res.status(403).json({ error: 'Cliente no conectado' });
+    const headers = { Authorization: `Bearer ${token}` };
+    const user = await fetch(`${ML_API}/users/me`, { headers }).then(r => r.json());
+    const uid = user.id;
+    if (!uid) return res.status(400).json({ error: 'Cliente sin ML User ID' });
+
+    // Sólo las activas: una pausada no tiene precio que mostrarle a nadie.
+    const base = `${ML_API}/users/${uid}/items/search?status=active&limit=100`;
+    const first = await fetch(base, { headers }).then(r => r.json());
+    let ids = first.results || [];
+    const total = first.paging?.total || ids.length;
+    if (total > 100) {
+      const pages = Math.min(Math.ceil(total / 100), 20);   // igual tope que items-full
+      for (let p = 1; p < pages; p++) {
+        const r = await fetch(`${base}&offset=${p*100}`, { headers }).then(r => r.json()).catch(() => ({}));
+        ids = ids.concat(r.results || []);
+      }
+    }
+    ids = [...new Set(ids)];
+
+    const map = {};
+    const CONC = 12;
+    for (let i = 0; i < ids.length; i += CONC) {
+      await Promise.all(ids.slice(i, i + CONC).map(async id => {
+        try {
+          const pr = await fetch(`${ML_API}/items/${id}/prices`, { headers }).then(r => r.json());
+          const std = (pr?.prices || []).find(p => p.type === 'standard');
+          const promos = (pr?.prices || [])
+            .filter(p => p.type !== 'standard' && parseFloat(p.amount) > 0)
+            .map(p => parseFloat(p.amount));
+          const lista  = std ? parseFloat(std.amount) : null;
+          if (!lista || !promos.length) return;
+          const precio = Math.min(...promos);
+          if (!(precio < lista)) return;   // sin descuento real, no ocupa lugar en el mapa
+          map[id] = {
+            precio,
+            precio_lista: lista,
+            descuento_pct: +((lista - precio) / lista * 100).toFixed(1),
+          };
+        } catch(_) { /* un ítem que falla no rompe el mapa */ }
+      }));
+    }
+
+    await pool.query(
+      `INSERT INTO precios_promo_cache (client_id, data, fetched_at) VALUES ($1,$2,NOW())
+       ON CONFLICT (client_id) DO UPDATE SET data=$2, fetched_at=NOW()`,
+      [clientId, JSON.stringify(map)]
+    );
+    console.log(`[PRECIOS PROMO] client ${clientId}: ${Object.keys(map).length} de ${ids.length} publicaciones con descuento`);
+    res.json({ map, cached: false, fetched_at: new Date(), revisadas: ids.length });
+  } catch(e) {
+    console.error('[PRECIOS PROMO]', e.message);
     res.status(500).json({ error: e.message });
   }
 });
