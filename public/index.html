@@ -6071,6 +6071,7 @@ window._lqpKey    = null;   // cliente+rango de lo que hay cargado
 let _lqpSort      = { col: 'margen_real', asc: false };
 let _lqpSearch    = '';
 let _lqpSoloCMV   = false;
+let _lqpTodasCols = false;  // el Excel siempre lleva todas; esto es solo para la pantalla
 
 function _lqpKeyActual() {
   const c = getActiveClient();
@@ -6113,37 +6114,40 @@ function sortLoQuePaso(col) {
 }
 function buscarLoQuePaso(v) { _lqpSearch = (v || '').toLowerCase(); renderLoQuePaso(); }
 function toggleLoQuePasoCMV(v) { _lqpSoloCMV = !!v; renderLoQuePaso(); }
+function toggleLoQuePasoCols(v) { _lqpTodasCols = !!v; renderLoQuePaso(); }
 
 // Definición única de columnas: la usan la tabla y el Excel, así nunca se despegan.
 // key = campo del item · calc = derivadas · tipo money/pct/num/txt
+// soloExcel = va al Excel pero no a la tabla (la pantalla es angosta y el margen tiene
+// que entrar sin scrollear hasta el fondo).
 function _lqpCols() {
   const tk = p => p.units > 0 ? p.revenue / p.units : 0;
   return [
     { key: 'mla_id',    label: 'MLA',            tipo: 'txt',   w: 15, align: 'left' },
-    { key: 'sku',       label: 'SKU',            tipo: 'txt',   w: 14, align: 'left' },
+    { key: 'sku',       label: 'SKU',            tipo: 'txt',   w: 14, align: 'left', soloExcel: true },
     { key: 'title',     label: 'Producto',       tipo: 'txt',   w: 45, align: 'left' },
-    { key: 'units',     label: 'Unidades',       tipo: 'num',   w: 9 },
-    { key: 'units_full',label: 'U. FULL',        tipo: 'num',   w: 9 },
-    { key: 'units_flex',label: 'U. Flex',        tipo: 'num',   w: 9 },
+    { key: 'units',     label: 'Unidades',       labelUI: 'U', tipo: 'num', w: 9 },
+    { key: 'units_full',label: 'U. FULL',        tipo: 'num',   w: 9,  soloExcel: true },
+    { key: 'units_flex',label: 'U. Flex',        tipo: 'num',   w: 9,  soloExcel: true },
     { key: 'revenue',   label: 'Facturación',    tipo: 'money', w: 14, fuerte: true },
-    { key: 'ticket',    label: 'Ticket prom.',   tipo: 'money', w: 13, calc: tk },
+    { key: 'ticket',    label: 'Ticket prom.',   tipo: 'money', w: 13, calc: tk, soloExcel: true },
     { key: 'sale_fee',  label: 'Comisión ML',    tipo: 'money', w: 13, costo: true },
     { key: 'cmv_total', label: 'CMV',            tipo: 'money', w: 13, costo: true },
-    { key: 'envio_real',label: 'Envío vendedor', tipo: 'money', w: 14, costo: true },
+    { key: 'envio_real',label: 'Envío vendedor', labelUI: 'Envío', tipo: 'money', w: 14, costo: true },
     { key: 'flex_imp',  label: 'Flex/FULL',      tipo: 'money', w: 11, costo: true },
     { key: 'iva_dif',   label: 'IVA neto',       tipo: 'money', w: 11, costo: true },
     { key: 'iibb',      label: 'IIBB',           tipo: 'money', w: 10, costo: true },
-    { key: 'margen_sin_publi',     label: 'Margen antes de pauta', tipo: 'money', w: 20, sub: true },
-    { key: 'margen_sin_publi_pct', label: '% antes de pauta',      tipo: 'pct',   w: 15, sub: true },
-    { key: 'publi_real',label: 'Publicidad',     tipo: 'money', w: 12, costo: true },
-    { key: 'tacos_item',label: 'TACOS ítem %',   tipo: 'pct',   w: 12 },
-    { key: 'margen_real',     label: 'Contrib. Marginal', tipo: 'money', w: 18, fuerte: true },
-    { key: 'margen_real_pct', label: 'CM %',              tipo: 'pct',   w: 10, fuerte: true },
-    { key: 'margen_x_unidad', label: 'CM / unidad',       tipo: 'money', w: 13 },
-    { key: 'retorno_cmv_pct', label: 'Retorno s/CMV %',   tipo: 'pct',   w: 15 },
-    { key: 'pct_cm',    label: '% de la CM total', tipo: 'pct', w: 15 },
-    { key: 'acos_ml',   label: 'ACOS ML %',      tipo: 'pct',   w: 12 },
-    { key: 'publi_ingresos_ml', label: 'Ventas atribuidas ML', tipo: 'money', w: 18 },
+    { key: 'margen_sin_publi',     label: 'Margen antes de pauta', labelUI: 'Antes de pauta', tipo: 'money', w: 20, sub: true },
+    { key: 'margen_sin_publi_pct', label: '% antes de pauta', tipo: 'pct',   w: 15, sub: true, soloExcel: true },
+    { key: 'publi_real',label: 'Publicidad',     tipo: 'money', w: 12, costo: true, destacada: true },
+    { key: 'tacos_item',label: 'TACOS ítem %',   labelUI: 'TACOS %', tipo: 'pct', w: 12 },
+    { key: 'margen_real',     label: 'Contrib. Marginal', tipo: 'money', w: 18, fuerte: true, destacada: true },
+    { key: 'margen_real_pct', label: 'CM %',              tipo: 'pct',   w: 10, fuerte: true, destacada: true },
+    { key: 'margen_x_unidad', label: 'CM / unidad', labelUI: 'CM / u', tipo: 'money', w: 13 },
+    { key: 'retorno_cmv_pct', label: 'Retorno s/CMV %',   tipo: 'pct',   w: 15, soloExcel: true },
+    { key: 'pct_cm',    label: '% de la CM total', tipo: 'pct', w: 15, soloExcel: true },
+    { key: 'acos_ml',   label: 'ACOS ML %',      tipo: 'pct',   w: 12, soloExcel: true },
+    { key: 'publi_ingresos_ml', label: 'Ventas atribuidas ML', tipo: 'money', w: 18, soloExcel: true },
   ];
 }
 
@@ -6202,13 +6206,15 @@ function renderLoQuePaso() {
       <div style="font-size:9px;color:var(--muted);margin-top:2px">${sub}</div>
     </div>`;
 
-  const cols = _lqpCols();
+  const cols = _lqpCols().filter(c => _lqpTodasCols || !c.soloExcel);
+  // Publicidad y contribución marginal van resaltadas: son las dos que se miran primero.
   const th = c => {
     const active = _lqpSort.col === c.key;
     const arrow  = active ? (_lqpSort.asc ? ' ↑' : ' ↓') : '';
+    const col    = active ? 'var(--accent)' : c.destacada ? 'var(--text)' : 'var(--muted)';
     return `<th onclick="sortLoQuePaso('${c.key}')"
-      style="padding:7px 8px;text-align:${c.align || 'right'};font-size:10px;font-weight:600;white-space:nowrap;cursor:pointer;user-select:none;
-      color:${active ? 'var(--accent)' : 'var(--muted)'};position:sticky;top:0;background:var(--surface2);z-index:2;border-bottom:2px solid var(--border)">${c.label}${arrow}</th>`;
+      style="padding:6px 6px;text-align:${c.align || 'right'};font-size:10px;font-weight:${c.destacada ? '800' : '600'};white-space:nowrap;cursor:pointer;user-select:none;
+      color:${col};position:sticky;top:0;background:var(--surface2);z-index:2;border-bottom:2px solid ${c.destacada ? 'var(--accent)' : 'var(--border)'}">${c.labelUI || c.label}${arrow}</th>`;
   };
 
   const celda = (c, p) => {
@@ -6216,7 +6222,7 @@ function renderLoQuePaso() {
     if (c.key === 'mla_id')
       return `<td style="padding:6px 8px;font-size:11px;white-space:nowrap"><span style="color:var(--muted);cursor:pointer" title="Click para copiar" onclick="copyMLA(this,'${p.mla_id}')">${p.mla_id}</span></td>`;
     if (c.key === 'title')
-      return `<td style="padding:6px 8px;font-size:11px;max-width:230px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${(p.title||'').replace(/"/g,'&quot;')}">${p.title || ''}</td>`;
+      return `<td style="padding:6px 6px;font-size:11px;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${(p.title||'').replace(/"/g,'&quot;')}">${p.title || ''}</td>`;
     if (c.key === 'sku')
       return `<td style="padding:6px 8px;font-size:11px;color:var(--muted);white-space:nowrap">${p.sku || '—'}</td>`;
     if (c.key === 'cmv_total' && !p.has_cost)
@@ -6232,7 +6238,7 @@ function renderLoQuePaso() {
     if (c.fuerte && (c.key === 'margen_real' || c.key === 'margen_real_pct'))
       color = p.margen_real >= 0 ? '#00e676' : '#ff5252';
     const peso = (c.fuerte || c.sub) ? '700' : '400';
-    return `<td style="padding:6px 8px;text-align:${c.align || 'right'};font-size:11px;font-weight:${peso};color:${color};white-space:nowrap">${txt}</td>`;
+    return `<td style="padding:6px 6px;text-align:${c.align || 'right'};font-size:11px;font-weight:${peso};color:${color};white-space:nowrap">${txt}</td>`;
   };
 
   const rows = items.map((p, i) => `
@@ -6274,6 +6280,9 @@ function renderLoQuePaso() {
           style="flex:1;min-width:220px;padding:7px 12px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:12px;outline:none">
         <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);cursor:pointer">
           <input type="checkbox" ${_lqpSoloCMV ? 'checked' : ''} onchange="toggleLoQuePasoCMV(this.checked)" style="margin:0"> Solo con CMV cargado
+        </label>
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);cursor:pointer" title="Suma SKU, ticket promedio, unidades FULL/Flex, retorno s/CMV, % de la CM total y el ACOS del panel de ML. En el Excel van siempre.">
+          <input type="checkbox" ${_lqpTodasCols ? 'checked' : ''} onchange="toggleLoQuePasoCols(this.checked)" style="margin:0"> Todas las columnas
         </label>
         <span style="font-size:11px;color:var(--muted)">${items.length} filas · Flex ${fM(meta.flex_por_unidad_ff)}/u sobre FULL-FLEX · IIBB ${meta.tasa_iibb_pct || 0}%${meta.es_monotributista ? ' · monotributo (IVA 0)' : ''}</span>
       </div>
