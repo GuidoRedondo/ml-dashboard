@@ -1447,27 +1447,37 @@ async function fetchAllOrders(uid, headers, fromStr, toStr) {
 // comisión, impuestos y reembolsos descontados del payout. Excluirlas infla la
 // utilidad del reporte. fetchAllOrders se deja intacta porque los otros 21
 // endpoints que la usan SÍ quieren únicamente ventas concretadas (status=paid).
+//
+// Se busca SIN filtro de estado y se filtra acá: ML rechaza con bad_request el filtro
+// order.status=partially_refunded, así que pedirlo por status perdía silenciosamente
+// todas las devoluciones parciales (en REDFISHOK, julio 2026: 5 órdenes, $15.191 de
+// facturación que no aparecían en ningún lado). Los estados sin movimiento de plata
+// (payment_required, invalid, etc.) se descartan.
+const PYL_ESTADOS = ['paid', 'partially_refunded', 'partially_paid', 'cancelled'];
+
 async function fetchOrdersForPyL(uid, headers, fromStr, toStr) {
-  const statuses = ['paid', 'partially_refunded', 'cancelled'];
   try {
-    const perStatus = await Promise.all(statuses.map(async status => {
-      const base = `${ML_API}/orders/search?seller=${uid}&order.status=${status}&sort=date_desc&limit=50&order.date_created.from=${encodeURIComponent(fromStr)}&order.date_created.to=${encodeURIComponent(toStr)}`;
-      const first = await fetch(base, { headers }).then(r => r.json()).catch(() => ({}));
-      const total = (first.paging && first.paging.total) || 0;
-      let all = first.results || [];
-      if (total > 50) {
-        const maxPages = Math.min(Math.ceil(total / 50), 300); // hasta 15000 órdenes
-        for (let b = 1; b < maxPages; b += 5) {
-          const end = Math.min(b + 5, maxPages);
-          const batch = await Promise.all(Array.from({length: end - b}, (_, i) =>
-            fetch(`${base}&offset=${(b+i)*50}`, { headers }).then(r => r.json()).catch(() => ({results:[]}))
-          ));
-          batch.forEach(p => { if (p.results) all = all.concat(p.results); });
-        }
+    const base = `${ML_API}/orders/search?seller=${uid}&sort=date_desc&limit=50&order.date_created.from=${encodeURIComponent(fromStr)}&order.date_created.to=${encodeURIComponent(toStr)}`;
+    const first = await fetch(base, { headers }).then(r => r.json()).catch(() => ({}));
+    const total = (first.paging && first.paging.total) || 0;
+    let all = first.results || [];
+    if (total > 50) {
+      const maxPages = Math.min(Math.ceil(total / 50), 300); // hasta 15000 órdenes
+      for (let b = 1; b < maxPages; b += 5) {
+        const end = Math.min(b + 5, maxPages);
+        const batch = await Promise.all(Array.from({length: end - b}, (_, i) =>
+          fetch(`${base}&offset=${(b+i)*50}`, { headers }).then(r => r.json()).catch(() => ({results:[]}))
+        ));
+        batch.forEach(p => { if (p.results) all = all.concat(p.results); });
       }
-      return all;
-    }));
-    const orders = perStatus.flat();
+    }
+    // Dedup por id: la paginación de ML puede repetir filas si el orden se reacomoda.
+    const vistas = new Set();
+    const orders = all.filter(o => {
+      if (!o || !PYL_ESTADOS.includes(o.status) || vistas.has(o.id)) return false;
+      vistas.add(o.id);
+      return true;
+    });
     let amount = 0;
     orders.forEach(o => { amount += parseFloat(o.total_amount) || 0; });
     return { orders, amount };
@@ -5056,7 +5066,9 @@ app.get('/api/reporte/items-vendidos', requireAuth, async (req, res) => {
 //       antes sólo miraba 'paid' y el envío y la comisión de las canceladas no le pegaban
 //       a ningún producto. Suma además impuestos y reembolsos por producto, y da de alta
 //       los MLA que gastaron pauta sin vender.
-const MARGEN_CALC_VERSION = 3;
+//   4 → entran las devoluciones parciales (ML rechaza el filtro order.status para ese
+//       estado, así que ahora se busca sin filtro y se filtra en el server)
+const MARGEN_CALC_VERSION = 4;
 
 // Núcleo compartido del cálculo. Lo consumen /api/reporte/margen-real-producto (tabla de
 // Rentabilidad, ordenada por los que pierden) y /api/performance/top-ganancia (ranking de los
