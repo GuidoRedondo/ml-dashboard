@@ -5052,7 +5052,11 @@ app.get('/api/reporte/items-vendidos', requireAuth, async (req, res) => {
 // tardar 1-2 min en recalcular.
 //   1 → original
 //   2 → dedup de anuncios PADS (antes la paginación duplicaba y el gasto salía al doble)
-const MARGEN_CALC_VERSION = 2;
+//   3 → mismo universo de órdenes que el P&L (paid + partially_refunded + cancelled):
+//       antes sólo miraba 'paid' y el envío y la comisión de las canceladas no le pegaban
+//       a ningún producto. Suma además impuestos y reembolsos por producto, y da de alta
+//       los MLA que gastaron pauta sin vender.
+const MARGEN_CALC_VERSION = 3;
 
 // Núcleo compartido del cálculo. Lo consumen /api/reporte/margen-real-producto (tabla de
 // Rentabilidad, ordenada por los que pierden) y /api/performance/top-ganancia (ranking de los
@@ -5070,18 +5074,46 @@ async function calcularMargenRealPorMla(client_id, date_from, date_to) {
   const esMonotrib = (cRes.rows[0]?.condicion_iva || 'responsable_inscripto') === 'monotributista';
 
   const fmt = d => new Date(d).toISOString().slice(0,19) + '.000-00:00';
-  const { orders } = await fetchAllOrders(uid, headers, fmt(date_from + 'T00:00:00'), fmt(date_to + 'T23:59:59'));
+  // MISMO universo que el P&L general (fetchOrdersForPyL): paid + partially_refunded +
+  // cancelled. Con sólo 'paid' el envío y la comisión que ML igual cobra en una cancelación
+  // no le pegaban a ningún producto y la tabla no cerraba contra el P&L (en REDFISHOK de
+  // julio 2026 quedaban $436.336 de envío afuera, el 10% del total del período).
+  const { orders } = await fetchOrdersForPyL(uid, headers, fmt(date_from + 'T00:00:00'), fmt(date_to + 'T23:59:59'));
 
-  // Agrupar por MLA
+  const nuevoMla = (id, title) => ({ mla_id: id, title: title || id, units: 0, revenue: 0, sale_fee: 0,
+    envio_real: 0, units_full: 0, units_flex: 0, impuestos: 0, reembolsos: 0,
+    units_canceladas: 0, revenue_cancelado: 0, sale_fee_cancel: 0, envio_cancel: 0 });
+
+  // Agrupar por MLA. Criterio del P&L: una cancelación no factura ni consume stock, pero
+  // ML igual se queda con la comisión, los impuestos y el envío — esos cargos sí cargan
+  // contra el producto que los generó.
   const byMla = {};
   orders.forEach(o => {
-    (o.order_items||[]).forEach(oi => {
-      const id = oi.item?.id; if (!id) return;
-      if (!byMla[id]) byMla[id] = { mla_id: id, title: oi.item?.title || id, units: 0, revenue: 0, sale_fee: 0,
-        envio_real: 0, units_full: 0, units_flex: 0 };
-      byMla[id].units   += oi.quantity || 0;
-      byMla[id].revenue += (parseFloat(oi.unit_price)||0) * (oi.quantity||0);
-      byMla[id].sale_fee += parseFloat(oi.sale_fee)||0;
+    const cancelada = o.status === 'cancelled';
+    const lineas = (o.order_items||[]).filter(oi => oi.item?.id);
+    // Base de reparto de los cargos que vienen a nivel orden (impuestos, reembolsos).
+    const baseOrden = lineas.reduce((s,oi) => s + (parseFloat(oi.unit_price)||0)*(oi.quantity||0), 0);
+    const taxes  = parseFloat(o.taxes?.amount) || 0;
+    const refund = (o.payments||[]).reduce((s,p) => s + (parseFloat(p.transaction_amount_refunded)||0), 0);
+    lineas.forEach(oi => {
+      const id = oi.item.id;
+      const m = byMla[id] || (byMla[id] = nuevoMla(id, oi.item?.title));
+      const monto = (parseFloat(oi.unit_price)||0) * (oi.quantity||0);
+      const frac  = baseOrden > 0 ? monto / baseOrden : 1 / lineas.length;
+      const fee   = parseFloat(oi.sale_fee) || 0;
+      m.sale_fee  += fee;
+      m.impuestos += taxes * frac;
+      if (cancelada) {
+        m.units_canceladas  += oi.quantity || 0;
+        m.revenue_cancelado += monto;
+        m.sale_fee_cancel   += fee;
+      } else {
+        m.units      += oi.quantity || 0;
+        m.revenue    += monto;
+        // El reembolso de una cancelada volvió al comprador y esa venta nunca entró a
+        // facturación: restarlo descontaría plata que el vendedor nunca cobró.
+        m.reembolsos += refund * frac;
+      }
     });
   });
 
@@ -5094,25 +5126,77 @@ async function calcularMargenRealPorMla(client_id, date_from, date_to) {
     const sc = o.shipping?.id ? shipCostMap[o.shipping.id] : null;
     const ois = (o.order_items||[]).filter(oi => oi.item?.id);
     const mode = sc?.mode || 'Otro';
+    const cancelada = o.status === 'cancelled';
     ois.forEach(oi => {
       const m = byMla[oi.item.id], q = oi.quantity||0; if (!m) return;
-      m.envio_real += (envioPorItem[`${o.id}|${oi.item.id}`]?.seller) || 0;
+      const env = (envioPorItem[`${o.id}|${oi.item.id}`]?.seller) || 0;
+      m.envio_real += env;
+      if (cancelada) { m.envio_cancel += env; return; }   // una cancelada no consume unidades FULL/FLEX
       if (mode === 'FULL') m.units_full += q; else if (mode === 'FLEX') m.units_flex += q;
     });
   });
 
-  // SKU por MLA (mismo patrón que /api/reporte/items-vendidos) — el ranking lo muestra
-  // porque en la call se habla por SKU, no por MLA.
+  // Publicidad por MLA (PADS) — opcional, degradable.
+  // Además del costo se traen los ingresos y unidades que ML ATRIBUYE al anuncio
+  // (total_amount = directo + indirecto). Ese es el numerador del ACOS/ROAS que el vendedor
+  // ve en el panel de ML, y casi nunca coincide con la facturación real del ítem: incluye
+  // ventas de otros productos compradas después del click y ventas de la ventana de
+  // atribución que caen fuera del período. Guardarlo permite mostrar la diferencia en vez
+  // de que el número del P&L parezca un error.
+  const adsByItem = {};
+  try {
+    const advData = await fetch(`${ML_API}/advertising/advertisers?product_id=PADS`,
+      { headers: { ...headers, 'Content-Type': 'application/json', 'Api-Version': '1' } }).then(r=>r.json());
+    const advs = advData.advertisers || [];
+    // Una cuenta puede tener advertisers de varios sites: quedarse con el [0] a ciegas
+    // puede traer el de otro país y devolver cero gasto.
+    const adv = advs.find(a => a.site_id === 'MLA') || advs[0];
+    if (adv) {
+      const siteId = adv.site_id || 'MLA', fromDate = date_from, toDate = date_to;
+      const metrics = 'cost,total_amount,direct_amount,indirect_amount,units_quantity';
+      const ads = await fetchPadsAds(siteId, adv.advertiser_id, { ...headers, 'api-version': '2' },
+        { date_from: fromDate, date_to: toDate, metrics });
+      ads.forEach(ad => {
+        const mt = ad.metrics || {};
+        if (!(mt.cost > 0)) return;
+        // Un mismo ítem puede estar en varias campañas: se acumula (ya vienen deduplicadas).
+        const a = adsByItem[ad.item_id] || (adsByItem[ad.item_id] = { cost: 0, total_amount: 0, direct_amount: 0, indirect_amount: 0, units: 0 });
+        a.cost            += parseFloat(mt.cost)            || 0;
+        a.total_amount    += parseFloat(mt.total_amount)    || 0;
+        a.direct_amount   += parseFloat(mt.direct_amount)   || 0;
+        a.indirect_amount += parseFloat(mt.indirect_amount) || 0;
+        a.units           += parseFloat(mt.units_quantity)  || 0;
+      });
+    }
+  } catch(e) { /* publicidad por item opcional */ }
+
+  // MLA que gastaron pauta y no vendieron nada en el período: sin esta alta el gasto no
+  // aparecía en ninguna fila y la publicidad de la tabla no cerraba contra el P&L
+  // (en REDFISHOK de julio 2026 eran $191.006 en 98 publicaciones). Entran con
+  // facturación 0: todo lo que gastaron es pérdida y quedan arriba de todo al ordenar.
+  let ads_sin_ventas = 0, gasto_ads_sin_ventas = 0;
+  Object.entries(adsByItem).forEach(([id, a]) => {
+    if (byMla[id] || !(a.cost > 0)) return;
+    byMla[id] = nuevoMla(id, null);
+    ads_sin_ventas++;
+    gasto_ads_sin_ventas += a.cost;
+  });
+
+  // SKU y título por MLA (mismo patrón que /api/reporte/items-vendidos) — el ranking los
+  // muestra porque en la call se habla por SKU, no por MLA. El título hace falta además
+  // para las publicaciones que entraron sólo por publicidad (no vinieron en ninguna orden).
   const skuMap = {};
   const manualSku = await loadSkuManual(client_id);
   const mlaIds = Object.keys(byMla);
   for (let i = 0; i < mlaIds.length; i += 20) {
     const batch = mlaIds.slice(i, i + 20);
     try {
-      const data = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,seller_custom_field,attributes,variations&include_attributes=all`, { headers }).then(r => r.json());
+      const data = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,title,seller_custom_field,attributes,variations&include_attributes=all`, { headers }).then(r => r.json());
       (Array.isArray(data) ? data : []).forEach(r => {
         if (r.code !== 200 || !r.body) return;
         skuMap[r.body.id] = manualSku[r.body.id] || extractSku(r.body);
+        const m = byMla[r.body.id];
+        if (m && m.title === r.body.id && r.body.title) m.title = r.body.title;
       });
     } catch(e) {}
   }
@@ -5144,37 +5228,6 @@ async function calcularMargenRealPorMla(client_id, date_from, date_to) {
   const totFF = Object.values(byMla).reduce((s,m)=>s+m.units_full+m.units_flex,0);
   const flexU = totFF ? flexManual/totFF : 0;
 
-  // Publicidad por MLA (PADS) — opcional, degradable.
-  // Además del costo se traen los ingresos y unidades que ML ATRIBUYE al anuncio
-  // (total_amount = directo + indirecto). Ese es el numerador del ACOS/ROAS que el vendedor
-  // ve en el panel de ML, y casi nunca coincide con la facturación real del ítem: incluye
-  // ventas de otros productos compradas después del click y ventas de la ventana de
-  // atribución que caen fuera del período. Guardarlo permite mostrar la diferencia en vez
-  // de que el número del P&L parezca un error.
-  const adsByItem = {};
-  try {
-    const advData = await fetch(`${ML_API}/advertising/advertisers?product_id=PADS`,
-      { headers: { ...headers, 'Content-Type': 'application/json', 'Api-Version': '1' } }).then(r=>r.json());
-    const adv = (advData.advertisers||[])[0];
-    if (adv) {
-      const siteId = 'MLA', fromDate = date_from, toDate = date_to;
-      const metrics = 'cost,total_amount,direct_amount,indirect_amount,units_quantity';
-      const ads = await fetchPadsAds(siteId, adv.advertiser_id, { ...headers, 'api-version': '2' },
-        { date_from: fromDate, date_to: toDate, metrics });
-      ads.forEach(ad => {
-        const mt = ad.metrics || {};
-        if (!(mt.cost > 0)) return;
-        // Un mismo ítem puede estar en varias campañas: se acumula (ya vienen deduplicadas).
-        const a = adsByItem[ad.item_id] || (adsByItem[ad.item_id] = { cost: 0, total_amount: 0, direct_amount: 0, indirect_amount: 0, units: 0 });
-        a.cost            += parseFloat(mt.cost)            || 0;
-        a.total_amount    += parseFloat(mt.total_amount)    || 0;
-        a.direct_amount   += parseFloat(mt.direct_amount)   || 0;
-        a.indirect_amount += parseFloat(mt.indirect_amount) || 0;
-        a.units           += parseFloat(mt.units_quantity)  || 0;
-      });
-    }
-  } catch(e) { /* publicidad por item opcional */ }
-
   // Calcular P&L real por SKU
   const items = Object.values(byMla).map(m => {
     const fact = m.revenue, com = m.sale_fee;
@@ -5190,12 +5243,20 @@ async function calcularMargenRealPorMla(client_id, date_from, date_to) {
     const ivaC = esMonotrib ? 0 : ivaContenido(cmv, alic) + ivaContenido(com + envReal + flexImp, IVA_SERVICIOS_PCT);
     const ivaDif = Math.round(ivaV - ivaC);
     const iibb = Math.round(fact * (tasaIibb/100));
-    const margen = Math.round(fact - com - cmv - envReal - flexImp - publi - ivaDif - iibb);
+    const impuestos  = Math.round(m.impuestos);    // impuestos que ML retiene en la operación
+    const reembolsos = Math.round(m.reembolsos);   // plata devuelta al comprador
+    const margen = Math.round(fact - com - cmv - envReal - flexImp - publi - ivaDif - iibb - impuestos - reembolsos);
     return {
       mla_id: m.mla_id, title: m.title, sku: skuMap[m.mla_id] || null, units: m.units, revenue: fact,
       sale_fee: Math.round(com), cmv_total: Math.round(cmv), has_cost: costsMap[m.mla_id] != null,
       envio_real: envReal, flex_imp: flexImp, publi_real: publi, iva_dif: ivaDif, iibb,
+      impuestos, reembolsos,
       units_full: m.units_full, units_flex: m.units_flex,
+      // Cargos que ML cobró igual por operaciones canceladas: no facturan, pero pegan en el
+      // margen del producto. Se exponen para poder explicar por qué la fila no cierra
+      // contra "facturación × margen esperado".
+      units_canceladas: m.units_canceladas, revenue_cancelado: Math.round(m.revenue_cancelado),
+      cargos_cancelados: Math.round(m.sale_fee_cancel + m.envio_cancel),
       margen_real: margen, margen_real_pct: fact ? +(margen/fact*100).toFixed(1) : 0,
       margen_x_unidad: m.units > 0 ? Math.round(margen / m.units) : 0,
       // Retorno sobre la mercadería: cuánto deja cada peso puesto en stock.
@@ -5214,11 +5275,15 @@ async function calcularMargenRealPorMla(client_id, date_from, date_to) {
     };
   }).sort((a,b) => a.margen_real - b.margen_real);
 
+  const canceladas = orders.filter(o => o.status === 'cancelled').length;
   return {
     items, total_orders: orders.length, calc_version: MARGEN_CALC_VERSION,
     meta: { flex_manual: flexManual, flex_por_unidad_ff: Math.round(flexU),
             unidades_full_flex: totFF, tasa_iibb_pct: tasaIibb, es_monotributista: esMonotrib,
-            skus_que_pierden: items.filter(i=>i.margen_real<0).length },
+            skus_que_pierden: items.filter(i=>i.margen_real<0).length,
+            ordenes_canceladas: canceladas,
+            cargos_cancelados: items.reduce((s,i) => s + (i.cargos_cancelados||0), 0),
+            ads_sin_ventas, gasto_ads_sin_ventas: Math.round(gasto_ads_sin_ventas) },
   };
 }
 
@@ -5314,7 +5379,9 @@ app.get('/api/performance/top-ganancia', requireAuth, async (req, res) => {
       );
     }
 
-    const todos   = payload.items || [];
+    // Sin unidades no hay ranking posible: acá entran las publicaciones que sólo gastaron
+    // pauta o que arrastran cargos de una cancelación. Van a "Lo que pasó", no al top.
+    const todos   = (payload.items || []).filter(i => i.units > 0);
     const conCosto = todos.filter(i => i.has_cost);
     const sinCosto = todos.filter(i => !i.has_cost);
 
