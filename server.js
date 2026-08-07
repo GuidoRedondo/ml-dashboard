@@ -1854,6 +1854,7 @@ const REGLAS_DEFAULT = {
   producto_sin_ventas:   { habilitada: true, umbral: { dias_publicado: 14 } },
   anuncio_sangrando:     { habilitada: true, umbral: { acos_min: 50, dias: 5 } },
   oportunidad_escalable: { habilitada: true, umbral: { cvr_min: 5, gasto_max: 5000, dias: 30 } },
+  full_sin_stock_con_deposito: { habilitada: true, umbral: { min_unidades: 1, dias_ventas: 30, max_items: 8, max_consultas: 500 } },
 };
 
 async function getRegla(clientId, codigo) {
@@ -2585,6 +2586,131 @@ async function evalRuleOportunidadEscalable(client) {
   } catch(e) { console.error(`[ALERTA oportunidad_escalable] ${client.name}:`, e.message); return null; }
 }
 
+// Stock por ubicación de un user_product. Separa lo que está en el depósito de ML
+// (meli_facility = FULL) de lo que está en poder del vendedor (selling_address o
+// seller_warehouse). Es el único endpoint que discrimina ambos orígenes: el
+// available_quantity del ítem los suma y /inventories/{id}/stock/fulfillment solo
+// ve el lado FULL.
+async function fetchStockPorUbicacion(upid, headers) {
+  const s = await fetch(`${ML_API}/user-products/${upid}/stock`, { headers }).then(r => r.json());
+  if (!Array.isArray(s?.locations)) return null;
+  let full = 0, deposito = 0;
+  s.locations.forEach(l => {
+    const q = l.quantity || 0;
+    if (l.type === 'meli_facility') full += q;
+    else deposito += q;
+  });
+  return { full, deposito, locations: s.locations };
+}
+
+// Regla 12 — Sin stock en FULL pero con stock en el depósito propio
+// La publicación sigue ofreciéndose por FULL (logistic_type = fulfillment) pero el
+// inventario de fulfillment quedó en 0 y hay unidades en el depósito del vendedor:
+// o se repone FULL o se pasa la publicación a envío propio.
+// Se filtra por logistic_type porque ML deja el inventory_id pegado al ítem aunque
+// ya no opere por FULL (mismo criterio que /api/logistica/full-stock).
+async function evalRuleFullSinStockConDeposito(client) {
+  const regla = await getRegla(client.id, 'full_sin_stock_con_deposito');
+  if (!regla.habilitada) return null;
+  const token = await getClientToken(client.id);
+  if (!token) return null;
+  const headers = { 'Authorization': `Bearer ${token}` };
+  try {
+    const { min_unidades = 1, dias_ventas = 30, max_items = 8, max_consultas = 500 } = regla.umbral || {};
+    const me = await fetch(`${ML_API}/users/me`, { headers }).then(r => r.json());
+    if (me.error || !me.id) return null;
+    const uid = me.id;
+
+    // 1. Publicaciones activas que HOY se ofrecen por FULL
+    const allIds = await fetchAllActiveItemIds(uid, headers);
+    if (!allIds.length) return null;
+    const attrs = 'id,title,available_quantity,inventory_id,user_product_id,shipping,variations';
+    const candidatos = [];
+    const batches = [];
+    for (let i = 0; i < allIds.length; i += 20) batches.push(allIds.slice(i, i + 20));
+    for (let g = 0; g < batches.length; g += 6) {
+      await Promise.all(batches.slice(g, g + 6).map(async batch => {
+        try {
+          const data = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=${attrs}`, { headers })
+            .then(r => r.json());
+          (Array.isArray(data) ? data : []).forEach(r => {
+            if (r.code !== 200 || !r.body) return;
+            const b = r.body;
+            if ((b.shipping?.logistic_type || '') !== 'fulfillment') return;
+            if (b.variations?.length) {
+              b.variations.forEach(v => {
+                if (!v.user_product_id) return;
+                const varName = (v.attribute_combinations || []).map(a => a.value_name).join(' / ');
+                candidatos.push({
+                  id: b.id, variation_id: v.id, upid: v.user_product_id,
+                  title: varName ? `${b.title} — ${varName}` : b.title,
+                });
+              });
+            } else if (b.user_product_id) {
+              candidatos.push({ id: b.id, variation_id: null, upid: b.user_product_id, title: b.title });
+            }
+          });
+        } catch(e) {}
+      }));
+    }
+    if (!candidatos.length) { await resolveAlerta(client.id, 'full_sin_stock_con_deposito'); return null; }
+
+    // 2. Ventas del período — priorizan qué consultar y gradúan la severidad
+    const now  = new Date();
+    const fmt  = d => d.toISOString().slice(0,19) + '.000-00:00';
+    const desde = new Date(now.getTime() - dias_ventas * 86400000);
+    const ventasPorKey = {};
+    try {
+      const { orders } = await fetchAllOrders(uid, headers, fmt(desde), fmt(now));
+      orders.forEach(o => (o.order_items || []).forEach(oi => {
+        const id = oi.item?.id; if (!id) return;
+        const key = oi.item?.variation_id ? `${id}_${oi.item.variation_id}` : id;
+        ventasPorKey[key] = (ventasPorKey[key] || 0) + (oi.quantity || 0);
+      }));
+    } catch(e) {}
+    const ventasDe = c => ventasPorKey[c.variation_id ? `${c.id}_${c.variation_id}` : c.id] || 0;
+    candidatos.sort((a, b) => ventasDe(b) - ventasDe(a));
+    const truncado   = candidatos.length > max_consultas;
+    const aConsultar = candidatos.slice(0, max_consultas);
+
+    // 3. Stock por ubicación (1 request por user_product, cacheado: varias
+    //    publicaciones de la misma familia comparten user_product_id)
+    const cache = {};
+    const hits  = [];
+    for (let i = 0; i < aConsultar.length; i += 8) {
+      await Promise.all(aConsultar.slice(i, i + 8).map(async c => {
+        if (!cache[c.upid]) cache[c.upid] = fetchStockPorUbicacion(c.upid, headers).catch(() => null);
+        const st = await cache[c.upid];
+        if (!st || st.full > 0 || st.deposito < min_unidades) return;
+        hits.push({ ...c, stock_full: st.full, stock_deposito: st.deposito, vendidas: ventasDe(c) });
+      }));
+      if (i + 8 < aConsultar.length) await new Promise(r => setTimeout(r, 120));
+    }
+    console.log(`[ALERTA full_sin_stock] ${client.name}: fulfillment=${candidatos.length} consultadas=${aConsultar.length} hits=${hits.length}`);
+
+    if (!hits.length) { await resolveAlerta(client.id, 'full_sin_stock_con_deposito'); return null; }
+
+    hits.sort((a, b) => b.vendidas - a.vendidas || b.stock_deposito - a.stock_deposito);
+    const unidades  = hits.reduce((s, h) => s + h.stock_deposito, 0);
+    const conVenta  = hits.filter(h => h.vendidas > 0);
+    const severidad = conVenta.length ? 'critical' : 'warning';
+    const corto = t => (t || '').length > 45 ? t.slice(0, 45) + '…' : (t || '');
+    const lista = hits.slice(0, max_items).map(h =>
+      `• ${corto(h.title)}: 0 en FULL · ${h.stock_deposito} u. en depósito` +
+      (h.vendidas ? ` · ${h.vendidas} vendidas/${dias_ventas}d` : '')
+    ).join('\n');
+    const resto = hits.length > max_items ? `\n…y ${hits.length - max_items} más` : '';
+    const nota  = truncado ? `\n(se revisaron las ${max_consultas} publicaciones FULL con más ventas)` : '';
+    const titulo = `${hits.length} publicación${hits.length !== 1 ? 'es' : ''} sin stock en FULL con ${unidades} u. en depósito`;
+    return upsertAlerta(client.id, 'full_sin_stock_con_deposito', severidad,
+      titulo,
+      `Se siguen ofreciendo por FULL pero el inventario de fulfillment está en 0. ` +
+      `Reponer FULL o pasarlas a envío propio para no perder la venta:\n${lista}${resto}${nota}`,
+      { items: hits.slice(0, 50), total: hits.length, unidades_deposito: unidades, con_venta: conVenta.length, truncado }
+    );
+  } catch(e) { console.error(`[ALERTA full_sin_stock_con_deposito] ${client.name}:`, e.message); return null; }
+}
+
 // Motor principal
 async function runAlertEngine({ forceNotify = false, tipo = 'auto' } = {}) {
   console.log('[ALERTAS] Iniciando evaluación —', new Date().toISOString());
@@ -2604,6 +2730,7 @@ async function runAlertEngine({ forceNotify = false, tipo = 'auto' } = {}) {
       evalRuleProductoSinVentas,
       evalRuleAnuncioSangrando,
       evalRuleOportunidadEscalable,
+      evalRuleFullSinStockConDeposito,
     ];
     const newAlerts = [];
     for (const client of clients.rows) {
@@ -2654,6 +2781,8 @@ const SLACK_TIPO_CONFIG = {
   preguntas_pendientes: { emoji: '❓', label: 'Preguntas sin responder',     short: (a) => a.titulo },
   reputacion_bajando:   { emoji: '⭐', label: 'Reputación bajando',           short: (a) => a.titulo },
   producto_sin_ventas:  { emoji: '🛒', label: 'Productos sin ventas',         short: (a) => `${a.datos?.total || '?'} productos activos sin ventas en 90d` },
+  full_sin_stock_con_deposito: { emoji: '🏬', label: 'FULL en cero con stock propio', short: (a) =>
+                            `${a.datos?.total || '?'} publicaciones · ${a.datos?.unidades_deposito || 0} u. en depósito` },
 };
 
 async function sendSlackAlert(newAlerts) {
@@ -2670,7 +2799,7 @@ async function sendSlackAlert(newAlerts) {
   });
 
   // Ordenar: críticas primero, luego warnings
-  const orden = ['reputacion_bajando','stock_critico_pareto','caida_ventas','tacos_alto','tacos_producto_alto','margen_erosionado','roas_bajo','preguntas_pendientes','producto_sin_ventas'];
+  const orden = ['reputacion_bajando','stock_critico_pareto','full_sin_stock_con_deposito','caida_ventas','tacos_alto','tacos_producto_alto','margen_erosionado','roas_bajo','preguntas_pendientes','producto_sin_ventas'];
   const tiposOrdenados = [
     ...orden.filter(k => byTipo[k]),
     ...Object.keys(byTipo).filter(k => !orden.includes(k))

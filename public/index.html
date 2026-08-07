@@ -18010,6 +18010,7 @@ const CI_REGLAS_LABELS = {
   producto_sin_ventas:  { titulo: 'Producto sin ventas',    desc: 'Publicaciones activas con más de N días publicadas y 0 ventas en 90 días' },
   anuncio_sangrando:    { titulo: 'Anuncio sangrando',      desc: 'Ítems en publi con ACOS por encima del umbral durante N días consecutivos' },
   oportunidad_escalable:{ titulo: 'Oportunidad escalable',  desc: 'SKUs con alta tasa de conversión (CVR) y baja inversión en publicidad' },
+  full_sin_stock_con_deposito: { titulo: 'FULL en cero con stock propio', desc: 'Publicaciones que se ofrecen por FULL con el inventario de fulfillment en 0 y unidades en el depósito propio' },
 };
 
 let _ciActiveTab = 'alertas';
@@ -18136,6 +18137,27 @@ function ciRenderDetalle(a) {
     return `<details style="margin-top:8px">
       <summary style="font-size:11px;color:var(--accent);cursor:pointer;user-select:none">Ver las ${datos.items.length} oportunidades</summary>
       <table style="margin-top:6px;border-collapse:collapse;width:100%">${rows}</table>
+    </details>`;
+  }
+  if (a.codigo === 'full_sin_stock_con_deposito' && Array.isArray(datos.items) && datos.items.length) {
+    const rows = datos.items.map(c => {
+      const nombre = c.title ? (c.title.length > 50 ? c.title.slice(0,50)+'…' : c.title) : '—';
+      const vend = c.vendidas ? `${c.vendidas} u. vendidas` : 'sin ventas';
+      return `<tr>
+        <td style="padding:4px 8px 4px 0;font-size:11px;color:var(--muted);white-space:nowrap">
+          <a href="https://articulo.mercadolibre.com.ar/${c.id.replace('MLA','MLA-')}" target="_blank" style="color:var(--accent);text-decoration:none">${c.id}</a>
+        </td>
+        <td style="padding:4px 8px 4px 0;font-size:11px;color:var(--text)">${nombre}</td>
+        <td style="padding:4px 8px;font-size:11px;color:#dc2626;font-weight:600;white-space:nowrap">FULL 0</td>
+        <td style="padding:4px 8px;font-size:11px;color:#16a34a;font-weight:600;white-space:nowrap">📦 ${c.stock_deposito} u. depósito</td>
+        <td style="padding:4px 0;font-size:11px;color:var(--muted);white-space:nowrap">${vend}</td>
+      </tr>`;
+    }).join('');
+    const extra = datos.total > datos.items.length
+      ? `<div style="font-size:10px;color:var(--muted);margin-top:4px">…y ${datos.total - datos.items.length} más</div>` : '';
+    return `<details style="margin-top:8px">
+      <summary style="font-size:11px;color:var(--accent);cursor:pointer;user-select:none">Ver las ${datos.total} publicaciones</summary>
+      <table style="margin-top:6px;border-collapse:collapse;width:100%">${rows}</table>${extra}
     </details>`;
   }
   return `<div style="font-size:12px;color:var(--muted);white-space:pre-line">${a.mensaje}</div>`;
