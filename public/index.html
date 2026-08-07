@@ -1200,6 +1200,8 @@ tbody td {
     <div class="page" id="page-publicaciones">
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px;flex-wrap:wrap">
         <h2 style="margin:0;font-family:var(--font-b);flex:1">Publicaciones</h2>
+        <button class="sync-btn" onclick="chequearFullSinStock(false)" style="background:#f59e0b;color:#111"
+          title="Publicaciones que se siguen ofreciendo por FULL con el inventario de fulfillment en 0 y stock en tu depósito">🏬 FULL en cero</button>
         <button class="sync-btn" onclick="exportPubsExcel()">📥 Excel</button>
         <button class="sync-btn" onclick="exportarCMV()" style="background:#6366f1;color:#fff" title="Descargar Excel con MLA, título, precio, facturación y costo actual para completar">💰 Descargar CMV</button>
         <label style="margin:0">
@@ -1207,6 +1209,7 @@ tbody td {
           <span class="sync-btn" style="background:#059669;color:#fff;cursor:pointer" title="Importar Excel con costos completados">📤 Importar CMV</span>
         </label>
       </div>
+      <div id="fullSinStockPanel" style="display:none;margin-bottom:20px"></div>
       <div id="publicacionesContent"></div>
     </div>
 
@@ -4434,6 +4437,116 @@ async function importarCMV(input) {
     }
   };
   reader.readAsArrayBuffer(file);
+}
+
+// ── FULL en cero con stock en el depósito propio ─────────────────────────────
+// Publicaciones que se siguen ofreciendo por FULL pero el inventario de
+// fulfillment está en 0 y hay unidades propias: hay que reponer FULL o pasarlas
+// a envío propio. Mismo criterio que la alerta del Centro de Inteligencia.
+async function chequearFullSinStock(refresh) {
+  const panel = document.getElementById('fullSinStockPanel');
+  if (!panel) return;
+  const cuentas = state.accounts.filter(a => a.data);
+  if (!cuentas.length) { showToast('Sincronizá primero'); return; }
+  panel.style.display = 'block';
+  panel.innerHTML = `<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:24px;text-align:center;color:var(--muted);font-size:13px">
+    ⏳ Revisando el stock en FULL${cuentas.length > 1 ? ` de ${cuentas.length} cuentas` : ''}… puede tardar hasta un minuto</div>`;
+
+  const resultados = await Promise.all(cuentas.map(async acc => {
+    try {
+      const d = await apiCall('GET', `/api/publicaciones/full-sin-stock?client_id=${acc.id}${refresh ? '&refresh=1' : ''}`);
+      return { acc, d };
+    } catch(e) { return { acc, d: null }; }
+  }));
+
+  const fallidas = resultados.filter(r => !r.d || r.d.error).map(r => r.acc.name);
+  const ok       = resultados.filter(r => r.d && !r.d.error);
+  const items    = ok.flatMap(r => (r.d.items || []).map(i => ({ ...i, cuenta: r.acc.name })));
+  const enFull   = ok.reduce((s, r) => s + (r.d.en_full || 0), 0);
+  const unidades = items.reduce((s, i) => s + (i.stock_deposito || 0), 0);
+  const diasV    = ok[0]?.d?.dias_ventas || 30;
+  const cacheado = ok.length > 0 && ok.every(r => r.d.cached);
+  const generado = ok.map(r => r.d.generado).sort().pop();
+  window._fullSinStockData = items;
+
+  const cerrar = `<button class="sync-btn" onclick="document.getElementById('fullSinStockPanel').style.display='none'" style="padding:4px 10px;font-size:11px">✕ Cerrar</button>`;
+  const actualizar = `<button class="sync-btn" onclick="chequearFullSinStock(true)" style="padding:4px 10px;font-size:11px">🔄 Actualizar</button>`;
+  const avisoFallidas = fallidas.length
+    ? `<div style="font-size:11px;color:#dc2626;margin-top:8px">No se pudo revisar: ${fallidas.join(', ')} (token vencido o sin permisos)</div>` : '';
+  const pie = generado
+    ? `<div style="font-size:10px;color:var(--muted);margin-top:10px">Datos ${cacheado ? 'cacheados' : 'frescos'} · ${new Date(generado).toLocaleString('es-AR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})} · se revisaron ${enFull} publicaciones en FULL</div>` : '';
+
+  if (!items.length) {
+    panel.innerHTML = `<div style="background:var(--surface);border:1px solid var(--border);border-left:4px solid #16a34a;border-radius:12px;padding:18px 20px">
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <div style="flex:1;font-size:14px;font-weight:600;color:#16a34a;font-family:var(--font-b)">✅ Ninguna publicación en FULL quedó sin stock</div>
+        ${actualizar} ${cerrar}
+      </div>${avisoFallidas}${pie}</div>`;
+    return;
+  }
+
+  const multi = cuentas.length > 1;
+  const rows = items.map(i => {
+    const titulo = (i.title || '').length > 60 ? i.title.slice(0,60) + '…' : (i.title || '—');
+    const vend = i.vendidas
+      ? `<span style="color:#dc2626;font-weight:600">${i.vendidas} u.</span>`
+      : `<span style="color:var(--muted)">—</span>`;
+    return `<tr style="border-bottom:1px solid var(--border)">
+      ${multi ? `<td style="padding:8px;font-size:11px;color:var(--muted);white-space:nowrap">${i.cuenta}</td>` : ''}
+      <td style="padding:8px;font-size:11px;white-space:nowrap">
+        <a href="https://articulo.mercadolibre.com.ar/${(i.id||'').replace('MLA','MLA-')}" target="_blank"
+           style="color:var(--accent);text-decoration:none">${i.id}</a></td>
+      <td style="padding:8px;font-size:12px;color:var(--text)">${titulo}</td>
+      <td style="padding:8px;font-size:12px;font-weight:700;color:#dc2626;text-align:center;white-space:nowrap">0</td>
+      <td style="padding:8px;font-size:12px;font-weight:700;color:#16a34a;text-align:center;white-space:nowrap">${i.stock_deposito}</td>
+      <td style="padding:8px;font-size:12px;text-align:center;white-space:nowrap">${vend}</td>
+    </tr>`;
+  }).join('');
+
+  const conVenta = items.filter(i => i.vendidas > 0).length;
+  panel.innerHTML = `<div style="background:var(--surface);border:1px solid var(--border);border-left:4px solid #f59e0b;border-radius:12px;padding:18px 20px">
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px">
+      <div style="flex:1;font-size:15px;font-weight:700;color:#f59e0b;font-family:var(--font-b)">
+        🏬 ${items.length} publicación${items.length !== 1 ? 'es' : ''} sin stock en FULL — ${unidades} u. en tu depósito
+      </div>
+      <button class="sync-btn" onclick="exportFullSinStockExcel()" style="padding:4px 10px;font-size:11px">📥 Excel</button>
+      ${actualizar} ${cerrar}
+    </div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:12px">
+      Se siguen ofreciendo por FULL con el inventario de fulfillment en 0.
+      Reponé FULL o pasalas a envío propio${conVenta ? ` — <strong style="color:#dc2626">${conVenta} vendieron en los últimos ${diasV} días</strong>` : ''}.
+    </div>
+    <div style="overflow-x:auto">
+      <table style="width:100%;border-collapse:collapse">
+        <thead><tr style="border-bottom:2px solid var(--border)">
+          ${multi ? '<th style="padding:8px;text-align:left;font-size:11px;color:var(--muted)">Cuenta</th>' : ''}
+          <th style="padding:8px;text-align:left;font-size:11px;color:var(--muted)">MLA</th>
+          <th style="padding:8px;text-align:left;font-size:11px;color:var(--muted)">Publicación</th>
+          <th style="padding:8px;text-align:center;font-size:11px;color:var(--muted)">En FULL</th>
+          <th style="padding:8px;text-align:center;font-size:11px;color:var(--muted)">En depósito</th>
+          <th style="padding:8px;text-align:center;font-size:11px;color:var(--muted)">Vendidas ${diasV}d</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>${avisoFallidas}${pie}</div>`;
+}
+
+function exportFullSinStockExcel() {
+  const data = window._fullSinStockData || [];
+  if (!data.length) { showToast('No hay datos para exportar'); return; }
+  const rows = data.map(i => ({
+    Cuenta: i.cuenta || '',
+    MLA: i.id,
+    Variacion: i.variation_id || '',
+    Publicacion: i.title || '',
+    'Stock FULL': 0,
+    'Stock deposito': i.stock_deposito,
+    'Vendidas periodo': i.vendidas || 0,
+  }));
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'FULL en cero');
+  XLSX.writeFile(wb, `FULL_en_cero_${new Date().toISOString().slice(0,10)}.xlsx`);
+  showToast('✅ Excel descargado');
 }
 
 async function loadPublicaciones() {

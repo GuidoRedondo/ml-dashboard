@@ -2603,94 +2603,102 @@ async function fetchStockPorUbicacion(upid, headers) {
   return { full, deposito, locations: s.locations };
 }
 
-// Regla 12 — Sin stock en FULL pero con stock en el depósito propio
-// La publicación sigue ofreciéndose por FULL (logistic_type = fulfillment) pero el
-// inventario de fulfillment quedó en 0 y hay unidades en el depósito del vendedor:
-// o se repone FULL o se pasa la publicación a envío propio.
+// Publicaciones que se siguen ofreciendo por FULL (logistic_type = fulfillment)
+// con el inventario de fulfillment en 0 y unidades en el depósito del vendedor:
+// o se repone FULL o se pasan a envío propio antes de perder la venta.
 // Se filtra por logistic_type porque ML deja el inventory_id pegado al ítem aunque
 // ya no opere por FULL (mismo criterio que /api/logistica/full-stock).
+// La usan la regla del Centro de Inteligencia y el botón de la sección Publicaciones.
+async function detectarFullSinStockConDeposito(clientId, opts = {}) {
+  const { min_unidades = 1, dias_ventas = 30, max_consultas = 500 } = opts;
+  const token = await getClientToken(clientId);
+  if (!token) return null;
+  const headers = { 'Authorization': `Bearer ${token}` };
+  const me = await fetch(`${ML_API}/users/me`, { headers }).then(r => r.json());
+  if (me.error || !me.id) return null;
+  const uid = me.id;
+
+  // 1. Publicaciones activas que HOY se ofrecen por FULL
+  const allIds = await fetchAllActiveItemIds(uid, headers);
+  if (!allIds.length) return { hits: [], en_full: 0, consultadas: 0, truncado: false, dias_ventas };
+  const attrs = 'id,title,available_quantity,inventory_id,user_product_id,shipping,variations';
+  const candidatos = [];
+  const batches = [];
+  for (let i = 0; i < allIds.length; i += 20) batches.push(allIds.slice(i, i + 20));
+  for (let g = 0; g < batches.length; g += 6) {
+    await Promise.all(batches.slice(g, g + 6).map(async batch => {
+      try {
+        const data = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=${attrs}`, { headers })
+          .then(r => r.json());
+        (Array.isArray(data) ? data : []).forEach(r => {
+          if (r.code !== 200 || !r.body) return;
+          const b = r.body;
+          if ((b.shipping?.logistic_type || '') !== 'fulfillment') return;
+          if (b.variations?.length) {
+            b.variations.forEach(v => {
+              if (!v.user_product_id) return;
+              const varName = (v.attribute_combinations || []).map(a => a.value_name).join(' / ');
+              candidatos.push({
+                id: b.id, variation_id: v.id, upid: v.user_product_id,
+                title: varName ? `${b.title} — ${varName}` : b.title,
+              });
+            });
+          } else if (b.user_product_id) {
+            candidatos.push({ id: b.id, variation_id: null, upid: b.user_product_id, title: b.title });
+          }
+        });
+      } catch(e) {}
+    }));
+  }
+  if (!candidatos.length) return { hits: [], en_full: 0, consultadas: 0, truncado: false, dias_ventas };
+
+  // 2. Ventas del período — priorizan qué consultar y gradúan la severidad
+  const now   = new Date();
+  const fmt   = d => d.toISOString().slice(0,19) + '.000-00:00';
+  const desde = new Date(now.getTime() - dias_ventas * 86400000);
+  const ventasPorKey = {};
+  try {
+    const { orders } = await fetchAllOrders(uid, headers, fmt(desde), fmt(now));
+    orders.forEach(o => (o.order_items || []).forEach(oi => {
+      const id = oi.item?.id; if (!id) return;
+      const key = oi.item?.variation_id ? `${id}_${oi.item.variation_id}` : id;
+      ventasPorKey[key] = (ventasPorKey[key] || 0) + (oi.quantity || 0);
+    }));
+  } catch(e) {}
+  const ventasDe = c => ventasPorKey[c.variation_id ? `${c.id}_${c.variation_id}` : c.id] || 0;
+  candidatos.sort((a, b) => ventasDe(b) - ventasDe(a));
+  const truncado   = candidatos.length > max_consultas;
+  const aConsultar = candidatos.slice(0, max_consultas);
+
+  // 3. Stock por ubicación (1 request por user_product, cacheado: varias
+  //    publicaciones de la misma familia comparten user_product_id)
+  const cache = {};
+  const hits  = [];
+  for (let i = 0; i < aConsultar.length; i += 8) {
+    await Promise.all(aConsultar.slice(i, i + 8).map(async c => {
+      if (!cache[c.upid]) cache[c.upid] = fetchStockPorUbicacion(c.upid, headers).catch(() => null);
+      const st = await cache[c.upid];
+      if (!st || st.full > 0 || st.deposito < min_unidades) return;
+      hits.push({ ...c, stock_full: st.full, stock_deposito: st.deposito, vendidas: ventasDe(c) });
+    }));
+    if (i + 8 < aConsultar.length) await new Promise(r => setTimeout(r, 120));
+  }
+  hits.sort((a, b) => b.vendidas - a.vendidas || b.stock_deposito - a.stock_deposito);
+  return { hits, en_full: candidatos.length, consultadas: aConsultar.length, truncado, dias_ventas };
+}
+
+// Regla 12 — Sin stock en FULL pero con stock en el depósito propio
 async function evalRuleFullSinStockConDeposito(client) {
   const regla = await getRegla(client.id, 'full_sin_stock_con_deposito');
   if (!regla.habilitada) return null;
-  const token = await getClientToken(client.id);
-  if (!token) return null;
-  const headers = { 'Authorization': `Bearer ${token}` };
   try {
     const { min_unidades = 1, dias_ventas = 30, max_items = 8, max_consultas = 500 } = regla.umbral || {};
-    const me = await fetch(`${ML_API}/users/me`, { headers }).then(r => r.json());
-    if (me.error || !me.id) return null;
-    const uid = me.id;
-
-    // 1. Publicaciones activas que HOY se ofrecen por FULL
-    const allIds = await fetchAllActiveItemIds(uid, headers);
-    if (!allIds.length) return null;
-    const attrs = 'id,title,available_quantity,inventory_id,user_product_id,shipping,variations';
-    const candidatos = [];
-    const batches = [];
-    for (let i = 0; i < allIds.length; i += 20) batches.push(allIds.slice(i, i + 20));
-    for (let g = 0; g < batches.length; g += 6) {
-      await Promise.all(batches.slice(g, g + 6).map(async batch => {
-        try {
-          const data = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=${attrs}`, { headers })
-            .then(r => r.json());
-          (Array.isArray(data) ? data : []).forEach(r => {
-            if (r.code !== 200 || !r.body) return;
-            const b = r.body;
-            if ((b.shipping?.logistic_type || '') !== 'fulfillment') return;
-            if (b.variations?.length) {
-              b.variations.forEach(v => {
-                if (!v.user_product_id) return;
-                const varName = (v.attribute_combinations || []).map(a => a.value_name).join(' / ');
-                candidatos.push({
-                  id: b.id, variation_id: v.id, upid: v.user_product_id,
-                  title: varName ? `${b.title} — ${varName}` : b.title,
-                });
-              });
-            } else if (b.user_product_id) {
-              candidatos.push({ id: b.id, variation_id: null, upid: b.user_product_id, title: b.title });
-            }
-          });
-        } catch(e) {}
-      }));
-    }
-    if (!candidatos.length) { await resolveAlerta(client.id, 'full_sin_stock_con_deposito'); return null; }
-
-    // 2. Ventas del período — priorizan qué consultar y gradúan la severidad
-    const now  = new Date();
-    const fmt  = d => d.toISOString().slice(0,19) + '.000-00:00';
-    const desde = new Date(now.getTime() - dias_ventas * 86400000);
-    const ventasPorKey = {};
-    try {
-      const { orders } = await fetchAllOrders(uid, headers, fmt(desde), fmt(now));
-      orders.forEach(o => (o.order_items || []).forEach(oi => {
-        const id = oi.item?.id; if (!id) return;
-        const key = oi.item?.variation_id ? `${id}_${oi.item.variation_id}` : id;
-        ventasPorKey[key] = (ventasPorKey[key] || 0) + (oi.quantity || 0);
-      }));
-    } catch(e) {}
-    const ventasDe = c => ventasPorKey[c.variation_id ? `${c.id}_${c.variation_id}` : c.id] || 0;
-    candidatos.sort((a, b) => ventasDe(b) - ventasDe(a));
-    const truncado   = candidatos.length > max_consultas;
-    const aConsultar = candidatos.slice(0, max_consultas);
-
-    // 3. Stock por ubicación (1 request por user_product, cacheado: varias
-    //    publicaciones de la misma familia comparten user_product_id)
-    const cache = {};
-    const hits  = [];
-    for (let i = 0; i < aConsultar.length; i += 8) {
-      await Promise.all(aConsultar.slice(i, i + 8).map(async c => {
-        if (!cache[c.upid]) cache[c.upid] = fetchStockPorUbicacion(c.upid, headers).catch(() => null);
-        const st = await cache[c.upid];
-        if (!st || st.full > 0 || st.deposito < min_unidades) return;
-        hits.push({ ...c, stock_full: st.full, stock_deposito: st.deposito, vendidas: ventasDe(c) });
-      }));
-      if (i + 8 < aConsultar.length) await new Promise(r => setTimeout(r, 120));
-    }
-    console.log(`[ALERTA full_sin_stock] ${client.name}: fulfillment=${candidatos.length} consultadas=${aConsultar.length} hits=${hits.length}`);
-
+    const r = await detectarFullSinStockConDeposito(client.id, { min_unidades, dias_ventas, max_consultas });
+    if (!r) return null;
+    const { hits, en_full, consultadas, truncado } = r;
+    console.log(`[ALERTA full_sin_stock] ${client.name}: fulfillment=${en_full} consultadas=${consultadas} hits=${hits.length}`);
     if (!hits.length) { await resolveAlerta(client.id, 'full_sin_stock_con_deposito'); return null; }
 
-    hits.sort((a, b) => b.vendidas - a.vendidas || b.stock_deposito - a.stock_deposito);
     const unidades  = hits.reduce((s, h) => s + h.stock_deposito, 0);
     const conVenta  = hits.filter(h => h.vendidas > 0);
     const severidad = conVenta.length ? 'critical' : 'warning';
@@ -9270,6 +9278,43 @@ app.get('/api/logistica/full-stock', requireAuth, async (req, res) => {
   }
 });
 
+
+// Publicaciones que se ofrecen por FULL con el inventario de fulfillment en 0 y
+// stock en el depósito propio. Mismo criterio que la alerta del Centro de
+// Inteligencia — acá on-demand desde el botón de la sección Publicaciones.
+// Se cachea porque tarda varios segundos en cuentas grandes (1 request por
+// user_product); ?refresh=1 fuerza la relectura.
+const _fullSinStockCache = new Map();   // client_id → { ts, data }
+const FULL_SIN_STOCK_TTL = 15 * 60 * 1000;
+
+app.get('/api/publicaciones/full-sin-stock', requireAuth, async (req, res) => {
+  try {
+    const clientId = parseInt(req.query.client_id);
+    if (!clientId) return res.status(400).json({ error: 'client_id requerido' });
+    const cached = _fullSinStockCache.get(clientId);
+    if (req.query.refresh !== '1' && cached && Date.now() - cached.ts < FULL_SIN_STOCK_TTL) {
+      return res.json({ ...cached.data, cached: true, generado: new Date(cached.ts).toISOString() });
+    }
+    const regla = await getRegla(clientId, 'full_sin_stock_con_deposito');
+    const { min_unidades = 1, dias_ventas = 30, max_consultas = 500 } = regla.umbral || {};
+    const r = await detectarFullSinStockConDeposito(clientId, { min_unidades, dias_ventas, max_consultas });
+    if (!r) return res.status(403).json({ error: 'Cliente no conectado o token expirado' });
+    const data = {
+      items: r.hits,
+      total: r.hits.length,
+      unidades_deposito: r.hits.reduce((s, h) => s + h.stock_deposito, 0),
+      en_full: r.en_full,
+      consultadas: r.consultadas,
+      truncado: r.truncado,
+      dias_ventas: r.dias_ventas,
+    };
+    _fullSinStockCache.set(clientId, { ts: Date.now(), data });
+    res.json({ ...data, cached: false, generado: new Date().toISOString() });
+  } catch(e) {
+    console.error('[FULL_SIN_STOCK]', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
 
 app.put('/api/logistica/full-stock-global', requireAuth, async (req, res) => {
   try {
