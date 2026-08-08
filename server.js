@@ -333,7 +333,7 @@ async function initDB() {
     CREATE TABLE IF NOT EXISTS ci_runs (
       id              SERIAL PRIMARY KEY,
       ejecutado_en    TIMESTAMP DEFAULT NOW(),
-      tipo            VARCHAR(10) NOT NULL CHECK (tipo IN ('auto','manual')),
+      tipo            VARCHAR(20) NOT NULL CHECK (tipo IN ('auto','manual','publi_auto','publi_manual','publi_cron')),
       alertas_count   INT DEFAULT 0
     );
     CREATE TABLE IF NOT EXISTS metricas_publi (
@@ -391,9 +391,18 @@ async function initDB() {
       -- Objetivo único = diagnosticarlas antes de la reunión de conversión. Quedan afuera de
       -- TODOS los procesos automáticos de control de métricas (alertas, bitácora, TACOS, publi),
       -- pero conservan dashboard/Warren/Steve/P&L manual y el refresh de token (infra, no control).
-      -- 'cliente' (default) => cuenta plena. 'prospecto' => en diagnóstico. Solo admin las ve.
+      -- 'cliente' (default) => cuenta plena, única que corre automáticos.
+      -- 'prospecto' => en diagnóstico pre-conversión. 'ex_cliente' => se fue, queda el histórico.
+      -- Prospectos y ex clientes solo los ve admin.
       ALTER TABLE clients ADD COLUMN IF NOT EXISTS tipo_cuenta VARCHAR(20) DEFAULT 'cliente';
       UPDATE clients SET tipo_cuenta = 'cliente' WHERE tipo_cuenta IS NULL;
+      -- ci_runs.tipo nació VARCHAR(10) CHECK IN ('auto','manual'), así que los INSERT del motor de
+      -- publi ('publi_auto', 'publi_manual') venían fallando en silencio contra el .catch() y no
+      -- quedaba registro de ninguna corrida. Se amplía la columna y el CHECK.
+      ALTER TABLE ci_runs ALTER COLUMN tipo TYPE VARCHAR(20);
+      ALTER TABLE ci_runs DROP CONSTRAINT IF EXISTS ci_runs_tipo_check;
+      ALTER TABLE ci_runs ADD CONSTRAINT ci_runs_tipo_check
+        CHECK (tipo IN ('auto','manual','publi_auto','publi_manual','publi_cron'));
       -- Valores estructurados para poder EJECUTAR (hoy solo hay accion_sugerida en texto libre).
       -- valor_actual:    estado de la campaña al generar la sugerencia, ej {"budget":5000,"acos_target":15,"status":"active"}
       -- valor_propuesto: SOLO el campo que cambia, ej {"budget":5750}  ← esto es lo que se PUTea a ML
@@ -823,7 +832,8 @@ app.get('/api/clients', requireAuth, async (req, res) => {
                FROM clients WHERE id = $1`;
       params = [req.user.client_id];
     } else {
-      // Los prospectos (cuentas en diagnóstico pre-conversión) solo son visibles para admin.
+      // Solo el admin ve prospectos (pre-conversión) y ex clientes: el equipo trabaja únicamente
+      // sobre cuentas activas, así nadie pierde tiempo en una cuenta que no está vigente.
       const soloClientes = req.user.role === 'admin' ? '' : `WHERE tipo_cuenta = 'cliente'`;
       query = `SELECT id, name, ml_user_id, site_id, active, token_expires_at, updated_at,
                roas_target, tasa_iibb_pct, condicion_iva, publi_activa, tipo_cuenta,
@@ -2949,7 +2959,11 @@ app.post('/api/alertas/ejecutar', requireAuth, async (req, res) => {
 
 app.get('/api/alertas/ultimo-scaneo', requireAuth, async (req, res) => {
   try {
-    const r = await pool.query(`SELECT ejecutado_en, tipo, alertas_count FROM ci_runs ORDER BY ejecutado_en DESC LIMIT 1`);
+    // Solo corridas del motor de ALERTAS: ci_runs ahora también registra las de publi ('publi_*'),
+    // que tienen su propio panel y no deben pisar el "último escaneo" de este.
+    const r = await pool.query(
+      `SELECT ejecutado_en, tipo, alertas_count FROM ci_runs
+        WHERE tipo IN ('auto','manual') ORDER BY ejecutado_en DESC LIMIT 1`);
     res.json(r.rows[0] || null);
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
@@ -6918,14 +6932,14 @@ app.get('/api/publicaciones/ciclo-vida', requireAuth, async (req, res) => {
 });
 
 // Corrida diaria del Ciclo de Vida: recalcula y persiste estado/movimientos de
-// segmento de todos los clientes activos (excluye 'prospecto', aislados de los
-// automáticos). Corre por node-cron (~6am ART) para capturar transiciones aunque
-// nadie abra el tab; también expuesto para cron externo / disparo manual.
+// segmento de todos los clientes activos. Solo tipo_cuenta='cliente': prospectos y ex clientes
+// están aislados de los automáticos. Corre por node-cron (~6am ART) para capturar transiciones
+// aunque nadie abra el tab; también expuesto para cron externo / disparo manual.
 async function runCicloVidaDiario() {
   const cl = await pool.query(
     `SELECT id, name FROM clients
        WHERE active = true AND access_token IS NOT NULL
-         AND (tipo_cuenta IS NULL OR tipo_cuenta <> 'prospecto')
+         AND (tipo_cuenta IS NULL OR tipo_cuenta = 'cliente')
        ORDER BY id`
   );
   let ok = 0, fail = 0;
@@ -11175,7 +11189,7 @@ app.get('/api/debug/publi-eval', requireAuth, async (req, res) => {
     const client = clientRow.rows[0];
     const roas_target = parseFloat(client.roas_target) || 4;
 
-    const padsData = await fetchPADSMetrics(client, 30);
+    const padsData = await fetchPADSMetrics(client, PUBLI_WINDOW_DAYS);
     if (!padsData) return res.json({ error: 'Sin datos PADS (sin token o sin advertisers)' });
 
     const log = [];
@@ -11653,6 +11667,28 @@ app.get('/api/seguimiento/:id/evolucion', requireAuth, async (req, res) => {
 
 // ── MOTOR DE DECISIONES DE PUBLICIDAD — Sprint 5 ──────────────────────────────
 
+// Ventana de análisis del motor. Corta (7d por default) = decisiones sobre lo que está pasando
+// ESTA semana, no sobre un promedio de 30 días que ya se comió el error. El precio de acortar es
+// menos datos por objeto: por eso los umbrales de gasto son POR DÍA (se escalan con la ventana) y
+// hay mínimos de clicks/ventas para no proponer nada sobre ruido estadístico.
+// Override con PUBLI_WINDOW_DAYS; se clampea a 3–30.
+const PUBLI_WINDOW_DAYS = Math.min(30, Math.max(3, parseInt(process.env.PUBLI_WINDOW_DAYS) || 7));
+
+// Umbrales de gasto por día. Equivalen a los de 30d con los que se calibró el motor
+// ($5.000/30d ≈ $167/día para reducir, $10.000/30d ≈ $333/día para discontinuar).
+const PUBLI_GASTO_MIN_REDUCIR_DIA = 167;
+const PUBLI_GASTO_MIN_MUERTA_DIA  = 333;
+
+// Mínimos de significancia — sin esto, en 7 días una campaña con 1 sola venta afortunada muestra
+// ROAS altísimo y dispararía "subir presupuesto" sobre nada.
+const PUBLI_MIN_CLICKS_CAMPANIA = 30;
+const PUBLI_MIN_VENTAS_ESCALAR  = 2;
+const PUBLI_MIN_CLICKS_ITEM     = 15;
+
+// clicks/ventas normalizados: PADS los devuelve como string o number según endpoint.
+function metClicks(m) { return parseInt(m.clicks) || 0; }
+function metVentas(m) { return parseInt(m.units_quantity) || 0; }
+
 async function callClaudeForDecision(datos) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
@@ -11671,8 +11707,11 @@ Datos:
 - Regla: ${datos.nombre_regla}
 - SKU/Campaña: ${datos.objeto_id} — ${datos.objeto_nombre}
 - ROAS target cliente: ${datos.roas_target}
-- Métricas 30d: ROAS=${datos.roas ?? 'n/d'}, ACOS=${datos.acos ?? 'n/d'}, CVR=${datos.cvr ?? 'n/d'}, Gasto=$${datos.gasto ?? 0}
-- Ventas atribuidas: ${datos.ventas_unidades ?? 0} u / $${datos.ventas_amount ?? 0}`;
+- Métricas últimos ${PUBLI_WINDOW_DAYS} días: ROAS=${datos.roas ?? 'n/d'}, ACOS=${datos.acos ?? 'n/d'}, CVR=${datos.cvr ?? 'n/d'}, Gasto=$${datos.gasto ?? 0}
+- Clicks en la ventana: ${datos.clicks ?? 'n/d'}
+- Ventas atribuidas: ${datos.ventas_unidades ?? 0} u / $${datos.ventas_amount ?? 0}
+
+Importante: la ventana es de ${PUBLI_WINDOW_DAYS} días, no de un mes. Si mencionás plata, aclarás si es de la ventana o proyectada al mes. El impacto_pesos SIEMPRE es mensual (proyectá ×${(30 / PUBLI_WINDOW_DAYS).toFixed(1)} si hace falta).`;
 
   try {
     const resp = await fetch('https://api.anthropic.com/v1/messages', {
@@ -11693,7 +11732,7 @@ Datos:
   }
 }
 
-async function fetchPADSMetrics(client, days = 30) {
+async function fetchPADSMetrics(client, days = PUBLI_WINDOW_DAYS) {
   const token = await getClientToken(client.id);
   if (!token) return null;
   const h1 = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'Api-Version': '1' };
@@ -11874,6 +11913,13 @@ async function insertDecision(clientId, { tipo, nivel, objeto_id, objeto_nombre,
 async function evalPubliRules(client, { campaigns, items, advId, siteId }, roas_target) {
   let count = 0;
 
+  // Las métricas vienen de una ventana de PUBLI_WINDOW_DAYS. Los umbrales de gasto y el impacto
+  // estimado se expresan siempre en pesos/mes, así que se escalan con este factor.
+  const dias  = PUBLI_WINDOW_DAYS;
+  const F_MES = 30 / dias;
+  const GASTO_MIN_REDUCIR = PUBLI_GASTO_MIN_REDUCIR_DIA * dias;
+  const GASTO_MIN_MUERTA  = PUBLI_GASTO_MIN_MUERTA_DIA * dias;
+
   // Token fresco para leer el estado autoritativo de campañas (valor_actual) vía fetchCampaignFresh.
   const token = await getClientToken(client.id);
 
@@ -11889,13 +11935,16 @@ async function evalPubliRules(client, { campaigns, items, advId, siteId }, roas_
     try {
       const m = getMet(c); const roas = parseFloat(m.roas) || 0; const gasto = parseFloat(m.cost) || 0;
       if (roas < 1.3 * roas_target || gasto <= 0) continue;
+      // Significancia: en una ventana corta, un ROAS alto con 1 venta es azar, no una campaña ganadora.
+      const clicks = metClicks(m), ventas = metVentas(m);
+      if (clicks < PUBLI_MIN_CLICKS_CAMPANIA || ventas < PUBLI_MIN_VENTAS_ESCALAR) continue;
       const campId = c.id || c.campaign_id;
       if (await publiDecisionExists(client.id, 'escalar_campania', campId)) continue;
       // valor_actual FRESCO (principio #1). Sin budget confiable no se propone (no se calcula % sobre null).
       const estado = token ? await fetchCampaignFresh(siteId, advId, campId, token) : null;
       if (!estado || estado.budget == null) { console.log(`[PUBLI-R1] ${client.name} campaña ${campId}: sin budget fresco — skip`); continue; }
       const nuevoBudget = Math.round(estado.budget * 1.15);   // +15% (regla de oro; override solo manual)
-      const datos = { nombre_regla: 'Escalar campaña ganadora', objeto_id: campId, objeto_nombre: c.name || c.campaign_name || 'Campaña', roas_target, roas: roas.toFixed(2), acos: (parseFloat(m.acos)||0).toFixed(2), cvr: (parseFloat(m.cvr)||0).toFixed(3), gasto: Math.round(gasto), ventas_unidades: m.units_quantity || 0, ventas_amount: Math.round(parseFloat(m.total_amount)||0), accion_default: `Subir presupuesto +15% ($${estado.budget} → $${nuevoBudget})`, impacto_estimado: Math.round(gasto * 0.15) };
+      const datos = { nombre_regla: 'Escalar campaña ganadora', objeto_id: campId, objeto_nombre: c.name || c.campaign_name || 'Campaña', roas_target, roas: roas.toFixed(2), acos: (parseFloat(m.acos)||0).toFixed(2), cvr: (parseFloat(m.cvr)||0).toFixed(3), gasto: Math.round(gasto), clicks, ventas_unidades: ventas, ventas_amount: Math.round(parseFloat(m.total_amount)||0), accion_default: `Subir presupuesto +15% ($${estado.budget} → $${nuevoBudget})`, impacto_estimado: Math.round(gasto * F_MES * 0.15) };
       const claude = await callClaudeForDecision(datos);
       const impacto = claude.impacto_pesos || datos.impacto_estimado;
       await insertDecision(client.id, { tipo: 'escalar_campania', nivel: 'campania', objeto_id: campId, objeto_nombre: datos.objeto_nombre, accion: claude.accion, justificacion: claude.justificacion, metricas: m, impacto, prioridad: Math.round(impacto * 1.0), valor_actual: estado, valor_propuesto: { budget: nuevoBudget } });
@@ -11903,18 +11952,20 @@ async function evalPubliRules(client, { campaigns, items, advId, siteId }, roas_
     } catch(e) { console.error(`[PUBLI-R1] ${client.name} campaña ${c.id||c.campaign_id}:`, e.message); }
   }
 
-  // Regla 2 — Reducir campaña perdedora (ROAS ≤ 0.7× target, gasto >$5.000)
+  // Regla 2 — Reducir campaña perdedora (ROAS ≤ 0.7× target, gasto sobre el mínimo de la ventana)
   for (const c of campaigns) {
     try {
       const m = getMet(c); const roas = parseFloat(m.roas) || 0; const gasto = parseFloat(m.cost) || 0;
-      if (roas === 0 || roas > 0.7 * roas_target || gasto <= 5000) continue;
+      if (roas === 0 || roas > 0.7 * roas_target || gasto <= GASTO_MIN_REDUCIR) continue;
+      const clicks = metClicks(m);
+      if (clicks < PUBLI_MIN_CLICKS_CAMPANIA) continue;
       const campId = c.id || c.campaign_id;
       if (await publiDecisionExists(client.id, 'reducir_campania', campId)) continue;
       // valor_actual FRESCO (principio #1). Sin budget confiable no se propone.
       const estado = token ? await fetchCampaignFresh(siteId, advId, campId, token) : null;
       if (!estado || estado.budget == null) { console.log(`[PUBLI-R2] ${client.name} campaña ${campId}: sin budget fresco — skip`); continue; }
       const nuevoBudget = Math.round(estado.budget * 0.70);   // -30%
-      const datos = { nombre_regla: 'Reducir campaña perdedora', objeto_id: campId, objeto_nombre: c.name || c.campaign_name || 'Campaña', roas_target, roas: roas.toFixed(2), acos: (parseFloat(m.acos)||0).toFixed(2), cvr: (parseFloat(m.cvr)||0).toFixed(3), gasto: Math.round(gasto), ventas_unidades: m.units_quantity || 0, ventas_amount: Math.round(parseFloat(m.total_amount)||0), accion_default: `Bajar presupuesto -30% ($${estado.budget} → $${nuevoBudget})`, impacto_estimado: Math.round(gasto * 0.3) };
+      const datos = { nombre_regla: 'Reducir campaña perdedora', objeto_id: campId, objeto_nombre: c.name || c.campaign_name || 'Campaña', roas_target, roas: roas.toFixed(2), acos: (parseFloat(m.acos)||0).toFixed(2), cvr: (parseFloat(m.cvr)||0).toFixed(3), gasto: Math.round(gasto), clicks, ventas_unidades: metVentas(m), ventas_amount: Math.round(parseFloat(m.total_amount)||0), accion_default: `Bajar presupuesto -30% ($${estado.budget} → $${nuevoBudget})`, impacto_estimado: Math.round(gasto * F_MES * 0.3) };
       const claude = await callClaudeForDecision(datos);
       const impacto = claude.impacto_pesos || datos.impacto_estimado;
       await insertDecision(client.id, { tipo: 'reducir_campania', nivel: 'campania', objeto_id: campId, objeto_nombre: datos.objeto_nombre, accion: claude.accion, justificacion: claude.justificacion, metricas: m, impacto, prioridad: Math.round(impacto * 1.0), valor_actual: estado, valor_propuesto: { budget: nuevoBudget } });
@@ -11925,12 +11976,15 @@ async function evalPubliRules(client, { campaigns, items, advId, siteId }, roas_
   // Regla 3 — Pausar anuncio sangrando (ACOS >50%, sin ventas)
   for (const it of items) {
     try {
-      const m = getMet(it); const acos = parseFloat(m.acos) || 0; const gasto = parseFloat(m.cost) || 0; const ventas = parseInt(m.units_quantity) || 0;
+      const m = getMet(it); const acos = parseFloat(m.acos) || 0; const gasto = parseFloat(m.cost) || 0; const ventas = metVentas(m);
       if (acos <= 0.5 || ventas > 0 || gasto <= 0) continue;
+      // Sin un mínimo de clicks, "0 ventas" no significa nada: puede no haber tenido tráfico.
+      const clicks = metClicks(m);
+      if (clicks < PUBLI_MIN_CLICKS_ITEM) continue;
       const itemId = it.item_id || it.id;
       if (await publiDecisionExists(client.id, 'pausar_sangrado', itemId)) continue;
       const campania = campMap[String(it.campaign_id || '')] || null;
-      const datos = { nombre_regla: 'Pausar anuncio sangrando', objeto_id: itemId, objeto_nombre: it.title || itemId, roas_target, roas: (parseFloat(m.roas)||0).toFixed(2), acos: acos.toFixed(2), cvr: (parseFloat(m.cvr)||0).toFixed(3), gasto: Math.round(gasto), ventas_unidades: 0, ventas_amount: 0, accion_default: 'Pausar anuncio del ítem', impacto_estimado: Math.round(gasto) };
+      const datos = { nombre_regla: 'Pausar anuncio sangrando', objeto_id: itemId, objeto_nombre: it.title || itemId, roas_target, roas: (parseFloat(m.roas)||0).toFixed(2), acos: acos.toFixed(2), cvr: (parseFloat(m.cvr)||0).toFixed(3), gasto: Math.round(gasto), clicks, ventas_unidades: 0, ventas_amount: 0, accion_default: 'Pausar anuncio del ítem', impacto_estimado: Math.round(gasto * F_MES) };
       const claude = await callClaudeForDecision(datos);
       const impacto = claude.impacto_pesos || datos.impacto_estimado;
       await insertDecision(client.id, { tipo: 'pausar_sangrado', nivel: 'item', objeto_id: itemId, objeto_nombre: datos.objeto_nombre, accion: claude.accion, justificacion: claude.justificacion, metricas: { ...m, _campania: campania }, impacto, prioridad: Math.round(impacto * 1.5) });
@@ -11943,10 +11997,13 @@ async function evalPubliRules(client, { campaigns, items, advId, siteId }, roas_
     try {
       const m = getMet(it); const cvr = parseFloat(m.cvr) || 0; const gasto = parseFloat(m.cost) || 0; const roas = parseFloat(m.roas) || 0;
       if (cvr <= 0.05 || gasto <= 0 || roas < roas_target) continue;
+      // Un CVR calculado sobre 3 clicks no es un CVR. Mismo criterio que R3.
+      const clicks = metClicks(m);
+      if (clicks < PUBLI_MIN_CLICKS_ITEM) continue;
       const itemId = it.item_id || it.id;
       if (await publiDecisionExists(client.id, 'subir_puja_headroom', itemId)) continue;
       const campania = campMap[String(it.campaign_id || '')] || null;
-      const datos = { nombre_regla: 'Subir puja — ítem con headroom', objeto_id: itemId, objeto_nombre: it.title || itemId, roas_target, roas: roas.toFixed(2), acos: (parseFloat(m.acos)||0).toFixed(2), cvr: cvr.toFixed(3), gasto: Math.round(gasto), ventas_unidades: m.units_quantity || 0, ventas_amount: Math.round(parseFloat(m.total_amount)||0), accion_default: 'Aumentar puja/prioridad del ítem', impacto_estimado: Math.round(gasto * 0.3) };
+      const datos = { nombre_regla: 'Subir puja — ítem con headroom', objeto_id: itemId, objeto_nombre: it.title || itemId, roas_target, roas: roas.toFixed(2), acos: (parseFloat(m.acos)||0).toFixed(2), cvr: cvr.toFixed(3), gasto: Math.round(gasto), clicks, ventas_unidades: metVentas(m), ventas_amount: Math.round(parseFloat(m.total_amount)||0), accion_default: 'Aumentar puja/prioridad del ítem', impacto_estimado: Math.round(gasto * F_MES * 0.3) };
       const claude = await callClaudeForDecision(datos);
       const impacto = claude.impacto_pesos || datos.impacto_estimado;
       await insertDecision(client.id, { tipo: 'subir_puja_headroom', nivel: 'item', objeto_id: itemId, objeto_nombre: datos.objeto_nombre, accion: claude.accion, justificacion: claude.justificacion, metricas: { ...m, _campania: campania }, impacto, prioridad: Math.round(impacto * 1.0) });
@@ -11981,7 +12038,7 @@ async function evalPubliRules(client, { campaigns, items, advId, siteId }, roas_
             if (gasto <= 0) continue;
             if (await publiDecisionExists(client.id, 'stockout_protector', item.id)) continue;
             const campania = campMap[String(padsItem.campaign_id || '')] || null;
-            const datos = { nombre_regla: 'Stockout protector', objeto_id: item.id, objeto_nombre: item.title || item.id, roas_target, roas: (parseFloat(m.roas)||0).toFixed(2), acos: (parseFloat(m.acos)||0).toFixed(2), cvr: (parseFloat(m.cvr)||0).toFixed(3), gasto: Math.round(gasto), ventas_unidades: m.units_quantity || 0, ventas_amount: Math.round(parseFloat(m.total_amount)||0), accion_default: `Pausar publi del ítem — stock para ${diasCobertura}d`, impacto_estimado: Math.round(gasto) };
+            const datos = { nombre_regla: 'Stockout protector', objeto_id: item.id, objeto_nombre: item.title || item.id, roas_target, roas: (parseFloat(m.roas)||0).toFixed(2), acos: (parseFloat(m.acos)||0).toFixed(2), cvr: (parseFloat(m.cvr)||0).toFixed(3), gasto: Math.round(gasto), ventas_unidades: m.units_quantity || 0, ventas_amount: Math.round(parseFloat(m.total_amount)||0), accion_default: `Pausar publi del ítem — stock para ${diasCobertura}d`, impacto_estimado: Math.round(gasto * F_MES) };
             const claude = await callClaudeForDecision(datos);
             const impacto = claude.impacto_pesos || datos.impacto_estimado;
             await insertDecision(client.id, { tipo: 'stockout_protector', nivel: 'item', objeto_id: item.id, objeto_nombre: datos.objeto_nombre, accion: claude.accion, justificacion: claude.justificacion, metricas: { ...m, stock, diasCobertura, _campania: campania }, impacto, prioridad: Math.round(impacto * 1.5) });
@@ -11992,15 +12049,17 @@ async function evalPubliRules(client, { campaigns, items, advId, siteId }, roas_
     }
   } catch(e) { console.error(`[PUBLI-R6] ${client.name} bloque stockout:`, e.message); }
 
-  // Regla 7 — Discontinuar inversión muerta (gasto >$10.000, 0 ventas)
+  // Regla 7 — Discontinuar inversión muerta (gasto sobre el mínimo de la ventana, 0 ventas)
   for (const it of items) {
     try {
-      const m = getMet(it); const gasto = parseFloat(m.cost) || 0; const ventas = parseInt(m.units_quantity) || 0;
-      if (gasto <= 10000 || ventas > 0) continue;
+      const m = getMet(it); const gasto = parseFloat(m.cost) || 0; const ventas = metVentas(m);
+      if (gasto <= GASTO_MIN_MUERTA || ventas > 0) continue;
+      const clicks = metClicks(m);
+      if (clicks < PUBLI_MIN_CLICKS_ITEM) continue;
       const itemId = it.item_id || it.id;
       if (await publiDecisionExists(client.id, 'discontinuar_muerta', itemId)) continue;
       const campania = campMap[String(it.campaign_id || '')] || null;
-      const datos = { nombre_regla: 'Discontinuar inversión muerta', objeto_id: itemId, objeto_nombre: it.title || itemId, roas_target, roas: '0', acos: 'infinito', cvr: '0', gasto: Math.round(gasto), ventas_unidades: 0, ventas_amount: 0, accion_default: 'Pausar anuncio — sin ventas con inversión alta', impacto_estimado: Math.round(gasto) };
+      const datos = { nombre_regla: 'Discontinuar inversión muerta', objeto_id: itemId, objeto_nombre: it.title || itemId, roas_target, roas: '0', acos: 'infinito', cvr: '0', gasto: Math.round(gasto), clicks, ventas_unidades: 0, ventas_amount: 0, accion_default: 'Pausar anuncio — sin ventas con inversión alta', impacto_estimado: Math.round(gasto * F_MES) };
       const claude = await callClaudeForDecision(datos);
       const impacto = claude.impacto_pesos || datos.impacto_estimado;
       await insertDecision(client.id, { tipo: 'discontinuar_muerta', nivel: 'item', objeto_id: itemId, objeto_nombre: datos.objeto_nombre, accion: claude.accion, justificacion: claude.justificacion, metricas: { ...m, _campania: campania }, impacto, prioridad: Math.round(impacto * 1.5) });
@@ -12092,7 +12151,7 @@ async function notificarPubliSlack(runStart) {
 }
 
 async function runPubliAnalyzer({ tipo = 'auto' } = {}) {
-  console.log('[PUBLI] Iniciando análisis —', new Date().toISOString());
+  console.log(`[PUBLI] Iniciando análisis (ventana ${PUBLI_WINDOW_DAYS}d) —`, new Date().toISOString());
   try {
     // Gate opt-in: solo clientes con publi_activa=true (default false). Arranca apagado para todos
     // hasta que se prenda cliente por cliente vía PATCH /api/clients/:id/publi-activa.
@@ -12103,18 +12162,22 @@ async function runPubliAnalyzer({ tipo = 'auto' } = {}) {
       console.log(`[PUBLI] Analizando ${client.name}...`);
       try {
         const roas_target = parseFloat(client.roas_target) || 4;
-        const padsData = await fetchPADSMetrics(client, 30);
+        const padsData = await fetchPADSMetrics(client, PUBLI_WINDOW_DAYS);
         if (!padsData || (!padsData.campaigns.length && !padsData.items.length)) { console.log(`[PUBLI] ${client.name}: sin datos PADS`); continue; }
         await saveMetricasPubli(client.id, padsData);
-        // Vencer decisiones nuevas con +14 días sin acción
-        await pool.query(`UPDATE decisiones_publi SET estado='vencida', actualizada_en=NOW() WHERE client_id=$1 AND estado='nueva' AND creada_en < NOW() - INTERVAL '14 days'`, [client.id]);
+        // Vencer decisiones sin acción. Con ventana corta la sugerencia se pudre rápido: los datos
+        // que la generaron ya no son los de la semana en curso. Mínimo 10 días para no vencer algo
+        // que Guido todavía no llegó a mirar.
+        const diasVencimiento = Math.max(10, PUBLI_WINDOW_DAYS * 2);
+        await pool.query(`UPDATE decisiones_publi SET estado='vencida', actualizada_en=NOW() WHERE client_id=$1 AND estado='nueva' AND creada_en < NOW() - make_interval(days => $2)`, [client.id, diasVencimiento]);
         const n = await evalPubliRules(client, padsData, roas_target);
         totalDecisiones += n;
         console.log(`[PUBLI] ${client.name}: ${n} decisiones nuevas`);
       } catch(e) { console.error(`[PUBLI] Error en ${client.name}:`, e.message); }
       await new Promise(r => setTimeout(r, 1000));
     }
-    await pool.query(`INSERT INTO ci_runs (tipo, alertas_count) VALUES ($1,$2)`, [`publi_${tipo}`, totalDecisiones]).catch(() => {});
+    await pool.query(`INSERT INTO ci_runs (tipo, alertas_count) VALUES ($1,$2)`, [`publi_${tipo}`, totalDecisiones])
+      .catch(e => console.error('[PUBLI] No se pudo registrar la corrida en ci_runs:', e.message));
     console.log(`[PUBLI] Análisis completo — ${totalDecisiones} decisiones generadas`);
     // Aviso Slack SOLO si hubo sugerencias nuevas (N>0). No frena la corrida si Slack falla.
     if (totalDecisiones > 0) { await notificarPubliSlack(runStart).catch(e => console.error('[PUBLI] Slack notify error:', e.message)); }
@@ -12141,7 +12204,7 @@ app.get('/api/decisiones-publi', requireAuth, async (req, res) => {
 
 // Modo del motor: dry-run (default) vs ejecución real. Solo lectura, para el cartel de la UI.
 app.get('/api/publi/modo', requireAuth, async (req, res) => {
-  res.json({ dry_run: process.env.PUBLI_DRY_RUN !== 'false' });
+  res.json({ dry_run: process.env.PUBLI_DRY_RUN !== 'false', ventana_dias: PUBLI_WINDOW_DAYS });
 });
 
 app.get('/api/decisiones-publi/stats', requireAuth, async (req, res) => {
@@ -12244,14 +12307,17 @@ app.patch('/api/clients/:id/publi-activa', requireAuth, async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
-// Tipo de cuenta: 'cliente' (plena) o 'prospecto' (en diagnóstico pre-conversión).
-// Solo admin. Marcar 'prospecto' la saca de todos los automáticos de control de métricas;
-// volver a 'cliente' ("Convertir en cliente") la reintegra a todos los procesos.
+// Tipo de cuenta — tres estados, y SOLO 'cliente' corre automáticos:
+//   'cliente'    → cuenta activa: alertas, bitácora, TACOS, ciclo de vida y motor de publi.
+//   'prospecto'  → en diagnóstico pre-conversión: visible solo para admin, sin automáticos.
+//   'ex_cliente' → se fue: se conservan histórico y token para consultar, pero no genera ni una
+//                  sugerencia más. Es lo que evita seguir laburando gratis sobre cuentas que ya no pagan.
+// Solo admin. Volver a 'cliente' reintegra la cuenta a todos los procesos.
 app.patch('/api/clients/:id/tipo-cuenta', requireAuth, requireAdmin, async (req, res) => {
   try {
     const { tipo_cuenta } = req.body;
-    if (!['cliente', 'prospecto'].includes(tipo_cuenta)) {
-      return res.status(400).json({ error: "tipo_cuenta debe ser 'cliente' o 'prospecto'" });
+    if (!['cliente', 'prospecto', 'ex_cliente'].includes(tipo_cuenta)) {
+      return res.status(400).json({ error: "tipo_cuenta debe ser 'cliente', 'prospecto' o 'ex_cliente'" });
     }
     await pool.query('UPDATE clients SET tipo_cuenta=$1, updated_at=NOW() WHERE id=$2', [tipo_cuenta, req.params.id]);
     res.json({ ok: true, tipo_cuenta });
@@ -13230,5 +13296,14 @@ initDB().then(() => {
       runCicloVidaDiario().catch(e => console.error('[CICLO-VIDA][cron] Error:', e.message));
     }, { timezone: 'UTC' });
     console.log('[CRON] Ciclo de Vida programado: 06:00 ART');
+
+    // 07:30 ART (10:30 UTC) — motor de publicidad. Con ventana de PUBLI_WINDOW_DAYS días la
+    // corrida tiene que ser diaria: una campaña que se dio vuelta el martes hay que verla el
+    // miércoles, no el mes que viene. No spamea porque publiDecisionExists dedupea 7 días la
+    // misma sugerencia sobre el mismo objeto, y solo entran clientes con publi_activa=true.
+    nodeCron.schedule('30 10 * * *', () => {
+      runPubliAnalyzer({ tipo: 'cron' }).catch(e => console.error('[PUBLI][cron] Error:', e.message));
+    }, { timezone: 'UTC' });
+    console.log(`[CRON] Motor de publicidad programado: 07:30 ART (ventana ${PUBLI_WINDOW_DAYS}d)`);
   }
 }).catch(e => { console.error('DB init error:', e); process.exit(1); });
