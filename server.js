@@ -11410,6 +11410,39 @@ async function takeSeguimientoSnapshot(seg, token, uid, todayOrders) {
   `, [seg.id, today, precio, stock, visitas, ordenes, ritmo_dia]);
 }
 
+// Cierre diario de snapshots de seguimiento. Sin esto el snapshot es lazy —solo se graba cuando
+// alguien abre la pestaña—, así que cualquier día que nadie entre al dashboard queda como un hueco
+// y la comparación contra el período anterior compara períodos con distinta cantidad de días.
+// Idempotente: takeSeguimientoSnapshot pisa la fila del día vía ON CONFLICT.
+async function runSeguimientoSnapshotDiario() {
+  const cl = await pool.query(
+    `SELECT id, name FROM clients
+      WHERE active = true AND access_token IS NOT NULL
+        AND (tipo_cuenta IS NULL OR tipo_cuenta = 'cliente')
+      ORDER BY id`
+  );
+  let ok = 0, fail = 0;
+  for (const c of cl.rows) {
+    try {
+      const segs = await pool.query(
+        'SELECT * FROM seguimiento_publicaciones WHERE client_id=$1 AND activa=true', [c.id]);
+      if (!segs.rows.length) continue;
+      const token = await getClientToken(c.id);
+      const uid   = (await pool.query('SELECT ml_user_id FROM clients WHERE id=$1', [c.id])).rows[0]?.ml_user_id;
+      if (!token || !uid) { fail++; continue; }
+      const todayOrders = await buildTodayOrders(uid, token);
+      for (const seg of segs.rows) {
+        await takeSeguimientoSnapshot(seg, token, uid, todayOrders).catch(e =>
+          console.warn(`[SEGUIMIENTO][cron] ${c.name} ${seg.mla}: ${e.message}`));
+      }
+      ok += segs.rows.length;
+    } catch(e) { fail++; console.warn(`[SEGUIMIENTO][cron] cliente ${c.id} (${c.name}) falló: ${e.message}`); }
+    await new Promise(r => setTimeout(r, 1200));   // respiro entre clientes (rate limit ML)
+  }
+  console.log(`[SEGUIMIENTO][cron] cierre diario: ${ok} snapshots, ${fail} clientes con error`);
+  return { ok, fail };
+}
+
 async function buildTodayOrders(uid, token) {
   const headers = { Authorization: `Bearer ${token}` };
   const today   = new Date().toLocaleDateString('en-CA', { timeZone: ART });
@@ -11501,16 +11534,27 @@ app.get('/api/seguimiento', requireAuth, async (req, res) => {
       }
     } catch(_) {}
 
-    // Calcular períodos
-    const today = new Date().toLocaleDateString('en-CA', { timeZone: ART });
-    const curTo   = today;
-    const curFrom = new Date(new Date(today + 'T12:00:00Z') - rangeDays * 86400000).toISOString().slice(0,10);
-    const prevTo  = new Date(new Date(curFrom + 'T12:00:00Z') - 86400000).toISOString().slice(0,10);
-    const prevFrom= new Date(new Date(prevTo  + 'T12:00:00Z') - (rangeDays - 1) * 86400000).toISOString().slice(0,10);
+    // Calcular períodos. Dos reglas para que el % contra el período anterior signifique algo:
+    //  1) los dos períodos tienen EXACTAMENTE rangeDays días (antes el actual tenía uno más y
+    //     todas las sumas salían infladas);
+    //  2) el día en curso queda afuera — tiene visitas y órdenes a medio contar, y comparar medio
+    //     día contra días enteros da caídas que no existen. El dato de hoy se muestra igual, pero
+    //     como "último snapshot", no dentro de la comparación.
+    const shift   = (iso, n) => new Date(new Date(iso + 'T12:00:00Z').getTime() + n * 86400000).toISOString().slice(0,10);
+    const today   = new Date().toLocaleDateString('en-CA', { timeZone: ART });
+    const curTo   = shift(today,  -1);
+    const curFrom = shift(curTo,  -(rangeDays - 1));
+    const prevTo  = shift(curFrom, -1);
+    const prevFrom= shift(prevTo, -(rangeDays - 1));
 
     const segIds = segs.rows.map(s => s.id);
+    // dia se pide como texto: la columna es DATE y node-pg la devuelve como objeto Date, que al
+    // compararse contra un string ('2026-07-26') da SIEMPRE false. Con eso los filtros de período
+    // no matcheaban nada y cur/prev/delta salían en null en todas las publicaciones.
     const snaps  = await pool.query(
-      `SELECT * FROM seguimiento_snapshots_diarios WHERE seguimiento_id = ANY($1) AND dia >= $2 ORDER BY dia`,
+      `SELECT seguimiento_id, to_char(dia,'YYYY-MM-DD') AS dia, precio, stock, visitas, ordenes, ritmo_dia
+         FROM seguimiento_snapshots_diarios
+        WHERE seguimiento_id = ANY($1) AND dia >= $2 ORDER BY dia`,
       [segIds, prevFrom]
     );
 
@@ -11537,6 +11581,7 @@ app.get('/api/seguimiento', requireAuth, async (req, res) => {
         precio:     ultimo ? parseFloat(ultimo.precio) || null : null,
         stock,
         cobertura,
+        dias: inRange.length,   // cuántos días del período tienen snapshot (para saber si el % es confiable)
       };
     };
 
@@ -11547,27 +11592,47 @@ app.get('/api/seguimiento', requireAuth, async (req, res) => {
       const delta = (c, p, key) => {
         if (!c || !p || p[key] == null || c[key] == null) return null;
         const d = c[key] - p[key];
+        // Contra una base de 0 el porcentaje sería infinito: se devuelve null y el front muestra
+        // el absoluto ("+12" en vez de "+∞%").
         const pct = p[key] !== 0 ? d / Math.abs(p[key]) * 100 : null;
         return { abs: parseFloat(d.toFixed(3)), pct: pct != null ? parseFloat(pct.toFixed(1)) : null };
       };
+      // Último snapshot disponible — puede ser el de hoy. Stock y precio son valores puntuales
+      // (no acumulados), así que conviene mostrarlos frescos aunque hoy no entre en la comparación.
+      const ultimoSnap = rows.length ? rows[rows.length - 1] : null;
+      const actual = ultimoSnap ? {
+        dia:    ultimoSnap.dia,
+        stock:  ultimoSnap.stock,
+        precio: parseFloat(ultimoSnap.precio) || null,
+        cobertura: (ultimoSnap.stock != null && cur && cur.ritmo_dia > 0)
+          ? Math.round(ultimoSnap.stock / cur.ritmo_dia) : null,
+      } : null;
+      // Stock, precio y cobertura son valores puntuales: el % se mide desde el valor de HOY contra
+      // el cierre del período anterior, que es lo que el chip muestra. Visitas, órdenes, conversión
+      // y ritmo son del período: ahí se comparan los dos períodos completos entre sí.
+      const curPuntual = (cur && actual) ? {
+        stock:     actual.stock     != null ? actual.stock     : cur.stock,
+        precio:    actual.precio    != null ? actual.precio    : cur.precio,
+        cobertura: actual.cobertura != null ? actual.cobertura : cur.cobertura,
+      } : cur;
       return {
         ...seg,
-        periodo: { curFrom, curTo, prevFrom, prevTo },
-        cur, prev,
+        periodo: { curFrom, curTo, prevFrom, prevTo, dias: rangeDays },
+        cur, prev, actual,
         delta: cur && prev ? {
           visitas:    delta(cur, prev, 'visitas'),
           ordenes:    delta(cur, prev, 'ordenes'),
           conversion: delta(cur, prev, 'conversion'),
           ritmo_dia:  delta(cur, prev, 'ritmo_dia'),
-          precio:     delta(cur, prev, 'precio'),
-          stock:      delta(cur, prev, 'stock'),
-          cobertura:  delta(cur, prev, 'cobertura'),
+          precio:     delta(curPuntual, prev, 'precio'),
+          stock:      delta(curPuntual, prev, 'stock'),
+          cobertura:  delta(curPuntual, prev, 'cobertura'),
         } : null,
         snapshots_count: rows.length,
       };
     });
 
-    res.json({ ok: true, items, curFrom, curTo, prevFrom, prevTo });
+    res.json({ ok: true, items, curFrom, curTo, prevFrom, prevTo, dias: rangeDays });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -13305,5 +13370,11 @@ initDB().then(() => {
       runPubliAnalyzer({ tipo: 'cron' }).catch(e => console.error('[PUBLI][cron] Error:', e.message));
     }, { timezone: 'UTC' });
     console.log(`[CRON] Motor de publicidad programado: 07:30 ART (ventana ${PUBLI_WINDOW_DAYS}d)`);
+
+    // 23:45 ART — cierre del día en Seguimiento. Tarde a propósito: agarra el día casi completo.
+    nodeCron.schedule('45 23 * * *', () => {
+      runSeguimientoSnapshotDiario().catch(e => console.error('[SEGUIMIENTO][cron] Error:', e.message));
+    }, { timezone: 'America/Argentina/Buenos_Aires' });
+    console.log('[CRON] Snapshots de Seguimiento programados: 23:45 ART');
   }
 }).catch(e => { console.error('DB init error:', e); process.exit(1); });

@@ -6095,25 +6095,48 @@ function renderSeguimiento(data) {
   // Escala de cobertura compartida con la sección Stock (umbrales configurables)
   const cobCol  = c => c==null?'var(--muted)':c<=_stockUmbrales.critico?'#ff5252':c<=_stockUmbrales.alerta?'#ff9100':'#00e676';
   const cobIcon = c => c==null?'':c<=_stockUmbrales.critico?'🔴':c<=_stockUmbrales.alerta?'🟠':'🟢';
-  const segArrow = d => {
-    if (!d || d.abs == null || d.abs === 0) return '';
-    const up = d.abs > 0;
-    return `<span style="color:${up?'#00e676':'#ff5252'};font-size:10px;margin-left:3px">${up?'▲':'▼'}${Math.abs(d.abs)}</span>`;
+  const fmtNum = n => n == null ? '—' : Number(n).toLocaleString('es-AR');
+
+  // Variación contra el período anterior. El % es el dato principal; el absoluto queda en el
+  // tooltip. `neutro` para métricas donde subir no es ni bueno ni malo (stock, precio): pintarlas
+  // de verde/rojo haría leer como "mejora" algo que es solo un cambio.
+  const segDelta = (d, opts = {}) => {
+    if (!d || d.abs == null) return `<span style="color:var(--muted);font-size:10px;margin-left:4px" title="Sin período anterior para comparar">s/d</span>`;
+    if (d.abs === 0) return `<span style="color:var(--muted);font-size:10px;margin-left:4px">=</span>`;
+    const up  = d.abs > 0;
+    const col = opts.neutro ? 'var(--muted)' : (up ? '#00e676' : '#ff5252');
+    const txt = d.pct != null ? `${up ? '+' : ''}${d.pct}%` : `${up ? '+' : ''}${fmtNum(d.abs)}`;
+    const tip = d.pct != null ? `${up ? '+' : ''}${fmtNum(d.abs)} vs período anterior` : 'El período anterior venía en cero: no hay % posible';
+    return `<span style="color:${col};font-size:10px;margin-left:4px;font-weight:700" title="${tip}">${up?'▲':'▼'}${txt.replace('-','')}</span>`;
   };
 
   let rows = '';
   items.forEach(item => {
     const marcadaDate = new Date(item.marcada_at).toLocaleDateString('es-AR', {day:'2-digit',month:'short',year:'2-digit'});
     const titulo = (item.titulo || item.mla);
-    const cur = item.cur;
+    const cur = item.cur, act = item.actual, dl = item.delta;
     let chips = '';
     if (cur) {
-      const cob = cur.cobertura;
+      const cob = act?.cobertura ?? cur.cobertura;
+      const chip = (icono, label, valor, delta, opts) =>
+        `<span style="color:var(--muted)">${icono} ${label} <b style="color:${opts?.color || 'var(--text)'}">${valor}</b>${segDelta(delta, opts)}</span>`;
       chips = `<div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:5px;font-size:11px">
-        <span style="color:var(--muted)">📦 Stock <b style="color:var(--text)">${cur.stock ?? '—'}</b>${segArrow(item.delta?.stock)}</span>
-        <span style="color:var(--muted)">⏳ Cobertura <b style="color:${cobCol(cob)}">${cob!=null?cobIcon(cob)+' '+cob+'d':'—'}</b>${segArrow(item.delta?.cobertura)}</span>
-        <span style="color:var(--muted)">🔥 Ritmo <b style="color:var(--text)">${cur.ritmo_dia||0}/d</b></span>
+        ${chip('👁', 'Visitas',    fmtNum(cur.visitas),                                    dl?.visitas)}
+        ${chip('🛒', 'Órdenes',    fmtNum(cur.ordenes),                                    dl?.ordenes)}
+        ${chip('🎯', 'Conversión', (cur.conversion ?? 0) + '%',                            dl?.conversion)}
+        ${chip('🔥', 'Ritmo',      (cur.ritmo_dia || 0) + '/d',                            dl?.ritmo_dia)}
+        ${chip('💵', 'Precio',     act?.precio != null ? '$' + fmtNum(act.precio) : '—',   dl?.precio,   { neutro: true })}
+        ${chip('📦', 'Stock',      fmtNum(act?.stock ?? cur.stock),                        dl?.stock,    { neutro: true })}
+        ${chip('⏳', 'Cobertura',  cob != null ? cobIcon(cob) + ' ' + cob + 'd' : '—',     dl?.cobertura,{ neutro: true, color: cobCol(cob) })}
       </div>`;
+      // Sin período anterior no hay nada contra qué comparar: la salida es el backfill.
+      if (!item.prev) {
+        chips += `<div style="font-size:10px;color:#ff9100;margin-top:4px">⚠ Sin datos del período anterior — usá "Rellenar histórico" para poder comparar</div>`;
+      } else if (cur.dias < data.dias || item.prev.dias < data.dias) {
+        chips += `<div style="font-size:10px;color:var(--muted);margin-top:4px">Comparación parcial: ${cur.dias} de ${data.dias} días con datos vs ${item.prev.dias} del período anterior</div>`;
+      }
+    } else {
+      chips = `<div style="font-size:10px;color:var(--muted);margin-top:5px">Todavía sin snapshots cerrados. Mañana ya vas a ver la comparación.</div>`;
     }
     rows += `
     <div style="border:1px solid var(--border);border-radius:10px;margin-bottom:10px;overflow:hidden;background:var(--surface)">
@@ -6135,8 +6158,18 @@ function renderSeguimiento(data) {
     </div>`;
   });
 
+  // Fechas explícitas: sin esto un "▲12%" no dice contra qué período se está midiendo.
+  const fmtDia = iso => iso ? iso.slice(8,10) + '/' + iso.slice(5,7) : '—';
+  const cabecera = data.curFrom
+    ? `<span title="El día de hoy no entra: está a medio contar y ensuciaría los porcentajes">
+         📅 <b style="color:var(--text)">${fmtDia(data.curFrom)} → ${fmtDia(data.curTo)}</b>
+         vs ${fmtDia(data.prevFrom)} → ${fmtDia(data.prevTo)}
+         · los % comparan contra el período anterior (hoy no entra, va incompleto)</span>`
+    : '';
+
   el.innerHTML = `
     <div style="font-size:12px;color:var(--muted);margin-bottom:12px">${items.length} publicación${items.length !== 1 ? 'es' : ''} en seguimiento · Click en una para ver su conversión diaria</div>
+    ${cabecera ? `<div style="font-size:11px;color:var(--muted);margin-bottom:12px;padding:8px 12px;border:1px solid var(--border);border-radius:8px;background:var(--surface)">${cabecera}</div>` : ''}
     ${rows}`;
 }
 
