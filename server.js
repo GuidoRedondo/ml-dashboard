@@ -11688,8 +11688,11 @@ app.post('/api/seguimiento/backfill', requireAuth, async (req, res) => {
 
     for (const seg of segs.rows) {
       try {
+        // NO usar date_from/date_to: ML ignora el from y devuelve UN solo día (el de hoy), con lo
+        // cual todos los días del backfill quedaban en 0 visitas y, como abajo se saltean los días
+        // sin datos, no se grababa ni un snapshot. Con ?last=N sí devuelve la serie completa.
         const visRes = await fetch(
-          `${ML_API}/items/${seg.mla}/visits/time_window?date_from=${fromDate}&date_to=${today}&unit=day`,
+          `${ML_API}/items/${seg.mla}/visits/time_window?last=${allDays.length}&unit=day`,
           { headers }
         ).then(r => r.json()).catch(() => ({}));
         const visitsByDay = {};
