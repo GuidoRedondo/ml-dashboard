@@ -7144,6 +7144,7 @@ function renderCombos(data) {
           ${r.ordenes?.toLocaleString('es-AR') || 0} órdenes en ${r.dias} días ·
           ${r.carritos_multiproducto} de ${r.carritos} carritos con más de un producto (${r.pct_carritos_multiproducto}%) ·
           ${r.con_co_compra} candidatos con co-compra real
+          ${r.candidatos_totales > cands.length ? `· <b>mostrando los ${cands.length} mejores de ${r.candidatos_totales}</b>` : ''}
         </p>
       </div>
       <button onclick="loadCombos(true)" class="sync-btn" style="background:var(--surface2)">🔄 Actualizar</button>
