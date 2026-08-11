@@ -13177,9 +13177,12 @@ app.get('/api/analisis/combos', requireAuth, async (req, res) => {
       if (A.stock < 1 || B.stock < 1) return;
       const ev = evaluarCombo(A, B);
       if (ev.ahorro_x_venta <= 0) return;
-      // Ventas conjuntas estimadas por mes: el que menos rota manda, porque el combo no
-      // se puede vender más veces que el producto más escaso.
-      const ventasMes = Math.min(A.units, B.units) / (dias / 30);
+      // Cuántas veces por mes se vendería el combo. SÓLO se estima cuando los productos
+      // ya se compraron juntos: ahí la frecuencia observada es un piso razonable. Suponer
+      // que todas las ventas de A y B se convierten en ventas del combo da números de
+      // fantasía (un par cualquiera de dos productos que rotan proyectaba millones por mes)
+      // y encima el mismo producto entra en varios pares, así que se contaba muchas veces.
+      const ventasMes = cocompras > 0 ? cocompras / (dias / 30) : null;
       candidatos.push({
         productos: [
           { mla: A.mla, titulo: A.titulo, precio: A.precio, units: A.units, stock: A.stock,
@@ -13190,14 +13193,25 @@ app.get('/api/analisis/combos', requireAuth, async (req, res) => {
         cocompras,
         origen: cocompras > 0 ? 'co-compra' : 'misma categoría',
         categoria: A.categoria,
-        ventas_mes_estimadas: +ventasMes.toFixed(1),
-        ahorro_mensual: Math.round(ev.ahorro_x_venta * ventasMes),
+        ventas_mes_estimadas: ventasMes != null ? +ventasMes.toFixed(1) : null,
+        ahorro_mensual: ventasMes != null ? Math.round(ev.ahorro_x_venta * ventasMes) : null,
         ...ev,
       });
     });
 
     candidatos.sort((x, y) =>
-      (y.cocompras - x.cocompras) || (y.ahorro_mensual - x.ahorro_mensual) || (y.ahorro_x_venta - x.ahorro_x_venta));
+      (y.cocompras - x.cocompras) || ((y.ahorro_mensual || 0) - (x.ahorro_mensual || 0)) || (y.ahorro_x_venta - x.ahorro_x_venta));
+
+    // Total defendible: sólo los combos con co-compra real, y cada producto contado una
+    // sola vez — un mismo ítem aparece en varios pares y sumarlos todos sería aire.
+    const usados = new Set();
+    let ahorroMensualTotal = 0;
+    candidatos.filter(c => c.ahorro_mensual > 0).forEach(c => {
+      const [a, b] = c.productos.map(p => p.mla);
+      if (usados.has(a) || usados.has(b)) return;
+      usados.add(a); usados.add(b);
+      ahorroMensualTotal += c.ahorro_mensual;
+    });
 
     res.json({
       candidatos: candidatos.slice(0, 60),
@@ -13210,7 +13224,8 @@ app.get('/api/analisis/combos', requireAuth, async (req, res) => {
         pares_co_comprados: Object.keys(cocompra).length,
         candidatos_totales: candidatos.length,
         con_co_compra: candidatos.filter(c => c.cocompras > 0).length,
-        ahorro_mensual_total: candidatos.reduce((s, c) => s + c.ahorro_mensual, 0),
+        // Sólo de los pares con co-compra observada y sin repetir productos (ver arriba).
+        ahorro_mensual_total: ahorroMensualTotal,
       },
     });
   } catch(e) {

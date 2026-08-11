@@ -7121,8 +7121,11 @@ function renderCombos(data) {
           ${fmt$(c.cargo_separado)} → ${fmt$(c.cargo_combo)}
         </td>
         <td style="padding:8px;text-align:right;font-size:12px;font-weight:800;color:#00e676;white-space:nowrap">${fmt$(c.ahorro_x_venta)}</td>
-        <td style="padding:8px;text-align:right;font-size:11px;white-space:nowrap">${c.ahorro_mensual > 0 ? fmt$(c.ahorro_mensual) : '—'}<br>
-          <span style="color:var(--muted);font-size:10px">${c.ventas_mes_estimadas} vtas/mes</span></td>
+        <td style="padding:8px;text-align:right;font-size:11px;white-space:nowrap">
+          ${c.ahorro_mensual > 0
+            ? `${fmt$(c.ahorro_mensual)}<br><span style="color:var(--muted);font-size:10px">${c.ventas_mes_estimadas} vtas/mes</span>`
+            : '<span style="color:var(--muted);font-size:10px" title="Estos dos productos nunca se compraron juntos, así que no hay con qué estimar cuántos combos se venderían">sin base para estimar</span>'}
+        </td>
         <td style="padding:8px;text-align:right;font-size:11px;white-space:nowrap">
           ${c.margen_combo != null
             ? `${fmt$(c.margen_combo)}<br><span style="color:var(--muted);font-size:10px">${c.margen_combo_pct}%</span>`
@@ -7149,7 +7152,7 @@ function renderCombos(data) {
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:20px">
       ${kpiCard2('Combos candidatos', cands.length, '', '#0ea5e9')}
       ${kpiCard2('Con co-compra real', r.con_co_compra || 0, '', '#22c55e')}
-      ${kpiCard2('Ahorro estimado/mes', fmt$(r.ahorro_mensual_total || 0), '', '#00e676', true)}
+      ${kpiCard2('Ahorro estimado/mes', fmt$(r.ahorro_mensual_total || 0), 'solo combos con co-compra real', '#00e676', true)}
     </div>
 
     ${r.pct_carritos_multiproducto < 10 ? `
