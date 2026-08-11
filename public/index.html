@@ -1250,6 +1250,7 @@ tbody td {
           <button id="rentTabDescuentos" onclick="switchRentTab('descuentos')" class="sync-btn">🏷️ Descuentos</button>
           <button id="rentTabFees" onclick="switchRentTab('fees')" class="sync-btn">🔍 Verificador</button>
           <button id="rentTabUmbrales" onclick="switchRentTab('umbrales')" class="sync-btn">🎯 Umbrales</button>
+          <button id="rentTabCombos" onclick="switchRentTab('combos')" class="sync-btn" title="Pares que conviene publicar juntos: el cargo fijo de ML se paga una vez por venta, no por producto">🧺 Combos</button>
         </div>
       </div>
       <div id="rentabilidadContent"><div style="color:var(--muted);font-size:13px;padding:20px;text-align:center">Sincronizá primero para ver los datos</div></div>
@@ -1258,6 +1259,7 @@ tbody td {
       <div id="descuentosContent" style="display:none"></div>
       <div id="feesContent" style="display:none"></div>
       <div id="umbralesContent" style="display:none"></div>
+      <div id="combosContent" style="display:none"></div>
     </div>
 
     <!-- ADS -->
@@ -6283,17 +6285,20 @@ function switchRentTab(tab) {
   document.getElementById('descuentosContent').style.display   = tab === 'descuentos' ? '' : 'none';
   document.getElementById('feesContent').style.display         = tab === 'fees'       ? '' : 'none';
   document.getElementById('umbralesContent').style.display     = tab === 'umbrales'   ? '' : 'none';
+  document.getElementById('combosContent').style.display       = tab === 'combos'     ? '' : 'none';
   document.getElementById('rentTabAnalisis').style.background   = tab === 'analisis'   ? 'var(--accent)' : 'var(--surface2)';
   document.getElementById('rentTabLoQuePaso').style.background  = tab === 'loquepaso'  ? 'var(--accent)' : 'var(--surface2)';
   document.getElementById('rentTabSimulador').style.background  = tab === 'simulador'  ? 'var(--accent)' : 'var(--surface2)';
   document.getElementById('rentTabDescuentos').style.background = tab === 'descuentos' ? 'var(--accent)' : 'var(--surface2)';
   document.getElementById('rentTabFees').style.background       = tab === 'fees'       ? 'var(--accent)' : 'var(--surface2)';
   document.getElementById('rentTabUmbrales').style.background   = tab === 'umbrales'   ? 'var(--accent)' : 'var(--surface2)';
+  document.getElementById('rentTabCombos').style.background     = tab === 'combos'     ? 'var(--accent)' : 'var(--surface2)';
   if (tab === 'loquepaso')  loadLoQuePaso(false);
   if (tab === 'simulador')  loadSimulador();
   if (tab === 'descuentos') loadDescuentos();
   if (tab === 'fees')       initVerificadorFees();
   if (tab === 'umbrales')   loadUmbrales();
+  if (tab === 'combos')     loadCombos();
 }
 
 // ── LO QUE PASÓ — P&L real por producto del período ───────────────────────────
@@ -7065,6 +7070,110 @@ const CARGO_FIJO_ESCALAS_FE = [
   { desde: 24000, hasta: 32999, cargo: 3030 },
   { desde: 33000, hasta: Infinity, cargo: 0 },
 ];
+
+let _combosData = null;
+
+async function loadCombos(forceRefresh) {
+  const el = document.getElementById('combosContent');
+  if (!el) return;
+  const client = getActiveClient();
+  if (!client) { el.innerHTML = '<p style="color:var(--muted);padding:20px">Seleccioná un cliente</p>'; return; }
+  if (_combosData && !forceRefresh) { renderCombos(_combosData); return; }
+
+  el.innerHTML = '<div style="padding:40px;text-align:center;color:var(--muted)">Buscando combos en las compras de los últimos 90 días...</div>';
+  try {
+    const data = await apiCall('GET', `/api/analisis/combos?client_id=${client.id}`);
+    _combosData = data;
+    renderCombos(data);
+  } catch(e) {
+    el.innerHTML = `<div style="padding:20px;color:#ff5252">Error: ${e.message}</div>`;
+  }
+}
+
+function renderCombos(data) {
+  const el = document.getElementById('combosContent');
+  if (!el) return;
+  if (!data) { el.innerHTML = '<p style="color:var(--muted);padding:20px">No se pudieron leer las ventas. Revisá la conexión del cliente con Mercado Libre.</p>'; return; }
+  if (data.error) { el.innerHTML = `<div style="padding:20px;color:#ff5252">${data.error}</div>`; return; }
+
+  const cands = data.candidatos || [];
+  const r = data.resumen || {};
+  const fmt$ = n => n == null ? '—' : '$' + Math.round(n).toLocaleString('es-AR');
+
+  const fila = c => {
+    const [a, b] = c.productos;
+    const prod = p => `
+      <div style="display:flex;align-items:center;gap:6px;margin-bottom:3px">
+        ${p.thumbnail ? `<img src="${p.thumbnail}" style="width:26px;height:26px;object-fit:cover;border-radius:4px;flex-shrink:0">` : ''}
+        <div style="min-width:0">
+          <a href="${p.permalink}" target="_blank" style="color:var(--text);text-decoration:none;font-size:11px;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:260px" title="${(p.titulo||'').replace(/"/g,'&quot;')}">${p.titulo || p.mla}</a>
+          <span style="color:var(--muted);font-size:10px">${fmt$(p.precio)} · ${p.units} u · stock ${p.stock}${p.tiene_costo ? '' : ' · <span style="color:#a78bfa">sin costo</span>'}</span>
+        </div>
+      </div>`;
+    const badge = c.cocompras > 0
+      ? `<span style="background:#22c55e22;color:#22c55e;padding:2px 7px;border-radius:10px;font-size:10px;font-weight:700">ya se compraron juntos ${c.cocompras}×</span>`
+      : `<span style="background:var(--surface2);color:var(--muted);padding:2px 7px;border-radius:10px;font-size:10px">misma categoría</span>`;
+    return `
+      <tr style="border-bottom:1px solid var(--border)">
+        <td style="padding:8px;vertical-align:top">${prod(a)}${prod(b)}<div style="margin-top:4px">${badge}</div></td>
+        <td style="padding:8px;text-align:right;font-size:12px;font-weight:700;white-space:nowrap">${fmt$(c.precio_combo)}</td>
+        <td style="padding:8px;text-align:right;font-size:11px;color:var(--muted);white-space:nowrap">
+          ${fmt$(c.cargo_separado)} → ${fmt$(c.cargo_combo)}
+        </td>
+        <td style="padding:8px;text-align:right;font-size:12px;font-weight:800;color:#00e676;white-space:nowrap">${fmt$(c.ahorro_x_venta)}</td>
+        <td style="padding:8px;text-align:right;font-size:11px;white-space:nowrap">${c.ahorro_mensual > 0 ? fmt$(c.ahorro_mensual) : '—'}<br>
+          <span style="color:var(--muted);font-size:10px">${c.ventas_mes_estimadas} vtas/mes</span></td>
+        <td style="padding:8px;text-align:right;font-size:11px;white-space:nowrap">
+          ${c.margen_combo != null
+            ? `${fmt$(c.margen_combo)}<br><span style="color:var(--muted);font-size:10px">${c.margen_combo_pct}%</span>`
+            : '<span style="color:#a78bfa;font-size:10px">falta CMV</span>'}
+        </td>
+      </tr>
+      ${c.aviso_envio ? `<tr><td colspan="6" style="padding:0 8px 8px;font-size:10px;color:${c.efecto_envio < 0 ? '#ff9100' : '#22c55e'}">⚠ ${c.aviso_envio}</td></tr>` : ''}`;
+  };
+
+  el.innerHTML = `
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:10px">
+      <div>
+        <h3 style="margin:0 0 4px;font-family:var(--font-b);font-size:15px">🧺 Armador de combos</h3>
+        <p style="margin:0;font-size:12px;color:var(--muted)">Pares que conviene publicar juntos: el cargo fijo de ML se paga una vez por venta, no por producto</p>
+        <p style="margin:4px 0 0;font-size:11px;color:var(--muted)">
+          ${r.ordenes?.toLocaleString('es-AR') || 0} órdenes en ${r.dias} días ·
+          ${r.carritos_multiproducto} de ${r.carritos} carritos con más de un producto (${r.pct_carritos_multiproducto}%) ·
+          ${r.con_co_compra} candidatos con co-compra real
+        </p>
+      </div>
+      <button onclick="loadCombos(true)" class="sync-btn" style="background:var(--surface2)">🔄 Actualizar</button>
+    </div>
+
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:20px">
+      ${kpiCard2('Combos candidatos', cands.length, '', '#0ea5e9')}
+      ${kpiCard2('Con co-compra real', r.con_co_compra || 0, '', '#22c55e')}
+      ${kpiCard2('Ahorro estimado/mes', fmt$(r.ahorro_mensual_total || 0), '', '#00e676', true)}
+    </div>
+
+    ${r.pct_carritos_multiproducto < 10 ? `
+      <div style="background:rgba(255,145,0,.08);border-left:3px solid #ff9100;padding:10px 12px;border-radius:6px;margin-bottom:16px;font-size:11.5px;line-height:1.6">
+        Sólo el <b>${r.pct_carritos_multiproducto}%</b> de los carritos lleva más de un producto, así que hay poca
+        co-compra de la cual aprender. Los candidatos marcados <b>"misma categoría"</b> salen de juntar productos
+        que rotan y comparten categoría: la plata ahí es real (el ahorro de cargo fijo), pero que se vendan juntos
+        es una apuesta, no un dato.
+      </div>` : ''}
+
+    <div style="overflow-x:auto">
+      <table style="width:100%;border-collapse:collapse">
+        <thead><tr style="border-bottom:2px solid var(--border)">
+          <th style="padding:7px 8px;text-align:left;font-size:10px;color:var(--muted)">Combo</th>
+          <th style="padding:7px 8px;text-align:right;font-size:10px;color:var(--muted)">Precio</th>
+          <th style="padding:7px 8px;text-align:right;font-size:10px;color:var(--muted)" title="Cargo fijo pagando por separado vs. pagándolo una sola vez">Cargo fijo</th>
+          <th style="padding:7px 8px;text-align:right;font-size:10px;color:var(--accent)">Ahorro/venta</th>
+          <th style="padding:7px 8px;text-align:right;font-size:10px;color:var(--muted)">Ahorro/mes</th>
+          <th style="padding:7px 8px;text-align:right;font-size:10px;color:var(--muted)">Margen combo</th>
+        </tr></thead>
+        <tbody>${cands.map(fila).join('') || '<tr><td colspan="6" style="padding:40px;text-align:center;color:var(--muted)">No se encontraron combos que dejen plata</td></tr>'}</tbody>
+      </table>
+    </div>`;
+}
 
 let _umbralesData = null;
 let _umbralesTab  = 'seguras';

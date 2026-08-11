@@ -13016,6 +13016,209 @@ app.delete('/api/informe-mensual/:id', requireAuth, requireAdmin, async (req, re
 
 // ── CLIFF FINDER ─────────────────────────────────────────────────────────────
 
+// ── ARMADOR DE COMBOS ────────────────────────────────────────────────────────
+// Propone packs de dos productos y dice cuánto deja el combo contra vender por
+// separado. La plata sale del cargo fijo de ML, que se paga UNA vez por venta y no
+// por producto: dos ítems de $16.000 pagan $2.505 cada uno, y el mismo par vendido
+// como combo de $32.000 paga $3.005 — $2.005 de diferencia por venta.
+//
+// Los candidatos salen de dos señales, porque ninguna alcanza sola:
+//   · co-compra real: pares que ya aparecieron en un mismo carrito (shipping.id).
+//     Es la señal más fuerte, pero escasea — en REDFISHOK sólo el 7% de los carritos
+//     lleva más de un producto y la dupla más repetida apareció 3 veces en 3 meses.
+//   · misma categoría entre productos con rotación: cubre el resto del catálogo.
+function cargoFijoDe(precio) {
+  const idx = getEscalaIdx(precio);
+  return idx >= 0 ? CARGO_FIJO_ESCALAS[idx].cargo : 0;
+}
+
+function evaluarCombo(a, b) {
+  const precioCombo = a.precio + b.precio;
+  const cargoSeparado = cargoFijoDe(a.precio) + cargoFijoDe(b.precio);
+  const cargoCombo    = cargoFijoDe(precioCombo);
+  const ahorroCargo   = cargoSeparado - cargoCombo;
+
+  // Arriba de $33.000 el envío deja de estar bonificado y lo paga el vendedor. Si los dos
+  // productos venían por debajo y el combo cruza, ese envío es un costo NUEVO que se come
+  // el ahorro. Si ya estaban los dos arriba, el combo paga un solo envío en vez de dos.
+  const aArriba = a.precio >= UMBRAL_ENVIO_GRATIS, bArriba = b.precio >= UMBRAL_ENVIO_GRATIS;
+  const comboArriba = precioCombo >= UMBRAL_ENVIO_GRATIS;
+  let efectoEnvio = 0, avisoEnvio = null;
+  if (comboArriba && !aArriba && !bArriba) {
+    efectoEnvio = -ENVIO_FULL_33K;
+    avisoEnvio  = 'El combo cruza los $33.000: el envío pasa a pagarlo el vendedor';
+  } else if (aArriba && bArriba) {
+    efectoEnvio = ENVIO_FULL_33K;
+    avisoEnvio  = 'Los dos ya pagan envío por separado: el combo paga uno solo';
+  }
+
+  const neto = ahorroCargo + efectoEnvio;
+
+  // Margen del combo, sólo si los dos tienen costo cargado. Sin CMV no se informa:
+  // un margen calculado sobre un costo que falta miente para arriba.
+  const tienenCosto = a.costo_unit != null && b.costo_unit != null;
+  const cmv = tienenCosto ? a.costo_unit + b.costo_unit : null;
+  const comision = precioCombo * CLIFF_COMISION_PCT + cargoCombo;
+  const margenCombo = tienenCosto ? precioCombo - comision - cmv : null;
+
+  return {
+    precio_combo:    Math.round(precioCombo),
+    cargo_separado:  cargoSeparado,
+    cargo_combo:     cargoCombo,
+    ahorro_cargo:    ahorroCargo,
+    efecto_envio:    efectoEnvio,
+    aviso_envio:     avisoEnvio,
+    ahorro_x_venta:  Math.round(neto),
+    tienen_costo:    tienenCosto,
+    cmv_combo:       tienenCosto ? Math.round(cmv) : null,
+    margen_combo:    margenCombo != null ? Math.round(margenCombo) : null,
+    margen_combo_pct: margenCombo != null && precioCombo > 0
+      ? +(margenCombo / precioCombo * 100).toFixed(1) : null,
+  };
+}
+
+// GET /api/analisis/combos — candidatos a publicación de combo
+app.get('/api/analisis/combos', requireAuth, async (req, res) => {
+  try {
+    const clientId = parseInt(req.query.client_id);
+    if (!clientId) return res.status(400).json({ error: 'client_id requerido' });
+    const dias = Math.min(parseInt(req.query.days) || 90, 180);
+
+    const token = await getClientToken(clientId);
+    if (!token) return res.status(403).json({ error: 'Sin token ML' });
+    const headers = { Authorization: `Bearer ${token}` };
+    const clRes = await pool.query('SELECT ml_user_id FROM clients WHERE id=$1', [clientId]);
+    const uid = clRes.rows[0]?.ml_user_id;
+    if (!uid) return res.status(400).json({ error: 'Cliente sin ML User ID' });
+
+    const hasta = new Date();
+    const desde = new Date(hasta.getTime() - dias * 24 * 60 * 60 * 1000);
+    const fmtFecha = d => d.toISOString().slice(0, 19) + '.000-00:00';
+    const { orders, ok } = await fetchAllOrders(uid, headers, fmtFecha(desde), fmtFecha(hasta));
+    if (!ok) return res.status(502).json({ error: 'No se pudieron leer las órdenes de ML' });
+
+    // 1. Carritos: varias órdenes con el mismo shipping.id son UNA compra.
+    const carritos = {};
+    const unidades = {};
+    orders.forEach(o => {
+      const sid = o.shipping && o.shipping.id;
+      (o.order_items || []).forEach(oi => {
+        const id = oi.item && oi.item.id;
+        if (!id) return;
+        unidades[id] = (unidades[id] || 0) + (oi.quantity || 0);
+        if (sid) (carritos[sid] = carritos[sid] || new Set()).add(id);
+      });
+    });
+    const cocompra = {};
+    let carritosMulti = 0;
+    Object.values(carritos).forEach(set => {
+      const ids = Array.from(set).sort();
+      if (ids.length < 2) return;
+      carritosMulti++;
+      for (let i = 0; i < ids.length; i++)
+        for (let j = i + 1; j < ids.length; j++)
+          cocompra[ids[i] + '|' + ids[j]] = (cocompra[ids[i] + '|' + ids[j]] || 0) + 1;
+    });
+
+    // 2. Universo: los que más rotan, más los que ya aparecieron juntos en un carrito.
+    const TOP_ROTACION = 50;
+    const porRotacion = Object.entries(unidades).sort((a, b) => b[1] - a[1]).map(([id]) => id);
+    const conCocompra = new Set(Object.keys(cocompra).flatMap(k => k.split('|')));
+    const universo = Array.from(new Set([...porRotacion.slice(0, TOP_ROTACION), ...conCocompra]));
+
+    const meta = {};
+    for (let i = 0; i < universo.length; i += 20) {
+      const batch = universo.slice(i, i + 20);
+      const data = await fetch(
+        `${ML_API}/items?ids=${batch.join(',')}&attributes=id,title,price,available_quantity,category_id,shipping,permalink,thumbnail,status`,
+        { headers }
+      ).then(r => r.json()).catch(() => []);
+      (Array.isArray(data) ? data : []).forEach(r => {
+        if (r.code !== 200 || !r.body) return;
+        const b = r.body;
+        meta[b.id] = {
+          mla: b.id, titulo: b.title, precio: parseFloat(b.price) || 0,
+          stock: b.available_quantity || 0, categoria: b.category_id,
+          permalink: b.permalink, thumbnail: (b.thumbnail || '').replace('http://', 'https://'),
+          activo: b.status === 'active', units: unidades[b.id] || 0, costo_unit: null,
+        };
+      });
+    }
+
+    const costsRes = await pool.query(
+      'SELECT mla_id, costo_unit FROM product_costs WHERE client_id=$1', [clientId]);
+    costsRes.rows.forEach(r => {
+      if (meta[r.mla_id]) meta[r.mla_id].costo_unit = parseFloat(r.costo_unit) || null;
+    });
+
+    // 3. Candidatos: los pares co-comprados y, para el resto, pares de la misma categoría
+    //    entre los que rotan. Sin el corte por categoría saldrían combos sin sentido
+    //    (una caña con un par de guantes) sólo porque los precios suman lindo.
+    const pares = new Map();
+    Object.entries(cocompra).forEach(([k, n]) => {
+      const [a, b] = k.split('|');
+      if (meta[a] && meta[b]) pares.set(k, { a, b, cocompras: n });
+    });
+    const rotan = porRotacion.slice(0, TOP_ROTACION).filter(id => meta[id]);
+    for (let i = 0; i < rotan.length; i++) {
+      for (let j = i + 1; j < rotan.length; j++) {
+        const a = rotan[i], b = rotan[j];
+        if (meta[a].categoria !== meta[b].categoria) continue;
+        const k = [a, b].sort().join('|');
+        if (!pares.has(k)) pares.set(k, { a, b, cocompras: 0 });
+      }
+    }
+
+    // 4. Evaluar
+    const candidatos = [];
+    pares.forEach(({ a, b, cocompras }) => {
+      const A = meta[a], B = meta[b];
+      if (!A || !B || !A.activo || !B.activo) return;
+      if (A.stock < 1 || B.stock < 1) return;
+      const ev = evaluarCombo(A, B);
+      if (ev.ahorro_x_venta <= 0) return;
+      // Ventas conjuntas estimadas por mes: el que menos rota manda, porque el combo no
+      // se puede vender más veces que el producto más escaso.
+      const ventasMes = Math.min(A.units, B.units) / (dias / 30);
+      candidatos.push({
+        productos: [
+          { mla: A.mla, titulo: A.titulo, precio: A.precio, units: A.units, stock: A.stock,
+            thumbnail: A.thumbnail, permalink: A.permalink, tiene_costo: A.costo_unit != null },
+          { mla: B.mla, titulo: B.titulo, precio: B.precio, units: B.units, stock: B.stock,
+            thumbnail: B.thumbnail, permalink: B.permalink, tiene_costo: B.costo_unit != null },
+        ],
+        cocompras,
+        origen: cocompras > 0 ? 'co-compra' : 'misma categoría',
+        categoria: A.categoria,
+        ventas_mes_estimadas: +ventasMes.toFixed(1),
+        ahorro_mensual: Math.round(ev.ahorro_x_venta * ventasMes),
+        ...ev,
+      });
+    });
+
+    candidatos.sort((x, y) =>
+      (y.cocompras - x.cocompras) || (y.ahorro_mensual - x.ahorro_mensual) || (y.ahorro_x_venta - x.ahorro_x_venta));
+
+    res.json({
+      candidatos: candidatos.slice(0, 60),
+      resumen: {
+        dias, ordenes: orders.length,
+        carritos: Object.keys(carritos).length,
+        carritos_multiproducto: carritosMulti,
+        pct_carritos_multiproducto: Object.keys(carritos).length > 0
+          ? +(carritosMulti / Object.keys(carritos).length * 100).toFixed(1) : 0,
+        pares_co_comprados: Object.keys(cocompra).length,
+        candidatos_totales: candidatos.length,
+        con_co_compra: candidatos.filter(c => c.cocompras > 0).length,
+        ahorro_mensual_total: candidatos.reduce((s, c) => s + c.ahorro_mensual, 0),
+      },
+    });
+  } catch(e) {
+    console.error('[COMBOS]', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // GET /api/analisis/umbrales — detecta ítems cerca de umbrales de cargo fijo
 app.get('/api/analisis/umbrales', requireAuth, async (req, res) => {
   try {
