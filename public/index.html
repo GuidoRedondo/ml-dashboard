@@ -4827,6 +4827,26 @@ function buildPubRows(items, fmt, dias) {
     const dscColor = dsc == null ? 'var(--muted)' : dsc > 20 ? '#ff9100' : dsc > 7 ? '#FFD700' : '#00e676';
     const dscStr = dsc != null ? dsc + 'd' : '—';
 
+    // Stock: total arriba, desglose depósito/FULL abajo. available_quantity suma los dos
+    // orígenes, y un FULL en cero con el depósito lleno es una venta que se está perdiendo.
+    // Sólo aplica a las publicaciones que operan por FULL: en el resto todo es depósito.
+    const _sf = item.stock_full, _sd = item.stock_deposito;
+    let stockSub = '';
+    if (item.is_full) {
+      if (_sf == null) {
+        stockSub = '<div style="font-size:10px;color:var(--muted)">desglose s/d</div>';
+      } else {
+        const fullCol = (_sf === 0 && _sd > 0) ? '#ff5252' : '#00bcd4';
+        stockSub = '<div style="font-size:10px;font-weight:600;white-space:nowrap">'
+          + '<span style="color:var(--muted)">' + _sd.toLocaleString('es-AR') + ' dep · </span>'
+          + '<span style="color:' + fullCol + '">' + _sf.toLocaleString('es-AR') + ' FULL</span>'
+          + '</div>';
+      }
+    }
+    const stockCell = '<td style="text-align:right;font-weight:700;color:' + stockColor + '">'
+      + (item.available_quantity != null ? item.available_quantity.toLocaleString('es-AR') : '—')
+      + stockSub + '</td>';
+
     const segPub = window._seguimientoMap?.[item.id];
     const starPub = segPub ? '★' : '☆';
     const starColorPub = segPub ? '#FFD700' : 'rgba(255,255,255,.45)';
@@ -4875,7 +4895,7 @@ function buildPubRows(items, fmt, dias) {
         + '<td style="text-align:right;color:var(--muted)">—</td>'
         + '<td style="text-align:center;color:var(--muted)">—</td>';
     }
-    return '<tr class="pub-row" data-status="' + item.status + '" data-hassales="' + item.hasSales + '" data-hassales30d="' + item.hasSales30d + '" data-hasproblems="' + item.hasProblems + '" data-isfull="' + (item.is_full?'1':'0') + '" data-staledays="' + (dsc ?? 0) + '" data-pvpdiff="' + pvpState + '" data-search="' + (item.title + item.id + (item.cuenta||'')).toLowerCase() + '">'      + '<td style="text-align:center;cursor:pointer;font-size:16px;color:' + starColorPub + ';padding:0 4px" title="' + (segPub ? 'Quitar seguimiento' : 'Seguir esta publicación') + '" onclick="toggleSeguimiento(\'' + item.id + '\',\'' + item.title.replace(/'/g,"\\'") + '\',' + clientIdPub + ')">' + starPub + '</td>'      + '<td style="font-size:11px"><span style="color:var(--muted);cursor:pointer" title="Click para copiar" onclick="copyMLA(this,\'' + item.id + '\')">'      + item.id + '</span></td>'      + '<td style="max-width:240px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'      + '<a href="https://articulo.mercadolibre.com.ar/' + item.id.replace(/MLA(\d+)/, 'MLA-$1') + '" target="_blank" style="color:var(--text);text-decoration:none" title="Abrir en ML">'      + item.title + '</a></td>'      + pvpCells      + promCell      + '<td>' + statusTag + '</td>'      + '<td style="text-align:center">' + fullTag + '</td>'      + '<td style="text-align:right;font-weight:700;color:' + stockColor + '">' + (item.available_quantity != null ? item.available_quantity.toLocaleString('es-AR') : '—') + '</td>'      + '<td style="text-align:right;font-size:12px;font-weight:700;color:' + ritmoColor + '">' + (ritmo > 0 ? ritmo : '—') + '</td>'      + '<td style="text-align:right;font-size:12px;color:' + coberColor + '">' + coberturaStr + '</td>'      + '<td>' + adsTag + '</td>'      + '<td style="text-align:right;color:#00e676;font-weight:700">' + (item.units || '—') + '</td>'      + '<td style="text-align:right;color:var(--yellow);font-weight:700">' + (item.revenue > 0 ? fmt(item.revenue) : '—') + '</td>'      + '<td style="text-align:right;color:#00e676;font-weight:600">' + (item.adsSales > 0 ? fmt(item.adsSales) : '—') + '</td>'      + '<td style="text-align:right;font-size:12px">' + (item.revenueShare > 0 ? item.revenueShare + '%' : '—') + '</td>'      + '<td style="text-align:right">' + (item.visits > 0 ? item.visits.toLocaleString('es-AR') : '—') + '</td>'      + '<td style="text-align:right;font-size:13px;font-weight:700;color:' + convColor + '">' + (item.conversion > 0 ? item.conversion + '%' : '—') + '</td>'      + '<td style="text-align:right">' + (item.adsClicks > 0 ? item.adsClicks.toLocaleString('es-AR') : '—') + '</td>'      + '<td style="text-align:right;font-size:13px;font-weight:700;color:' + adsConvColor + '">' + (item.adsConversion > 0 ? item.adsConversion + '%' : '—') + '</td>'      + (function(){ if (item.health == null) return '<td style="text-align:center;color:var(--muted);font-size:11px">—</td>'; const h = item.health; const pct = Math.round(h * 100); const color = pct >= 80 ? '#00e676' : pct >= 50 ? '#ff9100' : '#ff5252'; const bar = '<div style="background:var(--surface2);border-radius:3px;height:4px;width:60px;margin:3px auto 0"><div style="background:'+color+';height:100%;width:'+pct+'%;border-radius:3px"></div></div>'; return '<td style="text-align:center"><span style="font-size:12px;font-weight:700;color:'+color+'">' + pct + '%</span>' + bar + '</td>'; })()      + '<td style="text-align:right;font-size:12px;font-weight:700;color:' + dscColor + '">' + dscStr + '</td>'      + '</tr>';
+    return '<tr class="pub-row" data-status="' + item.status + '" data-hassales="' + item.hasSales + '" data-hassales30d="' + item.hasSales30d + '" data-hasproblems="' + item.hasProblems + '" data-isfull="' + (item.is_full?'1':'0') + '" data-staledays="' + (dsc ?? 0) + '" data-pvpdiff="' + pvpState + '" data-search="' + (item.title + item.id + (item.cuenta||'')).toLowerCase() + '">'      + '<td style="text-align:center;cursor:pointer;font-size:16px;color:' + starColorPub + ';padding:0 4px" title="' + (segPub ? 'Quitar seguimiento' : 'Seguir esta publicación') + '" onclick="toggleSeguimiento(\'' + item.id + '\',\'' + item.title.replace(/'/g,"\\'") + '\',' + clientIdPub + ')">' + starPub + '</td>'      + '<td style="font-size:11px"><span style="color:var(--muted);cursor:pointer" title="Click para copiar" onclick="copyMLA(this,\'' + item.id + '\')">'      + item.id + '</span></td>'      + '<td style="max-width:240px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'      + '<a href="https://articulo.mercadolibre.com.ar/' + item.id.replace(/MLA(\d+)/, 'MLA-$1') + '" target="_blank" style="color:var(--text);text-decoration:none" title="Abrir en ML">'      + item.title + '</a></td>'      + pvpCells      + promCell      + '<td>' + statusTag + '</td>'      + '<td style="text-align:center">' + fullTag + '</td>'      + stockCell      + '<td style="text-align:right;font-size:12px;font-weight:700;color:' + ritmoColor + '">' + (ritmo > 0 ? ritmo : '—') + '</td>'      + '<td style="text-align:right;font-size:12px;color:' + coberColor + '">' + coberturaStr + '</td>'      + '<td>' + adsTag + '</td>'      + '<td style="text-align:right;color:#00e676;font-weight:700">' + (item.units || '—') + '</td>'      + '<td style="text-align:right;color:var(--yellow);font-weight:700">' + (item.revenue > 0 ? fmt(item.revenue) : '—') + '</td>'      + '<td style="text-align:right;color:#00e676;font-weight:600">' + (item.adsSales > 0 ? fmt(item.adsSales) : '—') + '</td>'      + '<td style="text-align:right;font-size:12px">' + (item.revenueShare > 0 ? item.revenueShare + '%' : '—') + '</td>'      + '<td style="text-align:right">' + (item.visits > 0 ? item.visits.toLocaleString('es-AR') : '—') + '</td>'      + '<td style="text-align:right;font-size:13px;font-weight:700;color:' + convColor + '">' + (item.conversion > 0 ? item.conversion + '%' : '—') + '</td>'      + '<td style="text-align:right">' + (item.adsClicks > 0 ? item.adsClicks.toLocaleString('es-AR') : '—') + '</td>'      + '<td style="text-align:right;font-size:13px;font-weight:700;color:' + adsConvColor + '">' + (item.adsConversion > 0 ? item.adsConversion + '%' : '—') + '</td>'      + (function(){ if (item.health == null) return '<td style="text-align:center;color:var(--muted);font-size:11px">—</td>'; const h = item.health; const pct = Math.round(h * 100); const color = pct >= 80 ? '#00e676' : pct >= 50 ? '#ff9100' : '#ff5252'; const bar = '<div style="background:var(--surface2);border-radius:3px;height:4px;width:60px;margin:3px auto 0"><div style="background:'+color+';height:100%;width:'+pct+'%;border-radius:3px"></div></div>'; return '<td style="text-align:center"><span style="font-size:12px;font-weight:700;color:'+color+'">' + pct + '%</span>' + bar + '</td>'; })()      + '<td style="text-align:right;font-size:12px;font-weight:700;color:' + dscColor + '">' + dscStr + '</td>'      + '</tr>';
   }).join('');
 }
 
@@ -9150,7 +9170,8 @@ function loadPerformance() {
     return;
   }
 
-  const byMode = {}, byProvince = {}, byHour = new Array(24).fill(0);
+  const byMode = {}, byProvince = {}, byCity = {}, byHour = new Array(24).fill(0);
+  const zonasPorItem = {};   // MLA -> zonas de entrega, alimenta el buscador por producto
   const top15Rev = [], top15Units = [];
   let totVisits = 0, adsImpr = 0, adsClicks = 0, adsUnits = 0, adsSalesAmt = 0;
 
@@ -9169,6 +9190,24 @@ function loadPerformance() {
       ? perf.by_province_per_mode[f]
       : (perf.by_province || {});
     Object.entries(provinceData).forEach(([k,v]) => { byProvince[k] = (byProvince[k]||0) + v; });
+
+    // Ciudad — mismo criterio de filtro por modo de entrega que la provincia
+    const cityData = f && perf.by_city_per_mode && perf.by_city_per_mode[f]
+      ? perf.by_city_per_mode[f]
+      : (perf.by_city || {});
+    Object.entries(cityData).forEach(([k,v]) => { byCity[k] = (byCity[k]||0) + v; });
+
+    // Zonas por publicación — se fusionan las cuentas conectadas sumando unidades
+    Object.entries(perf.zonas_por_item || {}).forEach(([mla, z]) => {
+      const acc = zonasPorItem[mla] || (zonasPorItem[mla] = {
+        titulo: z.titulo, unidades: 0, facturacion: 0, provincias: {}, ciudades: {}, modos: {},
+      });
+      acc.unidades    += z.unidades    || 0;
+      acc.facturacion += z.facturacion || 0;
+      ['provincias','ciudades','modos'].forEach(dim => {
+        Object.entries(z[dim] || {}).forEach(([k,v]) => { acc[dim][k] = (acc[dim][k]||0) + v; });
+      });
+    });
 
     // Hour — use filtered data if mode active
     const hourData = f && perf.by_hour_per_mode && perf.by_hour_per_mode[f]
@@ -9190,6 +9229,8 @@ function loadPerformance() {
     top15Rev.push(  ...revItems);
     top15Units.push(...unitsItems);
   });
+
+  window._zonasPorItem = zonasPorItem;   // lo consume renderZonasProducto()
 
   const fmt = n => { const sign = n < 0 ? '-' : ''; return sign + '$' + Math.round(Math.abs(n)).toLocaleString('es-AR'); };
   const fmtK = n => n >= 1e6 ? (n/1e6).toFixed(1)+'M' : n >= 1e3 ? Math.round(n/1e3)+'K' : n.toLocaleString('es-AR');
@@ -9343,6 +9384,26 @@ function loadPerformance() {
           </div>
         </div>`;
     }).join('');
+  }
+
+  // Ranking de una sola serie (ciudades): un color y el largo de la barra hacen el
+  // trabajo. provinceChart pinta cada fila de un color distinto según el puesto, que
+  // sugiere categorías que no existen; acá no se repite eso.
+  function rankChart(data, color, unidad = 'ventas') {
+    const total = Object.values(data).reduce((a,b)=>a+b,0) || 1;
+    const entries = Object.entries(data).sort((a,b)=>b[1]-a[1]).slice(0,10);
+    if (!entries.length) return '<div style="color:var(--muted);font-size:12px;padding:20px;text-align:center">Sin datos en el período</div>';
+    const max = entries[0][1] || 1;
+    return entries.map(([label, val]) => `
+        <div style="margin-bottom:9px">
+          <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px">
+            <span style="color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:55%">${label}</span>
+            <span style="color:var(--muted);font-size:11px">${val} ${unidad} · <strong style="color:${color}">${(val/total*100).toFixed(1)}%</strong></span>
+          </div>
+          <div style="background:var(--surface2);border-radius:4px;height:6px">
+            <div style="background:${color};height:100%;width:${(val/max*100).toFixed(1)}%;border-radius:4px"></div>
+          </div>
+        </div>`).join('');
   }
 
   // ── HOUR CHART (full width SVG) ───────────────────────────────────────────
@@ -9543,6 +9604,21 @@ function loadPerformance() {
       </div>
     </div>
 
+    <!-- ROW 1b: Ciudades + buscador de zonas por producto -->
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
+      <div class="kpi-card" style="padding:18px">
+        <div class="kpi-label" style="margin-bottom:14px">🏙️ Ventas por ciudad — Top 10</div>
+        ${rankChart(byCity, '#00bcd4')}
+      </div>
+      <div class="kpi-card" style="padding:18px">
+        <div class="kpi-label" style="margin-bottom:10px">🔎 Zonas por producto</div>
+        <input id="zonasProdSearch" type="text" placeholder="Buscá por MLA o título…"
+          oninput="renderZonasProducto(this.value)"
+          style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px;margin-bottom:12px">
+        <div id="zonasProdOut" style="max-height:320px;overflow-y:auto"></div>
+      </div>
+    </div>
+
     <!-- ROW 2: Preguntas -->
     <div id="preguntasCard" style="margin-bottom:12px">
       <div style="color:var(--muted);font-size:12px;padding:14px;text-align:center">⏳ Cargando datos de preguntas...</div>
@@ -9578,6 +9654,64 @@ function loadPerformance() {
   // Load preguntas async after render
   setTimeout(loadPreguntasCard, 50);
   setTimeout(loadTopGanancia, 60);
+  renderZonasProducto('');
+}
+
+// ── ZONAS POR PRODUCTO ──────────────────────────────────────────────────────
+// Dónde se vende cada publicación. Sin búsqueda muestra los más vendidos del
+// período; con búsqueda filtra por MLA o título. Los datos salen de
+// performance.zonas_por_item, que ya viene con el dashboard: no pega a la API.
+function renderZonasProducto(q) {
+  const out = document.getElementById('zonasProdOut');
+  if (!out) return;
+  const data = window._zonasPorItem || {};
+  const term = (q || '').trim().toLowerCase();
+
+  let items = Object.entries(data).map(([mla, z]) => ({ mla, ...z }));
+  if (term) {
+    items = items.filter(i => i.mla.toLowerCase().includes(term) ||
+                              (i.titulo || '').toLowerCase().includes(term));
+  }
+  items.sort((a, b) => b.unidades - a.unidades);
+
+  if (!items.length) {
+    out.innerHTML = `<div style="color:var(--muted);font-size:12px;padding:24px;text-align:center">
+      ${term ? 'Ningún producto vendido matchea la búsqueda' : 'Sin ventas en el período'}</div>`;
+    return;
+  }
+
+  const mostrar = term ? items.slice(0, 20) : items.slice(0, 5);
+  const money = n => '$' + Math.round(n).toLocaleString('es-AR');
+  // Cada zona muestra las unidades, no el % del total del seller: lo que importa acá
+  // es dónde cae este producto, no cuánto pesa en la cuenta.
+  // Cada fila lleva su etiqueta: tres colores sin rótulo obligan a adivinar cuál
+  // es provincia, cuál ciudad y cuál forma de entrega.
+  const chips = (rotulo, obj, color) => {
+    const e = Object.entries(obj).sort((a, b) => b[1] - a[1]).slice(0, 5);
+    if (!e.length) return '';
+    return `<div style="display:flex;gap:6px;align-items:baseline;margin-top:3px">
+      <span style="font-size:10px;color:var(--muted);font-weight:600;min-width:46px;flex-shrink:0">${rotulo}</span>
+      <span>` + e.map(([k, v]) => `<span style="display:inline-block;background:${color}1f;color:${color};
+        border-radius:5px;padding:2px 7px;font-size:11px;font-weight:600;margin:0 4px 4px 0;white-space:nowrap">
+        ${k} <span style="opacity:.75">${v}u</span></span>`).join('') + `</span></div>`;
+  };
+
+  out.innerHTML = mostrar.map(i => `
+    <div style="border-bottom:1px solid var(--border);padding:10px 0">
+      <div style="display:flex;justify-content:space-between;gap:8px;align-items:baseline">
+        <span style="font-size:12px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:65%"
+          title="${(i.titulo || '').replace(/"/g,'&quot;')}">${i.titulo || i.mla}</span>
+        <span style="font-size:11px;color:var(--muted);white-space:nowrap">${i.unidades}u · ${money(i.facturacion)}</span>
+      </div>
+      <div style="font-size:10px;color:var(--muted);margin:3px 0 6px">${i.mla}</div>
+      ${chips('Provincia', i.provincias, '#FFD700')}
+      ${chips('Ciudad',    i.ciudades,   '#00bcd4')}
+      ${chips('Entrega',   i.modos,      '#8bc34a')}
+    </div>`).join('') +
+    (!term && items.length > 5
+      ? `<div style="font-size:11px;color:var(--muted);padding:10px 0;text-align:center">
+           Top 5 de ${items.length} productos con ventas — buscá para ver el resto</div>`
+      : '');
 }
 
 // ── TOP POR GANANCIA ────────────────────────────────────────────────────────
@@ -17882,6 +18016,8 @@ async function loadStock() {
         ritmo:       parseFloat(ritmo.toFixed(2)),
         cobertura,
         is_full:     item.is_full || false,
+        stock_full:      item.stock_full ?? null,       // null = FULL sin dato, no cero
+        stock_deposito:  item.stock_deposito ?? null,
         units:       item.units || 0,
         min_critico: umbralMap[item.id] ?? null,   // umbral crítico en unidades (por producto)
       };
@@ -17962,6 +18098,8 @@ function renderStock() {
   const conMin      = rows.filter(r => r.min_critico != null).length;
   const sinCMV      = rows.filter(r => r.costo == null).length;
   const conFull     = rows.filter(r => r.is_full).length;
+  // Se sigue ofreciendo por FULL pero el depósito de ML está vacío y el propio no: venta perdida
+  const fullEnCeroCount = rows.filter(r => r.is_full && r.stock_full === 0 && r.stock_deposito > 0).length;
   const valorTotal  = rows.filter(r => r.valor_stock != null).reduce((s, r) => s + r.valor_stock, 0);
   const conValor    = rows.filter(r => r.valor_stock != null).length;
 
@@ -17974,13 +18112,14 @@ function renderStock() {
       ${sub ? `<div style="font-size:11px;color:var(--muted);margin-top:4px">${sub}</div>` : ''}
     </div>`;
 
-  const kpis = `<div style="display:grid;grid-template-columns:repeat(7,1fr);gap:12px;margin-bottom:16px">
+  const kpis = `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:16px">
     ${kpiCard('📦','Total activas', total, 'var(--accent)', `${dias}d de período`, 'todos')}
     ${kpiCard('⚠️','Sin stock', sinStock, sinStock>0?'#ff5252':'#00e676', 'Stock = 0', 'sin_stock')}
     ${kpiCard('🔴','Cobertura crítica', critico, critico>0?'#ff9100':'#00e676', `≤ ${uCrit} días`, 'critico')}
     ${kpiCard('🚨','Bajo mínimo', bajoMin, bajoMin>0?'#ff5252':'#00e676', `${conMin} con mínimo fijado`, 'bajo_min')}
     ${kpiCard('❓','Sin CMV', sinCMV, sinCMV>0?'#6366f1':'#00e676', 'Sin costo cargado', 'sin_cmv')}
     ${kpiCard('📦','Con FULL', conFull, '#00bcd4', `${(conFull/Math.max(total,1)*100).toFixed(0)}% del total`, 'full')}
+    ${kpiCard('🚨','FULL en 0', fullEnCeroCount, fullEnCeroCount>0?'#ff5252':'#00e676', 'Con stock en depósito', 'full_cero')}
     <div class="kpi-card" style="padding:16px;border-top:3px solid #059669">
       <div class="kpi-label">💰 Valor total en stock</div>
       <div style="font-size:22px;font-weight:800;font-family:var(--font-b);color:#059669;margin-top:6px">${conValor > 0 ? fmt(valorTotal) : '—'}</div>
@@ -18000,6 +18139,7 @@ function renderStock() {
         ['bajo_min','Bajo mínimo',`${bajoMin}`,'#ff5252'],
         ['sin_cmv','Sin CMV',`${sinCMV}`,'#6366f1'],
         ['full','FULL',`${conFull}`,'#00bcd4'],
+        ['full_cero','FULL en 0 c/ depósito',`${fullEnCeroCount}`,'#ff5252'],
       ].map(([key,label,count,color]) => `
         <button onclick="setStockFilter('${key}',this)"
           style="padding:4px 12px;border-radius:20px;font-size:12px;font-weight:600;cursor:pointer;
@@ -18042,6 +18182,8 @@ function renderStock() {
             ${th('sku',         'SKU',         'left')}
             ${th('title',       'Título',      'left')}
             ${th('stock',       'Stock')}
+            ${th('stock_deposito', 'Depósito')}
+            ${th('stock_full',     'En FULL')}
             ${th('min_critico', 'Crítico (u.)')}
             ${th('costo',       'CMV unit.')}
             ${th('valor_stock', 'Valor en stock')}
@@ -18075,6 +18217,7 @@ function renderStockRows() {
   else if (f === 'bajo_min')  filtered = rows.filter(r => r.min_critico != null && r.stock <= r.min_critico);
   else if (f === 'sin_cmv')   filtered = rows.filter(r => r.costo == null);
   else if (f === 'full')      filtered = rows.filter(r => r.is_full);
+  else if (f === 'full_cero') filtered = rows.filter(r => r.is_full && r.stock_full === 0 && r.stock_deposito > 0);
 
   // Orden
   const { col, asc } = _stockSort;
@@ -18086,8 +18229,19 @@ function renderStockRows() {
   });
 
   const stockColor  = s => s === 0 ? '#ff5252' : s <= 3 ? '#ff5252' : s <= 10 ? '#ff9100' : '#00e676';
+  // Columna "En FULL": sólo aplica a las publicaciones que operan por FULL. El caso rojo
+  // es FULL en cero con mercadería en el depósito — se sigue ofreciendo y no hay qué despachar.
+  const fullEnCero  = r => r.is_full && r.stock_full === 0 && r.stock_deposito > 0;
+  const fullCellText = r => !r.is_full ? '—'
+    : r.stock_full == null ? 's/d'
+    : (fullEnCero(r) ? '🚨 0' : r.stock_full.toLocaleString('es-AR'));
+  const fullCellColor = r => !r.is_full || r.stock_full == null ? 'var(--muted)'
+    : fullEnCero(r) ? '#ff5252' : '#00bcd4';
+  // Los umbrales se leen de _stockUmbrales: antes coberBadge se llamaba sin ellos y
+  // quedaban undefined, así que toda comparación daba false y la columna se pintaba
+  // siempre verde — incluso en los productos que el KPI contaba como críticos.
   const coberColor  = (c, uCrit, uAlert) => c == null ? 'var(--muted)' : c <= uCrit ? '#ff5252' : c <= uAlert ? '#ff9100' : '#00e676';
-  const coberBadge  = (c, uCrit, uAlert) => {
+  const coberBadge  = (c, uCrit = _stockUmbrales.critico, uAlert = _stockUmbrales.alerta) => {
     if (c == null) return '<span style="color:var(--muted)">—</span>';
     const col = coberColor(c, uCrit, uAlert);
     const icon = c <= uCrit ? '🔴' : c <= uAlert ? '🟠' : '🟢';
@@ -18107,6 +18261,8 @@ function renderStockRows() {
           title="${r.title}">${r.title}</a>
       </td>
       <td style="padding:8px 10px;text-align:right;font-weight:700;font-size:13px;color:${(r.min_critico!=null && r.stock<=r.min_critico) ? '#ff5252' : stockColor(r.stock)}">${(r.min_critico!=null && r.stock<=r.min_critico) ? '🚨 ' : ''}${r.stock.toLocaleString('es-AR')}</td>
+      <td style="padding:8px 10px;text-align:right;color:${r.stock_deposito!=null?'var(--text)':'var(--muted)'}">${r.stock_deposito!=null ? r.stock_deposito.toLocaleString('es-AR') : 's/d'}</td>
+      <td style="padding:8px 10px;text-align:right;font-weight:${r.is_full?'700':'400'};color:${fullCellColor(r)}">${fullCellText(r)}</td>
       <td style="padding:8px 10px;text-align:center">
         <input type="number" min="0" value="${r.min_critico ?? ''}" placeholder="—"
           onchange="setStockMinCritico('${r.id}', this.value)" title="Marcar crítico cuando el stock cae a este nivel o menos (vacío = sin mínimo)"
@@ -18117,10 +18273,10 @@ function renderStockRows() {
       <td style="padding:8px 10px;text-align:right;color:${r.ritmo>0?'var(--text)':'var(--muted)'}">${r.ritmo > 0 ? r.ritmo : '—'}</td>
       <td style="padding:8px 10px;text-align:right">${coberBadge(r.cobertura)}</td>
       <td style="padding:8px 10px;text-align:center">${r.is_full ? '<span style="background:rgba(0,188,212,.15);color:#00bcd4;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600">FULL</span>' : '<span style="color:var(--muted);font-size:11px">—</span>'}</td>
-    </tr>`).join('') || `<tr><td colspan="10" style="padding:40px;text-align:center;color:var(--muted)">Sin productos con este filtro</td></tr>`;
+    </tr>`).join('') || `<tr><td colspan="12" style="padding:40px;text-align:center;color:var(--muted)">Sin productos con este filtro</td></tr>`;
 
   // Actualizar KPI cards según filtro activo
-  ['todos','sin_stock','critico','bajo_min','sin_cmv','full'].forEach(key => {
+  ['todos','sin_stock','critico','bajo_min','sin_cmv','full','full_cero'].forEach(key => {
     const card = document.getElementById(`stk-kpi-${key}`);
     if (card) {
       card.style.outline = _stockFilter===key ? '2px solid var(--accent)' : 'none';
@@ -18142,6 +18298,8 @@ function exportStockExcel() {
     'SKU':              r.sku === '—' ? '' : r.sku,
     'Título':           r.title,
     'Stock':            r.stock,
+    'Depósito':         r.stock_deposito ?? '',
+    'En FULL':          r.is_full ? (r.stock_full ?? '') : '',
     'Crítico (u.)':     r.min_critico ?? '',
     'CMV unitario':     r.costo ?? '',
     'Valor en stock':   r.valor_stock != null ? Math.round(r.valor_stock) : '',

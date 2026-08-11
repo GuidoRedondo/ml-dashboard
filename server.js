@@ -1272,11 +1272,11 @@ async function fetchShippingCosts(orders, headers) {
         console.log(`[SHIPMENT] id=${batch[idx]} logistic=${s.logistic_type} buyerCost=${buyerCost} sellerCost=${sellerCost}`);
       }
 
-      // Province: receiver address state
-      const province = (s.receiver_address && (
-        s.receiver_address.state?.name ||
-        s.receiver_address.city?.name
-      )) || 'Sin dato';
+      // Zona de entrega. Provincia y ciudad se guardan por separado: antes la ciudad
+      // sólo aparecía como reemplazo cuando faltaba la provincia, así que el ranking
+      // mezclaba "Buenos Aires" con "Mar del Plata" en la misma lista.
+      const province = s.receiver_address?.state?.name || 'Sin dato';
+      const city     = s.receiver_address?.city?.name  || 'Sin dato';
 
       // logistic_type values: fulfillment=FULL, flex=FLEX, cross_docking/me2=Correo, xd_drop_off=Punto entrega
       const lt = (s.logistic_type || '').toLowerCase();
@@ -1293,7 +1293,7 @@ async function fetchShippingCosts(orders, headers) {
         mode = s.logistic_type || s.shipping_mode || 'Otro';
       }
 
-      costMap[batch[idx]] = { sellerCost, province, mode, buyerCost };
+      costMap[batch[idx]] = { sellerCost, province, city, mode, buyerCost };
     });
   }
   return costMap;
@@ -2613,6 +2613,57 @@ async function fetchStockPorUbicacion(upid, headers) {
   return { full, deposito, locations: s.locations };
 }
 
+// Desglose depósito/FULL para un lote de publicaciones ya cargadas.
+// Sólo gasta requests en las que HOY se ofrecen por FULL: en el resto todo el stock
+// está en poder del vendedor, así que el número sale del propio ítem. Un ítem con
+// variaciones tiene un user_product por variación, y se suman.
+// Las que quedan fuera del tope quedan en null a propósito: sin dato es sin dato,
+// no cero — mostrar cero haría parecer que el FULL está vacío.
+async function buildStockPorUbicacionMap(itemDetails, headers, opts = {}) {
+  const { max_consultas = 400, lote = 8, prioridad = () => 0 } = opts;
+  const map = {};
+  const pendientes = [];
+
+  Object.values(itemDetails).forEach(d => {
+    if (!d || !d.id) return;
+    if ((d.shipping?.logistic_type || '') !== 'fulfillment') {
+      map[d.id] = { full: 0, deposito: d.available_quantity || 0, sin_dato: false };
+      return;
+    }
+    const upids = d.variations?.length
+      ? [...new Set(d.variations.map(v => v.user_product_id).filter(Boolean))]
+      : (d.user_product_id ? [d.user_product_id] : []);
+    if (!upids.length) { map[d.id] = { full: null, deposito: null, sin_dato: true }; return; }
+    pendientes.push({ id: d.id, upids });
+  });
+
+  pendientes.sort((a, b) => prioridad(b.id) - prioridad(a.id));
+  const aConsultar = pendientes.slice(0, max_consultas);
+  const truncado   = pendientes.length > max_consultas;
+  pendientes.slice(max_consultas).forEach(p => {
+    map[p.id] = { full: null, deposito: null, sin_dato: true };
+  });
+
+  // Cache por user_product: varias publicaciones de la misma familia lo comparten
+  const cache = {};
+  for (let i = 0; i < aConsultar.length; i += lote) {
+    await Promise.all(aConsultar.slice(i, i + lote).map(async p => {
+      let full = 0, deposito = 0, ok = false;
+      for (const upid of p.upids) {
+        if (!cache[upid]) cache[upid] = fetchStockPorUbicacion(upid, headers).catch(() => null);
+        const st = await cache[upid];
+        if (!st) continue;
+        full += st.full; deposito += st.deposito; ok = true;
+      }
+      map[p.id] = ok ? { full, deposito, sin_dato: false }
+                     : { full: null, deposito: null, sin_dato: true };
+    }));
+    if (i + lote < aConsultar.length) await new Promise(r => setTimeout(r, 120));
+  }
+
+  return { map, consultadas: aConsultar.length, en_full: pendientes.length, truncado };
+}
+
 // Publicaciones que se siguen ofreciendo por FULL (logistic_type = fulfillment)
 // con el inventario de fulfillment en 0 y unidades en el depósito del vendedor:
 // o se repone FULL o se pasan a envío propio antes de perder la venta.
@@ -3103,6 +3154,8 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
     const byMode     = {};
     // By province
     const byProvince = {};
+    // By city
+    const byCity     = {};
     // By hour
     const byHour     = new Array(24).fill(0);
     // Per item breakdown for top lists
@@ -3110,7 +3163,12 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
     // Per item breakdown per shipping mode (for filtering)
     const byItemPerMode     = {};
     const byProvincePerMode = {};
+    const byCityPerMode     = {};
     const byHourPerMode     = {};
+    // Zona de entrega por publicación: alimenta el buscador "dónde se vende este producto".
+    // Se arma acá porque las órdenes y los envíos ya están cargados; hacerlo aparte
+    // obligaría a volver a pedirlos.
+    const zonasPorItem      = {};
 
     const ARG_MS = -3 * 60 * 60 * 1000;
     curData.orders.forEach((order, orderIdx) => {
@@ -3127,16 +3185,37 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
       else if (shipId && !shipData)  mode = 'Otro';
       byMode[mode] = (byMode[mode] || 0) + 1;
 
-      // Province
+      // Province + city
       const province = shipData ? shipData.province : 'Sin envío';
+      const city     = shipData ? (shipData.city || 'Sin dato') : 'Sin envío';
       byProvince[province] = (byProvince[province] || 0) + 1;
+      byCity[city]         = (byCity[city]         || 0) + 1;
 
-      // Per-mode province + hour
+      // Per-mode province + city + hour
       if (!byProvincePerMode[mode]) byProvincePerMode[mode] = {};
       byProvincePerMode[mode][province] = (byProvincePerMode[mode][province] || 0) + 1;
 
+      if (!byCityPerMode[mode]) byCityPerMode[mode] = {};
+      byCityPerMode[mode][city] = (byCityPerMode[mode][city] || 0) + 1;
+
       if (!byHourPerMode[mode]) byHourPerMode[mode] = new Array(24).fill(0);
       byHourPerMode[mode][hour]++; // hour ya en ARG time
+
+      // Zonas por publicación. Las unidades y la facturación se cargan al MLA, así que
+      // un pedido de 3 unidades a Córdoba pesa 3, no 1.
+      (order.order_items || []).forEach(oi => {
+        const mid = oi.item?.id; if (!mid) return;
+        const z = zonasPorItem[mid] || (zonasPorItem[mid] = {
+          titulo: oi.item?.title || mid, unidades: 0, facturacion: 0,
+          provincias: {}, ciudades: {}, modos: {},
+        });
+        const q = oi.quantity || 0;
+        z.unidades    += q;
+        z.facturacion += (parseFloat(oi.unit_price) || 0) * q;
+        z.provincias[province] = (z.provincias[province] || 0) + q;
+        z.ciudades[city]       = (z.ciudades[city]       || 0) + q;
+        z.modos[mode]          = (z.modos[mode]          || 0) + q;
+      });
 
       // Per item — use item-level sale_fee directly, prorate taxes+shipping by revenue fraction
       const orderItemsRevenue = (order.order_items || []).reduce((s, oi) =>
@@ -3571,9 +3650,12 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
       performance: {
         by_mode:              byMode,
         by_province:          byProvince,
+        by_city:              byCity,
         by_hour:              byHour,
         by_province_per_mode: byProvincePerMode,
+        by_city_per_mode:     byCityPerMode,
         by_hour_per_mode:     byHourPerMode,
+        zonas_por_item:       zonasPorItem,
         top15_revenue:        top15Revenue,
         top15_units:          top15Units,
         top15_by_mode:        top15ByMode
@@ -4390,7 +4472,7 @@ app.get('/api/items-full', requireAuth, async (req, res) => {
     for (let i = 0; i < allIds.length; i += 20) {
       const batch = allIds.slice(i, i+20);
       try {
-        const data = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,title,price,status,sub_status,available_quantity,listing_type_id,category_id,shipping,pictures,condition,catalog_listing,video_id,health,seller_custom_field,attributes,variations,last_updated&include_attributes=all`, { headers }).then(r => r.json());
+        const data = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,title,price,status,sub_status,available_quantity,listing_type_id,category_id,shipping,pictures,condition,catalog_listing,video_id,health,seller_custom_field,attributes,variations,user_product_id,inventory_id,last_updated&include_attributes=all`, { headers }).then(r => r.json());
         (Array.isArray(data) ? data : []).forEach(r => {
           if (r.code === 200 && r.body) itemDetailsMap[r.body.id] = r.body;
         });
@@ -4412,6 +4494,23 @@ app.get('/api/items-full', requireAuth, async (req, res) => {
 
     const soldItemIds = Object.keys(salesByItem);
     const totalRevenue = Object.values(salesByItem).reduce((s, i) => s + i.revenue, 0);
+
+    // ── 4b. Stock desglosado: depósito propio vs FULL ───────────────────────
+    // available_quantity los suma y no deja ver si el FULL se vació. Sólo cuesta
+    // requests en las publicaciones que hoy operan por FULL; se priorizan las que
+    // más vendieron en el período, que son las que importa no quebrar.
+    // Si esto falla, la sección entera se queda sin datos por un dato secundario:
+    // se degrada a "sin desglose" y Publicaciones y Stock siguen funcionando.
+    let stockLoc = { map: {}, en_full: 0, consultadas: 0, truncado: false, error: null };
+    try {
+      stockLoc = await buildStockPorUbicacionMap(itemDetailsMap, headers, {
+        prioridad: id => salesByItem[id]?.units || 0,
+      });
+      console.log(`[STOCK-UBICACION] en_full=${stockLoc.en_full} consultadas=${stockLoc.consultadas} truncado=${stockLoc.truncado}`);
+    } catch(e) {
+      stockLoc.error = e.message;
+      console.error('[STOCK-UBICACION] falló, sigo sin desglose:', e.message);
+    }
 
     // ── 5. Ads data — ALL items ──────────────────────────────────────────────
     let advId = null;
@@ -4487,6 +4586,8 @@ app.get('/api/items-full', requireAuth, async (req, res) => {
         photo_urls: pics.slice(0,3).map(p => p.url || p.secure_url || ''),
         is_full: isFull,
         is_flex: isFlex,
+        stock_full:      stockLoc.map[item.id]?.full ?? null,
+        stock_deposito:  stockLoc.map[item.id]?.deposito ?? null,
         units: item.units, revenue: item.revenue, hasSales: true, hasSales30d: soldLast30.has(item.id),
         revenueShare: totalRevenue > 0 ? parseFloat(((item.revenue/totalRevenue)*100).toFixed(2)) : 0,
         visits, conversion: visits > 0 ? parseFloat(((item.units/visits)*100).toFixed(1)) : 0,
@@ -4522,6 +4623,8 @@ app.get('/api/items-full', requireAuth, async (req, res) => {
         photo_urls: pics.slice(0,3).map(p => p.url || p.secure_url || ''),
         is_full: isFull,
         is_flex: isFlex,
+        stock_full:      stockLoc.map[id]?.full ?? null,
+        stock_deposito:  stockLoc.map[id]?.deposito ?? null,
         units: 0, revenue: 0, hasSales: false, hasSales30d: soldLast30.has(id),
         revenueShare: 0,
         visits: visitsMap[id] || 0,
@@ -4548,7 +4651,14 @@ app.get('/api/items-full', requireAuth, async (req, res) => {
       withProblems: items.filter(i => i.hasProblems).length,
     };
 
-    res.json({ items, total_revenue: totalRevenue, days: effectiveDays, summary });
+    res.json({
+      items, total_revenue: totalRevenue, days: effectiveDays, summary,
+      // Para que la UI pueda avisar que el desglose no cubre todo el catálogo
+      stock_ubicacion: {
+        en_full: stockLoc.en_full, consultadas: stockLoc.consultadas,
+        truncado: stockLoc.truncado, error: stockLoc.error || null,
+      },
+    });
   } catch(e) { console.error('[ITEMS-FULL ERROR]', e.message, e.stack); res.status(500).json({ error: e.message }); }
 });
 
