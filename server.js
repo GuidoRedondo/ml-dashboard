@@ -2598,9 +2598,11 @@ async function evalRuleOportunidadEscalable(client) {
 
 // Stock por ubicación de un user_product. Separa lo que está en el depósito de ML
 // (meli_facility = FULL) de lo que está en poder del vendedor (selling_address o
-// seller_warehouse). Es el único endpoint que discrimina ambos orígenes: el
-// available_quantity del ítem los suma y /inventories/{id}/stock/fulfillment solo
-// ve el lado FULL.
+// seller_warehouse). Es el único endpoint que discrimina ambos orígenes:
+// /inventories/{id}/stock/fulfillment sólo ve el lado FULL, y el available_quantity
+// del ítem NO es la suma de los dos — en una publicación por FULL es únicamente el
+// stock que está en ML (verificado en MLA2009264696: available_quantity 7, con 220
+// unidades en el depósito propio).
 async function fetchStockPorUbicacion(upid, headers) {
   const s = await fetch(`${ML_API}/user-products/${upid}/stock`, { headers }).then(r => r.json());
   if (!Array.isArray(s?.locations)) return null;
