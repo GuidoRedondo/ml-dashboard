@@ -5693,6 +5693,17 @@ app.get('/api/performance/top-ganancia', requireAuth, async (req, res) => {
     }
     const top10Ganancia = ganadores.slice(0, 10).reduce((s,i) => s + i.margen_real, 0);
 
+    // El KPI "Destruyen margen" tiene que contar lo mismo que el listado de abajo.
+    // meta.skus_que_pierden viene del payload y cuenta TODAS las publicaciones con
+    // margen negativo, incluidas las que el ranking descarta: las que no tienen CMV
+    // cargado y las que no vendieron nada en el período (pauta o cargos de cancelación
+    // sin ventas). Por eso el KPI mostraba 88 y la lista 14. Se manda el desglose para
+    // que la pantalla explique la diferencia en vez de contradecirse.
+    const pierdenRanking  = ranking.filter(i => i.margen_real < 0).length;
+    const pierdenSinCmv   = sinCosto.filter(i => i.margen_real < 0).length;
+    const pierdenSinVenta = (payload.items || [])
+      .filter(i => !(i.units > 0) && i.margen_real < 0).length;
+
     res.json({
       disponible: true,
       cached,
@@ -5708,6 +5719,10 @@ app.get('/api/performance/top-ganancia', requireAuth, async (req, res) => {
         // Facturación que queda fuera del ranking por no tener el costo cargado.
         facturacion_sin_cmv: Math.round(sinCosto.reduce((s,i) => s + i.revenue, 0)),
         skus_que_ganan:      ganadores.length,
+        // Los tres son excluyentes y suman meta.skus_que_pierden
+        pierden_ranking:     pierdenRanking,
+        pierden_sin_cmv:     pierdenSinCmv,
+        pierden_sin_ventas:  pierdenSinVenta,
         skus_80_ganancia:    skus80,
         pareto_top10_pct:    totalGanadores > 0 ? +(top10Ganancia / totalGanadores * 100).toFixed(1) : 0,
       },

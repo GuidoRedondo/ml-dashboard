@@ -9896,7 +9896,18 @@ function renderTopGanancia() {
         ${kpi('Ganancia total', f(m.ganancia_total), m.ganancia_total >= 0 ? '#00e676' : '#ff5252', `${m.margen_promedio_pct}% s/facturación`)}
         ${kpi('Concentración', `${m.pareto_top10_pct}%`, '#FFD700', 'de la ganancia la hacen el top 10')}
         ${kpi('Pareto real', m.skus_80_ganancia, '#3b82f6', `SKUs hacen el 80% · ${m.skus_que_ganan} dejan plata`)}
-        ${kpi('Destruyen margen', m.skus_que_pierden || 0, (m.skus_que_pierden || 0) > 0 ? '#ff5252' : 'var(--muted)', 'productos con ganancia negativa')}
+        ${kpi('Destruyen margen', m.pierden_ranking ?? perdedores.length,
+              (m.pierden_ranking ?? perdedores.length) > 0 ? '#ff5252' : 'var(--muted)',
+              (() => {
+                // El KPI cuenta lo mismo que el listado. Los que el ranking descarta
+                // —sin CMV o sin ventas— se nombran aparte en vez de sumarse en silencio.
+                const extra = [];
+                if (m.pierden_sin_cmv)    extra.push(`${m.pierden_sin_cmv} sin CMV`);
+                if (m.pierden_sin_ventas) extra.push(`${m.pierden_sin_ventas} sin ventas`);
+                return extra.length
+                  ? `en el ranking · además ${extra.join(' y ')}`
+                  : 'productos con ganancia negativa';
+              })())}
       </div>
 
       ${m.skus_sin_cmv > 0 ? `<div style="background:rgba(255,145,0,.1);border:1px solid rgba(255,145,0,.3);border-radius:8px;padding:8px 12px;margin-bottom:12px;font-size:11px;color:#ff9100">
@@ -18003,13 +18014,22 @@ async function loadStock() {
       const stock   = item.available_quantity ?? 0;
       const costo   = costsMap[item.id] ?? null;
       const ritmo   = dias > 0 && item.units > 0 ? item.units / dias : 0;
+      // La cobertura se mide sobre el stock publicado: es lo que se puede vender hoy
+      // por esa publicación y lo que determina cuándo se corta la venta.
       const cobertura = ritmo > 0 ? Math.round(stock / ritmo) : null;
-      const valorStock = costo != null ? costo * stock : null;
+      // El valor inmovilizado, en cambio, es toda la mercadería: depósito + FULL. En una
+      // publicación por FULL, available_quantity sólo ve la parte que está en ML, así que
+      // valuar sobre eso subestimaba el inventario (7 unidades cuando hay 227).
+      const stockTotal = (item.stock_deposito != null || item.stock_full != null)
+        ? (item.stock_deposito || 0) + (item.stock_full || 0)
+        : stock;
+      const valorStock = costo != null ? costo * stockTotal : null;
       return {
         id:          item.id,
         sku:         item.sku || '—',
         title:       item.title,
         stock,
+        stock_total: stockTotal,       // depósito + FULL: sobre esto se valúa
         costo,
         valor_stock: valorStock,
         ritmo:       parseFloat(ritmo.toFixed(2)),
@@ -18183,6 +18203,7 @@ function renderStock() {
             ${th('stock',       'Stock')}
             ${th('stock_deposito', 'Depósito')}
             ${th('stock_full',     'En FULL')}
+            ${th('stock_total',    'Total')}
             ${th('min_critico', 'Crítico (u.)')}
             ${th('costo',       'CMV unit.')}
             ${th('valor_stock', 'Valor en stock')}
@@ -18196,7 +18217,7 @@ function renderStock() {
     </div>
     <div style="font-size:11px;color:var(--muted);margin-top:10px">
       Cobertura = stock actual / (unidades vendidas ÷ ${dias} días del período) · Publicaciones activas y pausadas<br>
-      <b>Stock</b> es lo que la publicación tiene disponible para vender: en las que operan por FULL, eso es <b>sólo lo que está en el depósito de ML</b>. <b>Depósito</b> es la mercadería que tenés vos, que no se vende por esa publicación hasta que la mandes a FULL — por eso puede ser mucho mayor que el stock.<br>
+      <b>Stock</b> es lo que la publicación tiene disponible para vender: en las que operan por FULL, eso es <b>sólo lo que está en el depósito de ML</b>. <b>Depósito</b> es la mercadería que tenés vos, que no se vende por esa publicación hasta que la mandes a FULL. <b>Total</b> = depósito + FULL, y es sobre ese total que se calcula el <b>valor en stock</b>. La <b>cobertura</b>, en cambio, va sobre el stock publicado: es lo que determina cuándo se te corta la venta.<br>
       <b>Escala de cobertura</b>: umbrales en días (global, se aplican a todos). <b>Crítico (u.)</b>: mínimo de unidades por producto — cuando el stock cae a ese nivel o menos, se marca 🚨 (se guarda por cuenta).
     </div>`;
 
@@ -18263,6 +18284,7 @@ function renderStockRows() {
       <td style="padding:8px 10px;text-align:right;font-weight:700;font-size:13px;color:${(r.min_critico!=null && r.stock<=r.min_critico) ? '#ff5252' : stockColor(r.stock)}">${(r.min_critico!=null && r.stock<=r.min_critico) ? '🚨 ' : ''}${r.stock.toLocaleString('es-AR')}</td>
       <td style="padding:8px 10px;text-align:right;color:${r.stock_deposito!=null?'var(--text)':'var(--muted)'}">${r.stock_deposito!=null ? r.stock_deposito.toLocaleString('es-AR') : 's/d'}</td>
       <td style="padding:8px 10px;text-align:right;font-weight:${r.is_full?'700':'400'};color:${fullCellColor(r)}">${fullCellText(r)}</td>
+      <td style="padding:8px 10px;text-align:right;font-weight:700">${r.stock_total.toLocaleString('es-AR')}</td>
       <td style="padding:8px 10px;text-align:center">
         <input type="number" min="0" value="${r.min_critico ?? ''}" placeholder="—"
           onchange="setStockMinCritico('${r.id}', this.value)" title="Marcar crítico cuando el stock cae a este nivel o menos (vacío = sin mínimo)"
@@ -18273,7 +18295,7 @@ function renderStockRows() {
       <td style="padding:8px 10px;text-align:right;color:${r.ritmo>0?'var(--text)':'var(--muted)'}">${r.ritmo > 0 ? r.ritmo : '—'}</td>
       <td style="padding:8px 10px;text-align:right">${coberBadge(r.cobertura)}</td>
       <td style="padding:8px 10px;text-align:center">${r.is_full ? '<span style="background:rgba(0,188,212,.15);color:#00bcd4;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600">FULL</span>' : '<span style="color:var(--muted);font-size:11px">—</span>'}</td>
-    </tr>`).join('') || `<tr><td colspan="12" style="padding:40px;text-align:center;color:var(--muted)">Sin productos con este filtro</td></tr>`;
+    </tr>`).join('') || `<tr><td colspan="13" style="padding:40px;text-align:center;color:var(--muted)">Sin productos con este filtro</td></tr>`;
 
   // Actualizar KPI cards según filtro activo
   ['todos','sin_stock','critico','bajo_min','sin_cmv','full','full_cero'].forEach(key => {
@@ -18300,6 +18322,7 @@ function exportStockExcel() {
     'Stock':            r.stock,
     'Depósito':         r.stock_deposito ?? '',
     'En FULL':          r.is_full ? (r.stock_full ?? '') : '',
+    'Total':            r.stock_total,
     'Crítico (u.)':     r.min_critico ?? '',
     'CMV unitario':     r.costo ?? '',
     'Valor en stock':   r.valor_stock != null ? Math.round(r.valor_stock) : '',
