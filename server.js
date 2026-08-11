@@ -11113,8 +11113,9 @@ app.post('/api/proxy-ml-write', requireAuth, async (req, res) => {
     }
 
     // 3) Solo se pueden mandar atributos de empaque
-    const PERMITIDOS = new Set(['PACKAGE_LENGTH','PACKAGE_WIDTH','PACKAGE_HEIGHT',
-                                'PACKAGE_WEIGHT','SELLER_PACKAGE_WEIGHT']);
+    const PERMITIDOS = new Set(['PACKAGE_LENGTH','PACKAGE_WIDTH','PACKAGE_HEIGHT','PACKAGE_WEIGHT',
+                                'SELLER_PACKAGE_LENGTH','SELLER_PACKAGE_WIDTH',
+                                'SELLER_PACKAGE_HEIGHT','SELLER_PACKAGE_WEIGHT']);
     const attrs = (body && body.attributes) || [];
     if (!Array.isArray(attrs) || !attrs.length) {
       return res.status(400).json({ error: 'Se espera body.attributes con al menos un atributo' });
