@@ -4151,6 +4151,9 @@ app.get('/api/ads-anuncios', requireAuth, async (req, res) => {
     const metrics = 'clicks,prints,cost,cpc,acos,direct_amount,indirect_amount,total_amount,direct_units_quantity,indirect_units_quantity,units_quantity,cvr,roas,ctr';
     const allItems = [];
     {
+      // SIN dedupAdsPorItem a propósito: esta vista es por anuncio (ítem × campaña) y
+      // muestra la columna campaña. Un ítem en dos campañas sale en dos filas con el mismo
+      // gasto — que es lo que devuelve ML. No sumar esas filas para sacar un total de cuenta.
       const ads = await fetchPadsAds(siteId, advId, h2, { date_from: fromDate, date_to: toDate, metrics });
       ads.forEach(ad => {
         const m = ad.metrics || {};
@@ -4264,6 +4267,7 @@ app.get('/api/ads-items', requireAuth, async (req, res) => {
     const advertisers = advData.advertisers || [];
     if (!advertisers.length) return res.json({ ads_item_ids: [] });
     const adv = advertisers.find(a => a.site_id === siteId) || advertisers[0];
+    // Sin dedup: sólo se extraen los item_id a un Set, no se suman métricas.
     const ads = await fetchPadsAds(siteId, adv.advertiser_id, h2, { filters: 'filters[statuses]=active,paused' });
     const adsItemIds = new Set(ads.map(a => a.item_id));
     res.json({ ads_item_ids: Array.from(adsItemIds) });
@@ -4868,7 +4872,7 @@ app.post('/api/diagnostico/calcular', requireAuth, async (req, res) => {
       const advList = advRes.results || advRes.advertisers || (Array.isArray(advRes) ? advRes : []);
       const advId = advList[0]?.advertiser_id || advList[0]?.id || uid;
 
-      const adsDiag = await fetchPadsAds(siteId, advId, h2, { date_from: fromStr, date_to: toStr, metrics });
+      const adsDiag = dedupAdsPorItem(await fetchPadsAds(siteId, advId, h2, { date_from: fromStr, date_to: toStr, metrics }));
       adsDiag.forEach(ad => {
         const m = ad.metrics || {};
         padsInversion   += parseFloat(m.cost||0);
@@ -5385,7 +5389,9 @@ app.get('/api/reporte/items-vendidos', requireAuth, async (req, res) => {
 //       los MLA que gastaron pauta sin vender.
 //   4 → entran las devoluciones parciales (ML rechaza el filtro order.status para ese
 //       estado, así que ahora se busca sin filtro y se filtra en el server)
-const MARGEN_CALC_VERSION = 4;
+//   5 → la publicidad por producto ya no suma la misma métrica una vez por campaña
+//       (ver dedupAdsPorItem): venía inflada ~25%. Suma la antigüedad de las fotos.
+const MARGEN_CALC_VERSION = 5;
 
 // Núcleo compartido del cálculo. Lo consumen /api/reporte/margen-real-producto (tabla de
 // Rentabilidad, ordenada por los que pierden) y /api/performance/top-ganancia (ranking de los
@@ -6043,7 +6049,7 @@ app.get('/api/reporte/pyl', requireAuth, async (req, res) => {
       const advRes = await fetch(`${ML_API}/advertising/advertisers?product_id=PADS`, {headers:h2}).then(r=>r.json()).catch(()=>({}));
       const advList = advRes.results || advRes.advertisers || (Array.isArray(advRes)?advRes:[]);
       const advId = advList[0]?.advertiser_id || advList[0]?.id || uid;
-      const adsPyl = await fetchPadsAds(siteId, advId, h2, { date_from, date_to, metrics: 'cost' });
+      const adsPyl = dedupAdsPorItem(await fetchPadsAds(siteId, advId, h2, { date_from, date_to, metrics: 'cost' }));
       adsPyl.forEach(ad => { egreso_publicidad += parseFloat(ad.metrics?.cost||0); });
     } catch(e){}
 
@@ -6413,7 +6419,7 @@ async function fetchAdsByItemFull(token, fromDate, toDate) {
     out.advertiser_found = true;
     const metrics = 'clicks,prints,cost,total_amount,units_quantity,acos,ctr,cvr,roas';
     {
-      const ads = await fetchPadsAds(siteId, advId, h2, { date_from: fromDate, date_to: toDate, metrics });
+      const ads = dedupAdsPorItem(await fetchPadsAds(siteId, advId, h2, { date_from: fromDate, date_to: toDate, metrics }));
       ads.forEach(ad => {
         out.raw_count += 1;
         const m = ad.metrics || {};
@@ -12666,7 +12672,7 @@ app.get('/api/admin/tacos-report', requireAuth, requireAdmin, async (req, res) =
         }
 
         // Items con ads
-        const adsItems = await fetchPadsAds(siteId, advId, h2, { date_from: dateFrom, date_to: dateTo, metrics });
+        const adsItems = dedupAdsPorItem(await fetchPadsAds(siteId, advId, h2, { date_from: dateFrom, date_to: dateTo, metrics }));
 
         // Agregar totales de ads
         let gastoTotal = 0, ventasAdsTotal = 0, clicksTotal = 0, impressionsTotal = 0, unitsAds = 0;
