@@ -11085,6 +11085,58 @@ app.get('/api/proxy-ml', requireAuth, async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
+// ── Proxy de ESCRITURA a ML (solo atributos de items propios) ──────────────
+app.post('/api/proxy-ml-write', requireAuth, async (req, res) => {
+  try {
+    const { path, client_id, method, body } = req.body || {};
+    if (!path || !client_id) return res.status(400).json({ error: 'Falta path o client_id' });
+
+    // 1) Solo PUT sobre /items/MLA... — nada de borrar ni tocar otros recursos
+    const verb = (method || 'PUT').toUpperCase();
+    if (verb !== 'PUT') return res.status(403).json({ error: 'Solo se permite PUT' });
+    const m = /^\/items\/(MLA\d+)$/.exec(path);
+    if (!m) return res.status(403).json({ error: 'Solo se permite PUT /items/{MLA}' });
+    const itemId = m[1];
+
+    const clientRes = await pool.query('SELECT * FROM clients WHERE id=$1', [client_id]);
+    if (!clientRes.rows.length) return res.status(404).json({ error: 'Cliente no encontrado' });
+    const client = clientRes.rows[0];
+
+    // 2) Ownership: el item tiene que ser de la cuenta de ESE cliente
+    const chk = await fetch(`${ML_API}/items/${itemId}?attributes=id,seller_id`, {
+      headers: { 'Authorization': `Bearer ${client.access_token}` }
+    });
+    const chkData = await chk.json();
+    if (!chk.ok) return res.status(chk.status).json({ error: 'No se pudo verificar el item', detail: chkData });
+    if (String(chkData.seller_id) !== String(client.ml_user_id)) {
+      return res.status(403).json({ error: 'El item no pertenece a este cliente' });
+    }
+
+    // 3) Solo se pueden mandar atributos de empaque
+    const PERMITIDOS = new Set(['PACKAGE_LENGTH','PACKAGE_WIDTH','PACKAGE_HEIGHT',
+                                'PACKAGE_WEIGHT','SELLER_PACKAGE_WEIGHT']);
+    const attrs = (body && body.attributes) || [];
+    if (!Array.isArray(attrs) || !attrs.length) {
+      return res.status(400).json({ error: 'Se espera body.attributes con al menos un atributo' });
+    }
+    const invalido = attrs.find(a => !PERMITIDOS.has(a.id));
+    if (invalido) return res.status(403).json({ error: `Atributo no permitido: ${invalido.id}` });
+    if (Object.keys(body).some(k => k !== 'attributes')) {
+      return res.status(403).json({ error: 'Solo se permite modificar attributes' });
+    }
+
+    const r = await fetch(`${ML_API}${path}`, {
+      method: 'PUT',
+      headers: { 'Authorization': `Bearer ${client.access_token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ attributes: attrs })
+    });
+    const data = await r.json();
+    console.log(`[proxy-ml-write] ${req.user?.username} → ${itemId} ${r.status}`,
+                attrs.map(a => `${a.id}=${a.value_name}`).join(' '));
+    res.status(r.status).json(data);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
 app.get('/api/bitacora', requireAuth, async (req, res) => {
   try {
     const { client_id } = req.query;
