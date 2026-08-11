@@ -69,16 +69,39 @@ function ivaContenido(montoBruto, alicuotaPct = 21) {
 }
 
 // ── CLIFF FINDER — escalas de cargo fijo ML ──────────────────────────────────
+// Verificado contra /sites/MLA/listing_prices el 11-ago-2026. Si ML actualiza los
+// cargos, estos tres valores son lo único que hay que tocar.
 const CARGO_FIJO_ESCALAS = [
-  { desde: 0,     hasta: 15999, cargo: 1255 },
-  { desde: 16000, hasta: 23999, cargo: 2500 },
-  { desde: 24000, hasta: 32999, cargo: 3030 },
+  { desde: 0,     hasta: 15999, cargo: 1250 },
+  { desde: 16000, hasta: 23999, cargo: 2505 },
+  { desde: 24000, hasta: 32999, cargo: 3005 },
   { desde: 33000, hasta: Infinity, cargo: 0 },
 ];
 const ENVIO_FULL_33K = 7430;
+// Sobre el diferencial de precio que se resigna al bajar de escala se recupera la
+// comisión y el IVA que ya no se pagan. La comisión real varía por categoría
+// (13%–16,5%): se usa el techo, así el detector peca de mostrar de más y no de menos.
+const CLIFF_COMISION_PCT = 0.165;
+const CLIFF_IVA_PCT      = 0.044;
+const CLIFF_RECUPERO_PCT = CLIFF_COMISION_PCT + CLIFF_IVA_PCT;
 
 function getEscalaIdx(precio) {
   return CARGO_FIJO_ESCALAS.findIndex(e => precio >= e.desde && precio <= e.hasta);
+}
+
+// Rango de precios REALES dentro de la escala idx donde bajar al corte inferior
+// deja neto positivo. El pass 1 lo usa para pedir el detalle sólo de los ítems que
+// podrían llegar a calificar: sin esto, un catálogo de 4.500 publicaciones dispara
+// miles de llamadas individuales a ML y el rate limit se come los resultados.
+function ventanaRentable(idx, isFull) {
+  if (idx <= 0) return null;
+  const escalaActual = CARGO_FIJO_ESCALAS[idx];
+  const escalaTarget = CARGO_FIJO_ESCALAS[idx - 1];
+  const envio  = (isFull && idx === CARGO_FIJO_ESCALAS.length - 1) ? ENVIO_FULL_33K : 0;
+  const ahorro = (escalaActual.cargo - escalaTarget.cargo) + envio;
+  if (ahorro <= 0) return null;
+  // neto = -d * (1 - recupero) + ahorro  →  positivo mientras d < ahorro / (1 - recupero)
+  return { min: escalaActual.desde, max: escalaTarget.hasta + ahorro / (1 - CLIFF_RECUPERO_PCT) };
 }
 
 function calcCliffOportunidad(precio, isFull) {
@@ -90,8 +113,8 @@ function calcCliffOportunidad(precio, isFull) {
   const envioActual   = (isFull && idxActual === CARGO_FIJO_ESCALAS.length - 1) ? ENVIO_FULL_33K : 0;
   const diffPrecio    = precio - precioSugerido;
   const netoXVenta    = -diffPrecio
-    + diffPrecio * 0.165
-    + diffPrecio * 0.044
+    + diffPrecio * CLIFF_COMISION_PCT
+    + diffPrecio * CLIFF_IVA_PCT
     - (escalaTarget.cargo - escalaActual.cargo)
     + envioActual;
   if (netoXVenta <= 0) return null;
@@ -102,6 +125,31 @@ function calcCliffOportunidad(precio, isFull) {
     envio_actual:    envioActual,
     ahorro_x_venta:  Math.round(netoXVenta),
   };
+}
+
+// ── Antigüedad de contenido de una publicación ───────────────────────────────
+// ML no expone "última vez que tocaste la publicación": `last_updated` del ítem se mueve
+// con cualquier cosa (stock, sincronizaciones), así que sirve de poco — verificado el
+// 11-ago-2026 en REDFISHOK, donde publicaciones con fotos de 2024 traían last_updated de
+// esta semana. Lo que sí es fecha real: el ID de cada foto termina en _MMYYYY (cuándo se
+// subió) y la descripción tiene su propio last_updated.
+function fechaImagenMasReciente(pictures) {
+  let mejor = null;
+  (pictures || []).forEach(pic => {
+    const m = /_(\d{2})(\d{4})(?:$|-)/.exec(pic?.id || '') || /_(\d{2})(\d{4})-[A-Z]\./.exec(pic?.secure_url || pic?.url || '');
+    if (!m) return;
+    const mes = parseInt(m[1], 10), anio = parseInt(m[2], 10);
+    if (mes < 1 || mes > 12 || anio < 2010 || anio > new Date().getFullYear() + 1) return;
+    const f = new Date(Date.UTC(anio, mes - 1, 1));
+    if (!mejor || f > mejor) mejor = f;
+  });
+  return mejor;
+}
+
+function mesesDesde(fecha) {
+  if (!fecha) return null;
+  const hoy = new Date();
+  return Math.max(0, (hoy.getFullYear() - fecha.getUTCFullYear()) * 12 + (hoy.getMonth() - fecha.getUTCMonth()));
 }
 
 // ── DATABASE ──────────────────────────────────────────────────────────────────
@@ -2269,6 +2317,23 @@ async function fetchPadsAds(siteId, advId, headersV2, { date_from, date_to, metr
   return Array.from(porAd.values());
 }
 
+// ML replica las métricas del ítem en CADA campaña donde está anunciado: un ítem en dos
+// campañas vuelve dos veces con el MISMO cost, no con el gasto repartido entre ellas.
+// Sumar esas filas infla la inversión. Verificado en REDFISHOK el 11-ago-2026: los 70 ítems
+// multi-campaña traían costo idéntico en todas, y sumarlos daba $1.461.412 contra los
+// $1.166.706 reales de la cuenta (+25%); tomando una fila por ítem da el total exacto.
+// Se conserva la de mayor cost, que es la métrica del ítem.
+function dedupAdsPorItem(ads) {
+  const porItem = new Map();
+  (ads || []).forEach(ad => {
+    if (!ad.item_id) return;
+    const prev = porItem.get(ad.item_id);
+    const cost = parseFloat(ad.metrics?.cost) || 0;
+    if (!prev || cost > (parseFloat(prev.metrics?.cost) || 0)) porItem.set(ad.item_id, ad);
+  });
+  return Array.from(porItem.values());
+}
+
 // Regla 7b — TACOS alto POR PRODUCTO (detecta SKUs puntuales sobre objetivo,
 // aunque el TACOS de la cuenta esté sano). TACOS de ítem = gasto pauta del ítem /
 // facturación total del ítem (orgánico + ads), no el ACOS.
@@ -2301,7 +2366,7 @@ async function evalRuleTacosProductoAlto(client) {
 
     // 1. Gasto de pauta por ítem
     const spendByItem = {};
-    const adsTacos = await fetchPadsAds(siteId, advId, h2, { date_from: fromStr, date_to: toStr, metrics: 'cost' });
+    const adsTacos = dedupAdsPorItem(await fetchPadsAds(siteId, advId, h2, { date_from: fromStr, date_to: toStr, metrics: 'cost' }));
     adsTacos.forEach(ad => {
       spendByItem[ad.item_id] = (spendByItem[ad.item_id] || 0) + ((ad.metrics || {}).cost || 0);
     });
@@ -2423,19 +2488,8 @@ async function evalRuleProductoSinVentas(client) {
     const { dias_publicado = 14 } = regla.umbral || {};
 
     // Fetch all active item IDs
-    let allIds = [];
-    let offset = 0;
-    while (true) {
-      const data = await fetch(
-        `${ML_API}/users/${uid}/items/search?status=active&limit=100&offset=${offset}`,
-        { headers }
-      ).then(r => r.json()).catch(() => ({}));
-      const ids = data.results || [];
-      if (!ids.length) break;
-      allIds = allIds.concat(ids);
-      if (ids.length < 100 || allIds.length >= (data.paging?.total || allIds.length)) break;
-      offset += 100;
-    }
+    // scan: la paginación por offset corta en 1000 y hay cuentas de +4.500 publicaciones
+    const allIds = await fetchAllActiveItemIds(uid, headers);
     if (!allIds.length) return null;
 
     // Fetch item details in batches of 20
@@ -3358,8 +3412,8 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
         const siteId   = user.site_id || 'MLA';
         const fromDate = curFrom.toISOString().slice(0,10);
         const toDate   = curTo.toISOString().slice(0,10);
-        const adsDash = await fetchPadsAds(siteId, adv.advertiser_id, { ...headers, 'api-version': '2' },
-          { date_from: fromDate, date_to: toDate, metrics: 'cost' });
+        const adsDash = dedupAdsPorItem(await fetchPadsAds(siteId, adv.advertiser_id, { ...headers, 'api-version': '2' },
+          { date_from: fromDate, date_to: toDate, metrics: 'cost' }));
         adsDash.forEach(ad => {
           if (ad.metrics?.cost > 0) {
             adsByItem[ad.item_id] = (adsByItem[ad.item_id] || 0) + parseFloat(ad.metrics.cost);
@@ -4526,9 +4580,9 @@ app.get('/api/items-full', requireAuth, async (req, res) => {
     if (advId) {
       const metrics = 'clicks,prints,cost,acos,direct_amount,total_amount,units_quantity';
       try {
-        const ads = await fetchPadsAds(siteId, advId, h2, { date_from: fromDate, date_to: toDate, metrics });
-        // Un ítem puede estar anunciado en varias campañas: las métricas se SUMAN.
-        // Antes se asignaba el objeto y la última campaña pisaba a las anteriores.
+        const ads = dedupAdsPorItem(await fetchPadsAds(siteId, advId, h2, { date_from: fromDate, date_to: toDate, metrics }));
+        // Una fila por ítem: ML ya devuelve la métrica del ítem completa en cada campaña
+        // donde aparece (ver dedupAdsPorItem), así que acá no hay nada que sumar entre campañas.
         ads.forEach(ad => {
           const m = ad.metrics || {};
           const a = adsByItem[ad.item_id] || (adsByItem[ad.item_id] = {
@@ -5429,12 +5483,12 @@ async function calcularMargenRealPorMla(client_id, date_from, date_to) {
     if (adv) {
       const siteId = adv.site_id || 'MLA', fromDate = date_from, toDate = date_to;
       const metrics = 'cost,total_amount,direct_amount,indirect_amount,units_quantity';
-      const ads = await fetchPadsAds(siteId, adv.advertiser_id, { ...headers, 'api-version': '2' },
-        { date_from: fromDate, date_to: toDate, metrics });
+      const ads = dedupAdsPorItem(await fetchPadsAds(siteId, adv.advertiser_id, { ...headers, 'api-version': '2' },
+        { date_from: fromDate, date_to: toDate, metrics }));
       ads.forEach(ad => {
         const mt = ad.metrics || {};
         if (!(mt.cost > 0)) return;
-        // Un mismo ítem puede estar en varias campañas: se acumula (ya vienen deduplicadas).
+        // Una fila por ítem (ver dedupAdsPorItem): acá no se acumula entre campañas.
         const a = adsByItem[ad.item_id] || (adsByItem[ad.item_id] = { cost: 0, total_amount: 0, direct_amount: 0, indirect_amount: 0, units: 0 });
         a.cost            += parseFloat(mt.cost)            || 0;
         a.total_amount    += parseFloat(mt.total_amount)    || 0;
@@ -5466,12 +5520,14 @@ async function calcularMargenRealPorMla(client_id, date_from, date_to) {
   for (let i = 0; i < mlaIds.length; i += 20) {
     const batch = mlaIds.slice(i, i + 20);
     try {
-      const data = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,title,seller_custom_field,attributes,variations&include_attributes=all`, { headers }).then(r => r.json());
+      const data = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,title,pictures,seller_custom_field,attributes,variations&include_attributes=all`, { headers }).then(r => r.json());
       (Array.isArray(data) ? data : []).forEach(r => {
         if (r.code !== 200 || !r.body) return;
         skuMap[r.body.id] = manualSku[r.body.id] || extractSku(r.body);
         const m = byMla[r.body.id];
         if (m && m.title === r.body.id && r.body.title) m.title = r.body.title;
+        // Viene en el mismo multiget, así que la antigüedad de las fotos no cuesta llamadas extra.
+        if (m) m.fecha_fotos = fechaImagenMasReciente(r.body.pictures);
       });
     } catch(e) {}
   }
@@ -5526,6 +5582,8 @@ async function calcularMargenRealPorMla(client_id, date_from, date_to) {
       sale_fee: Math.round(com), cmv_total: Math.round(cmv), has_cost: costsMap[m.mla_id] != null,
       envio_real: envReal, flex_imp: flexImp, publi_real: publi, iva_dif: ivaDif, iibb,
       impuestos, reembolsos,
+      fotos_ultima_fecha: m.fecha_fotos ? m.fecha_fotos.toISOString().slice(0, 10) : null,
+      fotos_meses: mesesDesde(m.fecha_fotos),
       units_full: m.units_full, units_flex: m.units_flex,
       // Cargos que ML cobró igual por operaciones canceladas: no facturan, pero pegan en el
       // margen del producto. Se exponen para poder explicar por qué la fila no cierra
@@ -5751,15 +5809,8 @@ app.get('/api/reporte/items-activos', requireAuth, async (req, res) => {
     if (!uid) return res.status(400).json({ error: 'Cliente sin ML User ID' });
 
     // Traer todos los ítems activos
-    let allItemIds = [];
-    let offset = 0;
-    while (true) {
-      const data = await fetch(`${ML_API}/users/${uid}/items/search?status=active&limit=100&offset=${offset}`, { headers }).then(r => r.json()).catch(() => ({}));
-      const results = data.results || [];
-      allItemIds = allItemIds.concat(results);
-      if (results.length < 100) break;
-      offset += 100;
-    }
+    // scan: la paginación por offset corta en 1000 y hay cuentas de +4.500 publicaciones
+    const allItemIds = await fetchAllActiveItemIds(uid, headers);
 
     // Fetch detalles individuales en paralelo (igual que Umbrales — el batch no devuelve sale_price)
     const itemsMap = {};
@@ -7183,17 +7234,8 @@ app.get('/api/reporte/publicaciones', requireAuth, async (req, res) => {
     if (!uid) return res.status(400).json({ error: 'Cliente sin ML User ID' });
 
     // 1. Traer todos los IDs activos
-    let allItemIds = [];
-    let offset = 0;
-    while (true) {
-      const data = await fetch(`${ML_API}/users/${uid}/items/search?status=active&limit=100&offset=${offset}`, { headers })
-        .then(r => r.json()).catch(() => ({}));
-      const results = data.results || [];
-      allItemIds = allItemIds.concat(results);
-      if (results.length < 100) break;
-      offset += 100;
-      if (offset > 2000) break;
-    }
+    // scan: la paginación por offset corta en 1000 y hay cuentas de +4.500 publicaciones
+    const allItemIds = await fetchAllActiveItemIds(uid, headers);
 
     // Tags que indican problemas de calidad (no exhaustivo — los más comunes en MLA)
     const TAGS_PROBLEMA = new Set([
@@ -7237,6 +7279,11 @@ app.get('/api/reporte/publicaciones', requireAuth, async (req, res) => {
           const plainText = desc && (desc.plain_text || desc.text) || '';
           const descChars = plainText.length;
 
+          // Antigüedad real del contenido: la foto más nueva y el último cambio de descripción.
+          const fImg  = fechaImagenMasReciente(pictures);
+          const fDesc = desc?.last_updated ? new Date(desc.last_updated) : null;
+          const fUlt  = [fImg, fDesc].filter(Boolean).sort((a, b) => b - a)[0] || null;
+
           items.push({
             mla_id: b.id,
             title: b.title,
@@ -7256,6 +7303,12 @@ app.get('/api/reporte/publicaciones', requireAuth, async (req, res) => {
             descripcion_chars: descChars,
             tiene_descripcion: descChars > 0,
             health: typeof b.health === 'number' ? b.health : null,
+            imagenes_ultima_fecha:  fImg  ? fImg.toISOString().slice(0, 10)  : null,
+            imagenes_meses:         mesesDesde(fImg),
+            descripcion_ultima_fecha: fDesc ? fDesc.toISOString().slice(0, 10) : null,
+            descripcion_meses:      mesesDesde(fDesc),
+            ultimo_cambio_fecha:    fUlt  ? fUlt.toISOString().slice(0, 10)  : null,
+            ultimo_cambio_meses:    mesesDesde(fUlt),
             tags,
             warnings_calidad: warnings,
             flags_positivos: positivos,
@@ -7278,9 +7331,14 @@ app.get('/api/reporte/publicaciones', requireAuth, async (req, res) => {
       ? +(healthValues.reduce((s, h) => s + h, 0) / healthValues.length).toFixed(3)
       : null;
     const bajaSalud = items.filter(i => typeof i.health === 'number' && i.health < 0.7).length;
+    const abandonadas12m = items.filter(i => i.ultimo_cambio_meses != null && i.ultimo_cambio_meses >= 12).length;
+    const fotosViejas12m = items.filter(i => i.imagenes_meses != null && i.imagenes_meses >= 12).length;
 
     const resumen = {
       total_publicaciones: n,
+      sin_tocar_12m: abandonadas12m,
+      pct_sin_tocar_12m: n > 0 ? Math.round(abandonadas12m / n * 100) : 0,
+      fotos_de_mas_de_12m: fotosViejas12m,
       con_video: conVideo,
       pct_con_video: n > 0 ? Math.round(conVideo / n * 100) : 0,
       con_3_o_menos_imagenes: con3oMenosImg,
@@ -7578,17 +7636,8 @@ app.get('/api/reporte/full', requireAuth, async (req, res) => {
     if (!uid) return res.status(400).json({ error: 'Cliente sin ML User ID' });
 
     // 1. Traer todos los items activos
-    let allItemIds = [];
-    let offset = 0;
-    while (true) {
-      const data = await fetch(`${ML_API}/users/${uid}/items/search?status=active&limit=100&offset=${offset}`, { headers })
-        .then(r => r.json()).catch(() => ({}));
-      const results = data.results || [];
-      allItemIds = allItemIds.concat(results);
-      if (results.length < 100) break;
-      offset += 100;
-      if (offset > 2000) break;
-    }
+    // scan: la paginación por offset corta en 1000 y hay cuentas de +4.500 publicaciones
+    const allItemIds = await fetchAllActiveItemIds(uid, headers);
 
     // 2. Detalle de items en batch — filtrar solo FULL
     const fullItems = [];
@@ -7926,17 +7975,8 @@ app.get('/api/reporte/promos-especiales', requireAuth, async (req, res) => {
     const umbralEnvioARS = parseFloat(req.query.umbral_envio) || 8500;
 
     // 1. Traer todos los items activos
-    let allItemIds = [];
-    let offset = 0;
-    while (true) {
-      const data = await fetch(`${ML_API}/users/${uid}/items/search?status=active&limit=100&offset=${offset}`, { headers })
-        .then(r => r.json()).catch(() => ({}));
-      const results = data.results || [];
-      allItemIds = allItemIds.concat(results);
-      if (results.length < 100) break;
-      offset += 100;
-      if (offset > 2000) break;
-    }
+    // scan: la paginación por offset corta en 1000 y hay cuentas de +4.500 publicaciones
+    const allItemIds = await fetchAllActiveItemIds(uid, headers);
 
     // 2. Detalle por item — fetch individual a /items/{id} en paralelo.
     //    El batch /items?ids=... NO devuelve `installments`. ML expone el campo
@@ -9005,16 +9045,8 @@ app.get('/api/logistica', requireAuth, async (req, res) => {
 
     // ── Items activos: cuántos son FULL / FLEX / correo ──────────────────────
     // Fetch active items in batches
-    let allActiveIds = [];
-    let offset = 0;
-    while (true) {
-      const r = await fetch(`${ML_API}/users/${uid}/items/search?status=active&limit=100&offset=${offset}`, { headers }).then(r => r.json());
-      const ids = r.results || [];
-      allActiveIds = allActiveIds.concat(ids);
-      if (ids.length < 100 || allActiveIds.length >= (r.paging && r.paging.total || 0)) break;
-      offset += 100;
-      if (offset > 2000) break;
-    }
+    // scan: la paginación por offset corta en 1000 y hay cuentas de +4.500 publicaciones
+    const allActiveIds = await fetchAllActiveItemIds(uid, headers);
 
     // Fetch shipping info for all active items
     let fullCount = 0, flexCount = 0, correoCount = 0, otroCount = 0;
@@ -10079,10 +10111,10 @@ async function fetchAdsByItemMap(headers, fromDate, toDate, siteId = 'MLA') {
     const advertisers = advData.advertisers || [];
     if (!advertisers.length) return map;
     const adv = advertisers.find(a => a.site_id === siteId) || advertisers[0];
-    const ads = await fetchPadsAds(siteId, adv.advertiser_id, { ...headers, 'api-version': '2' },
-      { date_from: fromDate, date_to: toDate, metrics: 'cost' });
+    const ads = dedupAdsPorItem(await fetchPadsAds(siteId, adv.advertiser_id, { ...headers, 'api-version': '2' },
+      { date_from: fromDate, date_to: toDate, metrics: 'cost' }));
     ads.forEach(ad => {
-      if (ad.metrics?.cost > 0) map[ad.item_id] = (map[ad.item_id] || 0) + parseFloat(ad.metrics.cost);
+      if (ad.metrics?.cost > 0) map[ad.item_id] = parseFloat(ad.metrics.cost);
     });
   } catch(_) {}
   return map;
@@ -12992,80 +13024,96 @@ app.get('/api/analisis/umbrales', requireAuth, async (req, res) => {
     const uid = clRes.rows[0]?.ml_user_id;
     if (!uid) return res.status(400).json({ error: 'Cliente sin ML User ID' });
 
-    // 1. Obtener todos los IDs activos
-    const allIds = [];
-    let offset = 0;
-    while (allIds.length < 400) {
-      const r = await fetch(`${ML_API}/users/${uid}/items/search?status=active&limit=100&offset=${offset}`, { headers })
-        .then(r => r.json()).catch(() => ({}));
-      const ids = r.results || [];
-      allIds.push(...ids);
-      if (ids.length < 100) break;
-      offset += 100;
-    }
+    // 1. Obtener todos los IDs activos (scan: la paginación por offset corta en 1000
+    //    y hay cuentas de +4.500 publicaciones, ej. REDFISHOK)
+    const allIds = await fetchAllActiveItemIds(uid, headers);
 
-    // 2. Pass 1: batch ligero — precio de lista + logística para detectar candidatos
+    // 2. Pass 1: batch ligero — precio de lista + logística para detectar candidatos.
+    //    El precio de acá es el de lista: el real puede ser hasta un 30% menor por
+    //    promociones, así que se acepta el ítem si CUALQUIER precio de ese rango cae
+    //    en la ventana rentable de su escala.
+    const CLIFF_PISO_DESCUENTO = 0.70;
+    const esCandidato = (precio, isFull) => {
+      for (let idx = 1; idx < CARGO_FIJO_ESCALAS.length; idx++) {
+        const v = ventanaRentable(idx, isFull);
+        if (v && precio >= v.min && precio * CLIFF_PISO_DESCUENTO <= v.max) return true;
+      }
+      return false;
+    };
+
     const candidatos = [];
-    for (let i = 0; i < allIds.length; i += 20) {
-      const batch = allIds.slice(i, i + 20);
-      const data = await fetch(
-        `${ML_API}/items?ids=${batch.join(',')}&attributes=id,price,shipping,title,permalink,listing_type_id`,
-        { headers }
-      ).then(r => r.json()).catch(() => []);
-      (Array.isArray(data) ? data : []).forEach(r => {
-        if (r.code !== 200 || !r.body) return;
-        const b = r.body;
-        const precio = parseFloat(b.price) || 0;
-        const isFull = b.shipping?.logistic_type === 'fulfillment';
-        // Ampliar margen +20% para no perder ítems con descuento por encima del umbral real
-        if (getEscalaIdx(precio * 0.80) !== getEscalaIdx(precio) || getEscalaIdx(precio) > 0) {
-          candidatos.push({ id: b.id, precioLista: precio, isFull,
-            title: b.title, permalink: b.permalink, logistica: b.shipping?.logistic_type || 'unknown' });
-        }
-      });
+    let batchesFallidos = 0;
+    const pass1Batches = [];
+    for (let i = 0; i < allIds.length; i += 20) pass1Batches.push(allIds.slice(i, i + 20));
+    const PASS1_CONCURRENCY = 8;
+    for (let g = 0; g < pass1Batches.length; g += PASS1_CONCURRENCY) {
+      await Promise.all(pass1Batches.slice(g, g + PASS1_CONCURRENCY).map(async batch => {
+        const data = await fetch(
+          `${ML_API}/items?ids=${batch.join(',')}&attributes=id,price,shipping,title,permalink,listing_type_id`,
+          { headers }
+        ).then(r => r.json()).catch(() => null);
+        if (!Array.isArray(data)) { batchesFallidos++; return; }
+        data.forEach(r => {
+          if (r.code !== 200 || !r.body) return;
+          const b = r.body;
+          const precio = parseFloat(b.price) || 0;
+          const isFull = b.shipping?.logistic_type === 'fulfillment';
+          if (esCandidato(precio, isFull)) {
+            candidatos.push({ id: b.id, precioLista: precio, isFull,
+              title: b.title, permalink: b.permalink, logistica: b.shipping?.logistic_type || 'unknown' });
+          }
+        });
+      }));
     }
 
-    // Pass 2: fetch individual para candidatos — obtiene sale_price real
+    // Pass 2: fetch individual para candidatos — obtiene sale_price real.
+    //    Con concurrencia acotada: un Promise.all sobre todo el lote se come un 429 de
+    //    ML y los errores se perdían en silencio, devolviendo menos oportunidades de las
+    //    que hay sin avisar que faltaban.
     const oportunidades = [];
-    await Promise.all(candidatos.map(async c => {
-      try {
-        const [b, pricesResp] = await Promise.all([
-          fetch(`${ML_API}/items/${c.id}`, { headers }).then(r => r.json()),
-          fetch(`${ML_API}/items/${c.id}/prices`, { headers }).then(r => r.json()).catch(() => null),
-        ]);
-        if (b.error) return;
-        const basePrice  = parseFloat(b.price) || 0;
-        const origPrice  = b.original_price ? parseFloat(b.original_price) : null;
-        const saleRaw    = b.sale_price;
-        const salePrice  = saleRaw != null
-          ? (typeof saleRaw === 'object' ? parseFloat(saleRaw.amount || saleRaw.regular_amount || 0) : parseFloat(saleRaw))
-          : null;
-        const promoPrice = b.promotions?.[0]?.price ? parseFloat(b.promotions[0].price) : null;
-        // /items/{id}/prices puede tener el precio promocional
-        const pricesAmt  = pricesResp?.prices?.find(p => p.type === 'promotion' || p.type === 'standard')?.amount;
-        const pricesPromo = pricesResp?.prices?.filter(p => p.type !== 'standard')
-          .map(p => parseFloat(p.amount)).filter(v => v > 0);
-        const minPricesPromo = pricesPromo?.length ? Math.min(...pricesPromo) : null;
-        const candidates = [basePrice, salePrice, promoPrice, minPricesPromo].filter(v => v && v > 0);
-        const precio     = Math.min(...candidates);
-        const precioLista    = (origPrice && origPrice > precio) ? origPrice : basePrice;
-        const tieneDescuento = precio < precioLista;
-        const isFull  = b.shipping?.logistic_type === 'fulfillment';
-        const op = calcCliffOportunidad(precio, isFull);
-        if (!op) return;
-        oportunidades.push({
-          id:              b.id,
-          title:           b.title || c.title,
-          permalink:       b.permalink || c.permalink,
-          precio,
-          precio_lista:    tieneDescuento ? precioLista : null,
-          tiene_descuento: tieneDescuento,
-          is_full:         isFull,
-          logistica:       b.shipping?.logistic_type || c.logistica,
-          ...op,
-        });
-      } catch(e) {}
-    }));
+    let candidatosFallidos = 0;
+    const PASS2_CONCURRENCY = 10;
+    for (let g = 0; g < candidatos.length; g += PASS2_CONCURRENCY) {
+      await Promise.all(candidatos.slice(g, g + PASS2_CONCURRENCY).map(async c => {
+        try {
+          const [b, pricesResp] = await Promise.all([
+            fetch(`${ML_API}/items/${c.id}`, { headers }).then(r => r.json()),
+            fetch(`${ML_API}/items/${c.id}/prices`, { headers }).then(r => r.json()).catch(() => null),
+          ]);
+          if (b.error) return;
+          const basePrice  = parseFloat(b.price) || 0;
+          const origPrice  = b.original_price ? parseFloat(b.original_price) : null;
+          const saleRaw    = b.sale_price;
+          const salePrice  = saleRaw != null
+            ? (typeof saleRaw === 'object' ? parseFloat(saleRaw.amount || saleRaw.regular_amount || 0) : parseFloat(saleRaw))
+            : null;
+          const promoPrice = b.promotions?.[0]?.price ? parseFloat(b.promotions[0].price) : null;
+          // /items/{id}/prices puede tener el precio promocional
+          const pricesAmt  = pricesResp?.prices?.find(p => p.type === 'promotion' || p.type === 'standard')?.amount;
+          const pricesPromo = pricesResp?.prices?.filter(p => p.type !== 'standard')
+            .map(p => parseFloat(p.amount)).filter(v => v > 0);
+          const minPricesPromo = pricesPromo?.length ? Math.min(...pricesPromo) : null;
+          const candidates = [basePrice, salePrice, promoPrice, minPricesPromo].filter(v => v && v > 0);
+          const precio     = Math.min(...candidates);
+          const precioLista    = (origPrice && origPrice > precio) ? origPrice : basePrice;
+          const tieneDescuento = precio < precioLista;
+          const isFull  = b.shipping?.logistic_type === 'fulfillment';
+          const op = calcCliffOportunidad(precio, isFull);
+          if (!op) return;
+          oportunidades.push({
+            id:              b.id,
+            title:           b.title || c.title,
+            permalink:       b.permalink || c.permalink,
+            precio,
+            precio_lista:    tieneDescuento ? precioLista : null,
+            tiene_descuento: tieneDescuento,
+            is_full:         isFull,
+            logistica:       b.shipping?.logistic_type || c.logistica,
+            ...op,
+          });
+        } catch(e) { candidatosFallidos++; }
+      }));
+    }
 
     // 3. Historial de acciones (última por ítem)
     const accionesRes = await pool.query(
@@ -13097,7 +13145,15 @@ app.get('/api/analisis/umbrales', requireAuth, async (req, res) => {
     const otras   = oportunidades.filter(o => o.cargo_actual !== 0)
       .sort((a, b) => b.ahorro_x_venta - a.ahorro_x_venta);
 
-    res.json({ seguras, testear, otras, historial: historialRes.rows });
+    res.json({
+      seguras, testear, otras, historial: historialRes.rows,
+      cobertura: {
+        activas_escaneadas: allIds.length,
+        candidatos:         candidatos.length,
+        batches_fallidos:   batchesFallidos,
+        candidatos_fallidos: candidatosFallidos,
+      },
+    });
   } catch(e) {
     console.error('[CLIFF FINDER]', e.message);
     res.status(500).json({ error: e.message });

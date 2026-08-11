@@ -6362,6 +6362,7 @@ function _lqpCols() {
     { key: 'mla_id',    label: 'MLA',            tipo: 'txt',   w: 15, align: 'left' },
     { key: 'sku',       label: 'SKU',            tipo: 'txt',   w: 14, align: 'left', soloExcel: true },
     { key: 'title',     label: 'Producto',       tipo: 'txt',   w: 45, align: 'left' },
+    { key: 'fotos_meses', label: 'Meses desde última foto', labelUI: 'Fotos', tipo: 'meses', w: 16 },
     { key: 'units',     label: 'Unidades',       labelUI: 'U', tipo: 'num', w: 9 },
     { key: 'units_full',label: 'U. FULL',        tipo: 'num',   w: 9,  soloExcel: true },
     { key: 'units_flex',label: 'U. Flex',        tipo: 'num',   w: 9,  soloExcel: true },
@@ -6454,7 +6455,8 @@ function renderLoQuePaso() {
     const col    = active ? 'var(--accent)' : c.destacada ? 'var(--text)' : 'var(--muted)';
     return `<th onclick="sortLoQuePaso('${c.key}')"
       style="padding:6px 6px;text-align:${c.align || 'right'};font-size:10px;font-weight:${c.destacada ? '800' : '600'};white-space:nowrap;cursor:pointer;user-select:none;
-      color:${col};position:sticky;top:0;background:var(--surface2);z-index:2;border-bottom:2px solid ${c.destacada ? 'var(--accent)' : 'var(--border)'}">${c.labelUI || c.label}${arrow}</th>`;
+      color:${col};position:sticky;top:0;background:var(--surface2);z-index:2;border-bottom:2px solid ${c.destacada ? 'var(--accent)' : 'var(--border)'}"
+      ${c.tipo === 'meses' ? 'title="Hace cuánto que no se sube una foto nueva. Sale de la fecha de subida de cada imagen en ML."' : ''}>${c.labelUI || c.label}${arrow}</th>`;
   };
 
   const celda = (c, p) => {
@@ -6471,7 +6473,12 @@ function renderLoQuePaso() {
     let txt, color = 'var(--text)';
     if (c.tipo === 'money')      txt = fM(v);
     else if (c.tipo === 'pct')   txt = v == null ? '—' : fP(v);
+    else if (c.tipo === 'meses') txt = v == null ? '—' : (v === 0 ? 'este mes' : v + ' m');
     else                         txt = (v == null ? '—' : Number(v).toLocaleString('es-AR'));
+
+    // Fotos: cuanto más viejas, más fuerte el aviso. 12+ meses es una publicación abandonada.
+    if (c.tipo === 'meses' && v != null)
+      color = v >= 12 ? '#ff5252' : v >= 6 ? '#ff9100' : 'var(--muted)';
 
     if (c.costo && v > 0)        color = '#ff9100';
     if (c.sub)                   color = v >= 0 ? '#4ade80' : '#ff5252';
@@ -7070,7 +7077,7 @@ async function loadUmbrales(forceRefresh) {
 
   if (_umbralesData && !forceRefresh) { renderUmbrales(_umbralesData); return; }
 
-  el.innerHTML = '<div style="padding:40px;text-align:center;color:var(--muted)">Analizando publicaciones... esto puede tardar unos segundos</div>';
+  el.innerHTML = '<div style="padding:40px;text-align:center;color:var(--muted)">Analizando el catálogo completo... en cuentas con miles de publicaciones puede tardar un minuto</div>';
   try {
     const data = await apiCall('GET', `/api/analisis/umbrales?client_id=${client.id}`);
     _umbralesData = data;
@@ -7083,6 +7090,7 @@ async function loadUmbrales(forceRefresh) {
 function renderUmbrales(data) {
   const el = document.getElementById('umbralesContent');
   if (!el) return;
+  if (!data) { el.innerHTML = '<p style="color:var(--muted);padding:20px">No se pudo leer el catálogo. Revisá la conexión del cliente con Mercado Libre.</p>'; return; }
   const client = getActiveClient();
 
   // Cross-reference with by_product for units sold
@@ -7107,6 +7115,17 @@ function renderUmbrales(data) {
     .reduce((s, o) => s + (o.ahorro_mensual || 0), 0);
   const fmt$ = n => n != null ? '$' + Math.round(n).toLocaleString('es-AR') : '—';
 
+  // Cuánto del catálogo se llegó a mirar. Si ML rechazó lotes, decirlo: un resultado
+  // incompleto que se muestra como completo hace tomar decisiones sobre datos que no están.
+  const cob = data.cobertura;
+  const fallidos = cob ? (cob.batches_fallidos || 0) + (cob.candidatos_fallidos || 0) : 0;
+  const cobertura = !cob ? '' :
+    `<p style="margin:4px 0 0;font-size:11px;color:${fallidos ? '#f59e0b' : 'var(--muted)'}">
+       Escaneadas ${cob.activas_escaneadas.toLocaleString('es-AR')} publicaciones activas ·
+       ${cob.candidatos.toLocaleString('es-AR')} en zona de umbral
+       ${fallidos ? `· ⚠️ ${fallidos} consultas rechazadas por ML: puede faltar alguna` : ''}
+     </p>`;
+
   const tabBtn = (id, label, active) =>
     `<button onclick="switchUmbralesTab('${id}')" id="uTab-${id}"
       style="padding:7px 16px;font-size:12px;font-weight:600;border:none;border-radius:6px;cursor:pointer;font-family:var(--font-b);
@@ -7119,6 +7138,7 @@ function renderUmbrales(data) {
       <div>
         <h3 style="margin:0 0 4px;font-family:var(--font-b);font-size:15px">🎯 Detector de Umbrales ML</h3>
         <p style="margin:0;font-size:12px;color:var(--muted)">Identifica publicaciones donde bajar el precio aumenta la ganancia neta</p>
+        ${cobertura}
       </div>
       <button onclick="loadUmbrales(true)" class="sync-btn" style="background:var(--surface2)">🔄 Actualizar</button>
     </div>
