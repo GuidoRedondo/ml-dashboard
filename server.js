@@ -11093,31 +11093,22 @@ app.post('/api/proxy-ml-write', requireAuth, async (req, res) => {
 
     // 1) Solo PUT sobre /items/MLA... — nada de borrar ni tocar otros recursos
     const verb = (method || 'PUT').toUpperCase();
-    if (verb !== 'PUT' && verb !== 'POST') return res.status(403).json({ error: 'Solo se permite PUT o POST' });
-    // Se admite el item directo o el user_product: cuando la publicacion nunca vendio,
-    // ML guarda las medidas de empaque en el user_product y rechaza el PUT sobre /items.
-    const mItem = /^\/items\/(MLA\d+)$/.exec(path);
-    const mUP   = /^\/user-products\/(MLAU\d+)(\/attributes)?$/.exec(path);
-    if (!mItem && !mUP) {
-      return res.status(403).json({ error: 'Solo se permite PUT /items/{MLA} o /user-products/{MLAU}' });
-    }
-    const itemId = (mItem || mUP)[1];
+    if (verb !== 'PUT') return res.status(403).json({ error: 'Solo se permite PUT' });
+    const m = /^\/items\/(MLA\d+)$/.exec(path);
+    if (!m) return res.status(403).json({ error: 'Solo se permite PUT /items/{MLA}' });
+    const itemId = m[1];
 
     const clientRes = await pool.query('SELECT * FROM clients WHERE id=$1', [client_id]);
     if (!clientRes.rows.length) return res.status(404).json({ error: 'Cliente no encontrado' });
     const client = clientRes.rows[0];
 
-    // 2) Ownership: el recurso tiene que ser de la cuenta de ESE cliente
-    const urlChk = mItem
-      ? `${ML_API}/items/${itemId}?attributes=id,seller_id`
-      : `${ML_API}/user-products/${itemId}`;
-    const chk = await fetch(urlChk, {
+    // 2) Ownership: el item tiene que ser de la cuenta de ESE cliente
+    const chk = await fetch(`${ML_API}/items/${itemId}?attributes=id,seller_id`, {
       headers: { 'Authorization': `Bearer ${client.access_token}` }
     });
     const chkData = await chk.json();
     if (!chk.ok) return res.status(chk.status).json({ error: 'No se pudo verificar el item', detail: chkData });
-    const duenio = mItem ? chkData.seller_id : chkData.user_id;
-    if (String(duenio) !== String(client.ml_user_id)) {
+    if (String(chkData.seller_id) !== String(client.ml_user_id)) {
       return res.status(403).json({ error: 'El item no pertenece a este cliente' });
     }
 
@@ -11136,9 +11127,9 @@ app.post('/api/proxy-ml-write', requireAuth, async (req, res) => {
     }
 
     const r = await fetch(`${ML_API}${path}`, {
-      method: verb,
+      method: 'PUT',
       headers: { 'Authorization': `Bearer ${client.access_token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify(path.endsWith('/attributes') ? attrs : { attributes: attrs })
+      body: JSON.stringify({ attributes: attrs })
     });
     const data = await r.json();
     console.log(`[proxy-ml-write] ${req.user?.username} → ${itemId} ${r.status}`,
