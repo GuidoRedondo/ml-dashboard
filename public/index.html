@@ -4568,6 +4568,107 @@ const MEDIDAS_PROBLEMAS = {
                          ayuda: 'Pasa a "acordar con el comprador": no es un error, es para tenerlo en cuenta' },
 };
 
+// Tipos de problema seleccionados como filtro. Vacío = mostrar todo.
+let _medidasFiltro = new Set();
+
+function medidasVisibles() {
+  const data = window._medidasEnvioData || [];
+  return _medidasFiltro.size ? data.filter(i => _medidasFiltro.has(i.problema)) : data;
+}
+
+function toggleMedidasFiltro(problema) {
+  if (_medidasFiltro.has(problema)) _medidasFiltro.delete(problema);
+  else _medidasFiltro.add(problema);
+  renderMedidasEnvioTabla();
+}
+
+function limpiarMedidasFiltro() {
+  _medidasFiltro.clear();
+  renderMedidasEnvioTabla();
+}
+
+function renderMedidasEnvioChips() {
+  const cont = document.getElementById('medidasEnvioChips');
+  if (!cont) return;
+  const data = window._medidasEnvioData || [];
+  const porTipo = {};
+  data.forEach(i => { porTipo[i.problema] = (porTipo[i.problema] || 0) + 1; });
+
+  const todas = `<div onclick="limpiarMedidasFiltro()" title="Mostrar todas"
+    style="display:flex;align-items:center;gap:6px;padding:6px 12px;cursor:pointer;user-select:none;border-radius:8px;
+           background:${_medidasFiltro.size ? 'var(--surface2)' : 'var(--accent)'};
+           border:1px solid ${_medidasFiltro.size ? 'var(--border)' : 'var(--accent)'}">
+    <span style="font-size:11px;color:${_medidasFiltro.size ? 'var(--muted)' : '#fff'}">Todas</span>
+    <strong style="font-size:13px;color:${_medidasFiltro.size ? 'var(--text)' : '#fff'}">${data.length}</strong>
+  </div>`;
+
+  const chips = Object.keys(MEDIDAS_PROBLEMAS).filter(k => porTipo[k]).map(k => {
+    const c = MEDIDAS_PROBLEMAS[k];
+    const on = _medidasFiltro.has(k);
+    return `<div onclick="toggleMedidasFiltro('${k}')" title="${c.ayuda} — clic para filtrar"
+      style="display:flex;align-items:center;gap:6px;padding:6px 12px;cursor:pointer;user-select:none;border-radius:8px;
+             background:${on ? c.color : 'var(--surface2)'};border:1px solid ${on ? c.color : 'var(--border)'}">
+      <span style="font-size:14px">${c.icono}</span>
+      <span style="font-size:11px;color:${on ? '#fff' : 'var(--muted)'}">${c.label}</span>
+      <strong style="font-size:13px;color:${on ? '#fff' : c.color}">${porTipo[k]}</strong>
+    </div>`;
+  }).join('');
+
+  cont.innerHTML = todas + chips;
+}
+
+function renderMedidasEnvioTabla() {
+  renderMedidasEnvioChips();
+  const cont = document.getElementById('medidasEnvioTabla');
+  if (!cont) return;
+  const items = medidasVisibles();
+  const multi = new Set((window._medidasEnvioData || []).map(i => i.cuenta)).size > 1;
+
+  if (!items.length) {
+    cont.innerHTML = `<div style="padding:18px;text-align:center;color:var(--muted);font-size:12px">
+      Ninguna publicación con ese filtro · <a href="#" onclick="limpiarMedidasFiltro();return false" style="color:var(--accent)">ver todas</a></div>`;
+    return;
+  }
+
+  const fmtPaq = p => (p && p.largo != null)
+    ? `${Math.round(p.largo)}×${Math.round(p.ancho)}×${Math.round(p.alto)} cm · ${Math.round(p.peso)} g`
+    : '<span style="color:#dc2626">sin declarar</span>';
+
+  const rows = items.map(i => {
+    const c = MEDIDAS_PROBLEMAS[i.problema] || { icono: '•', label: i.problema, color: 'var(--muted)' };
+    const titulo = (i.title || '').length > 58 ? i.title.slice(0,58) + '…' : (i.title || '—');
+    const vend = i.vendidas ? `<span style="font-weight:600">${i.vendidas}</span>` : `<span style="color:var(--muted)">—</span>`;
+    return `<tr style="border-bottom:1px solid var(--border)">
+      ${multi ? `<td style="padding:8px;font-size:11px;color:var(--muted);white-space:nowrap">${i.cuenta}</td>` : ''}
+      <td style="padding:8px;font-size:11px;white-space:nowrap">
+        <a href="https://articulo.mercadolibre.com.ar/${(i.id||'').replace('MLA','MLA-')}" target="_blank"
+           style="color:var(--accent);text-decoration:none">${i.id}</a></td>
+      <td style="padding:8px;font-size:12px;color:var(--text)">${titulo}</td>
+      <td style="padding:8px;font-size:11px;white-space:nowrap;color:${i.status === 'active' ? 'var(--muted)' : '#f59e0b'}">${MEDIDAS_ESTADOS[i.status] || i.status || '—'}</td>
+      <td style="padding:8px;font-size:11px;white-space:nowrap;color:${c.color}">${c.icono} ${c.label}</td>
+      <td style="padding:8px;font-size:11px;color:var(--muted)">${i.detalle || ''}</td>
+      <td style="padding:8px;font-size:11px;white-space:nowrap">${fmtPaq(i.paquete)}</td>
+      <td style="padding:8px;font-size:12px;text-align:center;white-space:nowrap">${vend}</td>
+    </tr>`;
+  }).join('');
+
+  cont.innerHTML = `<div style="overflow-x:auto">
+      <table style="width:100%;border-collapse:collapse">
+        <thead><tr style="border-bottom:2px solid var(--border)">
+          ${multi ? '<th style="padding:8px;text-align:left;font-size:11px;color:var(--muted)">Cuenta</th>' : ''}
+          <th style="padding:8px;text-align:left;font-size:11px;color:var(--muted)">MLA</th>
+          <th style="padding:8px;text-align:left;font-size:11px;color:var(--muted)">Publicación</th>
+          <th style="padding:8px;text-align:left;font-size:11px;color:var(--muted)">Estado</th>
+          <th style="padding:8px;text-align:left;font-size:11px;color:var(--muted)">Problema</th>
+          <th style="padding:8px;text-align:left;font-size:11px;color:var(--muted)">Detalle</th>
+          <th style="padding:8px;text-align:left;font-size:11px;color:var(--muted)">Paquete declarado</th>
+          <th style="padding:8px;text-align:center;font-size:11px;color:var(--muted)">Vendidas</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+}
+
 async function chequearMedidasEnvio(refresh) {
   const panel = document.getElementById('medidasEnvioPanel');
   if (!panel) return;
@@ -4591,13 +4692,14 @@ async function chequearMedidasEnvio(refresh) {
   const cacheado  = ok.length > 0 && ok.every(r => r.d.cached);
   const generado  = ok.map(r => r.d.generado).sort().pop();
   window._medidasEnvioData = items;
+  _medidasFiltro.clear();
 
   const cerrar     = `<button class="sync-btn" onclick="document.getElementById('medidasEnvioPanel').style.display='none'" style="padding:4px 10px;font-size:11px">✕ Cerrar</button>`;
   const actualizar = `<button class="sync-btn" onclick="chequearMedidasEnvio(true)" style="padding:4px 10px;font-size:11px">🔄 Actualizar</button>`;
   const avisoFallidas = fallidas.length
     ? `<div style="font-size:11px;color:#dc2626;margin-top:8px">No se pudo revisar: ${fallidas.join(', ')} (token vencido o sin permisos)</div>` : '';
   const pie = generado
-    ? `<div style="font-size:10px;color:var(--muted);margin-top:10px">Datos ${cacheado ? 'cacheados' : 'frescos'} · ${new Date(generado).toLocaleString('es-AR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})} · se revisaron ${revisadas} publicaciones activas</div>` : '';
+    ? `<div style="font-size:10px;color:var(--muted);margin-top:10px">Datos ${cacheado ? 'cacheados' : 'frescos'} · ${new Date(generado).toLocaleString('es-AR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})} · se revisaron ${revisadas} publicaciones activas, pausadas y en revisión</div>` : '';
 
   if (!items.length) {
     panel.innerHTML = `<div style="background:var(--surface);border:1px solid var(--border);border-left:4px solid #16a34a;border-radius:12px;padding:18px 20px">
@@ -4608,47 +4710,8 @@ async function chequearMedidasEnvio(refresh) {
     return;
   }
 
-  const multi   = cuentas.length > 1;
-  const graves  = items.filter(i => i.severidad === 'critical').length;
-  const porTipo = {};
-  items.forEach(i => { (porTipo[i.problema] = porTipo[i.problema] || []).push(i); });
-
-  const chips = Object.keys(MEDIDAS_PROBLEMAS)
-    .filter(k => porTipo[k])
-    .map(k => {
-      const c = MEDIDAS_PROBLEMAS[k];
-      return `<div style="display:flex;align-items:center;gap:6px;padding:6px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:8px" title="${c.ayuda}">
-        <span style="font-size:14px">${c.icono}</span>
-        <span style="font-size:11px;color:var(--muted)">${c.label}</span>
-        <strong style="font-size:13px;color:${c.color}">${porTipo[k].length}</strong>
-      </div>`;
-    }).join('');
-
-  const fmtPaq = p => (p && p.largo != null)
-    ? `${Math.round(p.largo)}×${Math.round(p.ancho)}×${Math.round(p.alto)} cm · ${Math.round(p.peso)} g`
-    : '<span style="color:#dc2626">sin declarar</span>';
-
-  const rows = items.map(i => {
-    const c = MEDIDAS_PROBLEMAS[i.problema] || { icono: '•', label: i.problema, color: 'var(--muted)' };
-    const titulo = (i.title || '').length > 58 ? i.title.slice(0,58) + '…' : (i.title || '—');
-    const vend = i.vendidas
-      ? `<span style="font-weight:600">${i.vendidas}</span>`
-      : `<span style="color:var(--muted)">—</span>`;
-    return `<tr style="border-bottom:1px solid var(--border)">
-      ${multi ? `<td style="padding:8px;font-size:11px;color:var(--muted);white-space:nowrap">${i.cuenta}</td>` : ''}
-      <td style="padding:8px;font-size:11px;white-space:nowrap">
-        <a href="https://articulo.mercadolibre.com.ar/${(i.id||'').replace('MLA','MLA-')}" target="_blank"
-           style="color:var(--accent);text-decoration:none">${i.id}</a></td>
-      <td style="padding:8px;font-size:12px;color:var(--text)">${titulo}</td>
-      <td style="padding:8px;font-size:11px;white-space:nowrap;color:${i.status === 'active' ? 'var(--muted)' : '#f59e0b'}">${MEDIDAS_ESTADOS[i.status] || i.status || '—'}</td>
-      <td style="padding:8px;font-size:11px;white-space:nowrap;color:${c.color}">${c.icono} ${c.label}</td>
-      <td style="padding:8px;font-size:11px;color:var(--muted)">${i.detalle || ''}</td>
-      <td style="padding:8px;font-size:11px;white-space:nowrap">${fmtPaq(i.paquete)}</td>
-      <td style="padding:8px;font-size:12px;text-align:center;white-space:nowrap">${vend}</td>
-    </tr>`;
-  }).join('');
-
-  const borde = graves ? '#dc2626' : '#f59e0b';
+  const graves = items.filter(i => i.severidad === 'critical').length;
+  const borde  = graves ? '#dc2626' : '#f59e0b';
   panel.innerHTML = `<div style="background:var(--surface);border:1px solid var(--border);border-left:4px solid ${borde};border-radius:12px;padding:18px 20px">
     <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px">
       <div style="flex:1;font-size:15px;font-weight:700;color:${borde};font-family:var(--font-b)">
@@ -4657,30 +4720,17 @@ async function chequearMedidasEnvio(refresh) {
       <button class="sync-btn" onclick="exportMedidasEnvioExcel()" style="padding:4px 10px;font-size:11px">📥 Excel</button>
       ${actualizar} ${cerrar}
     </div>
-    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">${chips}</div>
+    <div id="medidasEnvioChips" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px"></div>
     <div style="font-size:12px;color:var(--muted);margin-bottom:12px">
       ML compara la medida del producto de la ficha técnica contra el paquete declarado. Si no cierra, marca la publicación
-      y puede pausar las ventas de la cuenta por "paquete más grande de lo declarado".
+      y puede pausar las ventas de la cuenta por "paquete más grande de lo declarado". Tocá una tarjeta para filtrar.
     </div>
-    <div style="overflow-x:auto">
-      <table style="width:100%;border-collapse:collapse">
-        <thead><tr style="border-bottom:2px solid var(--border)">
-          ${multi ? '<th style="padding:8px;text-align:left;font-size:11px;color:var(--muted)">Cuenta</th>' : ''}
-          <th style="padding:8px;text-align:left;font-size:11px;color:var(--muted)">MLA</th>
-          <th style="padding:8px;text-align:left;font-size:11px;color:var(--muted)">Publicación</th>
-          <th style="padding:8px;text-align:left;font-size:11px;color:var(--muted)">Estado</th>
-          <th style="padding:8px;text-align:left;font-size:11px;color:var(--muted)">Problema</th>
-          <th style="padding:8px;text-align:left;font-size:11px;color:var(--muted)">Detalle</th>
-          <th style="padding:8px;text-align:left;font-size:11px;color:var(--muted)">Paquete declarado</th>
-          <th style="padding:8px;text-align:center;font-size:11px;color:var(--muted)">Vendidas</th>
-        </tr></thead>
-        <tbody>${rows}</tbody>
-      </table>
-    </div>${avisoFallidas}${pie}</div>`;
+    <div id="medidasEnvioTabla"></div>${avisoFallidas}${pie}</div>`;
+  renderMedidasEnvioTabla();
 }
 
 function exportMedidasEnvioExcel() {
-  const data = window._medidasEnvioData || [];
+  const data = medidasVisibles();
   if (!data.length) { showToast('No hay datos para exportar'); return; }
   const rows = data.map(i => ({
     Cuenta: i.cuenta || '',
@@ -4705,7 +4755,7 @@ function exportMedidasEnvioExcel() {
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Medidas de envio');
   XLSX.writeFile(wb, `Medidas_envio_${new Date().toISOString().slice(0,10)}.xlsx`);
-  showToast('✅ Excel descargado');
+  showToast(`✅ Excel descargado (${rows.length} filas)`);
 }
 
 function exportFullSinStockExcel() {
