@@ -9734,6 +9734,8 @@ function resumirMedidas(hits) {
 
 app.get('/api/publicaciones/medidas-envio', requireAuth, async (req, res) => {
   try {
+    // Diagnóstico interno: el cliente no lo consulta por su cuenta (ver applyPermissions)
+    if (req.user.role === 'cliente') return res.status(403).json({ error: 'Solo consultores' });
     const clientId = parseInt(req.query.client_id);
     if (!clientId) return res.status(400).json({ error: 'client_id requerido' });
     const cached = _medidasEnvioCache.get(clientId);
