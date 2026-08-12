@@ -1202,6 +1202,8 @@ tbody td {
         <h2 style="margin:0;font-family:var(--font-b);flex:1">Publicaciones</h2>
         <button class="sync-btn" onclick="chequearFullSinStock(false)" style="background:#f59e0b;color:#111"
           title="Publicaciones que se siguen ofreciendo por FULL con el inventario de fulfillment en 0 y stock en tu depósito">🏬 FULL en cero</button>
+        <button class="sync-btn" onclick="chequearMedidasEnvio(false)" style="background:#0ea5e9;color:#fff"
+          title="Publicaciones cuyas medidas de envío declaradas no cierran: ML puede marcarlas o pausar las ventas de la cuenta">📏 Medidas de envío</button>
         <button class="sync-btn" onclick="exportPubsExcel()">📥 Excel</button>
         <button class="sync-btn" onclick="exportarCMV()" style="background:#6366f1;color:#fff" title="Descargar Excel con MLA, título, precio, facturación y costo actual para completar">💰 Descargar CMV</button>
         <label style="margin:0">
@@ -1210,6 +1212,7 @@ tbody td {
         </label>
       </div>
       <div id="fullSinStockPanel" style="display:none;margin-bottom:20px"></div>
+      <div id="medidasEnvioPanel" style="display:none;margin-bottom:20px"></div>
       <div id="publicacionesContent"></div>
     </div>
 
@@ -4547,6 +4550,158 @@ async function chequearFullSinStock(refresh) {
         <tbody>${rows}</tbody>
       </table>
     </div>${avisoFallidas}${pie}</div>`;
+}
+
+const MEDIDAS_PROBLEMAS = {
+  sin_medidas:         { icono: '🚫', label: 'Sin medidas declaradas', color: '#dc2626',
+                         ayuda: 'ML completa con su base maestra y ahí empiezan las sanciones' },
+  no_entra:            { icono: '📐', label: 'El producto no entra en el paquete', color: '#dc2626',
+                         ayuda: 'Es lo que ML marca como "medidas y peso para revisar"' },
+  ml_midio_mas_grande: { icono: '⚖️', label: 'ML lo midió más grande', color: '#dc2626',
+                         ayuda: 'ML ya pesó el paquete en su depósito y no coincide con lo declarado' },
+  ficha_sospechosa:    { icono: '📋', label: 'La ficha mide más del doble que el paquete', color: '#f59e0b',
+                         ayuda: 'Casi siempre la ficha tiene la medida del producto desplegado, no del paquete' },
+  tramos_sin_declarar: { icono: '🎣', label: 'Falta declarar la cantidad de tramos', color: '#f59e0b',
+                         ayuda: 'Entra desarmado, pero sin los tramos cargados ML compara el largo armado' },
+  fuera_me2:           { icono: '📦', label: 'Fuera de Mercado Envíos por tamaño', color: '#6b7280',
+                         ayuda: 'Pasa a "acordar con el comprador": no es un error, es para tenerlo en cuenta' },
+};
+
+async function chequearMedidasEnvio(refresh) {
+  const panel = document.getElementById('medidasEnvioPanel');
+  if (!panel) return;
+  const cuentas = state.accounts.filter(a => a.data);
+  if (!cuentas.length) { showToast('Sincronizá primero'); return; }
+  panel.style.display = 'block';
+  panel.innerHTML = `<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:24px;text-align:center;color:var(--muted);font-size:13px">
+    ⏳ Revisando las medidas declaradas${cuentas.length > 1 ? ` de ${cuentas.length} cuentas` : ''}… en cuentas grandes puede tardar un par de minutos</div>`;
+
+  const resultados = await Promise.all(cuentas.map(async acc => {
+    try {
+      const d = await apiCall('GET', `/api/publicaciones/medidas-envio?client_id=${acc.id}${refresh ? '&refresh=1' : ''}`);
+      return { acc, d };
+    } catch(e) { return { acc, d: null }; }
+  }));
+
+  const fallidas  = resultados.filter(r => !r.d || r.d.error).map(r => r.acc.name);
+  const ok        = resultados.filter(r => r.d && !r.d.error);
+  const items     = ok.flatMap(r => (r.d.items || []).map(i => ({ ...i, cuenta: r.acc.name })));
+  const revisadas = ok.reduce((s, r) => s + (r.d.revisadas || 0), 0);
+  const cacheado  = ok.length > 0 && ok.every(r => r.d.cached);
+  const generado  = ok.map(r => r.d.generado).sort().pop();
+  window._medidasEnvioData = items;
+
+  const cerrar     = `<button class="sync-btn" onclick="document.getElementById('medidasEnvioPanel').style.display='none'" style="padding:4px 10px;font-size:11px">✕ Cerrar</button>`;
+  const actualizar = `<button class="sync-btn" onclick="chequearMedidasEnvio(true)" style="padding:4px 10px;font-size:11px">🔄 Actualizar</button>`;
+  const avisoFallidas = fallidas.length
+    ? `<div style="font-size:11px;color:#dc2626;margin-top:8px">No se pudo revisar: ${fallidas.join(', ')} (token vencido o sin permisos)</div>` : '';
+  const pie = generado
+    ? `<div style="font-size:10px;color:var(--muted);margin-top:10px">Datos ${cacheado ? 'cacheados' : 'frescos'} · ${new Date(generado).toLocaleString('es-AR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})} · se revisaron ${revisadas} publicaciones activas</div>` : '';
+
+  if (!items.length) {
+    panel.innerHTML = `<div style="background:var(--surface);border:1px solid var(--border);border-left:4px solid #16a34a;border-radius:12px;padding:18px 20px">
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <div style="flex:1;font-size:14px;font-weight:600;color:#16a34a;font-family:var(--font-b)">✅ Todas las publicaciones tienen las medidas de envío bien declaradas</div>
+        ${actualizar} ${cerrar}
+      </div>${avisoFallidas}${pie}</div>`;
+    return;
+  }
+
+  const multi   = cuentas.length > 1;
+  const graves  = items.filter(i => i.severidad === 'critical').length;
+  const porTipo = {};
+  items.forEach(i => { (porTipo[i.problema] = porTipo[i.problema] || []).push(i); });
+
+  const chips = Object.keys(MEDIDAS_PROBLEMAS)
+    .filter(k => porTipo[k])
+    .map(k => {
+      const c = MEDIDAS_PROBLEMAS[k];
+      return `<div style="display:flex;align-items:center;gap:6px;padding:6px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:8px" title="${c.ayuda}">
+        <span style="font-size:14px">${c.icono}</span>
+        <span style="font-size:11px;color:var(--muted)">${c.label}</span>
+        <strong style="font-size:13px;color:${c.color}">${porTipo[k].length}</strong>
+      </div>`;
+    }).join('');
+
+  const fmtPaq = p => (p && p.largo != null)
+    ? `${Math.round(p.largo)}×${Math.round(p.ancho)}×${Math.round(p.alto)} cm · ${Math.round(p.peso)} g`
+    : '<span style="color:#dc2626">sin declarar</span>';
+
+  const rows = items.map(i => {
+    const c = MEDIDAS_PROBLEMAS[i.problema] || { icono: '•', label: i.problema, color: 'var(--muted)' };
+    const titulo = (i.title || '').length > 58 ? i.title.slice(0,58) + '…' : (i.title || '—');
+    const vend = i.vendidas
+      ? `<span style="font-weight:600">${i.vendidas}</span>`
+      : `<span style="color:var(--muted)">—</span>`;
+    return `<tr style="border-bottom:1px solid var(--border)">
+      ${multi ? `<td style="padding:8px;font-size:11px;color:var(--muted);white-space:nowrap">${i.cuenta}</td>` : ''}
+      <td style="padding:8px;font-size:11px;white-space:nowrap">
+        <a href="https://articulo.mercadolibre.com.ar/${(i.id||'').replace('MLA','MLA-')}" target="_blank"
+           style="color:var(--accent);text-decoration:none">${i.id}</a></td>
+      <td style="padding:8px;font-size:12px;color:var(--text)">${titulo}</td>
+      <td style="padding:8px;font-size:11px;white-space:nowrap;color:${c.color}">${c.icono} ${c.label}</td>
+      <td style="padding:8px;font-size:11px;color:var(--muted)">${i.detalle || ''}</td>
+      <td style="padding:8px;font-size:11px;white-space:nowrap">${fmtPaq(i.paquete)}</td>
+      <td style="padding:8px;font-size:12px;text-align:center;white-space:nowrap">${vend}</td>
+    </tr>`;
+  }).join('');
+
+  const borde = graves ? '#dc2626' : '#f59e0b';
+  panel.innerHTML = `<div style="background:var(--surface);border:1px solid var(--border);border-left:4px solid ${borde};border-radius:12px;padding:18px 20px">
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px">
+      <div style="flex:1;font-size:15px;font-weight:700;color:${borde};font-family:var(--font-b)">
+        📏 ${items.length} publicación${items.length !== 1 ? 'es' : ''} para revisar${graves ? ` — ${graves} grave${graves !== 1 ? 's' : ''}` : ''}
+      </div>
+      <button class="sync-btn" onclick="exportMedidasEnvioExcel()" style="padding:4px 10px;font-size:11px">📥 Excel</button>
+      ${actualizar} ${cerrar}
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">${chips}</div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:12px">
+      ML compara la medida del producto de la ficha técnica contra el paquete declarado. Si no cierra, marca la publicación
+      y puede pausar las ventas de la cuenta por "paquete más grande de lo declarado".
+    </div>
+    <div style="overflow-x:auto">
+      <table style="width:100%;border-collapse:collapse">
+        <thead><tr style="border-bottom:2px solid var(--border)">
+          ${multi ? '<th style="padding:8px;text-align:left;font-size:11px;color:var(--muted)">Cuenta</th>' : ''}
+          <th style="padding:8px;text-align:left;font-size:11px;color:var(--muted)">MLA</th>
+          <th style="padding:8px;text-align:left;font-size:11px;color:var(--muted)">Publicación</th>
+          <th style="padding:8px;text-align:left;font-size:11px;color:var(--muted)">Problema</th>
+          <th style="padding:8px;text-align:left;font-size:11px;color:var(--muted)">Detalle</th>
+          <th style="padding:8px;text-align:left;font-size:11px;color:var(--muted)">Paquete declarado</th>
+          <th style="padding:8px;text-align:center;font-size:11px;color:var(--muted)">Vendidas</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>${avisoFallidas}${pie}</div>`;
+}
+
+function exportMedidasEnvioExcel() {
+  const data = window._medidasEnvioData || [];
+  if (!data.length) { showToast('No hay datos para exportar'); return; }
+  const rows = data.map(i => ({
+    Cuenta: i.cuenta || '',
+    MLA: i.id,
+    Publicacion: i.title || '',
+    Problema: (MEDIDAS_PROBLEMAS[i.problema] || {}).label || i.problema,
+    Gravedad: i.severidad,
+    Detalle: i.detalle || '',
+    'Largo cm': i.paquete?.largo ?? '',
+    'Ancho cm': i.paquete?.ancho ?? '',
+    'Alto cm':  i.paquete?.alto  ?? '',
+    'Peso g':   i.paquete?.peso  ?? '',
+    'Ficha atributo': i.ficha?.atributo || '',
+    'Ficha cm': i.ficha?.cm ?? '',
+    Tramos: i.tramos ?? '',
+    'Faltan cm': i.faltan_cm ?? '',
+    Logistica: i.logistic_type || '',
+    Vendidas: i.vendidas || 0,
+    Link: `https://articulo.mercadolibre.com.ar/${(i.id||'').replace('MLA','MLA-')}`,
+  }));
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Medidas de envio');
+  XLSX.writeFile(wb, `Medidas_envio_${new Date().toISOString().slice(0,10)}.xlsx`);
+  showToast('✅ Excel descargado');
 }
 
 function exportFullSinStockExcel() {
@@ -18487,6 +18642,7 @@ const CI_REGLAS_LABELS = {
   anuncio_sangrando:    { titulo: 'Anuncio sangrando',      desc: 'Ítems en publi con ACOS por encima del umbral durante N días consecutivos' },
   oportunidad_escalable:{ titulo: 'Oportunidad escalable',  desc: 'SKUs con alta tasa de conversión (CVR) y baja inversión en publicidad' },
   full_sin_stock_con_deposito: { titulo: 'FULL en cero con stock propio', desc: 'Publicaciones que se ofrecen por FULL con el inventario de fulfillment en 0 y unidades en el depósito propio' },
+  medidas_envio_invalidas: { titulo: 'Medidas de envío mal declaradas', desc: 'Publicaciones sin medidas, donde el producto no entra en el paquete declarado, o que ML midió más grandes que lo declarado' },
 };
 
 let _ciActiveTab = 'alertas';

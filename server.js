@@ -1913,6 +1913,7 @@ const REGLAS_DEFAULT = {
   anuncio_sangrando:     { habilitada: true, umbral: { acos_min: 50, dias: 5 } },
   oportunidad_escalable: { habilitada: true, umbral: { cvr_min: 5, gasto_max: 5000, dias: 30 } },
   full_sin_stock_con_deposito: { habilitada: true, umbral: { min_unidades: 1, dias_ventas: 30, max_items: 8, max_consultas: 500 } },
+  medidas_envio_invalidas: { habilitada: true, umbral: { min_items: 1, max_items: 8 } },
 };
 
 async function getRegla(clientId, codigo) {
@@ -2836,6 +2837,40 @@ async function evalRuleFullSinStockConDeposito(client) {
   } catch(e) { console.error(`[ALERTA full_sin_stock_con_deposito] ${client.name}:`, e.message); return null; }
 }
 
+// Regla 13 — Medidas de envío mal declaradas
+// ML pausa las ventas de la cuenta cuando el paquete real no coincide con el declarado
+// ("paquete más grande de lo declarado"). Avisamos antes de que llegue la sanción.
+async function evalRuleMedidasEnvio(client) {
+  const regla = await getRegla(client.id, 'medidas_envio_invalidas');
+  if (!regla.habilitada) return null;
+  const { min_items = 1, max_items = 8 } = regla.umbral || {};
+  try {
+    const r = await analizarMedidasEnvio(client.id);
+    if (!r) return null;
+    const graves = r.hits.filter(h => h.severidad === 'critical');
+    if (graves.length < min_items) return resolveAlerta(client.id, 'medidas_envio_invalidas');
+
+    const resumen = resumirMedidas(r.hits);
+    const conVenta = graves.filter(h => h.vendidas > 0);
+    const severidad = conVenta.length ? 'critical' : 'warning';
+    const corto = t => (t || '').length > 45 ? t.slice(0, 45) + '…' : (t || '');
+    const lista = graves.slice(0, max_items)
+      .map(h => `• ${corto(h.title)}: ${h.detalle}`)
+      .join('\n');
+    const resto = graves.length > max_items ? `\n…y ${graves.length - max_items} más` : '';
+    const partes = [];
+    if (resumen.sin_medidas)         partes.push(`${resumen.sin_medidas} sin medidas`);
+    if (resumen.no_entra)            partes.push(`${resumen.no_entra} donde el producto no entra en el paquete`);
+    if (resumen.ml_midio_mas_grande) partes.push(`${resumen.ml_midio_mas_grande} que ML midió más grandes`);
+
+    return upsertAlerta(client.id, 'medidas_envio_invalidas', severidad,
+      `${graves.length} publicación${graves.length !== 1 ? 'es' : ''} con las medidas de envío mal declaradas`,
+      `${partes.join(', ')}. ML puede pausar las ventas de la cuenta por "paquete más grande de lo declarado":\n${lista}${resto}`,
+      { items: graves.slice(0, 50), total: graves.length, resumen, revisadas: r.revisadas, con_venta: conVenta.length }
+    );
+  } catch(e) { console.error(`[ALERTA medidas_envio_invalidas] ${client.name}:`, e.message); return null; }
+}
+
 // Motor principal
 async function runAlertEngine({ forceNotify = false, tipo = 'auto' } = {}) {
   console.log('[ALERTAS] Iniciando evaluación —', new Date().toISOString());
@@ -2856,6 +2891,7 @@ async function runAlertEngine({ forceNotify = false, tipo = 'auto' } = {}) {
       evalRuleAnuncioSangrando,
       evalRuleOportunidadEscalable,
       evalRuleFullSinStockConDeposito,
+      evalRuleMedidasEnvio,
     ];
     const newAlerts = [];
     for (const client of clients.rows) {
@@ -2908,6 +2944,14 @@ const SLACK_TIPO_CONFIG = {
   producto_sin_ventas:  { emoji: '🛒', label: 'Productos sin ventas',         short: (a) => `${a.datos?.total || '?'} productos activos sin ventas en 90d` },
   full_sin_stock_con_deposito: { emoji: '🏬', label: 'FULL en cero con stock propio', short: (a) =>
                             `${a.datos?.total || '?'} publicaciones · ${a.datos?.unidades_deposito || 0} u. en depósito` },
+  medidas_envio_invalidas: { emoji: '📏', label: 'Medidas de envío mal declaradas', short: (a) => {
+                            const r = a.datos?.resumen || {};
+                            const p = [];
+                            if (r.sin_medidas) p.push(`${r.sin_medidas} sin medidas`);
+                            if (r.no_entra) p.push(`${r.no_entra} no entran en el paquete`);
+                            if (r.ml_midio_mas_grande) p.push(`${r.ml_midio_mas_grande} medidas más grandes por ML`);
+                            return `${a.datos?.total || '?'} publicaciones` + (p.length ? ` · ${p.join(', ')}` : '');
+                          } },
 };
 
 async function sendSlackAlert(newAlerts) {
@@ -2924,7 +2968,7 @@ async function sendSlackAlert(newAlerts) {
   });
 
   // Ordenar: críticas primero, luego warnings
-  const orden = ['reputacion_bajando','stock_critico_pareto','full_sin_stock_con_deposito','caida_ventas','tacos_alto','tacos_producto_alto','margen_erosionado','roas_bajo','preguntas_pendientes','producto_sin_ventas'];
+  const orden = ['reputacion_bajando','medidas_envio_invalidas','stock_critico_pareto','full_sin_stock_con_deposito','caida_ventas','tacos_alto','tacos_producto_alto','margen_erosionado','roas_bajo','preguntas_pendientes','producto_sin_ventas'];
   const tiposOrdenados = [
     ...orden.filter(k => byTipo[k]),
     ...Object.keys(byTipo).filter(k => !orden.includes(k))
@@ -9491,6 +9535,201 @@ app.get('/api/publicaciones/full-sin-stock', requireAuth, async (req, res) => {
     res.json({ ...data, cached: false, generado: new Date().toISOString() });
   } catch(e) {
     console.error('[FULL_SIN_STOCK]', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── MEDIDAS DE ENVÍO ──────────────────────────────────────────────────────────
+// ML compara las medidas del producto declaradas en la ficha técnica (TOTAL_LENGTH,
+// LENGTH, HEIGHT, DIAMETER, HAND_LENGTH…) contra el paquete que declara el vendedor
+// (SELLER_PACKAGE_*). Si el producto no entra en su propio paquete, marca la
+// publicación con "medidas y peso para revisar". No hay endpoint que liste las
+// marcadas, así que replicamos el criterio acá.
+const _medidasEnvioCache = new Map();   // client_id → { ts, data }
+const MEDIDAS_ENVIO_TTL = 6 * 60 * 60 * 1000;
+const ME2_LADO_MAX_CM   = 150;          // arriba de esto la publicación pierde Mercado Envíos
+
+const _LARGO_UNITS = { m: 100, cm: 1, mm: 0.1, in: 2.54 };
+const _PESO_UNITS  = { kg: 1000, g: 1 };
+
+// Valor de un atributo en cm — solo si su unidad es de longitud (evita leer WEIGHT como cm)
+function _attrCm(item, id) {
+  const a = (item.attributes || []).find(x => x.id === id);
+  const s = a && (a.values || [{}])[0] && (a.values || [{}])[0].struct;
+  if (!s || s.number == null || !_LARGO_UNITS[s.unit]) return null;
+  return Number(s.number) * _LARGO_UNITS[s.unit];
+}
+function _attrG(item, id) {
+  const a = (item.attributes || []).find(x => x.id === id);
+  const s = a && (a.values || [{}])[0] && (a.values || [{}])[0].struct;
+  if (!s || s.number == null || !_PESO_UNITS[s.unit]) return null;
+  return Number(s.number) * _PESO_UNITS[s.unit];
+}
+function _secciones(item) {
+  const a = (item.attributes || []).find(x => x.id === 'SECTIONS_NUMBER');
+  const v = a && (a.values || [{}])[0];
+  const n = v && parseInt(v.name);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+// Medida más grande declarada en la ficha del producto (ignora las del paquete)
+function _fichaMayor(item) {
+  let peor = null;
+  for (const a of item.attributes || []) {
+    if (a.id.startsWith('SELLER_PACKAGE_') || a.id.startsWith('PACKAGE_')) continue;
+    const s = (a.values || [{}])[0] && (a.values || [{}])[0].struct;
+    if (!s || s.number == null || !_LARGO_UNITS[s.unit]) continue;
+    const cm = Number(s.number) * _LARGO_UNITS[s.unit];
+    if (!peor || cm > peor.cm) peor = { id: a.id, cm };
+  }
+  return peor;
+}
+
+function clasificarMedidas(item) {
+  const paq = {
+    largo: _attrCm(item, 'SELLER_PACKAGE_LENGTH'),
+    ancho: _attrCm(item, 'SELLER_PACKAGE_WIDTH'),
+    alto:  _attrCm(item, 'SELLER_PACKAGE_HEIGHT'),
+    peso:  _attrG(item,  'SELLER_PACKAGE_WEIGHT'),
+  };
+  const base = {
+    id: item.id,
+    title: item.title,
+    vendidas: item.sold_quantity || 0,
+    logistic_type: (item.shipping || {}).logistic_type || null,
+    paquete: paq,
+  };
+
+  // 1. Sin medidas declaradas — es lo que hace que ML complete con su base maestra
+  if ([paq.largo, paq.ancho, paq.alto, paq.peso].some(v => v == null)) {
+    return { ...base, problema: 'sin_medidas', severidad: 'critical',
+             detalle: 'No tiene medidas ni peso declarados: ML completa con su base maestra' };
+  }
+
+  const ladoMayor = Math.max(paq.largo, paq.ancho, paq.alto);
+
+  // 2. El producto de la ficha no entra en el paquete → es lo que ML marca
+  const ficha = _fichaMayor(item);
+  if (ficha && ficha.cm > ladoMayor + 0.01) {
+    const tramos = _secciones(item);
+    // Un producto desarmable viaja por tramo: comparamos el tramo, no el largo armado
+    const efectivo = (tramos && ficha.id === 'TOTAL_LENGTH') ? ficha.cm / tramos : ficha.cm;
+    if (efectivo > ladoMayor + 0.01) {
+      const comun = { ...base, ficha: { atributo: ficha.id, cm: ficha.cm }, tramos,
+                      faltan_cm: Math.round((efectivo - ladoMayor) * 10) / 10 };
+      // Cuando la ficha mide más del doble que el paquete casi siempre es la medida del
+      // producto desplegado (una red de 4 m que viaja plegada), no un paquete mal declarado.
+      // Sin tramos que lo expliquen lo marcamos aparte, para no ahogar la alerta.
+      if (!tramos && efectivo > ladoMayor * 2) {
+        return { ...comun, problema: 'ficha_sospechosa', severidad: 'warning',
+                 detalle: `${ficha.id} declara ${Math.round(ficha.cm)} cm contra un paquete de ${Math.round(ladoMayor)} cm: ` +
+                          `revisá si la ficha tiene la medida del producto desplegado` };
+      }
+      return { ...comun, problema: 'no_entra', severidad: 'critical',
+               detalle: tramos
+                 ? `Cada tramo mide ${Math.round(efectivo)} cm y el paquete declara ${Math.round(ladoMayor)} cm`
+                 : `${ficha.id} declara ${Math.round(ficha.cm)} cm y el paquete ${Math.round(ladoMayor)} cm` };
+    }
+    // Entra desarmado, pero ML compara el largo armado y puede marcarla igual
+    if (!tramos) {
+      return { ...base, problema: 'tramos_sin_declarar', severidad: 'warning',
+               ficha: { atributo: ficha.id, cm: ficha.cm },
+               detalle: `${ficha.id} declara ${Math.round(ficha.cm)} cm contra un paquete de ${Math.round(ladoMayor)} cm ` +
+                        `y no está cargada la cantidad de tramos, así que ML no sabe que se desarma` };
+    }
+  }
+
+  // 3. ML ya midió el paquete en su depósito y le dio más grande que lo declarado
+  const mlL = _attrCm(item, 'PACKAGE_LENGTH'), mlA = _attrCm(item, 'PACKAGE_WIDTH'),
+        mlH = _attrCm(item, 'PACKAGE_HEIGHT'), mlP = _attrG(item, 'PACKAGE_WEIGHT');
+  if ([mlL, mlA, mlH].every(v => v != null)) {
+    const volML  = mlL * mlA * mlH;
+    const volDec = paq.largo * paq.ancho * paq.alto;
+    const pesoMayor = mlP != null && mlP > paq.peso * 1.2;
+    if (volML > volDec * 1.2 || pesoMayor) {
+      return { ...base, problema: 'ml_midio_mas_grande', severidad: 'critical',
+               medido_ml: { largo: mlL, ancho: mlA, alto: mlH, peso: mlP },
+               detalle: `ML midió ${Math.round(mlL)}×${Math.round(mlA)}×${Math.round(mlH)} cm` +
+                        (mlP != null ? ` y ${Math.round(mlP)} g` : '') +
+                        ` contra los ${Math.round(paq.largo)}×${Math.round(paq.ancho)}×${Math.round(paq.alto)} cm declarados` };
+    }
+  }
+
+  // 4. Sin problema de datos, pero no entra en Mercado Envíos por tamaño
+  if (ladoMayor > ME2_LADO_MAX_CM) {
+    return { ...base, problema: 'fuera_me2', severidad: 'info',
+             detalle: `El lado mayor es de ${Math.round(ladoMayor)} cm y Mercado Envíos corta en ${ME2_LADO_MAX_CM} cm` };
+  }
+  return null;
+}
+
+async function analizarMedidasEnvio(clientId) {
+  const token = await getClientToken(clientId);
+  if (!token) return null;
+  const headers = { 'Authorization': `Bearer ${token}` };
+  const me = await fetch(`${ML_API}/users/me`, { headers }).then(r => r.json());
+  if (me.error || !me.id) return null;
+
+  const allIds = await fetchAllActiveItemIds(me.id, headers);
+  if (!allIds.length) return { hits: [], revisadas: 0 };
+
+  const attrs = 'id,title,sold_quantity,shipping,attributes';
+  const hits = [];
+  let revisadas = 0;
+  const batches = [];
+  for (let i = 0; i < allIds.length; i += 20) batches.push(allIds.slice(i, i + 20));
+  for (let g = 0; g < batches.length; g += 6) {
+    await Promise.all(batches.slice(g, g + 6).map(async batch => {
+      try {
+        const data = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=${attrs}`, { headers })
+          .then(r => r.json());
+        (Array.isArray(data) ? data : []).forEach(r => {
+          if (r.code !== 200 || !r.body) return;
+          revisadas++;
+          const hit = clasificarMedidas(r.body);
+          if (hit) hits.push(hit);
+        });
+      } catch(e) {}
+    }));
+  }
+  const orden = { critical: 0, warning: 1, info: 2 };
+  hits.sort((a, b) => (orden[a.severidad] - orden[b.severidad]) || (b.vendidas - a.vendidas));
+  return { hits, revisadas };
+}
+
+function resumirMedidas(hits) {
+  const por = {};
+  for (const h of hits) por[h.problema] = (por[h.problema] || 0) + 1;
+  return {
+    sin_medidas:          por.sin_medidas          || 0,
+    no_entra:             por.no_entra             || 0,
+    ficha_sospechosa:     por.ficha_sospechosa     || 0,
+    tramos_sin_declarar:  por.tramos_sin_declarar  || 0,
+    ml_midio_mas_grande:  por.ml_midio_mas_grande  || 0,
+    fuera_me2:            por.fuera_me2            || 0,
+  };
+}
+
+app.get('/api/publicaciones/medidas-envio', requireAuth, async (req, res) => {
+  try {
+    const clientId = parseInt(req.query.client_id);
+    if (!clientId) return res.status(400).json({ error: 'client_id requerido' });
+    const cached = _medidasEnvioCache.get(clientId);
+    if (req.query.refresh !== '1' && cached && Date.now() - cached.ts < MEDIDAS_ENVIO_TTL) {
+      return res.json({ ...cached.data, cached: true, generado: new Date(cached.ts).toISOString() });
+    }
+    const r = await analizarMedidasEnvio(clientId);
+    if (!r) return res.status(403).json({ error: 'Cliente no conectado o token expirado' });
+    const data = {
+      items: r.hits,
+      total: r.hits.length,
+      revisadas: r.revisadas,
+      resumen: resumirMedidas(r.hits),
+      me2_lado_max: ME2_LADO_MAX_CM,
+    };
+    _medidasEnvioCache.set(clientId, { ts: Date.now(), data });
+    res.json({ ...data, cached: false, generado: new Date().toISOString() });
+  } catch(e) {
+    console.error('[MEDIDAS_ENVIO]', e.message);
     res.status(500).json({ error: e.message });
   }
 });
