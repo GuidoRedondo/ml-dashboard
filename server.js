@@ -11093,11 +11093,11 @@ app.post('/api/proxy-ml-write', requireAuth, async (req, res) => {
 
     // 1) Solo PUT sobre /items/MLA... — nada de borrar ni tocar otros recursos
     const verb = (method || 'PUT').toUpperCase();
-    if (verb !== 'PUT') return res.status(403).json({ error: 'Solo se permite PUT' });
+    if (verb !== 'PUT' && verb !== 'POST') return res.status(403).json({ error: 'Solo se permite PUT o POST' });
     // Se admite el item directo o el user_product: cuando la publicacion nunca vendio,
     // ML guarda las medidas de empaque en el user_product y rechaza el PUT sobre /items.
     const mItem = /^\/items\/(MLA\d+)$/.exec(path);
-    const mUP   = /^\/user-products\/(MLAU\d+)$/.exec(path);
+    const mUP   = /^\/user-products\/(MLAU\d+)(\/attributes)?$/.exec(path);
     if (!mItem && !mUP) {
       return res.status(403).json({ error: 'Solo se permite PUT /items/{MLA} o /user-products/{MLAU}' });
     }
@@ -11136,9 +11136,9 @@ app.post('/api/proxy-ml-write', requireAuth, async (req, res) => {
     }
 
     const r = await fetch(`${ML_API}${path}`, {
-      method: 'PUT',
+      method: verb,
       headers: { 'Authorization': `Bearer ${client.access_token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ attributes: attrs })
+      body: JSON.stringify(path.endsWith('/attributes') ? attrs : { attributes: attrs })
     });
     const data = await r.json();
     console.log(`[proxy-ml-write] ${req.user?.username} → ${itemId} ${r.status}`,
