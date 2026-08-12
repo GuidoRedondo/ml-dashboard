@@ -4552,6 +4552,7 @@ async function chequearFullSinStock(refresh) {
     </div>${avisoFallidas}${pie}</div>`;
 }
 
+const MEDIDAS_ESTADOS = { active: 'Activa', paused: 'Pausada', under_review: 'En revisión' };
 const MEDIDAS_PROBLEMAS = {
   sin_medidas:         { icono: '🚫', label: 'Sin medidas declaradas', color: '#dc2626',
                          ayuda: 'ML completa con su base maestra y ahí empiezan las sanciones' },
@@ -4639,6 +4640,7 @@ async function chequearMedidasEnvio(refresh) {
         <a href="https://articulo.mercadolibre.com.ar/${(i.id||'').replace('MLA','MLA-')}" target="_blank"
            style="color:var(--accent);text-decoration:none">${i.id}</a></td>
       <td style="padding:8px;font-size:12px;color:var(--text)">${titulo}</td>
+      <td style="padding:8px;font-size:11px;white-space:nowrap;color:${i.status === 'active' ? 'var(--muted)' : '#f59e0b'}">${MEDIDAS_ESTADOS[i.status] || i.status || '—'}</td>
       <td style="padding:8px;font-size:11px;white-space:nowrap;color:${c.color}">${c.icono} ${c.label}</td>
       <td style="padding:8px;font-size:11px;color:var(--muted)">${i.detalle || ''}</td>
       <td style="padding:8px;font-size:11px;white-space:nowrap">${fmtPaq(i.paquete)}</td>
@@ -4666,6 +4668,7 @@ async function chequearMedidasEnvio(refresh) {
           ${multi ? '<th style="padding:8px;text-align:left;font-size:11px;color:var(--muted)">Cuenta</th>' : ''}
           <th style="padding:8px;text-align:left;font-size:11px;color:var(--muted)">MLA</th>
           <th style="padding:8px;text-align:left;font-size:11px;color:var(--muted)">Publicación</th>
+          <th style="padding:8px;text-align:left;font-size:11px;color:var(--muted)">Estado</th>
           <th style="padding:8px;text-align:left;font-size:11px;color:var(--muted)">Problema</th>
           <th style="padding:8px;text-align:left;font-size:11px;color:var(--muted)">Detalle</th>
           <th style="padding:8px;text-align:left;font-size:11px;color:var(--muted)">Paquete declarado</th>
@@ -4683,6 +4686,7 @@ function exportMedidasEnvioExcel() {
     Cuenta: i.cuenta || '',
     MLA: i.id,
     Publicacion: i.title || '',
+    Estado: MEDIDAS_ESTADOS[i.status] || i.status || '',
     Problema: (MEDIDAS_PROBLEMAS[i.problema] || {}).label || i.problema,
     Gravedad: i.severidad,
     Detalle: i.detalle || '',

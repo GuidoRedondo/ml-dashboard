@@ -9594,6 +9594,7 @@ function clasificarMedidas(item) {
   const base = {
     id: item.id,
     title: item.title,
+    status: item.status || null,
     vendidas: item.sold_quantity || 0,
     logistic_type: (item.shipping || {}).logistic_type || null,
     paquete: paq,
@@ -9662,6 +9663,27 @@ function clasificarMedidas(item) {
   return null;
 }
 
+// Las publicaciones que ML marca por medidas suelen terminar pausadas o en revisión,
+// así que acá no alcanza con las activas: hacemos scan sin filtro y descartamos después.
+const MEDIDAS_STATUS_REVISABLES = new Set(['active', 'paused', 'under_review']);
+
+async function fetchAllItemIdsSinFiltro(uid, headers) {
+  const ids = [];
+  let scrollId = null;
+  for (let guard = 0; guard < 300; guard++) {   // tope de seguridad: 30.000 ítems
+    const url = scrollId
+      ? `${ML_API}/users/${uid}/items/search?search_type=scan&limit=100&scroll_id=${encodeURIComponent(scrollId)}`
+      : `${ML_API}/users/${uid}/items/search?search_type=scan&limit=100`;
+    const r = await fetch(url, { headers }).then(r => r.json()).catch(() => ({}));
+    const results = r.results || [];
+    if (r.scroll_id) scrollId = r.scroll_id;
+    if (!results.length) break;
+    ids.push(...results);
+    if (!scrollId) break;
+  }
+  return ids;
+}
+
 async function analizarMedidasEnvio(clientId) {
   const token = await getClientToken(clientId);
   if (!token) return null;
@@ -9669,10 +9691,10 @@ async function analizarMedidasEnvio(clientId) {
   const me = await fetch(`${ML_API}/users/me`, { headers }).then(r => r.json());
   if (me.error || !me.id) return null;
 
-  const allIds = await fetchAllActiveItemIds(me.id, headers);
+  const allIds = await fetchAllItemIdsSinFiltro(me.id, headers);
   if (!allIds.length) return { hits: [], revisadas: 0 };
 
-  const attrs = 'id,title,sold_quantity,shipping,attributes';
+  const attrs = 'id,title,status,sold_quantity,shipping,attributes';
   const hits = [];
   let revisadas = 0;
   const batches = [];
@@ -9684,6 +9706,7 @@ async function analizarMedidasEnvio(clientId) {
           .then(r => r.json());
         (Array.isArray(data) ? data : []).forEach(r => {
           if (r.code !== 200 || !r.body) return;
+          if (!MEDIDAS_STATUS_REVISABLES.has(r.body.status)) return;
           revisadas++;
           const hit = clasificarMedidas(r.body);
           if (hit) hits.push(hit);
