@@ -11350,6 +11350,45 @@ app.get('/api/proxy-ml', requireAuth, async (req, res) => {
 });
 
 // ── Proxy de ESCRITURA a ML (solo atributos de items propios) ──────────────
+// Sonda de factibilidad: ¿acepta ML escritura sobre /seller-promotions con esta app?
+// Solo admin y con un promotion_id que no existe, así nunca aplica un descuento real.
+app.post('/api/debug/promo-escritura', requireAuth, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') return res.status(403).json({ error: 'Solo admin' });
+    const { client_id, item_id } = req.body || {};
+    if (!client_id || !item_id) return res.status(400).json({ error: 'Falta client_id o item_id' });
+
+    const c = await pool.query('SELECT * FROM clients WHERE id=$1', [client_id]);
+    if (!c.rows.length) return res.status(404).json({ error: 'Cliente no encontrado' });
+    const client = c.rows[0];
+    const headers = { 'Authorization': `Bearer ${client.access_token}`, 'Content-Type': 'application/json' };
+
+    const chk = await fetch(`${ML_API}/items/${item_id}?attributes=id,seller_id,price`, { headers }).then(r => r.json());
+    if (String(chk.seller_id) !== String(client.ml_user_id)) {
+      return res.status(403).json({ error: 'El item no pertenece a este cliente' });
+    }
+
+    // promotion_id inexistente a propósito: queremos ver si la RUTA existe, no crear nada.
+    const pruebas = [
+      { verbo: 'POST', url: `${ML_API}/seller-promotions/items/${item_id}?app_version=v2`,
+        body: { promotion_id: 'P-MLA00000000', promotion_type: 'DEAL', deal_price: chk.price } },
+      { verbo: 'POST', url: `${ML_API}/seller-promotions/items/${item_id}`,
+        body: { promotion_id: 'P-MLA00000000', promotion_type: 'DEAL', deal_price: chk.price } },
+      { verbo: 'PUT',  url: `${ML_API}/seller-promotions/items/${item_id}?app_version=v2`,
+        body: { promotion_id: 'P-MLA00000000', promotion_type: 'DEAL', deal_price: chk.price } },
+    ];
+    const out = [];
+    for (const p of pruebas) {
+      try {
+        const r = await fetch(p.url, { method: p.verbo, headers, body: JSON.stringify(p.body) });
+        const txt = await r.text();
+        out.push({ verbo: p.verbo, url: p.url.replace(ML_API, ''), status: r.status, respuesta: txt.slice(0, 320) });
+      } catch(e) { out.push({ verbo: p.verbo, url: p.url.replace(ML_API, ''), error: e.message }); }
+    }
+    res.json({ item: item_id, precio_actual: chk.price, pruebas: out });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
 app.post('/api/proxy-ml-write', requireAuth, async (req, res) => {
   try {
     const { path, client_id, method, body } = req.body || {};
