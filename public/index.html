@@ -1318,10 +1318,15 @@ tbody td {
     <div class="page" id="page-promociones">
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px;flex-wrap:wrap">
         <h2 style="margin:0;font-family:var(--font-b);flex:1">🏷️ Promociones</h2>
+        <div style="display:flex;gap:6px">
+          <button id="promoTabActivas" onclick="switchPromoTab('activas')" class="sync-btn" style="background:var(--accent)">🏷️ Activas</button>
+          <button id="promoTabQueMeter" onclick="switchPromoTab('quemeter')" class="sync-btn" title="Campañas abiertas, qué publicaciones podés meter y cuánto margen queda con cada una">🎯 Qué meter</button>
+        </div>
         <button onclick="exportarPromocionesExcel()" class="sync-btn" style="background:#16a34a;color:#fff;border:none">📥 Excel</button>
         <button class="sync-btn" onclick="loadPromociones()">🔄 Actualizar</button>
       </div>
       <div id="promoContent"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Cargando...</div></div>
+      <div id="promoQueMeterContent" style="display:none"></div>
     </div>
 
     <!-- PREGUNTAS -->
@@ -17934,6 +17939,220 @@ function renderPromociones(data) {
     <div style="margin-top:10px;font-size:11px;color:var(--muted)">* Rent. neta = precio con descuento − comisión ML − IVA neto − costo (sin envío ni publicidad). Tocá 🔍 para el desglose completo con envío real y publicidad imputada.</div>`;
 }
 
+// ── Promociones › Qué meter ───────────────────────────────────────────────────
+let _promoCand = null;
+let _promoFiltro = 'todas';     // todas | rentables | perdida | sin_costo
+let _promoSoloUrgentes = false;
+const PROMO_URGENTE_DIAS = 7;
+
+function switchPromoTab(tab) {
+  const act = document.getElementById('promoContent');
+  const que = document.getElementById('promoQueMeterContent');
+  const bA  = document.getElementById('promoTabActivas');
+  const bQ  = document.getElementById('promoTabQueMeter');
+  const on  = 'var(--accent)', off = '';
+  if (tab === 'quemeter') {
+    act.style.display = 'none'; que.style.display = '';
+    bQ.style.background = on; bA.style.background = off;
+    if (!_promoCand) loadPromoCandidatos(false);
+  } else {
+    act.style.display = ''; que.style.display = 'none';
+    bA.style.background = on; bQ.style.background = off;
+  }
+}
+
+async function loadPromoCandidatos(refresh) {
+  const cont = document.getElementById('promoQueMeterContent');
+  if (!cont) return;
+  const cli = getActiveClient();
+  if (!cli) { cont.innerHTML = '<div style="padding:30px;text-align:center;color:var(--muted)">Elegí una cuenta</div>'; return; }
+  cont.innerHTML = `<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:26px;text-align:center;color:var(--muted);font-size:13px">
+    ⏳ Buscando campañas abiertas y calculando el margen de cada oferta… puede tardar un minuto</div>`;
+  try {
+    _promoCand = await apiCall('GET', `/api/promociones/candidatos?client_id=${cli.id}${refresh ? '&refresh=1' : ''}`);
+  } catch(e) {
+    cont.innerHTML = `<div style="padding:26px;text-align:center;color:#dc2626;font-size:13px">No se pudo cargar: ${e.message}</div>`;
+    return;
+  }
+  renderPromoCandidatos();
+}
+
+function promoFiltrados() {
+  if (!_promoCand) return [];
+  let items = _promoCand.items || [];
+  if (_promoSoloUrgentes) {
+    const urgentes = new Set((_promoCand.campanias || [])
+      .filter(c => c.dias_para_cierre != null && c.dias_para_cierre <= PROMO_URGENTE_DIAS)
+      .map(c => c.id));
+    items = items.filter(i => (i.ofertas || []).some(o => urgentes.has(o.promo_id)));
+  }
+  if (_promoFiltro === 'rentables') items = items.filter(i => i.margen_mejor != null && i.margen_mejor > 0);
+  if (_promoFiltro === 'perdida')   items = items.filter(i => i.margen_mejor != null && i.margen_mejor <= 0);
+  if (_promoFiltro === 'sin_costo') items = items.filter(i => !i.has_cost);
+  return items;
+}
+
+function setPromoFiltro(f) { _promoFiltro = f; renderPromoCandidatos(); }
+function togglePromoUrgentes() { _promoSoloUrgentes = !_promoSoloUrgentes; renderPromoCandidatos(); }
+function togglePromoFila(mla) {
+  const el = document.getElementById(`promo-det-${mla}`);
+  if (el) el.style.display = el.style.display === 'none' ? '' : 'none';
+}
+
+const _pm = n => n == null ? '—' : '$' + Math.round(n).toLocaleString('es-AR');
+
+function renderPromoCandidatos() {
+  const cont = document.getElementById('promoQueMeterContent');
+  if (!cont || !_promoCand) return;
+  const d = _promoCand;
+
+  if (d.sin_campanias || !(d.campanias || []).length) {
+    cont.innerHTML = `<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:26px;text-align:center;color:var(--muted);font-size:13px">
+      No hay campañas abiertas para esta cuenta en este momento.</div>`;
+    return;
+  }
+
+  // Tarjetas de campaña, las que cierran primero adelante
+  const camps = [...d.campanias].sort((a, b) =>
+    (a.dias_para_cierre ?? 9999) - (b.dias_para_cierre ?? 9999));
+  const tarjetas = camps.map(c => {
+    const dd = c.dias_para_cierre;
+    const urge = dd != null && dd <= PROMO_URGENTE_DIAS;
+    const color = urge ? '#dc2626' : (c.status === 'pending' ? '#f59e0b' : 'var(--muted)');
+    const cierra = dd == null ? 'sin fecha de cierre'
+                 : (dd <= 0 ? 'cierra hoy' : `cierra en ${dd} día${dd !== 1 ? 's' : ''}`);
+    return `<div style="min-width:190px;flex:1;padding:10px 12px;background:var(--surface2);border:1px solid ${urge ? '#dc2626' : 'var(--border)'};border-radius:10px">
+      <div style="font-size:12px;font-weight:700;color:var(--text);font-family:var(--font-b)">${c.name}</div>
+      <div style="font-size:10px;color:var(--muted);margin-top:2px">${c.type}${c.status === 'pending' ? ' · arranca pronto' : ''}</div>
+      <div style="font-size:11px;color:${color};margin-top:4px;font-weight:${urge ? '700' : '400'}">${cierra}</div>
+      <div style="font-size:10px;color:var(--muted);margin-top:2px">${c.candidatos} candidatas</div>
+    </div>`;
+  }).join('');
+
+  const items = promoFiltrados();
+  const btn = (f, txt, n) => `<button onclick="setPromoFiltro('${f}')" class="sync-btn"
+    style="padding:4px 10px;font-size:11px;${_promoFiltro === f ? 'background:var(--accent);color:#fff' : ''}">${txt}${n != null ? ` (${n})` : ''}</button>`;
+
+  const filas = items.map(i => {
+    const best = (i.ofertas || [])[0];
+    const nOf = (i.ofertas || []).length;
+    let margenCell, borde;
+    if (i.margen_mejor == null) {
+      margenCell = i.costo_sospechoso
+        ? `<span style="color:#f59e0b" title="El costo cargado es menos del 5% del precio: revisá el CMV">CMV dudoso</span>`
+        : `<span style="color:var(--muted)">sin CMV</span>`;
+      borde = 'var(--border)';
+    } else if (i.margen_mejor > 0) {
+      margenCell = `<span style="color:#16a34a;font-weight:700">${_pm(i.margen_mejor)}</span> <span style="color:var(--muted);font-size:10px">${i.margen_mejor_pct}%</span>`;
+      borde = '#16a34a';
+    } else {
+      margenCell = `<span style="color:#dc2626;font-weight:700">${_pm(i.margen_mejor)}</span> <span style="color:var(--muted);font-size:10px">${i.margen_mejor_pct}%</span>`;
+      borde = '#dc2626';
+    }
+    const detalle = (i.ofertas || []).map(o => {
+      const m = o.margen_pesos != null
+        ? `<span style="color:${o.margen_pesos > 0 ? '#16a34a' : '#dc2626'};font-weight:600">${_pm(o.margen_pesos)} (${o.margen_pct}%)</span>`
+        : '<span style="color:var(--muted)">—</span>';
+      const reparto = (o.meli_pct != null && o.seller_pct != null)
+        ? `ML ${o.meli_pct}% + vos ${o.seller_pct}%` : '<span style="color:var(--muted)">—</span>';
+      const precio = o.precio_a_definir
+        ? '<span style="color:var(--muted)">precio a definir</span>'
+        : `${_pm(o.precio_campania)} <span style="color:var(--muted);font-size:10px">-${o.descuento_pct}%</span>`;
+      const gana = o.promo_id === i.mejor ? ' ✅' : '';
+      return `<tr><td style="padding:4px 8px;font-size:11px">${o.promo_name}${gana}</td>
+        <td style="padding:4px 8px;font-size:11px">${precio}</td>
+        <td style="padding:4px 8px;font-size:11px">${reparto}</td>
+        <td style="padding:4px 8px;font-size:11px">${m}</td></tr>`;
+    }).join('');
+
+    return `<tr style="border-bottom:1px solid var(--border);border-left:3px solid ${borde}">
+      <td style="padding:8px;font-size:11px;white-space:nowrap">
+        <a href="https://articulo.mercadolibre.com.ar/${i.mla_id.replace('MLA','MLA-')}" target="_blank" style="color:var(--accent);text-decoration:none">${i.mla_id}</a></td>
+      <td style="padding:8px;font-size:12px">${(i.title || '').slice(0,52)}</td>
+      <td style="padding:8px;font-size:11px;text-align:center">${i.vendidas || 0}</td>
+      <td style="padding:8px;font-size:11px;white-space:nowrap">${_pm(i.precio_actual)}</td>
+      <td style="padding:8px;font-size:11px;white-space:nowrap">${best && !best.precio_a_definir ? _pm(best.precio_campania) : '—'}</td>
+      <td style="padding:8px;font-size:11px">${best ? best.promo_name.slice(0,24) : '—'}</td>
+      <td style="padding:8px;font-size:11px;white-space:nowrap">${margenCell}</td>
+      <td style="padding:8px;font-size:11px;text-align:center">
+        <span onclick="togglePromoFila('${i.mla_id}')" style="cursor:pointer;color:var(--accent)">${nOf} ▾</span></td>
+    </tr>
+    <tr id="promo-det-${i.mla_id}" style="display:none"><td colspan="8" style="padding:0 8px 10px 20px;background:var(--surface2)">
+      <table style="width:100%;border-collapse:collapse">
+        <thead><tr><th style="text-align:left;padding:4px 8px;font-size:10px;color:var(--muted)">Campaña</th>
+          <th style="text-align:left;padding:4px 8px;font-size:10px;color:var(--muted)">Precio</th>
+          <th style="text-align:left;padding:4px 8px;font-size:10px;color:var(--muted)">Quién pone el descuento</th>
+          <th style="text-align:left;padding:4px 8px;font-size:10px;color:var(--muted)">Margen por unidad</th></tr></thead>
+        <tbody>${detalle}</tbody></table></td></tr>`;
+  }).join('');
+
+  const aviso = d.truncado
+    ? `<div style="font-size:11px;color:#f59e0b;margin-top:8px">Se calculó el margen de las primeras ${d.fees_usados} ofertas: el resto quedó sin margen para no colgar la consulta.</div>` : '';
+  const avisoCmv = d.costos_sospechosos
+    ? `<div style="font-size:11px;color:#f59e0b;margin-top:4px">${d.costos_sospechosos} publicaciones tienen el CMV cargado por debajo del 5% del precio (¿está en dólares?). No se les calculó margen.</div>` : '';
+
+  cont.innerHTML = `
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px">${tarjetas}</div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px">
+      ${btn('todas','Todas', d.total_items)}
+      ${btn('rentables','Dejan margen', d.rentables)}
+      ${btn('perdida','Pierden plata', d.en_perdida)}
+      ${btn('sin_costo','Sin CMV', d.total_items - d.con_costo)}
+      <button onclick="togglePromoUrgentes()" class="sync-btn" style="padding:4px 10px;font-size:11px;${_promoSoloUrgentes ? 'background:#dc2626;color:#fff' : ''}">⏰ Cierran en ${PROMO_URGENTE_DIAS} días</button>
+      <div style="flex:1"></div>
+      <button onclick="exportPromoCandidatosExcel()" class="sync-btn" style="padding:4px 10px;font-size:11px">📥 Excel</button>
+      <button onclick="loadPromoCandidatos(true)" class="sync-btn" style="padding:4px 10px;font-size:11px">🔄 Actualizar</button>
+    </div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:10px">
+      ML no deja cargar promociones por API, así que esto resuelve la decisión y la carga va a mano en el Centro de Promociones.
+      El margen es por unidad, ya con comisión, envío, IVA e IIBB, y sin publicidad.
+    </div>
+    ${items.length ? `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse">
+      <thead><tr style="border-bottom:2px solid var(--border)">
+        <th style="padding:8px;text-align:left;font-size:11px;color:var(--muted)">MLA</th>
+        <th style="padding:8px;text-align:left;font-size:11px;color:var(--muted)">Publicación</th>
+        <th style="padding:8px;text-align:center;font-size:11px;color:var(--muted)">Vendidas</th>
+        <th style="padding:8px;text-align:left;font-size:11px;color:var(--muted)">Precio hoy</th>
+        <th style="padding:8px;text-align:left;font-size:11px;color:var(--muted)">Precio campaña</th>
+        <th style="padding:8px;text-align:left;font-size:11px;color:var(--muted)">Mejor campaña</th>
+        <th style="padding:8px;text-align:left;font-size:11px;color:var(--muted)">Margen x unidad</th>
+        <th style="padding:8px;text-align:center;font-size:11px;color:var(--muted)">Campañas</th>
+      </tr></thead><tbody>${filas}</tbody></table></div>`
+      : '<div style="padding:24px;text-align:center;color:var(--muted);font-size:12px">Ninguna publicación con ese filtro</div>'}
+    ${aviso}${avisoCmv}
+    <div style="font-size:10px;color:var(--muted);margin-top:10px">Datos ${d.cached ? 'cacheados' : 'frescos'} · ${d.generado ? new Date(d.generado).toLocaleString('es-AR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}) : ''}</div>`;
+}
+
+function exportPromoCandidatosExcel() {
+  const items = promoFiltrados();
+  if (!items.length) { showToast('No hay datos para exportar'); return; }
+  const rows = [];
+  items.forEach(i => (i.ofertas || []).forEach(o => rows.push({
+    MLA: i.mla_id,
+    Publicacion: i.title || '',
+    Vendidas: i.vendidas || 0,
+    'Precio hoy': i.precio_actual ?? '',
+    CMV: i.costo_unit ?? '',
+    Campania: o.promo_name,
+    Tipo: o.promo_type,
+    'Cierra': o.deadline_date ? o.deadline_date.slice(0,10) : '',
+    'Precio campania': o.precio_a_definir ? 'a definir' : o.precio_campania,
+    'Descuento %': o.descuento_pct ?? '',
+    'Pone ML %': o.meli_pct ?? '',
+    'Pones vos %': o.seller_pct ?? '',
+    'Comision': o.comision ?? '',
+    'Envio': o.envio ?? '',
+    'Margen $': o.margen_pesos ?? '',
+    'Margen %': o.margen_pct ?? '',
+    Recomendada: o.promo_id === i.mejor ? 'SI' : '',
+    Link: `https://articulo.mercadolibre.com.ar/${i.mla_id.replace('MLA','MLA-')}`,
+  })));
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Que meter');
+  XLSX.writeFile(wb, `Promociones_que_meter_${new Date().toISOString().slice(0,10)}.xlsx`);
+  showToast(`✅ Excel descargado (${rows.length} filas)`);
+}
+
 function exportarPromocionesExcel() {
   const data = window._promoData;
   if (!data || !(data.items || []).length) { showToast('No hay promociones para exportar'); return; }
@@ -18726,6 +18945,7 @@ const CI_REGLAS_LABELS = {
   anuncio_sangrando:    { titulo: 'Anuncio sangrando',      desc: 'Ítems en publi con ACOS por encima del umbral durante N días consecutivos' },
   oportunidad_escalable:{ titulo: 'Oportunidad escalable',  desc: 'SKUs con alta tasa de conversión (CVR) y baja inversión en publicidad' },
   full_sin_stock_con_deposito: { titulo: 'FULL en cero con stock propio', desc: 'Publicaciones que se ofrecen por FULL con el inventario de fulfillment en 0 y unidades en el depósito propio' },
+  promo_campania_por_vencer: { titulo: 'Campaña por vencer con candidatas rentables', desc: 'Campañas que cierran en los próximos días con publicaciones que dejan margen y todavía no están cargadas' },
   medidas_envio_invalidas: { titulo: 'Medidas de envío mal declaradas', desc: 'Publicaciones sin medidas, donde el producto no entra en el paquete declarado, o que ML midió más grandes que lo declarado' },
 };
 

@@ -1914,6 +1914,7 @@ const REGLAS_DEFAULT = {
   oportunidad_escalable: { habilitada: true, umbral: { cvr_min: 5, gasto_max: 5000, dias: 30 } },
   full_sin_stock_con_deposito: { habilitada: true, umbral: { min_unidades: 1, dias_ventas: 30, max_items: 8, max_consultas: 500 } },
   medidas_envio_invalidas: { habilitada: true, umbral: { min_items: 1, max_items: 8 } },
+  promo_campania_por_vencer: { habilitada: true, umbral: { dias: 7, min_items: 3, max_items: 6 } },
 };
 
 async function getRegla(clientId, codigo) {
@@ -2871,6 +2872,55 @@ async function evalRuleMedidasEnvio(client) {
   } catch(e) { console.error(`[ALERTA medidas_envio_invalidas] ${client.name}:`, e.message); return null; }
 }
 
+// Regla 14 — Campaña por vencer con candidatas rentables sin cargar
+// ML no deja adherir por API, así que lo único que podemos hacer es avisar a tiempo:
+// la campaña cierra, hay publicaciones que dejan margen y todavía no están adentro.
+async function evalRulePromoPorVencer(client) {
+  const regla = await getRegla(client.id, 'promo_campania_por_vencer');
+  if (!regla.habilitada) return null;
+  const { dias = 7, min_items = 3, max_items = 6 } = regla.umbral || {};
+  try {
+    const d = await obtenerCandidatosPromo(client.id);
+    if (!d || !(d.campanias || []).length) return resolveAlerta(client.id, 'promo_campania_por_vencer');
+
+    const porVencer = (d.campanias || [])
+      .filter(c => c.dias_para_cierre != null && c.dias_para_cierre >= 0 && c.dias_para_cierre <= dias);
+    if (!porVencer.length) return resolveAlerta(client.id, 'promo_campania_por_vencer');
+    const idsVencen = new Set(porVencer.map(c => c.id));
+
+    // Candidatas rentables que todavía NO están adentro de esas campañas
+    const oportunidades = [];
+    for (const it of d.items || []) {
+      for (const o of it.ofertas || []) {
+        if (!idsVencen.has(o.promo_id)) continue;
+        if (o.estado_oferta === 'started') continue;      // ya está participando
+        if (o.margen_pesos == null || o.margen_pesos <= 0) continue;
+        oportunidades.push({ mla_id: it.mla_id, title: it.title, vendidas: it.vendidas,
+                             promo: o.promo_name, precio: o.precio_campania,
+                             margen: o.margen_pesos, margen_pct: o.margen_pct });
+      }
+    }
+    if (oportunidades.length < min_items) return resolveAlerta(client.id, 'promo_campania_por_vencer');
+
+    oportunidades.sort((a, b) => (b.vendidas || 0) - (a.vendidas || 0));
+    const cierraAntes = Math.min(...porVencer.map(c => c.dias_para_cierre));
+    const corto = t => (t || '').length > 42 ? t.slice(0, 42) + '…' : (t || '');
+    const lista = oportunidades.slice(0, max_items).map(o =>
+      `• ${corto(o.title)} — ${o.promo}: $${Math.round(o.precio).toLocaleString('es-AR')} deja $${Math.round(o.margen).toLocaleString('es-AR')} (${o.margen_pct}%)`
+    ).join('\n');
+    const resto = oportunidades.length > max_items ? `\n…y ${oportunidades.length - max_items} más` : '';
+    const nombres = porVencer.map(c => `${c.name} (${c.dias_para_cierre}d)`).join(', ');
+
+    return upsertAlerta(client.id, 'promo_campania_por_vencer',
+      cierraAntes <= 2 ? 'critical' : 'warning',
+      `${oportunidades.length} publicación${oportunidades.length !== 1 ? 'es' : ''} rentable${oportunidades.length !== 1 ? 's' : ''} sin cargar en campañas que cierran`,
+      `Cierran: ${nombres}. Se cargan a mano desde el Centro de Promociones — ML no deja hacerlo por API:\n${lista}${resto}`,
+      { items: oportunidades.slice(0, 50), total: oportunidades.length,
+        campanias: porVencer, dias_min: cierraAntes }
+    );
+  } catch(e) { console.error(`[ALERTA promo_campania_por_vencer] ${client.name}:`, e.message); return null; }
+}
+
 // Motor principal
 async function runAlertEngine({ forceNotify = false, tipo = 'auto' } = {}) {
   console.log('[ALERTAS] Iniciando evaluación —', new Date().toISOString());
@@ -2892,6 +2942,7 @@ async function runAlertEngine({ forceNotify = false, tipo = 'auto' } = {}) {
       evalRuleOportunidadEscalable,
       evalRuleFullSinStockConDeposito,
       evalRuleMedidasEnvio,
+      evalRulePromoPorVencer,
     ];
     const newAlerts = [];
     for (const client of clients.rows) {
@@ -2944,6 +2995,8 @@ const SLACK_TIPO_CONFIG = {
   producto_sin_ventas:  { emoji: '🛒', label: 'Productos sin ventas',         short: (a) => `${a.datos?.total || '?'} productos activos sin ventas en 90d` },
   full_sin_stock_con_deposito: { emoji: '🏬', label: 'FULL en cero con stock propio', short: (a) =>
                             `${a.datos?.total || '?'} publicaciones · ${a.datos?.unidades_deposito || 0} u. en depósito` },
+  promo_campania_por_vencer: { emoji: '🏷️', label: 'Campaña por vencer con candidatas rentables', short: (a) =>
+                            `${a.datos?.total || '?'} publicaciones · cierra en ${a.datos?.dias_min ?? '?'} días` },
   medidas_envio_invalidas: { emoji: '📏', label: 'Medidas de envío mal declaradas', short: (a) => {
                             const r = a.datos?.resumen || {};
                             const p = [];
@@ -2968,7 +3021,7 @@ async function sendSlackAlert(newAlerts) {
   });
 
   // Ordenar: críticas primero, luego warnings
-  const orden = ['reputacion_bajando','medidas_envio_invalidas','stock_critico_pareto','full_sin_stock_con_deposito','caida_ventas','tacos_alto','tacos_producto_alto','margen_erosionado','roas_bajo','preguntas_pendientes','producto_sin_ventas'];
+  const orden = ['reputacion_bajando','promo_campania_por_vencer','medidas_envio_invalidas','stock_critico_pareto','full_sin_stock_con_deposito','caida_ventas','tacos_alto','tacos_producto_alto','margen_erosionado','roas_bajo','preguntas_pendientes','producto_sin_ventas'];
   const tiposOrdenados = [
     ...orden.filter(k => byTipo[k]),
     ...Object.keys(byTipo).filter(k => !orden.includes(k))
@@ -10607,6 +10660,26 @@ async function analizarCandidatosPromo(clientId) {
 
   items.sort((a, b) => (b.vendidas || 0) - (a.vendidas || 0));
   return { campanias: metaCamp, items, truncado, fees_usados: feesUsados };
+}
+
+// Envuelve el análisis con el cache: lo usan el endpoint y el motor de alertas, y el
+// cálculo tarda un minuto largo por cuenta.
+async function obtenerCandidatosPromo(clientId, { refresh = false } = {}) {
+  const cached = _promoCandCache.get(clientId);
+  if (!refresh && cached && Date.now() - cached.ts < PROMO_CAND_TTL) return cached.data;
+  const r = await analizarCandidatosPromo(clientId);
+  if (!r) return null;
+  const conMargen = r.items.filter(i => i.margen_mejor != null);
+  const data = {
+    ...r,
+    total_items: r.items.length,
+    con_costo: r.items.filter(i => i.has_cost).length,
+    rentables: conMargen.filter(i => i.margen_mejor > 0).length,
+    en_perdida: conMargen.filter(i => i.margen_mejor <= 0).length,
+    costos_sospechosos: r.items.filter(i => i.costo_sospechoso).length,
+  };
+  _promoCandCache.set(clientId, { ts: Date.now(), data });
+  return data;
 }
 
 app.get('/api/promociones/candidatos', requireAuth, async (req, res) => {
