@@ -11707,8 +11707,11 @@ app.post('/api/debug/promo-vias', requireAuth, async (req, res) => {
       // 1) precio directo — MISMO precio actual: no cambia nada, solo dice si la ruta escribe
       { que: 'PUT /items/{id} {price} (mismo precio)', verbo: 'PUT',
         url: `${ML_API}/items/${item_id}`, body: { price: precio } },
-      // 2) endpoint de precios
+      // 2) endpoint de precios (PUT y POST: el 405 puede ser solo el verbo)
       { que: 'PUT /items/{id}/prices', verbo: 'PUT',
+        url: `${ML_API}/items/${item_id}/prices`,
+        body: { prices: [{ type: 'standard', amount: precio, currency_id: 'ARS' }] } },
+      { que: 'POST /items/{id}/prices', verbo: 'POST',
         url: `${ML_API}/items/${item_id}/prices`,
         body: { prices: [{ type: 'standard', amount: precio, currency_id: 'ARS' }] } },
       // 3) crear campaña propia del vendedor
