@@ -2880,6 +2880,22 @@ async function evalRulePromoPorVencer(client) {
   if (!regla.habilitada) return null;
   const { dias = 7, min_items = 3, max_items = 6 } = regla.umbral || {};
   try {
+    // Chequeo barato primero: el análisis completo tarda un minuto por cuenta y no tiene
+    // sentido pagarlo en las cuentas donde no hay ninguna campaña cerca de cerrar.
+    const token = await getClientToken(client.id);
+    if (!token) return null;
+    const cRes = await pool.query('SELECT ml_user_id FROM clients WHERE id=$1', [client.id]);
+    const uid = cRes.rows[0]?.ml_user_id;
+    if (!uid) return null;
+    const pr = await fetch(`${ML_API}/seller-promotions/users/${uid}?app_version=v2`,
+      { headers: { 'Authorization': `Bearer ${token}` } }).then(r => r.json()).catch(() => ({}));
+    const cerca = (pr.results || []).filter(p => {
+      if (!PROMO_ESTADOS.has(p.status) || !p.deadline_date) return false;
+      const dd = Math.ceil((new Date(p.deadline_date) - Date.now()) / 86400000);
+      return dd >= 0 && dd <= dias;
+    });
+    if (!cerca.length) return resolveAlerta(client.id, 'promo_campania_por_vencer');
+
     const d = await obtenerCandidatosPromo(client.id);
     if (!d || !(d.campanias || []).length) return resolveAlerta(client.id, 'promo_campania_por_vencer');
 
