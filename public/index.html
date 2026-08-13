@@ -17940,8 +17940,16 @@ function renderPromociones(data) {
 }
 
 // ── Promociones › Qué meter ───────────────────────────────────────────────────
+const PROMO_VEREDICTOS = {
+  meter:     { icono: '✅', label: 'Meter',            color: '#16a34a' },
+  evaluar:   { icono: '⚠️', label: 'Evaluar',          color: '#f59e0b' },
+  no_meter:  { icono: '⛔', label: 'No meter',         color: '#dc2626' },
+  a_definir: { icono: '✏️', label: 'Precio a definir', color: '#6b7280' },
+  sin_datos: { icono: '❔', label: 'Falta CMV',        color: '#6b7280' },
+};
+
 let _promoCand = null;
-let _promoFiltro = 'todas';     // todas | rentables | perdida | sin_costo
+let _promoFiltro = 'todas';     // todas | meter | evaluar | no_meter | sin_costo
 let _promoSoloUrgentes = false;
 const PROMO_URGENTE_DIAS = 7;
 
@@ -17986,8 +17994,7 @@ function promoFiltrados() {
       .map(c => c.id));
     items = items.filter(i => (i.ofertas || []).some(o => urgentes.has(o.promo_id)));
   }
-  if (_promoFiltro === 'rentables') items = items.filter(i => i.margen_mejor != null && i.margen_mejor > 0);
-  if (_promoFiltro === 'perdida')   items = items.filter(i => i.margen_mejor != null && i.margen_mejor <= 0);
+  if (['meter','evaluar','no_meter'].includes(_promoFiltro)) items = items.filter(i => i.veredicto === _promoFiltro);
   if (_promoFiltro === 'sin_costo') items = items.filter(i => !i.has_cost);
   return items;
 }
@@ -18065,19 +18072,23 @@ function renderPromoCandidatos() {
         <td style="padding:4px 8px;font-size:11px">${m}</td></tr>`;
     }).join('');
 
+    const vd = PROMO_VEREDICTOS[i.veredicto] || { icono: '', label: i.veredicto || '', color: 'var(--muted)' };
     return `<tr style="border-bottom:1px solid var(--border);border-left:3px solid ${borde}">
+      <td style="padding:8px;font-size:11px;white-space:nowrap;color:${vd.color};font-weight:600">${vd.icono} ${vd.label}</td>
       <td style="padding:8px;font-size:11px;white-space:nowrap">
         <a href="https://articulo.mercadolibre.com.ar/${i.mla_id.replace('MLA','MLA-')}" target="_blank" style="color:var(--accent);text-decoration:none">${i.mla_id}</a></td>
-      <td style="padding:8px;font-size:12px">${(i.title || '').slice(0,52)}</td>
+      <td style="padding:8px;font-size:12px">${(i.title || '').slice(0,52)}
+        ${i.motivo ? `<div style="font-size:10px;color:var(--muted);margin-top:2px">${i.motivo}</div>` : ''}</td>
       <td style="padding:8px;font-size:11px;text-align:center">${i.vendidas || 0}</td>
-      <td style="padding:8px;font-size:11px;white-space:nowrap">${_pm(i.precio_actual)}</td>
+      <td style="padding:8px;font-size:11px;white-space:nowrap">${_pm(i.precio_actual)}${i.margen_hoy_pct != null ? ` <span style="color:var(--muted);font-size:10px">${i.margen_hoy_pct}%</span>` : ''}</td>
       <td style="padding:8px;font-size:11px;white-space:nowrap">${best && !best.precio_a_definir ? _pm(best.precio_campania) : '—'}</td>
       <td style="padding:8px;font-size:11px">${best ? best.promo_name.slice(0,24) : '—'}</td>
       <td style="padding:8px;font-size:11px;white-space:nowrap">${margenCell}</td>
+      <td style="padding:8px;font-size:11px;white-space:nowrap">${i.resigna_pp != null ? `<span style="color:${i.resigna_pp > 15 ? '#dc2626' : 'var(--muted)'}">-${i.resigna_pp} pp</span>` : '—'}</td>
       <td style="padding:8px;font-size:11px;text-align:center">
         <span onclick="togglePromoFila('${i.mla_id}')" style="cursor:pointer;color:var(--accent)">${nOf} ▾</span></td>
     </tr>
-    <tr id="promo-det-${i.mla_id}" style="display:none"><td colspan="8" style="padding:0 8px 10px 20px;background:var(--surface2)">
+    <tr id="promo-det-${i.mla_id}" style="display:none"><td colspan="10" style="padding:0 8px 10px 20px;background:var(--surface2)">
       <table style="width:100%;border-collapse:collapse">
         <thead><tr><th style="text-align:left;padding:4px 8px;font-size:10px;color:var(--muted)">Campaña</th>
           <th style="text-align:left;padding:4px 8px;font-size:10px;color:var(--muted)">Precio</th>
@@ -18095,8 +18106,9 @@ function renderPromoCandidatos() {
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px">${tarjetas}</div>
     <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px">
       ${btn('todas','Todas', d.total_items)}
-      ${btn('rentables','Dejan margen', d.rentables)}
-      ${btn('perdida','Pierden plata', d.en_perdida)}
+      ${btn('meter','✅ Meter', (d.por_veredicto||{}).meter)}
+      ${btn('evaluar','⚠️ Evaluar', (d.por_veredicto||{}).evaluar)}
+      ${btn('no_meter','⛔ No meter', (d.por_veredicto||{}).no_meter)}
       ${btn('sin_costo','Sin CMV', d.total_items - d.con_costo)}
       <button onclick="togglePromoUrgentes()" class="sync-btn" style="padding:4px 10px;font-size:11px;${_promoSoloUrgentes ? 'background:#dc2626;color:#fff' : ''}">⏰ Cierran en ${PROMO_URGENTE_DIAS} días</button>
       <div style="flex:1"></div>
@@ -18109,13 +18121,15 @@ function renderPromoCandidatos() {
     </div>
     ${items.length ? `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse">
       <thead><tr style="border-bottom:2px solid var(--border)">
+        <th style="padding:8px;text-align:left;font-size:11px;color:var(--muted)">Qué hacer</th>
         <th style="padding:8px;text-align:left;font-size:11px;color:var(--muted)">MLA</th>
         <th style="padding:8px;text-align:left;font-size:11px;color:var(--muted)">Publicación</th>
         <th style="padding:8px;text-align:center;font-size:11px;color:var(--muted)">Vendidas</th>
-        <th style="padding:8px;text-align:left;font-size:11px;color:var(--muted)">Precio hoy</th>
+        <th style="padding:8px;text-align:left;font-size:11px;color:var(--muted)">Precio hoy · margen</th>
         <th style="padding:8px;text-align:left;font-size:11px;color:var(--muted)">Precio campaña</th>
         <th style="padding:8px;text-align:left;font-size:11px;color:var(--muted)">Mejor campaña</th>
         <th style="padding:8px;text-align:left;font-size:11px;color:var(--muted)">Margen x unidad</th>
+        <th style="padding:8px;text-align:left;font-size:11px;color:var(--muted)">Resigna</th>
         <th style="padding:8px;text-align:center;font-size:11px;color:var(--muted)">Campañas</th>
       </tr></thead><tbody>${filas}</tbody></table></div>`
       : '<div style="padding:24px;text-align:center;color:var(--muted);font-size:12px">Ninguna publicación con ese filtro</div>'}
@@ -18128,9 +18142,14 @@ function exportPromoCandidatosExcel() {
   if (!items.length) { showToast('No hay datos para exportar'); return; }
   const rows = [];
   items.forEach(i => (i.ofertas || []).forEach(o => rows.push({
+    'Que hacer': (PROMO_VEREDICTOS[i.veredicto] || {}).label || i.veredicto || '',
+    Motivo: i.motivo || '',
     MLA: i.mla_id,
     Publicacion: i.title || '',
     Vendidas: i.vendidas || 0,
+    'Margen hoy $': i.margen_hoy ?? '',
+    'Margen hoy %': i.margen_hoy_pct ?? '',
+    'Resigna pp': i.resigna_pp ?? '',
     'Precio hoy': i.precio_actual ?? '',
     CMV: i.costo_unit ?? '',
     Campania: o.promo_name,
