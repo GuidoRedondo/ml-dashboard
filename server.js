@@ -10556,17 +10556,21 @@ async function analizarCandidatosPromo(clientId) {
     const tieneCosto = costoCargado && !costoSospechoso;
     const ofertas = [];
     for (const { camp, oferta } of ofertasPorItem[mla]) {
+      // DEAL y los cupones no proponen precio: lo define el vendedor al adherirse.
+      // Sin precio no hay descuento ni margen que calcular — mostrar 0 daba "-100%".
       const precio = parseFloat(oferta.price) || 0;
       const lista  = parseFloat(oferta.original_price) || m.precio_actual || 0;
+      const aDefinir = !(precio > 0);
       const base = {
+        precio_a_definir: aDefinir,
         promo_id: camp.id, promo_name: camp.name || camp.type, promo_type: camp.type,
         promo_status: camp.status, deadline_date: camp.deadline_date || null,
         estado_oferta: oferta.status || null,
-        precio_campania: precio, precio_lista: lista,
+        precio_campania: aDefinir ? null : precio, precio_lista: lista,
         precio_min: oferta.min_discounted_price != null ? parseFloat(oferta.min_discounted_price) : null,
         meli_pct: oferta.meli_percentage ?? null,
         seller_pct: oferta.seller_percentage ?? null,
-        descuento_pct: lista > 0 ? +((1 - precio / lista) * 100).toFixed(1) : null,
+        descuento_pct: (!aDefinir && lista > 0) ? +((1 - precio / lista) * 100).toFixed(1) : null,
       };
       if (tieneCosto && precio > 0 && feesUsados < PROMO_MAX_FEES) {
         const f = await feesAlPrecio(m, precio, headers, feeCache);
@@ -10587,6 +10591,8 @@ async function analizarCandidatosPromo(clientId) {
       if (a.margen_pesos != null && b.margen_pesos != null) return b.margen_pesos - a.margen_pesos;
       if (a.margen_pesos != null) return -1;
       if (b.margen_pesos != null) return 1;
+      // Entre las que no tienen margen calculado, primero las que sí traen precio
+      if (a.precio_a_definir !== b.precio_a_definir) return a.precio_a_definir ? 1 : -1;
       return (a.seller_pct ?? 99) - (b.seller_pct ?? 99);
     });
     items.push({
