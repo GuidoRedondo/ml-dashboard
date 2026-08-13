@@ -11685,57 +11685,6 @@ app.get('/api/proxy-ml', requireAuth, async (req, res) => {
 });
 
 // ── Proxy de ESCRITURA a ML (solo atributos de items propios) ──────────────
-// Sonda temporal: ¿hay ALGUNA vía de escritura de precio/promo con esta app?
-// El PUT de precio manda el MISMO precio que ya tiene el ítem, así que no cambia nada.
-app.post('/api/debug/promo-vias', requireAuth, async (req, res) => {
-  try {
-    if (req.user.role !== 'admin') return res.status(403).json({ error: 'Solo admin' });
-    const { client_id, item_id } = req.body || {};
-    if (!client_id || !item_id) return res.status(400).json({ error: 'Falta client_id o item_id' });
-
-    const c = await pool.query('SELECT * FROM clients WHERE id=$1', [client_id]);
-    if (!c.rows.length) return res.status(404).json({ error: 'Cliente no encontrado' });
-    const client = c.rows[0];
-    const headers = { 'Authorization': `Bearer ${client.access_token}`, 'Content-Type': 'application/json' };
-    const uid = client.ml_user_id;
-
-    const it = await fetch(`${ML_API}/items/${item_id}?attributes=id,seller_id,price`, { headers }).then(r => r.json());
-    if (String(it.seller_id) !== String(uid)) return res.status(403).json({ error: 'El item no es de este cliente' });
-    const precio = it.price;
-
-    const pruebas = [
-      // 1) precio directo — MISMO precio actual: no cambia nada, solo dice si la ruta escribe
-      { que: 'PUT /items/{id} {price} (mismo precio)', verbo: 'PUT',
-        url: `${ML_API}/items/${item_id}`, body: { price: precio } },
-      // 2) endpoint de precios (PUT y POST: el 405 puede ser solo el verbo)
-      { que: 'PUT /items/{id}/prices', verbo: 'PUT',
-        url: `${ML_API}/items/${item_id}/prices`,
-        body: { prices: [{ type: 'standard', amount: precio, currency_id: 'ARS' }] } },
-      { que: 'POST /items/{id}/prices', verbo: 'POST',
-        url: `${ML_API}/items/${item_id}/prices`,
-        body: { prices: [{ type: 'standard', amount: precio, currency_id: 'ARS' }] } },
-      // 3) crear campaña propia del vendedor
-      { que: 'POST /seller-promotions/promotions (campaña propia)', verbo: 'POST',
-        url: `${ML_API}/seller-promotions/promotions?app_version=v2`,
-        body: { name: '__sonda__', type: 'SELLER_CAMPAIGN', start_date: '2030-01-01T00:00:00Z', finish_date: '2030-01-02T00:00:00Z' } },
-      // 4) cupones del vendedor
-      { que: 'POST /seller-promotions/users/{uid}/coupons', verbo: 'POST',
-        url: `${ML_API}/seller-promotions/users/${uid}/coupons?app_version=v2`,
-        body: { name: '__sonda__', percentage: 5 } },
-    ];
-
-    const out = [];
-    for (const p of pruebas) {
-      try {
-        const r = await fetch(p.url, { method: p.verbo, headers, body: JSON.stringify(p.body) });
-        const txt = await r.text();
-        out.push({ que: p.que, status: r.status, respuesta: txt.slice(0, 260) });
-      } catch(e) { out.push({ que: p.que, error: e.message }); }
-    }
-    res.json({ item: item_id, precio, pruebas: out });
-  } catch(e) { res.status(500).json({ error: e.message }); }
-});
-
 app.post('/api/proxy-ml-write', requireAuth, async (req, res) => {
   try {
     const { path, client_id, method, body } = req.body || {};
