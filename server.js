@@ -10551,7 +10551,7 @@ function veredictoPromo(best, margenHoy) {
              prioridad: 2 };
   }
   const resigna = best.resigna_pp != null
-    ? ` resignando ${best.resigna_pp} puntos`
+    ? ` resignando ${best.resigna_pp} punto${best.resigna_pp === 1 ? '' : 's'}`
     : '';
   return { veredicto: 'meter',
            motivo: `Deja ${best.margen_pct}% de margen${resigna}`,
