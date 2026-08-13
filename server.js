@@ -10474,6 +10474,7 @@ async function analizarCandidatosPromo(clientId) {
   // 2. Candidatos de cada una
   const ofertasPorItem = {};
   const metaCamp = [];
+  const vistos = new Set();   // la paginación de ML repite filas entre páginas
   for (const c of campanias) {
     let offset = 0, total = null, n = 0;
     for (let guard = 0; guard < 20; guard++) {
@@ -10483,6 +10484,9 @@ async function analizarCandidatosPromo(clientId) {
       const res = r.results || [];
       if (total == null) total = r.paging?.total ?? res.length;
       res.forEach(x => {
+        const k = `${c.id}|${x.id}`;
+        if (vistos.has(k)) return;
+        vistos.add(k);
         // status "candidate" = se puede meter. "started" ya está adentro.
         (ofertasPorItem[x.id] = ofertasPorItem[x.id] || []).push({ camp: c, oferta: x });
         n++;
@@ -10545,7 +10549,11 @@ async function analizarCandidatosPromo(clientId) {
   for (const mla of mlas) {
     const m = meta[mla];
     if (!m) continue;
-    const tieneCosto = costo[mla] != null && costo[mla] > 0;
+    // Un costo por debajo del 5% del precio es casi siempre un error de carga (en Sima
+    // están en dólares): daría un margen fantasía del 60% y arruinaría la recomendación.
+    const costoCargado = costo[mla] != null && costo[mla] > 0;
+    const costoSospechoso = costoCargado && m.precio_actual > 0 && costo[mla] / m.precio_actual < 0.05;
+    const tieneCosto = costoCargado && !costoSospechoso;
     const ofertas = [];
     for (const { camp, oferta } of ofertasPorItem[mla]) {
       const precio = parseFloat(oferta.price) || 0;
@@ -10583,7 +10591,8 @@ async function analizarCandidatosPromo(clientId) {
     });
     items.push({
       mla_id: mla, title: m.title, precio_actual: m.precio_actual, stock: m.stock,
-      vendidas: m.vendidas, has_cost: tieneCosto, costo_unit: tieneCosto ? costo[mla] : null,
+      vendidas: m.vendidas, has_cost: tieneCosto, costo_sospechoso: costoSospechoso,
+      costo_unit: costoCargado ? costo[mla] : null,
       ofertas, mejor: ofertas[0]?.promo_id || null,
       margen_mejor: ofertas[0]?.margen_pesos ?? null,
       margen_mejor_pct: ofertas[0]?.margen_pct ?? null,
@@ -10611,6 +10620,7 @@ app.get('/api/promociones/candidatos', requireAuth, async (req, res) => {
       con_costo: r.items.filter(i => i.has_cost).length,
       rentables: conMargen.filter(i => i.margen_mejor > 0).length,
       en_perdida: conMargen.filter(i => i.margen_mejor <= 0).length,
+      costos_sospechosos: r.items.filter(i => i.costo_sospechoso).length,
     };
     _promoCandCache.set(clientId, { ts: Date.now(), data });
     res.json({ ...data, cached: false, generado: new Date().toISOString() });
