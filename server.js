@@ -10523,6 +10523,41 @@ function margenEnPromo({ precio, costo, alic, comPct, envio, esMonotrib, tasaIib
            margen_pesos: margen, margen_pct: precio ? +(margen / precio * 100).toFixed(1) : 0 };
 }
 
+// Veredicto por publicación. La tabla sola no alcanza: el consultor necesita saber qué
+// hacer, no interpretar seis números por fila.
+const PROMO_PISO_MARGEN_PCT = 10;   // debajo de esto la venta no paga el trabajo
+const PROMO_RESIGNA_MAX_PP  = 15;   // resignar más de esto es un descuento caro
+
+function veredictoPromo(best, margenHoy) {
+  if (!best) return { veredicto: 'sin_datos', motivo: 'No hay ofertas para esta publicación', prioridad: 0 };
+  if (best.margen_pesos == null) {
+    return best.precio_a_definir
+      ? { veredicto: 'a_definir', motivo: 'La campaña no propone precio: lo definís vos al cargarla', prioridad: 0 }
+      : { veredicto: 'sin_datos', motivo: 'Falta el CMV para saber si conviene', prioridad: 0 };
+  }
+  if (best.margen_pesos <= 0) {
+    return { veredicto: 'no_meter',
+             motivo: `Al precio de campaña la venta deja ${best.margen_pct}%: perdés plata en cada unidad`,
+             prioridad: 3 };
+  }
+  if (best.margen_pct < PROMO_PISO_MARGEN_PCT) {
+    return { veredicto: 'evaluar',
+             motivo: `Queda en ${best.margen_pct}% de margen, muy al límite`,
+             prioridad: 2 };
+  }
+  if (best.resigna_pp != null && best.resigna_pp > PROMO_RESIGNA_MAX_PP) {
+    return { veredicto: 'evaluar',
+             motivo: `Resignás ${best.resigna_pp} puntos de margen (de ${margenHoy?.margen_pct}% a ${best.margen_pct}%)`,
+             prioridad: 2 };
+  }
+  const resigna = best.resigna_pp != null
+    ? ` resignando ${best.resigna_pp} puntos`
+    : '';
+  return { veredicto: 'meter',
+           motivo: `Deja ${best.margen_pct}% de margen${resigna}`,
+           prioridad: 1 };
+}
+
 async function analizarCandidatosPromo(clientId) {
   const token = await getClientToken(clientId);
   if (!token) return null;
@@ -10623,6 +10658,20 @@ async function analizarCandidatosPromo(clientId) {
     const costoCargado = costo[mla] != null && costo[mla] > 0;
     const costoSospechoso = costoCargado && m.precio_actual > 0 && costo[mla] / m.precio_actual < 0.05;
     const tieneCosto = costoCargado && !costoSospechoso;
+
+    // Margen al precio de hoy: sin esto el número de la campaña no dice nada. Lo que
+    // importa no es "deja 30%", es cuánto se resigna contra no hacer nada.
+    let margenHoy = null;
+    if (tieneCosto && m.precio_actual > 0 && feesUsados < PROMO_MAX_FEES) {
+      const f0 = await feesAlPrecio(m, m.precio_actual, headers, feeCache);
+      feesUsados++;
+      if (f0.com_pct != null) {
+        margenHoy = margenEnPromo({
+          precio: m.precio_actual, costo: costo[mla], alic: alic[mla] ?? 21,
+          comPct: f0.com_pct, envio: f0.envio, esMonotrib, tasaIibb,
+        });
+      }
+    }
     const ofertas = [];
     for (const { camp, oferta } of ofertasPorItem[mla]) {
       // DEAL y los cupones no proponen precio: lo define el vendedor al adherirse.
@@ -10649,6 +10698,10 @@ async function analizarCandidatosPromo(clientId) {
             precio, costo: costo[mla], alic: alic[mla] ?? 21,
             comPct: f.com_pct, envio: f.envio, esMonotrib, tasaIibb,
           }));
+          if (margenHoy) {
+            base.resigna_pesos = Math.round(margenHoy.margen_pesos - base.margen_pesos);
+            base.resigna_pp    = +(margenHoy.margen_pct - base.margen_pct).toFixed(1);
+          }
         }
       } else if (tieneCosto && precio > 0) {
         truncado = true;
@@ -10664,17 +10717,24 @@ async function analizarCandidatosPromo(clientId) {
       if (a.precio_a_definir !== b.precio_a_definir) return a.precio_a_definir ? 1 : -1;
       return (a.seller_pct ?? 99) - (b.seller_pct ?? 99);
     });
+    const best = ofertas[0] || null;
+    const ver = veredictoPromo(best, margenHoy);
     items.push({
       mla_id: mla, title: m.title, precio_actual: m.precio_actual, stock: m.stock,
       vendidas: m.vendidas, has_cost: tieneCosto, costo_sospechoso: costoSospechoso,
       costo_unit: costoCargado ? costo[mla] : null,
+      margen_hoy: margenHoy ? margenHoy.margen_pesos : null,
+      margen_hoy_pct: margenHoy ? margenHoy.margen_pct : null,
+      resigna_pesos: best?.resigna_pesos ?? null,
+      resigna_pp: best?.resigna_pp ?? null,
+      veredicto: ver.veredicto, motivo: ver.motivo, prioridad: ver.prioridad,
       ofertas, mejor: ofertas[0]?.promo_id || null,
       margen_mejor: ofertas[0]?.margen_pesos ?? null,
       margen_mejor_pct: ofertas[0]?.margen_pct ?? null,
     });
   }
 
-  items.sort((a, b) => (b.vendidas || 0) - (a.vendidas || 0));
+  items.sort((a, b) => (b.prioridad || 0) - (a.prioridad || 0) || (b.vendidas || 0) - (a.vendidas || 0));
   return { campanias: metaCamp, items, truncado, fees_usados: feesUsados };
 }
 
@@ -10693,6 +10753,7 @@ async function obtenerCandidatosPromo(clientId, { refresh = false } = {}) {
     rentables: conMargen.filter(i => i.margen_mejor > 0).length,
     en_perdida: conMargen.filter(i => i.margen_mejor <= 0).length,
     costos_sospechosos: r.items.filter(i => i.costo_sospechoso).length,
+    por_veredicto: r.items.reduce((a, i) => { a[i.veredicto] = (a[i.veredicto] || 0) + 1; return a; }, {}),
   };
   _promoCandCache.set(clientId, { ts: Date.now(), data });
   return data;
@@ -10716,6 +10777,7 @@ app.get('/api/promociones/candidatos', requireAuth, async (req, res) => {
       rentables: conMargen.filter(i => i.margen_mejor > 0).length,
       en_perdida: conMargen.filter(i => i.margen_mejor <= 0).length,
       costos_sospechosos: r.items.filter(i => i.costo_sospechoso).length,
+      por_veredicto: r.items.reduce((a, i) => { a[i.veredicto] = (a[i.veredicto] || 0) + 1; return a; }, {}),
     };
     _promoCandCache.set(clientId, { ts: Date.now(), data });
     res.json({ ...data, cached: false, generado: new Date().toISOString() });
