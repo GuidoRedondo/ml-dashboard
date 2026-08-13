@@ -10390,6 +10390,236 @@ async function fetchAdsByItemMap(headers, fromDate, toDate, siteId = 'MLA') {
   return map;
 }
 
+// ── PROMOCIONES: qué conviene meter en cada campaña ───────────────────────────
+// ML no deja adherir ítems por API (403 PolicyAgent sobre /seller-promotions), pero sí
+// deja leer las campañas abiertas y sus candidatos con el precio propuesto y el reparto
+// del descuento. Con eso + el CMV se resuelve la decisión: en qué campaña conviene meter
+// cada publicación y cuánto margen queda. La carga sigue siendo a mano en el panel.
+const _promoCandCache = new Map();          // client_id → { ts, data }
+const PROMO_CAND_TTL   = 2 * 60 * 60 * 1000;
+const PROMO_MAX_FEES   = 400;               // tope de consultas de comisión por corrida
+const PROMO_ESTADOS    = new Set(['started', 'pending']);
+
+// Cargo fijo por venta de ML — mismo escalón que usa el front (cargoFijoML)
+function cargoFijoMLServer(precio) {
+  if (precio < 16000) return 1255;
+  if (precio < 24000) return 2500;
+  if (precio <= 33000) return 3030;
+  return 0;
+}
+
+// Comisión y envío del vendedor AL PRECIO DE CAMPAÑA. No alcanza con escalar los del
+// precio de lista: abajo de $33.000 aparece el cargo fijo y cambia el envío gratis, así
+// que un descuento puede cruzar el umbral y comerse más de lo que parece.
+async function feesAlPrecio(item, precio, headers, cache) {
+  const key = `${item.listing_type_id}|${item.category_id}|${item.logistic_type}|${Math.round(precio)}`;
+  if (cache.has(key)) return cache.get(key);
+  let out = { com_pct: null, envio: null };
+  try {
+    const qs = new URLSearchParams({
+      price:           Math.round(precio),
+      currency_id:     'ARS',
+      listing_type_id: item.listing_type_id || 'gold_special',
+      logistic_type:   item.logistic_type || 'cross_docking',
+      shipping_modes:  item.shipping_mode || 'me2',
+      billable_weight: item.peso || 500,
+    });
+    if (item.category_id) qs.set('category_id', item.category_id);
+    const d = await fetch(`${ML_API}/sites/MLA/listing_prices?${qs}`, { headers }).then(r => r.json());
+    if (d && !d.error) {
+      const pct = d.sale_fee_details?.percentage_fee;
+      out.com_pct = pct != null ? parseFloat(pct)
+                  : (d.sale_fee_amount != null ? +(d.sale_fee_amount / precio * 100).toFixed(2) : null);
+      const costs = d.shipping?.costs;
+      const seller = Array.isArray(costs) ? (costs.find(c => c.type === 'seller')?.amount ?? null)
+                                          : (d.shipping?.seller_cost ?? d.shipping?.cost ?? null);
+      out.envio = (seller != null && parseFloat(seller) > 0) ? Math.round(parseFloat(seller)) : 0;
+    }
+  } catch(e) {}
+  cache.set(key, out);
+  return out;
+}
+
+// Margen de contribución por unidad al precio de campaña. Misma fórmula que
+// calcularMargenRealPorMla, sin publicidad (no se puede imputar a una venta que no pasó).
+function margenEnPromo({ precio, costo, alic, comPct, envio, esMonotrib, tasaIibb }) {
+  const com   = Math.round(precio * (comPct || 0) / 100) + cargoFijoMLServer(precio);
+  const env   = envio || 0;
+  const ivaV  = esMonotrib ? 0 : ivaContenido(precio, alic);
+  const ivaC  = esMonotrib ? 0 : ivaContenido(costo, alic) + ivaContenido(com + env, IVA_SERVICIOS_PCT);
+  const ivaDif = Math.round(ivaV - ivaC);
+  const iibb  = Math.round(precio * (tasaIibb / 100));
+  const margen = Math.round(precio - com - costo - env - ivaDif - iibb);
+  return { comision: com, envio: env, iva_dif: ivaDif, iibb,
+           margen_pesos: margen, margen_pct: precio ? +(margen / precio * 100).toFixed(1) : 0 };
+}
+
+async function analizarCandidatosPromo(clientId) {
+  const token = await getClientToken(clientId);
+  if (!token) return null;
+  const headers = { 'Authorization': `Bearer ${token}` };
+  const cRes = await pool.query(
+    'SELECT ml_user_id, tasa_iibb_pct, condicion_iva FROM clients WHERE id=$1', [clientId]);
+  const uid = cRes.rows[0]?.ml_user_id;
+  if (!uid) return null;
+  const tasaIibb   = parseFloat(cRes.rows[0]?.tasa_iibb_pct) || 0;
+  const esMonotrib = (cRes.rows[0]?.condicion_iva || 'responsable_inscripto') === 'monotributista';
+
+  // 1. Campañas abiertas
+  const pr = await fetch(`${ML_API}/seller-promotions/users/${uid}?app_version=v2`, { headers })
+    .then(r => r.json()).catch(() => ({}));
+  const campanias = (pr.results || []).filter(p => PROMO_ESTADOS.has(p.status));
+  if (!campanias.length) return { campanias: [], items: [], sin_campanias: true };
+
+  // 2. Candidatos de cada una
+  const ofertasPorItem = {};
+  const metaCamp = [];
+  for (const c of campanias) {
+    let offset = 0, total = null, n = 0;
+    for (let guard = 0; guard < 20; guard++) {
+      const url = `${ML_API}/seller-promotions/promotions/${c.id}/items` +
+                  `?promotion_type=${c.type}&app_version=v2&limit=50&offset=${offset}`;
+      const r = await fetch(url, { headers }).then(r => r.json()).catch(() => ({}));
+      const res = r.results || [];
+      if (total == null) total = r.paging?.total ?? res.length;
+      res.forEach(x => {
+        // status "candidate" = se puede meter. "started" ya está adentro.
+        (ofertasPorItem[x.id] = ofertasPorItem[x.id] || []).push({ camp: c, oferta: x });
+        n++;
+      });
+      offset += 50;
+      if (!res.length || offset >= total) break;
+    }
+    metaCamp.push({
+      id: c.id, type: c.type, name: c.name || c.type, status: c.status,
+      start_date: c.start_date || null, finish_date: c.finish_date || null,
+      deadline_date: c.deadline_date || null,
+      dias_para_cierre: c.deadline_date
+        ? Math.ceil((new Date(c.deadline_date) - Date.now()) / 86400000) : null,
+      candidatos: n,
+    });
+  }
+
+  const mlas = Object.keys(ofertasPorItem);
+  if (!mlas.length) return { campanias: metaCamp, items: [] };
+
+  // 3. Datos del ítem (para pedir la comisión al precio de campaña)
+  const meta = {};
+  const batches = [];
+  for (let i = 0; i < mlas.length; i += 20) batches.push(mlas.slice(i, i + 20));
+  for (let g = 0; g < batches.length; g += 6) {
+    await Promise.all(batches.slice(g, g + 6).map(async b => {
+      try {
+        const d = await fetch(`${ML_API}/items?ids=${b.join(',')}&attributes=id,title,price,listing_type_id,category_id,shipping,available_quantity,sold_quantity`, { headers })
+          .then(r => r.json());
+        (Array.isArray(d) ? d : []).forEach(r => {
+          if (r.code !== 200 || !r.body) return;
+          const x = r.body;
+          meta[x.id] = {
+            title: x.title, precio_actual: x.price, stock: x.available_quantity,
+            vendidas: x.sold_quantity || 0,
+            listing_type_id: x.listing_type_id, category_id: x.category_id,
+            logistic_type: x.shipping?.logistic_type || 'cross_docking',
+            shipping_mode: x.shipping?.mode || 'me2',
+            peso: x.shipping?.dimensions?.weight || 500,
+          };
+        });
+      } catch(e) {}
+    }));
+  }
+
+  // 4. Costos
+  const costsRes = await pool.query(
+    'SELECT mla_id, costo_unit, alicuota_iva FROM product_costs WHERE client_id=$1', [clientId]);
+  const costo = {}, alic = {};
+  costsRes.rows.forEach(r => {
+    costo[r.mla_id] = parseFloat(r.costo_unit) || 0;
+    alic[r.mla_id]  = parseFloat(r.alicuota_iva) || 21;
+  });
+
+  // 5. Margen por oferta. Solo pedimos comisión donde hay costo: sin CMV el margen no se
+  //    puede calcular igual, y son cientos de llamadas.
+  const feeCache = new Map();
+  let feesUsados = 0, truncado = false;
+  const items = [];
+  for (const mla of mlas) {
+    const m = meta[mla];
+    if (!m) continue;
+    const tieneCosto = costo[mla] != null && costo[mla] > 0;
+    const ofertas = [];
+    for (const { camp, oferta } of ofertasPorItem[mla]) {
+      const precio = parseFloat(oferta.price) || 0;
+      const lista  = parseFloat(oferta.original_price) || m.precio_actual || 0;
+      const base = {
+        promo_id: camp.id, promo_name: camp.name || camp.type, promo_type: camp.type,
+        promo_status: camp.status, deadline_date: camp.deadline_date || null,
+        estado_oferta: oferta.status || null,
+        precio_campania: precio, precio_lista: lista,
+        precio_min: oferta.min_discounted_price != null ? parseFloat(oferta.min_discounted_price) : null,
+        meli_pct: oferta.meli_percentage ?? null,
+        seller_pct: oferta.seller_percentage ?? null,
+        descuento_pct: lista > 0 ? +((1 - precio / lista) * 100).toFixed(1) : null,
+      };
+      if (tieneCosto && precio > 0 && feesUsados < PROMO_MAX_FEES) {
+        const f = await feesAlPrecio(m, precio, headers, feeCache);
+        feesUsados++;
+        if (f.com_pct != null) {
+          Object.assign(base, { com_pct: f.com_pct }, margenEnPromo({
+            precio, costo: costo[mla], alic: alic[mla] ?? 21,
+            comPct: f.com_pct, envio: f.envio, esMonotrib, tasaIibb,
+          }));
+        }
+      } else if (tieneCosto && precio > 0) {
+        truncado = true;
+      }
+      ofertas.push(base);
+    }
+    // La mejor: la que más margen deja; sin costo, la que menos te obliga a poner
+    ofertas.sort((a, b) => {
+      if (a.margen_pesos != null && b.margen_pesos != null) return b.margen_pesos - a.margen_pesos;
+      if (a.margen_pesos != null) return -1;
+      if (b.margen_pesos != null) return 1;
+      return (a.seller_pct ?? 99) - (b.seller_pct ?? 99);
+    });
+    items.push({
+      mla_id: mla, title: m.title, precio_actual: m.precio_actual, stock: m.stock,
+      vendidas: m.vendidas, has_cost: tieneCosto, costo_unit: tieneCosto ? costo[mla] : null,
+      ofertas, mejor: ofertas[0]?.promo_id || null,
+      margen_mejor: ofertas[0]?.margen_pesos ?? null,
+      margen_mejor_pct: ofertas[0]?.margen_pct ?? null,
+    });
+  }
+
+  items.sort((a, b) => (b.vendidas || 0) - (a.vendidas || 0));
+  return { campanias: metaCamp, items, truncado, fees_usados: feesUsados };
+}
+
+app.get('/api/promociones/candidatos', requireAuth, async (req, res) => {
+  try {
+    const clientId = parseInt(req.query.client_id);
+    if (!clientId) return res.status(400).json({ error: 'client_id requerido' });
+    const cached = _promoCandCache.get(clientId);
+    if (req.query.refresh !== '1' && cached && Date.now() - cached.ts < PROMO_CAND_TTL) {
+      return res.json({ ...cached.data, cached: true, generado: new Date(cached.ts).toISOString() });
+    }
+    const r = await analizarCandidatosPromo(clientId);
+    if (!r) return res.status(403).json({ error: 'Cliente no conectado o token expirado' });
+    const conMargen = r.items.filter(i => i.margen_mejor != null);
+    const data = {
+      ...r,
+      total_items: r.items.length,
+      con_costo: r.items.filter(i => i.has_cost).length,
+      rentables: conMargen.filter(i => i.margen_mejor > 0).length,
+      en_perdida: conMargen.filter(i => i.margen_mejor <= 0).length,
+    };
+    _promoCandCache.set(clientId, { ts: Date.now(), data });
+    res.json({ ...data, cached: false, generado: new Date().toISOString() });
+  } catch(e) {
+    console.error('[PROMO CANDIDATOS]', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.get('/api/promociones', requireAuth, async (req, res) => {
   // Hard timeout: si algo cuelga, responder igual a los 9 segundos
   const hardTimeout = setTimeout(() => {
