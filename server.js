@@ -2952,7 +2952,8 @@ async function evalRuleSaludCmv(client) {
     const graves = (d.problemas || []).filter(p => p.severidad === 'critical');
     const coberturaMala = d.cobertura_facturacion != null && d.cobertura_facturacion < cobertura_min;
     const escalaMala = d.estado === 'escala_rara' || d.estado === 'sin_datos';
-    if (!escalaMala && !coberturaMala && !graves.length) {
+    const erroresCarga = ['con_errores', 'incompleto'].includes(d.estado);
+    if (!escalaMala && !coberturaMala && !erroresCarga && !graves.length) {
       return resolveAlerta(client.id, 'cmv_invalido');
     }
 
@@ -6188,8 +6189,10 @@ async function analizarSaludCmv(clientId, { dias = 60 } = {}) {
     .reduce((s, p) => s + (p.facturado || 0), 0);
   const cobFact = factTotal > 0 ? +(100 * (1 - factSinCosto / factTotal)).toFixed(1) : null;
   const nAct = Object.keys(activos).length;
-  const ratioMediano = ratios.length
-    ? +((ratios.slice().sort((a, b) => a - b)[Math.floor(ratios.length / 2)]) * 100).toFixed(1) : null;
+  const ratioCrudo = ratios.length
+    ? (ratios.slice().sort((a, b) => a - b)[Math.floor(ratios.length / 2)]) * 100 : null;
+  // Con costos en otra moneda el ratio es de centésimas: redondearlo a un decimal lo mostraba como 0%
+  const ratioMediano = ratioCrudo == null ? null : +(ratioCrudo < 1 ? ratioCrudo.toFixed(3) : ratioCrudo.toFixed(1));
 
   problemas.sort((a, b) => {
     const ord = { critical: 0, warning: 1, info: 2 };
@@ -6199,16 +6202,27 @@ async function analizarSaludCmv(clientId, { dias = 60 } = {}) {
   const porTipo = {};
   problemas.forEach(p => porTipo[p.tipo] = (porTipo[p.tipo] || 0) + 1);
 
-  // Veredicto de la cuenta: lo que se le dice al consultor de una
+  // Veredicto de la cuenta: lo que se le dice al consultor de una.
+  // "OK" tiene que ser exigente: una cuenta con el 93% de cobertura pero un producto que
+  // facturó millones sin costo NO está bien, y decirle OK es peor que no medir nada.
+  const pesos = n => '$' + Math.round(n).toLocaleString('es-AR');
+  const errCarga = (porTipo.escala_rara || 0) + (porTipo.costo_mayor_precio || 0) + (porTipo.costo_igual_precio || 0);
   let estado = 'ok', resumen = 'Los costos están cargados y son coherentes';
   if (!conCosto) {
     estado = 'sin_datos'; resumen = 'Esta cuenta no tiene ningún costo cargado: no se puede calcular margen';
   } else if (ratioMediano != null && ratioMediano < CMV_RATIO_MIN * 100) {
-    estado = 'escala_rara'; resumen = `El costo mediano es el ${ratioMediano}% del precio: los costos están en otra escala o moneda`;
+    estado = 'escala_rara';
+    resumen = `El costo mediano es el ${ratioMediano < 1 ? ratioMediano.toFixed(2) : ratioMediano}% del precio: los costos están en otra escala o moneda`;
   } else if (cobFact != null && cobFact < CMV_COBERTURA_MIN) {
-    estado = 'cobertura_baja'; resumen = `Solo el ${cobFact}% de lo facturado tiene el costo cargado`;
-  } else if (porTipo.escala_rara || porTipo.costo_mayor_precio) {
-    estado = 'con_errores'; resumen = `${(porTipo.escala_rara || 0) + (porTipo.costo_mayor_precio || 0)} publicaciones con el costo mal cargado`;
+    estado = 'cobertura_baja';
+    resumen = `Solo el ${cobFact}% de lo facturado tiene el costo cargado` +
+              (factSinCosto ? ` — ${pesos(factSinCosto)} facturados a ciegas` : '');
+  } else if (errCarga) {
+    estado = 'con_errores'; resumen = `${errCarga} publicaciones con el costo mal cargado`;
+  } else if (factSinCosto > 0) {
+    // La cobertura global puede estar bien y aun así haber productos que venden sin costo
+    estado = 'incompleto';
+    resumen = `${porTipo.sin_costo || 0} publicaciones sin costo, ${pesos(factSinCosto)} facturados en ${dias} días sin poder calcular margen`;
   } else if (porTipo.desactualizado) {
     estado = 'desactualizado'; resumen = `${porTipo.desactualizado} costos sin tocar hace más de ${CMV_MESES_VIEJO} meses`;
   }
