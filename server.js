@@ -1915,6 +1915,7 @@ const REGLAS_DEFAULT = {
   full_sin_stock_con_deposito: { habilitada: true, umbral: { min_unidades: 1, dias_ventas: 30, max_items: 8, max_consultas: 500 } },
   medidas_envio_invalidas: { habilitada: true, umbral: { min_items: 1, max_items: 8 } },
   promo_campania_por_vencer: { habilitada: true, umbral: { dias: 7, min_items: 3, max_items: 6 } },
+  cmv_invalido: { habilitada: true, umbral: { cobertura_min: 70, max_items: 6 } },
 };
 
 async function getRegla(clientId, codigo) {
@@ -2937,6 +2938,47 @@ async function evalRulePromoPorVencer(client) {
   } catch(e) { console.error(`[ALERTA promo_campania_por_vencer] ${client.name}:`, e.message); return null; }
 }
 
+// Regla 15 — Costos mal cargados o incompletos
+// No avisa "falta cargar CMV": avisa cuando la falta de CMV está haciendo que los números
+// del cliente mientan. Por eso pesa por facturación y no por cantidad de publicaciones.
+async function evalRuleSaludCmv(client) {
+  const regla = await getRegla(client.id, 'cmv_invalido');
+  if (!regla.habilitada) return null;
+  const { cobertura_min = 70, max_items = 6 } = regla.umbral || {};
+  try {
+    const d = await analizarSaludCmv(client.id, { dias: 60 });
+    if (!d) return null;
+
+    const graves = (d.problemas || []).filter(p => p.severidad === 'critical');
+    const coberturaMala = d.cobertura_facturacion != null && d.cobertura_facturacion < cobertura_min;
+    const escalaMala = d.estado === 'escala_rara' || d.estado === 'sin_datos';
+    if (!escalaMala && !coberturaMala && !graves.length) {
+      return resolveAlerta(client.id, 'cmv_invalido');
+    }
+
+    const severidad = (escalaMala || (d.cobertura_facturacion != null && d.cobertura_facturacion < 50))
+      ? 'critical' : 'warning';
+    const corto = t => (t || '').length > 42 ? t.slice(0, 42) + '…' : (t || '');
+    const lista = graves.slice(0, max_items).map(p =>
+      `• ${corto(p.title)}: ${p.detalle}`).join('\n');
+    const resto = graves.length > max_items ? `\n…y ${graves.length - max_items} más` : '';
+    const cab = escalaMala
+      ? d.resumen
+      : `${d.cobertura_facturacion}% de lo facturado tiene costo cargado` +
+        (d.facturacion_sin_costo ? ` · $${d.facturacion_sin_costo.toLocaleString('es-AR')} facturados sin costo` : '');
+
+    return upsertAlerta(client.id, 'cmv_invalido', severidad,
+      escalaMala ? d.resumen : `El CMV de ${client.name} no alcanza para calcular margen`,
+      `${cab}. Mientras esté así, el P&L, Rentabilidad y los diagnósticos de esta cuenta dan números que no son:\n${lista}${resto}`,
+      { estado: d.estado, cobertura_items: d.cobertura_items,
+        cobertura_facturacion: d.cobertura_facturacion,
+        facturacion_sin_costo: d.facturacion_sin_costo,
+        ratio_mediano: d.ratio_mediano, por_tipo: d.por_tipo,
+        items: graves.slice(0, 50), total: graves.length }
+    );
+  } catch(e) { console.error(`[ALERTA cmv_invalido] ${client.name}:`, e.message); return null; }
+}
+
 // Motor principal
 async function runAlertEngine({ forceNotify = false, tipo = 'auto' } = {}) {
   console.log('[ALERTAS] Iniciando evaluación —', new Date().toISOString());
@@ -2959,6 +3001,7 @@ async function runAlertEngine({ forceNotify = false, tipo = 'auto' } = {}) {
       evalRuleFullSinStockConDeposito,
       evalRuleMedidasEnvio,
       evalRulePromoPorVencer,
+      evalRuleSaludCmv,
     ];
     const newAlerts = [];
     for (const client of clients.rows) {
@@ -3011,6 +3054,12 @@ const SLACK_TIPO_CONFIG = {
   producto_sin_ventas:  { emoji: '🛒', label: 'Productos sin ventas',         short: (a) => `${a.datos?.total || '?'} productos activos sin ventas en 90d` },
   full_sin_stock_con_deposito: { emoji: '🏬', label: 'FULL en cero con stock propio', short: (a) =>
                             `${a.datos?.total || '?'} publicaciones · ${a.datos?.unidades_deposito || 0} u. en depósito` },
+  cmv_invalido: { emoji: '💰', label: 'CMV mal cargado o incompleto', short: (a) => {
+                            const d = a.datos || {};
+                            if (d.estado === 'sin_datos')   return 'sin ningún costo cargado';
+                            if (d.estado === 'escala_rara') return `costos en otra escala (mediana ${d.ratio_mediano}% del precio)`;
+                            return `${d.cobertura_facturacion ?? '?'}% de la facturación con costo`;
+                          } },
   promo_campania_por_vencer: { emoji: '🏷️', label: 'Campaña por vencer con candidatas rentables', short: (a) =>
                             `${a.datos?.total || '?'} publicaciones · cierra en ${a.datos?.dias_min ?? '?'} días` },
   medidas_envio_invalidas: { emoji: '📏', label: 'Medidas de envío mal declaradas', short: (a) => {
@@ -3037,7 +3086,7 @@ async function sendSlackAlert(newAlerts) {
   });
 
   // Ordenar: críticas primero, luego warnings
-  const orden = ['reputacion_bajando','promo_campania_por_vencer','medidas_envio_invalidas','stock_critico_pareto','full_sin_stock_con_deposito','caida_ventas','tacos_alto','tacos_producto_alto','margen_erosionado','roas_bajo','preguntas_pendientes','producto_sin_ventas'];
+  const orden = ['reputacion_bajando','cmv_invalido','promo_campania_por_vencer','medidas_envio_invalidas','stock_critico_pareto','full_sin_stock_con_deposito','caida_ventas','tacos_alto','tacos_producto_alto','margen_erosionado','roas_bajo','preguntas_pendientes','producto_sin_ventas'];
   const tiposOrdenados = [
     ...orden.filter(k => byTipo[k]),
     ...Object.keys(byTipo).filter(k => !orden.includes(k))
@@ -6022,6 +6071,202 @@ app.get('/api/reporte/items-activos', requireAuth, async (req, res) => {
     console.error('[ITEMS ACTIVOS]', e.message);
     res.status(500).json({ error: e.message });
   }
+});
+
+// ── SALUD DEL CMV ─────────────────────────────────────────────────────────────
+// Todo lo que calcula margen (P&L, Rentabilidad, Qué meter, Warren) sale de
+// product_costs. Si el costo está mal cargado el número no falla: miente, que es peor.
+// Calibrado sobre las 40 cuentas: el ratio costo/precio sano va de 16% a 66%, mediana 39%.
+const CMV_RATIO_MIN      = 0.05;   // debajo de esto el costo está en otra escala o moneda
+const CMV_RATIO_ALTO     = 0.95;   // costo ≈ precio: o vende a pérdida o cargaron el precio
+const CMV_MESES_VIEJO    = 6;      // con inflación, un costo de hace medio año ya no sirve
+const CMV_COBERTURA_MIN  = 70;     // % de la facturación que debería tener costo cargado
+const _saludCmvCache = new Map();
+const SALUD_CMV_TTL = 60 * 60 * 1000;
+
+async function analizarSaludCmv(clientId, { dias = 60 } = {}) {
+  const token = await getClientToken(clientId);
+  if (!token) return null;
+
+  // Costos guardados, con su antigüedad
+  const cRes = await pool.query(
+    `SELECT mla_id, title, costo_unit, alicuota_iva,
+            EXTRACT(EPOCH FROM (NOW() - updated_at)) / 86400 AS dias_desde
+       FROM product_costs WHERE client_id=$1`, [clientId]);
+  const costos = {};
+  cRes.rows.forEach(r => {
+    costos[r.mla_id] = {
+      costo: parseFloat(r.costo_unit) || 0,
+      alic: parseFloat(r.alicuota_iva) || 21,
+      dias: r.dias_desde != null ? Math.round(parseFloat(r.dias_desde)) : null,
+      title: r.title,
+    };
+  });
+
+  // Ventas del período, para pesar los problemas por facturación y no por cantidad
+  const hasta = new Date();
+  const desde = new Date(hasta.getTime() - dias * 86400000);
+  const iso = d => d.toISOString().slice(0, 10);
+  const ventas = {};
+  const headers = { 'Authorization': `Bearer ${token}` };
+  const me = await fetch(`${ML_API}/users/me`, { headers }).then(r => r.json()).catch(() => ({}));
+  if (!me.id) return null;
+  try {
+    const fmt = d => new Date(d).toISOString().slice(0, 19) + '.000-00:00';
+    const { orders } = await fetchAllOrders(me.id, headers,
+      fmt(iso(desde) + 'T00:00:00'), fmt(iso(hasta) + 'T23:59:59'));
+    orders.forEach(o => (o.order_items || []).forEach(oi => {
+      const id = oi.item?.id;
+      if (!id) return;
+      const q = oi.quantity || 0;
+      const v = ventas[id] || (ventas[id] = { revenue: 0, units: 0, title: oi.item?.title });
+      v.revenue += (oi.unit_price || 0) * q;
+      v.units   += q;
+    }));
+  } catch(e) { console.error('[SALUD CMV] ventas:', e.message); }
+
+  // Publicaciones activas con su precio
+  const ids = await fetchAllActiveItemIds(me.id, headers);
+  const activos = {};
+  const batches = [];
+  for (let i = 0; i < ids.length; i += 20) batches.push(ids.slice(i, i + 20));
+  for (let g = 0; g < batches.length; g += 6) {
+    await Promise.all(batches.slice(g, g + 6).map(async b => {
+      try {
+        const d = await fetch(`${ML_API}/items?ids=${b.join(',')}&attributes=id,title,price,sold_quantity`, { headers })
+          .then(r => r.json());
+        (Array.isArray(d) ? d : []).forEach(r => {
+          if (r.code !== 200 || !r.body) return;
+          activos[r.body.id] = { title: r.body.title, price: r.body.price, vendidas: r.body.sold_quantity || 0 };
+        });
+      } catch(e) {}
+    }));
+  }
+
+  // Diagnóstico por publicación
+  const problemas = [];
+  const ratios = [];
+  let conCosto = 0;
+  for (const [mla, a] of Object.entries(activos)) {
+    const c = costos[mla];
+    const facturado = ventas[mla]?.revenue || 0;
+    const base = { mla_id: mla, title: a.title, precio: a.price, facturado,
+                   unidades: ventas[mla]?.units || 0, costo: c?.costo ?? null,
+                   dias_desde: c?.dias ?? null };
+    if (!c || !c.costo) {
+      // Sin costo solo importa de verdad si el producto vende
+      problemas.push({ ...base, tipo: 'sin_costo',
+        severidad: facturado > 0 ? 'critical' : 'info',
+        detalle: facturado > 0
+          ? `Facturó ${Math.round(facturado).toLocaleString('es-AR')} en ${dias} días y no tiene costo cargado`
+          : 'Sin costo cargado' });
+      continue;
+    }
+    conCosto++;
+    if (!a.price) continue;
+    const ratio = c.costo / a.price;
+    ratios.push(ratio);
+    if (ratio < CMV_RATIO_MIN) {
+      problemas.push({ ...base, ratio: +(ratio * 100).toFixed(2), tipo: 'escala_rara', severidad: 'critical',
+        detalle: `El costo es el ${(ratio * 100).toFixed(2)}% del precio: revisá si está en dólares o le faltan ceros` });
+    } else if (ratio > 1) {
+      problemas.push({ ...base, ratio: +(ratio * 100).toFixed(1), tipo: 'costo_mayor_precio', severidad: 'critical',
+        detalle: `El costo (${Math.round(c.costo).toLocaleString('es-AR')}) es mayor que el precio de venta` });
+    } else if (ratio >= CMV_RATIO_ALTO) {
+      problemas.push({ ...base, ratio: +(ratio * 100).toFixed(1), tipo: 'costo_igual_precio', severidad: 'warning',
+        detalle: `El costo es el ${(ratio * 100).toFixed(0)}% del precio: no queda margen para nada` });
+    } else if (c.dias != null && c.dias > CMV_MESES_VIEJO * 30) {
+      problemas.push({ ...base, ratio: +(ratio * 100).toFixed(1), tipo: 'desactualizado',
+        severidad: facturado > 0 ? 'warning' : 'info',
+        detalle: `El costo no se toca hace ${Math.round(c.dias / 30)} meses` });
+    }
+  }
+
+  // Cobertura: por publicación y —lo que importa— por facturación
+  const factTotal = Object.values(ventas).reduce((s, v) => s + (v.revenue || 0), 0);
+  const factSinCosto = problemas.filter(p => p.tipo === 'sin_costo')
+    .reduce((s, p) => s + (p.facturado || 0), 0);
+  const cobFact = factTotal > 0 ? +(100 * (1 - factSinCosto / factTotal)).toFixed(1) : null;
+  const nAct = Object.keys(activos).length;
+  const ratioMediano = ratios.length
+    ? +((ratios.slice().sort((a, b) => a - b)[Math.floor(ratios.length / 2)]) * 100).toFixed(1) : null;
+
+  problemas.sort((a, b) => {
+    const ord = { critical: 0, warning: 1, info: 2 };
+    return (ord[a.severidad] - ord[b.severidad]) || (b.facturado - a.facturado);
+  });
+
+  const porTipo = {};
+  problemas.forEach(p => porTipo[p.tipo] = (porTipo[p.tipo] || 0) + 1);
+
+  // Veredicto de la cuenta: lo que se le dice al consultor de una
+  let estado = 'ok', resumen = 'Los costos están cargados y son coherentes';
+  if (!conCosto) {
+    estado = 'sin_datos'; resumen = 'Esta cuenta no tiene ningún costo cargado: no se puede calcular margen';
+  } else if (ratioMediano != null && ratioMediano < CMV_RATIO_MIN * 100) {
+    estado = 'escala_rara'; resumen = `El costo mediano es el ${ratioMediano}% del precio: los costos están en otra escala o moneda`;
+  } else if (cobFact != null && cobFact < CMV_COBERTURA_MIN) {
+    estado = 'cobertura_baja'; resumen = `Solo el ${cobFact}% de lo facturado tiene el costo cargado`;
+  } else if (porTipo.escala_rara || porTipo.costo_mayor_precio) {
+    estado = 'con_errores'; resumen = `${(porTipo.escala_rara || 0) + (porTipo.costo_mayor_precio || 0)} publicaciones con el costo mal cargado`;
+  } else if (porTipo.desactualizado) {
+    estado = 'desactualizado'; resumen = `${porTipo.desactualizado} costos sin tocar hace más de ${CMV_MESES_VIEJO} meses`;
+  }
+
+  return {
+    estado, resumen,
+    activos: nAct, con_costo: conCosto,
+    cobertura_items: nAct ? +(100 * conCosto / nAct).toFixed(1) : null,
+    cobertura_facturacion: cobFact,
+    facturacion_sin_costo: Math.round(factSinCosto),
+    ratio_mediano: ratioMediano,
+    dias, por_tipo: porTipo,
+    problemas: problemas.slice(0, 300),
+    total_problemas: problemas.length,
+  };
+}
+
+app.get('/api/reporte/salud-cmv', requireAuth, async (req, res) => {
+  try {
+    const clientId = parseInt(req.query.client_id);
+    if (!clientId) return res.status(400).json({ error: 'client_id requerido' });
+    const cached = _saludCmvCache.get(clientId);
+    if (req.query.refresh !== '1' && cached && Date.now() - cached.ts < SALUD_CMV_TTL) {
+      return res.json({ ...cached.data, cached: true, generado: new Date(cached.ts).toISOString() });
+    }
+    const r = await analizarSaludCmv(clientId, { dias: parseInt(req.query.dias) || 60 });
+    if (!r) return res.status(403).json({ error: 'Cliente no conectado o token expirado' });
+    _saludCmvCache.set(clientId, { ts: Date.now(), data: r });
+    res.json({ ...r, cached: false, generado: new Date().toISOString() });
+  } catch(e) {
+    console.error('[SALUD CMV]', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Vista transversal: el estado del CMV de todas las cuentas de un vistazo.
+app.get('/api/reporte/salud-cmv/todos', requireAuth, async (req, res) => {
+  try {
+    if (!['admin', 'consultant', 'colaborador'].includes(req.user.role)) {
+      return res.status(403).json({ error: 'Solo consultores' });
+    }
+    const cs = await pool.query(
+      `SELECT id, name FROM clients WHERE active = true AND access_token IS NOT NULL
+         AND tipo_cuenta = 'cliente' ORDER BY name`);
+    const out = [];
+    for (const c of cs.rows) {
+      const cached = _saludCmvCache.get(c.id);
+      if (cached && Date.now() - cached.ts < SALUD_CMV_TTL) {
+        const d = cached.data;
+        out.push({ client_id: c.id, name: c.name, estado: d.estado, resumen: d.resumen,
+                   cobertura_items: d.cobertura_items, cobertura_facturacion: d.cobertura_facturacion,
+                   ratio_mediano: d.ratio_mediano, total_problemas: d.total_problemas, cached: true });
+      } else {
+        out.push({ client_id: c.id, name: c.name, estado: 'sin_analizar', cached: false });
+      }
+    }
+    res.json({ clientes: out });
+  } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
 app.post('/api/reporte/costos', requireAuth, async (req, res) => {
