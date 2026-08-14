@@ -1246,6 +1246,8 @@ tbody td {
             <option value="monotributista">Monotributista (sin IVA)</option>
           </select>
         </div>
+        <button class="sync-btn" id="btnSaludCmv" onclick="chequearSaludCmv(false)" style="background:#0ea5e9;color:#fff"
+          title="Revisa si los costos cargados son coherentes: faltantes, en otra moneda, mayores al precio o sin actualizar">💰 Salud del CMV</button>
         <div style="display:flex;gap:6px">
           <button id="rentTabAnalisis" onclick="switchRentTab('analisis')" class="sync-btn" style="background:var(--accent)">📊 Análisis</button>
           <button id="rentTabLoQuePaso" onclick="switchRentTab('loquepaso')" class="sync-btn" title="P&amp;L real por producto del período seleccionado: envío que pagaste, publicidad PADS, IVA e IIBB">📆 Lo que pasó</button>
@@ -1256,6 +1258,7 @@ tbody td {
           <button id="rentTabCombos" onclick="switchRentTab('combos')" class="sync-btn" title="Pares que conviene publicar juntos: el cargo fijo de ML se paga una vez por venta, no por producto">🧺 Combos</button>
         </div>
       </div>
+      <div id="saludCmvPanel" style="display:none;margin-bottom:18px"></div>
       <div id="rentabilidadContent"><div style="color:var(--muted);font-size:13px;padding:20px;text-align:center">Sincronizá primero para ver los datos</div></div>
       <div id="loQuePasoContent" style="display:none"></div>
       <div id="simuladorContent" style="display:none"></div>
@@ -4786,6 +4789,123 @@ function exportMedidasEnvioExcel() {
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Medidas de envio');
   XLSX.writeFile(wb, `Medidas_envio_${new Date().toISOString().slice(0,10)}.xlsx`);
+  showToast(`✅ Excel descargado (${rows.length} filas)`);
+}
+
+// ── Salud del CMV ─────────────────────────────────────────────────────────────
+const CMV_ESTADOS = {
+  ok:             { icono: '✅', label: 'Los costos están sanos',        color: '#16a34a' },
+  incompleto:     { icono: '🟡', label: 'Faltan costos que sí venden',   color: '#f59e0b' },
+  desactualizado: { icono: '🕓', label: 'Costos desactualizados',        color: '#f59e0b' },
+  con_errores:    { icono: '⚠️', label: 'Costos mal cargados',           color: '#dc2626' },
+  cobertura_baja: { icono: '🔴', label: 'Cobertura insuficiente',        color: '#dc2626' },
+  escala_rara:    { icono: '💱', label: 'Costos en otra escala o moneda', color: '#dc2626' },
+  sin_datos:      { icono: '⛔', label: 'Sin ningún costo cargado',      color: '#dc2626' },
+};
+const CMV_TIPOS = {
+  sin_costo:          'Sin costo cargado',
+  escala_rara:        'Escala o moneda equivocada',
+  costo_mayor_precio: 'El costo supera al precio',
+  costo_igual_precio: 'Costo igual al precio',
+  desactualizado:     'Costo viejo',
+};
+let _cmvSalud = null;
+
+async function chequearSaludCmv(refresh) {
+  const panel = document.getElementById('saludCmvPanel');
+  if (!panel) return;
+  const cli = getActiveClient();
+  if (!cli) { showToast('Elegí una cuenta'); return; }
+  panel.style.display = 'block';
+  panel.innerHTML = `<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:24px;text-align:center;color:var(--muted);font-size:13px">
+    ⏳ Revisando los costos cargados contra precios y ventas…</div>`;
+  try {
+    _cmvSalud = await apiCall('GET', `/api/reporte/salud-cmv?client_id=${cli.id}${refresh ? '&refresh=1' : ''}`);
+  } catch(e) {
+    panel.innerHTML = `<div style="padding:22px;text-align:center;color:#dc2626;font-size:13px">No se pudo revisar: ${e.message}</div>`;
+    return;
+  }
+  renderSaludCmv();
+}
+
+function renderSaludCmv() {
+  const panel = document.getElementById('saludCmvPanel');
+  if (!panel || !_cmvSalud) return;
+  const d = _cmvSalud;
+  const e = CMV_ESTADOS[d.estado] || { icono: '•', label: d.estado, color: 'var(--muted)' };
+  const pm = n => n == null ? '—' : '$' + Math.round(n).toLocaleString('es-AR');
+
+  const kpi = (t, v, sub, col) => `<div style="flex:1;min-width:150px;padding:10px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:10px">
+    <div style="font-size:10px;color:var(--muted)">${t}</div>
+    <div style="font-size:17px;font-weight:700;color:${col || 'var(--text)'};font-family:var(--font-b)">${v}</div>
+    <div style="font-size:10px;color:var(--muted)">${sub}</div></div>`;
+
+  const colCob = d.cobertura_facturacion == null ? 'var(--text)'
+    : (d.cobertura_facturacion < 70 ? '#dc2626' : (d.cobertura_facturacion < 90 ? '#f59e0b' : '#16a34a'));
+
+  const filas = (d.problemas || []).slice(0, 200).map(p => `<tr style="border-bottom:1px solid var(--border)">
+      <td style="padding:7px 8px;font-size:11px;white-space:nowrap">
+        <a href="https://articulo.mercadolibre.com.ar/${(p.mla_id||'').replace('MLA','MLA-')}" target="_blank" style="color:var(--accent);text-decoration:none">${p.mla_id}</a></td>
+      <td style="padding:7px 8px;font-size:12px">${(p.title || '').slice(0,48)}</td>
+      <td style="padding:7px 8px;font-size:11px;white-space:nowrap;color:${p.severidad === 'critical' ? '#dc2626' : (p.severidad === 'warning' ? '#f59e0b' : 'var(--muted)')}">${CMV_TIPOS[p.tipo] || p.tipo}</td>
+      <td style="padding:7px 8px;font-size:11px;white-space:nowrap">${pm(p.precio)}</td>
+      <td style="padding:7px 8px;font-size:11px;white-space:nowrap">${p.costo != null ? pm(p.costo) : '—'}</td>
+      <td style="padding:7px 8px;font-size:11px;white-space:nowrap;font-weight:${p.facturado ? '600' : '400'}">${p.facturado ? pm(p.facturado) : '—'}</td>
+      <td style="padding:7px 8px;font-size:11px;color:var(--muted)">${p.detalle || ''}</td>
+    </tr>`).join('');
+
+  panel.innerHTML = `<div style="background:var(--surface);border:1px solid var(--border);border-left:4px solid ${e.color};border-radius:12px;padding:18px 20px">
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px">
+      <div style="flex:1">
+        <div style="font-size:15px;font-weight:700;color:${e.color};font-family:var(--font-b)">${e.icono} ${e.label}</div>
+        <div style="font-size:12px;color:var(--muted);margin-top:2px">${d.resumen}</div>
+      </div>
+      <button class="sync-btn" onclick="exportSaludCmvExcel()" style="padding:4px 10px;font-size:11px">📥 Excel</button>
+      <button class="sync-btn" onclick="chequearSaludCmv(true)" style="padding:4px 10px;font-size:11px">🔄 Actualizar</button>
+      <button class="sync-btn" onclick="document.getElementById('saludCmvPanel').style.display='none'" style="padding:4px 10px;font-size:11px">✕ Cerrar</button>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
+      ${kpi('Cobertura sobre lo facturado', d.cobertura_facturacion != null ? d.cobertura_facturacion + '%' : '—', `últimos ${d.dias} días`, colCob)}
+      ${kpi('Facturado sin costo', pm(d.facturacion_sin_costo), 'no se le puede calcular margen', d.facturacion_sin_costo ? '#dc2626' : '#16a34a')}
+      ${kpi('Publicaciones con costo', `${d.con_costo} / ${d.activos}`, (d.cobertura_items ?? '—') + '% del catálogo')}
+      ${kpi('Costo mediano', d.ratio_mediano != null ? d.ratio_mediano + '%' : '—', 'del precio de venta · sano 16-66%')}
+    </div>
+    ${filas ? `<div style="overflow-x:auto;max-height:420px;overflow-y:auto"><table style="width:100%;border-collapse:collapse">
+      <thead><tr style="border-bottom:2px solid var(--border);position:sticky;top:0;background:var(--surface)">
+        <th style="padding:8px;text-align:left;font-size:11px;color:var(--muted)">MLA</th>
+        <th style="padding:8px;text-align:left;font-size:11px;color:var(--muted)">Publicación</th>
+        <th style="padding:8px;text-align:left;font-size:11px;color:var(--muted)">Problema</th>
+        <th style="padding:8px;text-align:left;font-size:11px;color:var(--muted)">Precio</th>
+        <th style="padding:8px;text-align:left;font-size:11px;color:var(--muted)">Costo</th>
+        <th style="padding:8px;text-align:left;font-size:11px;color:var(--muted)">Facturó ${d.dias}d</th>
+        <th style="padding:8px;text-align:left;font-size:11px;color:var(--muted)">Detalle</th>
+      </tr></thead><tbody>${filas}</tbody></table></div>
+      ${d.total_problemas > 200 ? `<div style="font-size:11px;color:var(--muted);margin-top:8px">Se muestran las 200 más importantes de ${d.total_problemas}. El Excel las trae todas.</div>` : ''}`
+      : '<div style="padding:18px;text-align:center;color:#16a34a;font-size:12px">No hay nada para corregir</div>'}
+    <div style="font-size:10px;color:var(--muted);margin-top:10px">Ordenado por facturación: primero lo que más plata mueve. Datos ${d.cached ? 'cacheados' : 'frescos'}${d.generado ? ' · ' + new Date(d.generado).toLocaleString('es-AR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}) : ''}</div>
+  </div>`;
+}
+
+function exportSaludCmvExcel() {
+  const d = _cmvSalud;
+  if (!d || !(d.problemas || []).length) { showToast('No hay datos para exportar'); return; }
+  const rows = d.problemas.map(p => ({
+    MLA: p.mla_id,
+    Publicacion: p.title || '',
+    Problema: CMV_TIPOS[p.tipo] || p.tipo,
+    Gravedad: p.severidad,
+    Precio: p.precio ?? '',
+    'Costo cargado': p.costo ?? '',
+    'Costo % del precio': p.ratio ?? '',
+    [`Facturo ${d.dias}d`]: p.facturado || 0,
+    Unidades: p.unidades || 0,
+    'Dias desde la carga': p.dias_desde ?? '',
+    Detalle: p.detalle || '',
+    Link: `https://articulo.mercadolibre.com.ar/${(p.mla_id||'').replace('MLA','MLA-')}`,
+  }));
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Salud del CMV');
+  XLSX.writeFile(wb, `Salud_CMV_${new Date().toISOString().slice(0,10)}.xlsx`);
   showToast(`✅ Excel descargado (${rows.length} filas)`);
 }
 
@@ -11161,6 +11281,8 @@ function applyPermissions() {
   // se encuentre solo con el número crudo.
   const btnMedidasEl = document.getElementById('btnMedidasEnvio');
   if (btnMedidasEl) btnMedidasEl.style.display = soloConsultores ? '' : 'none';
+  const btnCmvEl = document.getElementById('btnSaludCmv');
+  if (btnCmvEl) btnCmvEl.style.display = soloConsultores ? '' : 'none';
   // Centro de Inteligencia: admins/consultores siempre; clientes solo si tienen el permiso habilitado
   const alertasNavEl = document.querySelector('[data-page="alertas"]');
   if (alertasNavEl) alertasNavEl.style.display = (soloConsultores || canSeeSection('alertas')) ? '' : 'none';
