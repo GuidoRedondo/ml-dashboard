@@ -11806,14 +11806,19 @@ app.get('/api/preguntas-detalle', requireAuth, async (req, res) => {
 
     // ── 2. Títulos de publicaciones (en lotes de 20) ──────────────────────────
     const itemIds = [...new Set(allQ.map(q => q.item_id).filter(Boolean))];
+    const skuManual = await loadSkuManual(parseInt(req.query.client_id));
     const titleMap = {};
     for (let i = 0; i < itemIds.length; i += 20) {
       const batch = itemIds.slice(i, i + 20);
-      const raw = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,title,permalink`, { headers })
+      const raw = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,title,permalink,seller_custom_field,seller_sku,attributes,variations`, { headers })
         .then(r => r.json()).catch(() => []);
       (Array.isArray(raw) ? raw : []).forEach(entry => {
         const it = entry.body || entry;
-        if (it?.id) titleMap[it.id] = { title: it.title || '', permalink: it.permalink || '' };
+        if (it?.id) titleMap[it.id] = {
+          title: it.title || '',
+          permalink: it.permalink || '',
+          sku: skuManual[String(it.id)] || extractSku(it) || '',
+        };
       });
     }
 
@@ -11843,6 +11848,7 @@ app.get('/api/preguntas-detalle', requireAuth, async (req, res) => {
       return {
         item_id:           q.item_id || '',
         item_titulo:       (titleMap[q.item_id] && titleMap[q.item_id].title) || '',
+        sku:               (titleMap[q.item_id] && titleMap[q.item_id].sku) || '',
         permalink:         (titleMap[q.item_id] && titleMap[q.item_id].permalink) || '',
         estado:            q.status === 'ANSWERED' ? 'Respondida' : 'Sin responder',
         pregunta:          q.text || '',
@@ -11877,7 +11883,7 @@ app.get('/api/preguntas-detalle', requireAuth, async (req, res) => {
     preguntas.forEach(p => {
       if (!p.item_id) return;
       const r = rankMap[p.item_id] || (rankMap[p.item_id] = {
-        item_id: p.item_id, item_titulo: p.item_titulo, permalink: p.permalink,
+        item_id: p.item_id, item_titulo: p.item_titulo, sku: p.sku, permalink: p.permalink,
         preguntas: 0, askers: new Set(), convertidos: new Set(),
       });
       r.preguntas++;
@@ -11889,6 +11895,7 @@ app.get('/api/preguntas-detalle', requireAuth, async (req, res) => {
     const ranking = Object.values(rankMap).map(r => ({
       item_id:     r.item_id,
       item_titulo: r.item_titulo,
+      sku:         r.sku || '',
       permalink:   r.permalink,
       preguntas:   r.preguntas,
       compradores: r.askers.size,

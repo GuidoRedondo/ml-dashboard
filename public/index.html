@@ -1336,6 +1336,7 @@ tbody td {
     <div class="page" id="page-preguntas">
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px;flex-wrap:wrap">
         <h2 style="margin:0;font-family:var(--font-b);flex:1">❓ Preguntas</h2>
+        <input id="preguntasBuscar" type="text" placeholder="🔍 Buscar por título, MLA o SKU" oninput="setPreguntasBusqueda(this.value)" style="padding:6px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px;min-width:260px">
         <select id="preguntasFilterMLA" onchange="setPreguntasFiltroMLA(this.value)" style="padding:6px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px;max-width:280px">
           <option value="">Todas las publicaciones</option>
         </select>
@@ -10851,6 +10852,7 @@ let _preguntasData = null;
 let _preguntasRanking = null;
 let _preguntasFiltroEstado = 'all';
 let _preguntasFiltroMLA = '';
+let _preguntasBusqueda = '';
 
 function _pregEsc(s) {
   return String(s ?? '').replace(/[&<>"]/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c]));
@@ -10901,6 +10903,9 @@ async function loadPreguntasDetalle() {
     _preguntasRanking = d.ranking || [];
     _preguntasFiltroEstado = 'all';
     _preguntasFiltroMLA = '';
+    _preguntasBusqueda = '';
+    const inpB = document.getElementById('preguntasBuscar');
+    if (inpB) inpB.value = '';
     const selE = document.getElementById('preguntasFilter');
     if (selE) selE.value = 'all';
     poblarPreguntasMLA();
@@ -10915,16 +10920,28 @@ async function loadPreguntasDetalle() {
 function poblarPreguntasMLA() {
   const sel = document.getElementById('preguntasFilterMLA');
   if (!sel) return;
-  const opts = (_preguntasRanking || []).map(r =>
-    `<option value="${_pregEsc(r.item_id)}">${_pregEsc(r.item_id)} · ${_pregEsc((r.item_titulo||'').slice(0,42))} (${r.preguntas})</option>`
+  // Siempre dejo visible la publicación filtrada, aunque la búsqueda no la matchee.
+  const opts = (_preguntasRanking || []).filter(r => r.item_id === _preguntasFiltroMLA || _pregMatchBusqueda(r)).map(r =>
+    `<option value="${_pregEsc(r.item_id)}">${_pregEsc(r.item_id)}${r.sku ? ' · ' + _pregEsc(r.sku) : ''} · ${_pregEsc((r.item_titulo||'').slice(0,42))} (${r.preguntas})</option>`
   ).join('');
   sel.innerHTML = '<option value="">Todas las publicaciones</option>' + opts;
   sel.value = _preguntasFiltroMLA;
 }
 
+// Matchea título, MLA o SKU contra el texto buscado (sin acentos, case-insensitive).
+function _pregNorm(v) {
+  return String(v || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+}
+function _pregMatchBusqueda(o) {
+  if (!_preguntasBusqueda) return true;
+  const hay = _pregNorm(o.item_id) + ' ' + _pregNorm(o.item_titulo) + ' ' + _pregNorm(o.sku);
+  return _pregNorm(_preguntasBusqueda).split(/\s+/).filter(Boolean).every(t => hay.includes(t));
+}
+
 function getPreguntasFiltradas() {
   let rows = _preguntasData || [];
   if (_preguntasFiltroMLA) rows = rows.filter(p => p.item_id === _preguntasFiltroMLA);
+  if (_preguntasBusqueda)  rows = rows.filter(_pregMatchBusqueda);
   if (_preguntasFiltroEstado === 'respondida') rows = rows.filter(p => p.estado === 'Respondida');
   else if (_preguntasFiltroEstado === 'sin')   rows = rows.filter(p => p.estado === 'Sin responder');
   else if (_preguntasFiltroEstado === 'venta') rows = rows.filter(p => p.genero_venta);
@@ -10936,6 +10953,15 @@ function setPreguntasFiltroEstado(v) {
   const sel = document.getElementById('preguntasFilter');
   if (sel) sel.value = _preguntasFiltroEstado;
   renderPreguntasResumen();
+  renderPreguntasDetalle();
+}
+function setPreguntasBusqueda(v) {
+  _preguntasBusqueda = (v || '').trim();
+  const inp = document.getElementById('preguntasBuscar');
+  if (inp && inp.value !== v) inp.value = v || '';
+  poblarPreguntasMLA();
+  renderPreguntasResumen();
+  renderPreguntasRanking();
   renderPreguntasDetalle();
 }
 function setPreguntasFiltroMLA(v) {
@@ -10970,7 +10996,8 @@ function renderPreguntasResumen() {
   const el = document.getElementById('preguntasResumen');
   if (!el || !_preguntasData) return;
   // El resumen refleja el filtro por publicación; los estados son su desglose.
-  const base = _preguntasFiltroMLA ? _preguntasData.filter(p=>p.item_id===_preguntasFiltroMLA) : _preguntasData;
+  let base = _preguntasFiltroMLA ? _preguntasData.filter(p=>p.item_id===_preguntasFiltroMLA) : _preguntasData;
+  if (_preguntasBusqueda) base = base.filter(_pregMatchBusqueda);
   const r = _pregResumen(base);
   const f = _preguntasFiltroEstado;
   const card = (key, label, value, sub, color) => {
@@ -11000,8 +11027,13 @@ function renderPreguntasResumen() {
 function renderPreguntasRanking() {
   const el = document.getElementById('preguntasRanking');
   if (!el) return;
-  const rk = _preguntasRanking || [];
-  if (!rk.length) { el.innerHTML = ''; return; }
+  const rk = (_preguntasRanking || []).filter(_pregMatchBusqueda);
+  if (!rk.length) {
+    el.innerHTML = _preguntasBusqueda
+      ? '<div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:16px;font-size:12px;color:var(--muted)">Ninguna publicación coincide con “' + _pregEsc(_preguntasBusqueda) + '”.</div>'
+      : '';
+    return;
+  }
   const maxPreg = Math.max(...rk.map(r=>r.preguntas), 1);
   const td = 'padding:7px 10px;border-bottom:1px solid var(--border);font-size:12px';
   const th = 'padding:7px 10px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);border-bottom:2px solid var(--border);white-space:nowrap';
@@ -11012,6 +11044,7 @@ function renderPreguntasRanking() {
     return `<tr onclick="setPreguntasFiltroMLA('${sel?'':_pregEsc(r.item_id)}')" style="cursor:pointer;background:${sel?'var(--surface2)':'transparent'}">
       <td style="${td};color:var(--muted);text-align:center">${i+1}</td>
       <td style="${td};white-space:nowrap;font-weight:600;color:${sel?'var(--accent)':'var(--text)'}">${_pregEsc(r.item_id)}${sel?' ✓':''}</td>
+      <td style="${td};white-space:nowrap;color:var(--muted)">${_pregEsc(r.sku) || '—'}</td>
       <td style="${td};max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${_pregEsc(r.item_titulo)}</td>
       <td style="${td}">
         <div style="display:flex;align-items:center;gap:6px">
@@ -11034,6 +11067,7 @@ function renderPreguntasRanking() {
           <thead><tr>
             <th style="${th};text-align:center">#</th>
             <th style="${th}">Publicación</th>
+            <th style="${th}">SKU</th>
             <th style="${th}">Título</th>
             <th style="${th}">Preguntas</th>
             <th style="${th};text-align:center">Ventas</th>
@@ -11052,6 +11086,7 @@ function renderPreguntasDetalle() {
 
   const chip = (txt, onclear) => `<span style="display:inline-flex;align-items:center;gap:5px;background:var(--surface2);border:1px solid var(--border);border-radius:20px;padding:3px 10px;font-size:11px;color:var(--text)">${txt} <span onclick="${onclear}" style="cursor:pointer;color:var(--muted);font-weight:700">✕</span></span>`;
   const chips = [];
+  if (_preguntasBusqueda)  chips.push(chip('🔍 ' + _pregEsc(_preguntasBusqueda), "setPreguntasBusqueda('')"));
   if (_preguntasFiltroMLA) chips.push(chip('📦 ' + _pregEsc(_preguntasFiltroMLA), "setPreguntasFiltroMLA('')"));
   if (_preguntasFiltroEstado !== 'all') {
     const lbl = { respondida:'Respondidas', sin:'Sin responder', venta:'Generaron venta' }[_preguntasFiltroEstado] || _preguntasFiltroEstado;
@@ -11079,6 +11114,7 @@ function renderPreguntasDetalle() {
       : '<span style="color:var(--muted)">—</span>';
     return `<tr>
       <td style="${td};white-space:nowrap">${pubLink}</td>
+      <td style="${td};white-space:nowrap;color:var(--muted)">${_pregEsc(p.sku) || '—'}</td>
       <td style="${td};max-width:200px">${_pregEsc(p.item_titulo)}</td>
       <td style="${td}">${estadoBadge}</td>
       <td style="${td};max-width:280px">${_pregEsc(p.pregunta)}</td>
@@ -11094,6 +11130,7 @@ function renderPreguntasDetalle() {
       <table style="width:100%;border-collapse:collapse">
         <thead><tr>
           <th style="${th}">Publicación</th>
+          <th style="${th}">SKU</th>
           <th style="${th}">Título</th>
           <th style="${th}">Estado</th>
           <th style="${th}">Pregunta</th>
@@ -11116,6 +11153,7 @@ function exportarPreguntasExcel() {
 
   const data = rows.map(p => ({
     'Publicación':       p.item_id,
+    'SKU':               p.sku || '',
     'Título':            p.item_titulo,
     'Link':              p.permalink,
     'Estado':            p.estado,
@@ -11129,15 +11167,17 @@ function exportarPreguntasExcel() {
     '¿Generó venta?':    p.genero_venta ? 'Sí' : 'No',
   }));
   const ws = XLSX.utils.json_to_sheet(data);
-  ws['!cols'] = [{wch:14},{wch:38},{wch:30},{wch:13},{wch:48},{wch:48},{wch:18},{wch:18},{wch:16},{wch:14},{wch:16},{wch:14}];
+  ws['!cols'] = [{wch:14},{wch:16},{wch:38},{wch:30},{wch:13},{wch:48},{wch:48},{wch:18},{wch:18},{wch:16},{wch:14},{wch:16},{wch:14}];
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Preguntas');
 
   // Hoja 2: ranking de publicaciones
-  if (_preguntasRanking && _preguntasRanking.length) {
-    const rk = _preguntasRanking.map((r,i) => ({
+  const rkFiltrado = (_preguntasRanking || []).filter(_pregMatchBusqueda);
+  if (rkFiltrado.length) {
+    const rk = rkFiltrado.map((r,i) => ({
       '#':            i + 1,
       'Publicación':  r.item_id,
+      'SKU':          r.sku || '',
       'Título':       r.item_titulo,
       'Link':         r.permalink,
       'Preguntas':    r.preguntas,
@@ -11146,7 +11186,7 @@ function exportarPreguntasExcel() {
       'Conversión (%)': r.conversion,
     }));
     const wsR = XLSX.utils.json_to_sheet(rk);
-    wsR['!cols'] = [{wch:5},{wch:14},{wch:42},{wch:30},{wch:11},{wch:24},{wch:18},{wch:15}];
+    wsR['!cols'] = [{wch:5},{wch:14},{wch:16},{wch:42},{wch:30},{wch:11},{wch:24},{wch:18},{wch:15}];
     XLSX.utils.book_append_sheet(wb, wsR, 'Ranking');
   }
 
