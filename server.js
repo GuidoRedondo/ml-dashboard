@@ -2657,9 +2657,15 @@ async function evalRuleOportunidadEscalable(client) {
 // (meli_facility = FULL) de lo que está en poder del vendedor (selling_address o
 // seller_warehouse). Es el único endpoint que discrimina ambos orígenes:
 // /inventories/{id}/stock/fulfillment sólo ve el lado FULL, y el available_quantity
-// del ítem NO es la suma de los dos — en una publicación por FULL es únicamente el
-// stock que está en ML (verificado en MLA2009264696: available_quantity 7, con 220
-// unidades en el depósito propio).
+// del ítem NO es la suma de los dos: qué muestra depende de si la publicación tiene
+// Flex (tag self_service_in en shipping).
+//   · Sin Flex: es únicamente el stock que está en ML (verificado en MLA2009264696:
+//     available_quantity 7 con 220 u. en el depósito propio). Con el FULL en cero la
+//     publicación queda frenada — ML deja de ofrecerla.
+//   · Con Flex: ML también ofrece el stock del depósito del vendedor y lo despacha
+//     desde ahí (verificado el 18/8/2026 en REDFISHOK, Luminocity, Virtual House y
+//     White Salud: FULL 0, available_quantity = las unidades del depósito).
+// Por eso "FULL en cero" no es sinónimo de "no vende".
 async function fetchStockPorUbicacion(upid, headers) {
   const s = await fetch(`${ML_API}/user-products/${upid}/stock`, { headers }).then(r => r.json());
   if (!Array.isArray(s?.locations)) return null;
