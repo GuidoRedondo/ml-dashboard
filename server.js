@@ -9867,6 +9867,165 @@ app.get('/api/publicaciones/full-sin-stock', requireAuth, async (req, res) => {
   }
 });
 
+
+// ── Sacar publicaciones de FULL ───────────────────────────────────────────────
+// Cuando el inventario de fulfillment queda en 0, la publicación se sigue ofreciendo
+// por FULL y no vende aunque haya stock en el depósito propio. Sacarla es entrar una
+// por una al panel de ML; acá se hace en lote desde el mismo panel que las detecta.
+//
+// Antes de escribir se revalida TODO en vivo (nunca contra el cache del panel):
+//  · el ítem es de la cuenta de ese cliente,
+//  · hoy sigue en fulfillment,
+//  · el stock en FULL es realmente 0 — si quedan unidades en el depósito de ML,
+//    sacarla de FULL las deja varadas ahí sin poder venderlas.
+const LOGISTICA_SALIDA = {
+  cross_docking: 'Colecta (ML retira)',
+  drop_off:      'Despacho en sucursal',
+  xd_drop_off:   'Places (punto de entrega)',
+  self_service:  'Flex',
+};
+
+// A qué tipo de envío devolverla: el que usa el resto de la cuenta. Se mira una
+// muestra de las activas que hoy NO están en FULL y gana la moda. Si la cuenta está
+// entera en FULL no hay dato — ahí decide el usuario, no adivinamos.
+async function detectarLogisticaHabitual(uid, headers) {
+  try {
+    const r = await fetch(`${ML_API}/users/${uid}/items/search?status=active&limit=100`, { headers })
+      .then(r => r.json());
+    const ids = r.results || [];
+    if (!ids.length) return null;
+    const conteo = {};
+    for (let i = 0; i < ids.length; i += 20) {
+      const data = await fetch(`${ML_API}/items?ids=${ids.slice(i, i + 20).join(',')}&attributes=id,shipping`, { headers })
+        .then(r => r.json());
+      (Array.isArray(data) ? data : []).forEach(x => {
+        const lt = x.body?.shipping?.logistic_type;
+        if (lt && LOGISTICA_SALIDA[lt]) conteo[lt] = (conteo[lt] || 0) + 1;
+      });
+    }
+    const orden = Object.entries(conteo).sort((a, b) => b[1] - a[1]);
+    return orden.length ? orden[0][0] : null;
+  } catch (e) { return null; }
+}
+
+app.post('/api/publicaciones/sacar-de-full', requireAuth, async (req, res) => {
+  try {
+    const { client_id, items, logistic_type, dry_run } = req.body || {};
+    const clientId = parseInt(client_id);
+    if (!clientId) return res.status(400).json({ error: 'client_id requerido' });
+    if (!Array.isArray(items) || !items.length) return res.status(400).json({ error: 'items requerido' });
+    if (items.length > 100) return res.status(400).json({ error: 'Máximo 100 publicaciones por vez' });
+    if (logistic_type && !LOGISTICA_SALIDA[logistic_type]) {
+      return res.status(400).json({ error: `logistic_type inválido: ${logistic_type}` });
+    }
+    // Es una escritura en la cuenta de ML: un usuario cliente sólo toca la suya
+    if (req.user?.role === 'cliente' && String(req.user.client_id) !== String(clientId)) {
+      return res.status(403).json({ error: 'No podés modificar publicaciones de otra cuenta' });
+    }
+
+    const token = await getClientToken(clientId);
+    if (!token) return res.status(403).json({ error: 'Cliente no conectado o token expirado' });
+    const headers = { 'Authorization': `Bearer ${token}` };
+    const me = await fetch(`${ML_API}/users/me`, { headers }).then(r => r.json());
+    if (me.error || !me.id) return res.status(403).json({ error: 'No se pudo validar la cuenta de ML' });
+
+    const destino = logistic_type || await detectarLogisticaHabitual(me.id, headers);
+    if (!destino) {
+      return res.status(400).json({ error: 'No pude deducir a qué tipo de envío pasarlas (la cuenta no tiene publicaciones fuera de FULL). Elegí uno a mano.' });
+    }
+
+    const ids = [...new Set(items.map(i => String(i).trim().toUpperCase()).filter(Boolean))];
+    const attrs = 'id,title,seller_id,shipping,user_product_id,variations,available_quantity';
+    const resultados = [];
+    const cacheStock = {};
+
+    for (const id of ids) {
+      try {
+        const d = await fetch(`${ML_API}/items/${id}?attributes=${attrs}`, { headers }).then(r => r.json());
+        if (d.error || !d.id) { resultados.push({ id, ok: false, motivo: 'no_encontrada', detalle: d.message || d.error }); continue; }
+        if (String(d.seller_id) !== String(me.id)) { resultados.push({ id, ok: false, motivo: 'no_es_del_cliente' }); continue; }
+        const ltActual = d.shipping?.logistic_type || '';
+        if (ltActual !== 'fulfillment') {
+          resultados.push({ id, ok: false, motivo: 'ya_no_esta_en_full', title: d.title, detalle: ltActual || 'sin tipo logístico' });
+          continue;
+        }
+
+        // Stock en el depósito de ML: si no es 0, sacarla de FULL deja las unidades varadas
+        const upids = d.variations?.length
+          ? [...new Set(d.variations.map(v => v.user_product_id).filter(Boolean))]
+          : (d.user_product_id ? [d.user_product_id] : []);
+        let full = 0, deposito = 0, leido = false;
+        for (const upid of upids) {
+          if (!cacheStock[upid]) cacheStock[upid] = fetchStockPorUbicacion(upid, headers).catch(() => null);
+          const st = await cacheStock[upid];
+          if (!st) continue;
+          full += st.full; deposito += st.deposito; leido = true;
+        }
+        if (!leido) { resultados.push({ id, ok: false, motivo: 'stock_ilegible', title: d.title }); continue; }
+        if (full > 0) {
+          resultados.push({ id, ok: false, motivo: 'tiene_stock_en_full', title: d.title, stock_full: full });
+          continue;
+        }
+        if (deposito < 1) {
+          resultados.push({ id, ok: false, motivo: 'sin_stock_propio', title: d.title });
+          continue;
+        }
+
+        if (dry_run) {
+          resultados.push({ id, ok: true, dry_run: true, title: d.title, stock_deposito: deposito, logistic_type: destino });
+          continue;
+        }
+
+        const put = await fetch(`${ML_API}/items/${id}`, {
+          method: 'PUT',
+          headers: { ...headers, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ shipping: { logistic_type: destino } })
+        });
+        const body = await put.json().catch(() => ({}));
+        console.log(`[SACAR-FULL] ${req.user?.username} → ${id} ${ltActual}→${destino} status=${put.status} ${put.ok ? '' : JSON.stringify(body).slice(0, 400)}`);
+        if (!put.ok) {
+          const causa = (body.cause || []).map(c => c.message || c.code).join(' · ');
+          resultados.push({ id, ok: false, motivo: 'ml_rechazo', title: d.title, status: put.status,
+                            detalle: causa || body.message || body.error || `HTTP ${put.status}` });
+          continue;
+        }
+        resultados.push({ id, ok: true, title: d.title, stock_deposito: deposito,
+                          logistic_type: body.shipping?.logistic_type || destino });
+      } catch (e) {
+        resultados.push({ id, ok: false, motivo: 'excepcion', detalle: e.message });
+      }
+      await new Promise(r => setTimeout(r, 150));
+    }
+
+    const okList = resultados.filter(r => r.ok);
+    if (okList.length && !dry_run) {
+      _fullSinStockCache.delete(clientId);   // el panel tiene que releer: ya no están en FULL
+      try {
+        await pool.query(
+          `INSERT INTO bitacora (client_id, tipo, estado, contenido, autor) VALUES ($1,$2,$3,$4,$5)`,
+          [clientId, 'nota', 'hecho',
+           `Se sacaron de FULL ${okList.length} publicación${okList.length !== 1 ? 'es' : ''} con el inventario de fulfillment en 0 ` +
+           `y stock propio, pasadas a ${LOGISTICA_SALIDA[destino]}:\n` +
+           okList.map(r => `• ${r.id} — ${(r.title || '').slice(0, 60)} (${r.stock_deposito} u. en depósito)`).join('\n'),
+           req.user?.username || 'dashboard']
+        );
+      } catch (e) { console.error('[SACAR-FULL] bitácora:', e.message); }
+    }
+
+    res.json({
+      logistic_type: destino,
+      logistic_label: LOGISTICA_SALIDA[destino],
+      auto: !logistic_type,
+      dry_run: !!dry_run,
+      ok: okList.length,
+      fallaron: resultados.length - okList.length,
+      resultados,
+    });
+  } catch (e) {
+    console.error('[SACAR-FULL]', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
 // ── MEDIDAS DE ENVÍO ──────────────────────────────────────────────────────────
 // ML compara las medidas del producto declaradas en la ficha técnica (TOTAL_LENGTH,
 // LENGTH, HEIGHT, DIAMETER, HAND_LENGTH…) contra el paquete que declara el vendedor

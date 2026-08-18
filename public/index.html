@@ -4491,7 +4491,7 @@ async function chequearFullSinStock(refresh) {
 
   const fallidas = resultados.filter(r => !r.d || r.d.error).map(r => r.acc.name);
   const ok       = resultados.filter(r => r.d && !r.d.error);
-  const items    = ok.flatMap(r => (r.d.items || []).map(i => ({ ...i, cuenta: r.acc.name })));
+  const items    = ok.flatMap(r => (r.d.items || []).map(i => ({ ...i, cuenta: r.acc.name, client_id: r.acc.id })));
   const enFull   = ok.reduce((s, r) => s + (r.d.en_full || 0), 0);
   const unidades = items.reduce((s, i) => s + (i.stock_deposito || 0), 0);
   const diasV    = ok[0]?.d?.dias_ventas || 30;
@@ -4516,12 +4516,19 @@ async function chequearFullSinStock(refresh) {
   }
 
   const multi = cuentas.length > 1;
+  _fullSinStockSel = new Set();
   const rows = items.map(i => {
     const titulo = (i.title || '').length > 60 ? i.title.slice(0,60) + '…' : (i.title || '—');
     const vend = i.vendidas
       ? `<span style="color:#dc2626;font-weight:600">${i.vendidas} u.</span>`
       : `<span style="color:var(--muted)">—</span>`;
+    // Una publicación con variaciones aparece en varias filas: la acción es por MLA,
+    // así que todas las filas del mismo MLA comparten la misma casilla lógica.
+    const key = `${i.client_id}|${i.id}`;
     return `<tr style="border-bottom:1px solid var(--border)">
+      <td style="padding:8px;text-align:center;white-space:nowrap">
+        <input type="checkbox" class="fsfChk" data-key="${key}"
+               onchange="toggleFullSinStock('${key}', this.checked)" style="cursor:pointer"></td>
       ${multi ? `<td style="padding:8px;font-size:11px;color:var(--muted);white-space:nowrap">${i.cuenta}</td>` : ''}
       <td style="padding:8px;font-size:11px;white-space:nowrap">
         <a href="https://articulo.mercadolibre.com.ar/${(i.id||'').replace('MLA','MLA-')}" target="_blank"
@@ -4546,9 +4553,26 @@ async function chequearFullSinStock(refresh) {
       Se siguen ofreciendo por FULL con el inventario de fulfillment en 0.
       Reponé FULL o pasalas a envío propio${conVenta ? ` — <strong style="color:#dc2626">${conVenta} vendieron en los últimos ${diasV} días</strong>` : ''}.
     </div>
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px;padding:10px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px">
+      <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;margin:0">
+        <input type="checkbox" onchange="toggleTodasFullSinStock(this.checked)" style="cursor:pointer"> Seleccionar todas
+      </label>
+      <span style="font-size:12px;color:var(--muted)">Pasarlas a:</span>
+      <select id="fsfLogistica" style="padding:5px 8px;font-size:12px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text)">
+        <option value="">Automático (el envío que usa el resto de la cuenta)</option>
+        <option value="cross_docking">Colecta (ML retira)</option>
+        <option value="drop_off">Despacho en sucursal</option>
+        <option value="xd_drop_off">Places (punto de entrega)</option>
+        <option value="self_service">Flex</option>
+      </select>
+      <button class="sync-btn" id="fsfBtnSacar" onclick="sacarDeFull()" disabled
+        style="background:#dc2626;color:#fff;padding:5px 12px;font-size:12px">🚚 Sacar de FULL (<span id="fsfCount">0</span>)</button>
+    </div>
+    <div id="fsfResultado"></div>
     <div style="overflow-x:auto">
       <table style="width:100%;border-collapse:collapse">
         <thead><tr style="border-bottom:2px solid var(--border)">
+          <th style="padding:8px;width:32px"></th>
           ${multi ? '<th style="padding:8px;text-align:left;font-size:11px;color:var(--muted)">Cuenta</th>' : ''}
           <th style="padding:8px;text-align:left;font-size:11px;color:var(--muted)">MLA</th>
           <th style="padding:8px;text-align:left;font-size:11px;color:var(--muted)">Publicación</th>
@@ -4559,6 +4583,121 @@ async function chequearFullSinStock(refresh) {
         <tbody>${rows}</tbody>
       </table>
     </div>${avisoFallidas}${pie}</div>`;
+}
+
+// Publicaciones tildadas para sacar de FULL. La clave es `client_id|MLA`: la acción
+// es por publicación, no por variación, y una con variaciones ocupa varias filas.
+let _fullSinStockSel = new Set();
+
+function _fsfSyncBoton() {
+  const n = _fullSinStockSel.size;
+  const btn = document.getElementById('fsfBtnSacar');
+  const cnt = document.getElementById('fsfCount');
+  if (cnt) cnt.textContent = n;
+  if (btn) btn.disabled = n === 0;
+}
+
+function toggleFullSinStock(key, on) {
+  if (on) _fullSinStockSel.add(key); else _fullSinStockSel.delete(key);
+  // Todas las filas del mismo MLA (una por variación) van juntas
+  document.querySelectorAll(`.fsfChk[data-key="${key}"]`).forEach(c => { c.checked = on; });
+  _fsfSyncBoton();
+}
+
+function toggleTodasFullSinStock(on) {
+  _fullSinStockSel = new Set();
+  document.querySelectorAll('.fsfChk').forEach(c => {
+    c.checked = on;
+    if (on) _fullSinStockSel.add(c.dataset.key);
+  });
+  _fsfSyncBoton();
+}
+
+// Saca de FULL las publicaciones tildadas: las pasa al tipo de envío elegido para que
+// vuelvan a vender con el stock del depósito propio. El backend revalida en vivo que
+// el inventario de fulfillment esté realmente en 0 antes de tocar nada.
+async function sacarDeFull() {
+  const seleccion = [...(_fullSinStockSel || [])];
+  if (!seleccion.length) { showToast('No seleccionaste ninguna publicación'); return; }
+
+  const logistica = document.getElementById('fsfLogistica')?.value || '';
+  const labels = { cross_docking:'Colecta (ML retira)', drop_off:'Despacho en sucursal',
+                   xd_drop_off:'Places (punto de entrega)', self_service:'Flex' };
+  const destino = logistica ? labels[logistica] : 'el tipo de envío que usa el resto de la cuenta';
+
+  const porCliente = {};
+  seleccion.forEach(k => {
+    const [cid, mla] = k.split('|');
+    (porCliente[cid] = porCliente[cid] || []).push(mla);
+  });
+  const cuentas = Object.keys(porCliente)
+    .map(cid => state.accounts.find(a => String(a.id) === cid)?.name || `Cliente ${cid}`);
+
+  if (!confirm(
+    `Vas a sacar de FULL ${seleccion.length} publicación${seleccion.length !== 1 ? 'es' : ''} ` +
+    `de ${cuentas.join(', ')}.\n\n` +
+    `Pasan a: ${destino}.\n\n` +
+    `Se escribe en Mercado Libre. Para volverlas a FULL hay que mandar stock al depósito de ML.\n\n¿Confirmás?`
+  )) return;
+
+  const btn = document.getElementById('fsfBtnSacar');
+  const out = document.getElementById('fsfResultado');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Sacando de FULL…'; }
+  if (out) out.innerHTML = '';
+
+  const respuestas = [];
+  for (const [cid, mlas] of Object.entries(porCliente)) {
+    const nombre = state.accounts.find(a => String(a.id) === cid)?.name || `Cliente ${cid}`;
+    try {
+      // apiCall devuelve null en 403 (token de ML vencido): no romper el resumen
+      const r = await apiCall('POST', '/api/publicaciones/sacar-de-full',
+        { client_id: parseInt(cid), items: mlas, logistic_type: logistica || undefined });
+      respuestas.push({ nombre, r: r || { error: 'token de ML vencido o sin permisos', resultados: [] } });
+    } catch (e) {
+      respuestas.push({ nombre, r: { error: e.message || 'error de red', resultados: [] } });
+    }
+  }
+
+  const MOTIVOS = {
+    ya_no_esta_en_full:  'Ya no estaba en FULL',
+    tiene_stock_en_full: 'Todavía tiene stock en el depósito de ML',
+    sin_stock_propio:    'No tiene stock en el depósito propio',
+    stock_ilegible:      'ML no devolvió el stock por ubicación',
+    no_es_del_cliente:   'La publicación no es de esta cuenta',
+    no_encontrada:       'ML no encontró la publicación',
+    ml_rechazo:          'Mercado Libre rechazó el cambio',
+    excepcion:           'Error inesperado',
+  };
+  const okTotal = respuestas.reduce((s, x) => s + (x.r.ok || 0), 0);
+  const fallos  = respuestas.flatMap(x => (x.r.resultados || []).filter(z => !z.ok).map(z => ({ ...z, cuenta: x.nombre })));
+  const errores = respuestas.filter(x => x.r.error).map(x => `${x.nombre}: ${x.r.error}`);
+  const destinoReal = respuestas.find(x => x.r.logistic_label)?.r.logistic_label;
+
+  if (out) {
+    const detalleFallos = fallos.length ? `
+      <div style="margin-top:8px;font-size:12px">
+        <div style="font-weight:600;color:#dc2626;margin-bottom:4px">${fallos.length} no se pudo${fallos.length !== 1 ? 'ieron' : ''} cambiar:</div>
+        ${fallos.map(f => `<div style="color:var(--muted);padding:2px 0">• ${f.id} — ${MOTIVOS[f.motivo] || f.motivo}${f.detalle ? `: ${f.detalle}` : ''}</div>`).join('')}
+      </div>` : '';
+    const detalleErrores = errores.length
+      ? `<div style="margin-top:8px;font-size:12px;color:#dc2626">${errores.map(e => `• ${e}`).join('<br>')}</div>` : '';
+    out.innerHTML = `<div style="background:var(--bg);border:1px solid var(--border);border-left:4px solid ${okTotal ? '#16a34a' : '#dc2626'};border-radius:8px;padding:12px 14px;margin-bottom:12px">
+      <div style="font-size:13px;font-weight:700;color:${okTotal ? '#16a34a' : '#dc2626'};font-family:var(--font-b)">
+        ${okTotal ? `✅ ${okTotal} publicación${okTotal !== 1 ? 'es' : ''} fuera de FULL${destinoReal ? ` — ahora en ${destinoReal}` : ''}` : '❌ No se cambió ninguna publicación'}
+      </div>${detalleFallos}${detalleErrores}</div>`;
+  }
+
+  if (btn) { btn.innerHTML = '🚚 Sacar de FULL (<span id="fsfCount">0</span>)'; btn.disabled = true; }
+  _fullSinStockSel = new Set();
+  if (okTotal) {
+    showToast(`✅ ${okTotal} publicación${okTotal !== 1 ? 'es' : ''} fuera de FULL`);
+    const resumen = out ? out.innerHTML : '';
+    await chequearFullSinStock(true);           // relee: ya no tienen que aparecer
+    const nuevo = document.getElementById('fsfResultado');
+    if (nuevo && resumen) nuevo.innerHTML = resumen;
+  } else {
+    showToast('No se pudo sacar ninguna de FULL');
+  }
 }
 
 const MEDIDAS_ESTADOS = { active: 'Activa', paused: 'Pausada', under_review: 'En revisión' };
