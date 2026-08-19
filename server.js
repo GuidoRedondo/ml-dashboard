@@ -12111,6 +12111,24 @@ app.get('/api/proxy-ml', requireAuth, async (req, res) => {
 });
 
 // ── Proxy de ESCRITURA a ML (solo atributos de items propios) ──────────────
+// TEMPORAL — sondeo de escritura para cerrar si existe ALGUNA vía de sacar una
+// publicación de FULL por API. Sólo admin. Se borra apenas termine la prueba.
+app.post('/api/debug/sondeo-full', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { client_id, path, method, body } = req.body || {};
+    const token = await getClientToken(parseInt(client_id));
+    if (!token) return res.status(403).json({ error: 'sin token' });
+    const r = await fetch(`${ML_API}${path}`, {
+      method: (method || 'PUT').toUpperCase(),
+      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body || {})
+    });
+    const data = await r.json().catch(() => ({}));
+    console.log(`[SONDEO-FULL] ${req.user?.username} ${method} ${path} → ${r.status} ${JSON.stringify(data).slice(0,300)}`);
+    res.json({ status: r.status, ok: r.ok, data });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
 app.post('/api/proxy-ml-write', requireAuth, async (req, res) => {
   try {
     const { path, client_id, method, body } = req.body || {};
