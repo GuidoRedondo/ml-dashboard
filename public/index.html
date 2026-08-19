@@ -2846,14 +2846,18 @@ function openAuthLink() {
 
 async function setTipoCuenta(id, name, tipo) {
   const msg = tipo === 'prospecto'
-    ? `¿Marcar "${name}" como PROSPECTO?\n\nSe saca de todos los procesos automáticos (alertas, bitácora, TACOS, publi) y pasa a verse solo desde tu cuenta admin, agrupado aparte. El diagnóstico manual (dashboard, Warren, Steve, P&L) sigue funcionando igual.`
+    ? `¿Marcar "${name}" como PROSPECTO?\n\nSe saca de todos los procesos automáticos (alertas, bitácora, TACOS, publi), se cierran las alertas que tenga abiertas, y pasa a verse solo desde tu cuenta admin, agrupado aparte. El diagnóstico manual (dashboard, Warren, Steve, P&L) sigue funcionando igual.`
     : tipo === 'ex_cliente'
-      ? `¿Marcar "${name}" como EX CLIENTE?\n\nSe corta TODO lo automático: no genera más alertas, tareas de bitácora, control de TACOS ni sugerencias de publicidad. El histórico (P&L, costos, diagnósticos, bitácora) queda intacto y lo podés consultar cuando quieras. Solo lo ves vos.\n\nSi vuelve, lo reactivás con un click.`
+      ? `¿Marcar "${name}" como EX CLIENTE?\n\nSe corta TODO lo automático: no genera más alertas, tareas de bitácora, control de TACOS ni sugerencias de publicidad, y se cierran las alertas que tenga abiertas. El histórico (P&L, costos, diagnósticos, bitácora) queda intacto y lo podés consultar cuando quieras. Solo lo ves vos.\n\nSi vuelve, lo reactivás con un click.`
       : `¿Convertir "${name}" en CLIENTE ACTIVO?\n\nEntra a todos los procesos automáticos de control de métricas y pasa a ser visible para todo el equipo.`;
   if (!confirm(msg)) return;
   const r = await apiCall('PATCH', `/api/clients/${id}/tipo-cuenta`, { tipo_cuenta: tipo });
   if (r && r.ok) {
-    showToast(tipo === 'prospecto' ? '🔍 Marcado como prospecto' : tipo === 'ex_cliente' ? '📦 Marcado como ex cliente' : '✅ Cliente activo');
+    const cerradas = r.alertas_cerradas
+      ? ` · ${r.alertas_cerradas} alerta${r.alertas_cerradas === 1 ? '' : 's'} cerrada${r.alertas_cerradas === 1 ? '' : 's'}` : '';
+    showToast((tipo === 'prospecto' ? '🔍 Marcado como prospecto'
+             : tipo === 'ex_cliente' ? '📦 Marcado como ex cliente'
+             : '✅ Cliente activo') + cerradas);
     await loadClients();   // ya re-renderiza selector + lista con el grupo nuevo
   }
 }

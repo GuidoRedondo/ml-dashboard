@@ -1686,7 +1686,10 @@ async function generateHotsaleReport(dateFrom, dateTo) {
     return fetch(url, { ...opts, signal: ctrl.signal }).finally(() => clearTimeout(t));
   };
 
-  const clientsRes = await pool.query('SELECT id, name, ml_user_id FROM clients ORDER BY name');
+  // Solo clientes: el reporte se manda solo a Slack todas las noches, y un prospecto o
+  // un ex cliente no tiene por qué aparecer ahí.
+  const clientsRes = await pool.query(
+    `SELECT id, name, ml_user_id FROM clients WHERE tipo_cuenta = 'cliente' ORDER BY name`);
   const clientResults = [];
 
   for (const client of clientsRes.rows) {
@@ -13641,7 +13644,19 @@ app.patch('/api/clients/:id/tipo-cuenta', requireAuth, requireAdmin, async (req,
       return res.status(400).json({ error: "tipo_cuenta debe ser 'cliente', 'prospecto' o 'ex_cliente'" });
     }
     await pool.query('UPDATE clients SET tipo_cuenta=$1, updated_at=NOW() WHERE id=$2', [tipo_cuenta, req.params.id]);
-    res.json({ ok: true, tipo_cuenta });
+
+    // Sacarla de los automáticos hacia adelante no alcanza: las alertas que ya estaban
+    // abiertas seguirían gritando por una cuenta que no es cliente. Se cierran acá.
+    // Al reactivar no se reabren: el próximo scan las vuelve a levantar si siguen vigentes.
+    let alertasCerradas = 0;
+    if (tipo_cuenta !== 'cliente') {
+      const r = await pool.query(
+        `UPDATE alertas SET estado='resuelta', updated_at=NOW()
+         WHERE client_id=$1 AND estado != 'resuelta'`, [req.params.id]);
+      alertasCerradas = r.rowCount || 0;
+      console.log(`[TIPO-CUENTA] ${req.user?.username} → cliente ${req.params.id} a '${tipo_cuenta}', ${alertasCerradas} alertas cerradas`);
+    }
+    res.json({ ok: true, tipo_cuenta, alertas_cerradas: alertasCerradas });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
