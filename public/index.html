@@ -4516,26 +4516,36 @@ async function chequearFullSinStock(refresh) {
   }
 
   const multi = cuentas.length > 1;
-  // Dos grupos muy distintos: las que ML dejó de ofrecer (no venden nada) y las que
-  // siguen vivas porque Flex las despacha desde el depósito propio.
-  const frenadas = items.filter(i => !i.ofertado);
-  const porFlex  = items.filter(i => i.ofertado);
-  window._fullSinStockFrenadas = [...new Set(frenadas.map(i => i.id))];
+  // Tres situaciones detrás del mismo "FULL en cero", de peor a mejor:
+  //  · frenadas   — ML dejó de ofrecerlas, no venden nada.
+  //  · encerradas — sólo las cubre Flex y Flex no sale de su zona: pierden el interior.
+  //  · llegan     — siguen ofreciendo envío a todo el país.
+  const frenadas   = items.filter(i => !i.ofertado);
+  const encerradas = items.filter(i => i.ofertado && i.alcance !== null && i.alcance < i.alcance_total);
+  const llegan     = items.filter(i => i.ofertado && (i.alcance === null || i.alcance >= i.alcance_total));
+  const problema   = [...frenadas, ...encerradas];
+  window._fullSinStockFrenadas = [...new Set(problema.map(i => i.id))];
 
   const fila = i => {
     const titulo = (i.title || '').length > 55 ? i.title.slice(0,55) + '…' : (i.title || '—');
     const vend = i.vendidas
       ? `<span style="color:#dc2626;font-weight:600">${i.vendidas} u.</span>`
       : `<span style="color:var(--muted)">—</span>`;
+    const alcance = !i.ofertado
+      ? `<span style="color:#dc2626;font-weight:700">no la ofrece</span>`
+      : i.alcance === null
+        ? `<span style="color:var(--muted)">sin medir</span>`
+        : i.alcance >= i.alcance_total
+          ? `<span style="color:#16a34a;font-weight:600">todo el país</span>`
+          : `<span style="color:#dc2626;font-weight:700" title="Zonas del país donde hoy ofrece envío">sólo ${i.zonas.join(' / ')}</span>`;
     return `<tr style="border-bottom:1px solid var(--border)">
       ${multi ? `<td style="padding:8px;font-size:11px;color:var(--muted);white-space:nowrap">${i.cuenta}</td>` : ''}
       <td style="padding:8px;font-size:11px;white-space:nowrap">
         <a href="https://articulo.mercadolibre.com.ar/${(i.id||'').replace('MLA','MLA-')}" target="_blank"
            style="color:var(--accent);text-decoration:none">${i.id}</a></td>
       <td style="padding:8px;font-size:12px;color:var(--text)">${titulo}</td>
-      <td style="padding:8px;font-size:12px;font-weight:700;color:#dc2626;text-align:center;white-space:nowrap">0</td>
+      <td style="padding:8px;font-size:11px;text-align:center;white-space:nowrap">${alcance}</td>
       <td style="padding:8px;font-size:12px;font-weight:700;color:#16a34a;text-align:center;white-space:nowrap">${i.stock_deposito}</td>
-      <td style="padding:8px;font-size:12px;text-align:center;white-space:nowrap">${i.ofertado || 0}</td>
       <td style="padding:8px;font-size:12px;text-align:center;white-space:nowrap">${vend}</td>
       <td style="padding:8px;text-align:center;white-space:nowrap">
         <a href="https://www.mercadolibre.com.ar/publicaciones/${i.id}/modificar/envio" target="_blank"
@@ -4548,9 +4558,8 @@ async function chequearFullSinStock(refresh) {
     ${multi ? '<th style="padding:8px;text-align:left;font-size:11px;color:var(--muted)">Cuenta</th>' : ''}
     <th style="padding:8px;text-align:left;font-size:11px;color:var(--muted)">MLA</th>
     <th style="padding:8px;text-align:left;font-size:11px;color:var(--muted)">Publicación</th>
-    <th style="padding:8px;text-align:center;font-size:11px;color:var(--muted)">En FULL</th>
+    <th style="padding:8px;text-align:center;font-size:11px;color:var(--muted)" title="Hasta dónde del país ofrece envío hoy, según Mercado Libre">Llega a</th>
     <th style="padding:8px;text-align:center;font-size:11px;color:var(--muted)">En depósito</th>
-    <th style="padding:8px;text-align:center;font-size:11px;color:var(--muted)" title="Unidades que ML está ofreciendo hoy en la publicación">Ofertadas</th>
     <th style="padding:8px;text-align:center;font-size:11px;color:var(--muted)">Vendidas ${diasV}d</th>
     <th style="padding:8px;text-align:center;font-size:11px;color:var(--muted)">Cambiar</th>
   </tr>`;
@@ -4561,40 +4570,41 @@ async function chequearFullSinStock(refresh) {
       <tbody>${lista.map(fila).join('')}</tbody>
     </table></div>`;
 
-  const conVenta = frenadas.filter(i => i.vendidas > 0).length;
-  const uFrenadas = frenadas.reduce((s, i) => s + (i.stock_deposito || 0), 0);
-  const uFlex     = porFlex.reduce((s, i) => s + (i.stock_deposito || 0), 0);
+  const conVenta = problema.filter(i => i.vendidas > 0).length;
+  const uProblema = problema.reduce((s, i) => s + (i.stock_deposito || 0), 0);
+  const uLlegan   = llegan.reduce((s, i) => s + (i.stock_deposito || 0), 0);
 
   // Sacar una publicación de FULL no se puede por API: ML devuelve
   // item.shipping.logistic_type.not_modifiable. Lo más cerca que llegamos es abrirle
   // al cliente la pantalla exacta donde se cambia, sin que la busque a mano.
-  const bloqueFrenadas = frenadas.length ? `
+  const bloqueProblema = problema.length ? `
     <div style="font-size:15px;font-weight:700;color:#dc2626;font-family:var(--font-b);margin:4px 0 4px">
-      🛑 ${frenadas.length} frenada${frenadas.length !== 1 ? 's' : ''} — ML dejó de ofrecerlas (${uFrenadas} u. paradas en tu depósito)
+      🛑 ${problema.length} perdiendo ventas — ${uProblema} u. paradas en tu depósito
     </div>
     <div style="font-size:12px;color:var(--muted);margin-bottom:10px">
-      Están en FULL con el inventario en cero y sin Flex que las cubra: no venden nada hasta que repongas FULL
-      o les cambies el envío${conVenta ? ` — <strong style="color:#dc2626">${conVenta} venían vendiendo en los últimos ${diasV} días</strong>` : ''}.
+      ${frenadas.length ? `<strong>${frenadas.length}</strong> que ML directamente dejó de ofrecer. ` : ''}
+      ${encerradas.length ? `<strong>${encerradas.length}</strong> que quedaron encerradas en la zona de Flex: con el FULL en cero
+      el único stock disponible es el tuyo, y Flex sólo despacha en su zona — al interior del país ya no le ofrecen envío. ` : ''}
+      ${conVenta ? `<strong style="color:#dc2626">${conVenta} venían vendiendo en los últimos ${diasV} días.</strong>` : ''}
       <br>Mercado Libre no deja sacar una publicación de FULL por API, así que el cambio va sí o sí por su panel:
       <button class="sync-btn" onclick="abrirEnvioEnML()" style="padding:3px 9px;font-size:11px;margin-left:4px">
-        🔗 Abrir las ${Math.min(frenadas.length, 10)} primeras en ML</button>
+        🔗 Abrir las ${Math.min(problema.length, 10)} primeras en ML</button>
     </div>
-    ${tabla(frenadas)}` : `
+    ${tabla(problema)}` : `
     <div style="font-size:14px;font-weight:600;color:#16a34a;font-family:var(--font-b);margin:4px 0 10px">
-      ✅ Ninguna quedó frenada: todas las que tienen el FULL en cero se siguen despachando por Flex
+      ✅ Ninguna perdió alcance: todas las que tienen el FULL en cero siguen ofreciendo envío a todo el país
     </div>`;
 
-  const bloqueFlex = porFlex.length ? `
+  const bloqueOk = llegan.length ? `
     <div style="font-size:13px;font-weight:700;color:#f59e0b;font-family:var(--font-b);margin:22px 0 4px">
-      🛵 ${porFlex.length} se despacha${porFlex.length !== 1 ? 'n' : ''} por Flex desde tu depósito (${uFlex} u.)
+      🛵 ${llegan.length} se despacha${llegan.length !== 1 ? 'n' : ''} desde tu depósito y siguen llegando a todo el país (${uLlegan} u.)
     </div>
     <div style="font-size:12px;color:var(--muted);margin-bottom:10px">
-      El FULL está en cero pero la publicación sigue viva: no perdés la venta, la preparás y despachás vos.
-      Reponer FULL te devuelve el envío y la exposición.
+      No perdés la venta, pero el envío lo preparás y pagás vos. Reponer FULL te devuelve el costo y la exposición.
     </div>
-    ${tabla(porFlex)}` : '';
+    ${tabla(llegan)}` : '';
 
-  panel.innerHTML = `<div style="background:var(--surface);border:1px solid var(--border);border-left:4px solid ${frenadas.length ? '#dc2626' : '#f59e0b'};border-radius:12px;padding:18px 20px">
+  panel.innerHTML = `<div style="background:var(--surface);border:1px solid var(--border);border-left:4px solid ${problema.length ? '#dc2626' : '#f59e0b'};border-radius:12px;padding:18px 20px">
     <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px">
       <div style="flex:1;font-size:15px;font-weight:700;color:var(--text);font-family:var(--font-b)">
         🏬 ${items.length} publicación${items.length !== 1 ? 'es' : ''} con el FULL en cero — ${unidades} u. en tu depósito
@@ -4602,7 +4612,7 @@ async function chequearFullSinStock(refresh) {
       <button class="sync-btn" onclick="exportFullSinStockExcel()" style="padding:4px 10px;font-size:11px">📥 Excel</button>
       ${actualizar} ${cerrar}
     </div>
-    ${bloqueFrenadas}${bloqueFlex}${avisoFallidas}${pie}</div>`;
+    ${bloqueProblema}${bloqueOk}${avisoFallidas}${pie}</div>`;
 }
 
 // Abre en pestañas la pantalla de envío de las publicaciones frenadas. Es lo más lejos
@@ -4974,7 +4984,11 @@ function exportFullSinStockExcel() {
     MLA: i.id,
     Variacion: i.variation_id || '',
     Publicacion: i.title || '',
-    Estado: i.ofertado ? 'Se despacha por Flex' : 'Frenada (ML no la ofrece)',
+    Estado: !i.ofertado ? 'Frenada (ML no la ofrece)'
+          : i.alcance === null ? 'Alcance sin medir'
+          : i.alcance >= i.alcance_total ? 'Vende a todo el pais desde el deposito'
+          : 'Encerrada en zona Flex',
+    'Llega a': !i.ofertado ? 'ninguna zona' : (i.zonas || []).join(' / ') || 'sin medir',
     'Stock FULL': 0,
     'Stock deposito': i.stock_deposito,
     'Unidades ofertadas': i.ofertado || 0,
@@ -19184,7 +19198,7 @@ const CI_REGLAS_LABELS = {
   producto_sin_ventas:  { titulo: 'Producto sin ventas',    desc: 'Publicaciones activas con más de N días publicadas y 0 ventas en 90 días' },
   anuncio_sangrando:    { titulo: 'Anuncio sangrando',      desc: 'Ítems en publi con ACOS por encima del umbral durante N días consecutivos' },
   oportunidad_escalable:{ titulo: 'Oportunidad escalable',  desc: 'SKUs con alta tasa de conversión (CVR) y baja inversión en publicidad' },
-  full_sin_stock_con_deposito: { titulo: 'FULL en cero con stock propio', desc: 'Publicaciones en FULL con el inventario de fulfillment en 0 y unidades en el depósito propio. Las que no tienen Flex quedan frenadas: ML deja de ofrecerlas' },
+  full_sin_stock_con_deposito: { titulo: 'FULL en cero con stock propio', desc: 'Publicaciones en FULL con el inventario de fulfillment en 0 y unidades en el depósito propio. Sin Flex ML deja de ofrecerlas; con Flex siguen vivas pero sólo despachan dentro de la zona de Flex y pierden el interior' },
   cmv_invalido: { titulo: 'CMV mal cargado o incompleto', desc: 'Costos faltantes, en otra escala o moneda, mayores al precio o sin actualizar: mientras estén así el margen de esta cuenta no es real' },
   promo_campania_por_vencer: { titulo: 'Campaña por vencer con candidatas rentables', desc: 'Campañas que cierran en los próximos días con publicaciones que dejan margen y todavía no están cargadas' },
   medidas_envio_invalidas: { titulo: 'Medidas de envío mal declaradas', desc: 'Publicaciones sin medidas, donde el producto no entra en el paquete declarado, o que ML midió más grandes que lo declarado' },
@@ -19320,10 +19334,14 @@ function ciRenderDetalle(a) {
     const rows = datos.items.map(c => {
       const nombre = c.title ? (c.title.length > 50 ? c.title.slice(0,50)+'…' : c.title) : '—';
       const vend = c.vendidas ? `${c.vendidas} u. vendidas` : 'sin ventas';
-      // Sin Flex la publicación queda frenada; con Flex se despacha desde el depósito
-      const estado = c.ofertado
-        ? `<span style="color:#f59e0b;font-weight:600">🛵 por Flex</span>`
-        : `<span style="color:#dc2626;font-weight:600">🛑 frenada</span>`;
+      // Sin Flex la publicación queda frenada; con Flex vende, pero sólo en la zona de Flex
+      const estado = !c.ofertado
+        ? `<span style="color:#dc2626;font-weight:600">🛑 no la ofrece</span>`
+        : c.alcance === null
+          ? `<span style="color:var(--muted)">sin medir</span>`
+          : c.alcance >= c.alcance_total
+            ? `<span style="color:#16a34a;font-weight:600">🛵 todo el país</span>`
+            : `<span style="color:#dc2626;font-weight:600">🚫 sólo ${c.zonas.join('/')}</span>`;
       return `<tr>
         <td style="padding:4px 8px 4px 0;font-size:11px;color:var(--muted);white-space:nowrap">
           <a href="https://articulo.mercadolibre.com.ar/${c.id.replace('MLA','MLA-')}" target="_blank" style="color:var(--accent);text-decoration:none">${c.id}</a>

@@ -2666,6 +2666,35 @@ async function evalRuleOportunidadEscalable(client) {
 //     desde ahí (verificado el 18/8/2026 en REDFISHOK, Luminocity, Virtual House y
 //     White Salud: FULL 0, available_quantity = las unidades del depósito).
 // Por eso "FULL en cero" no es sinónimo de "no vende".
+// Hasta dónde del país llega hoy una publicación. Es la pregunta que importa cuando el
+// FULL queda en cero: con Flex la publicación sigue viva, pero Flex sólo despacha en su
+// zona de cobertura, así que deja de ofrecer envío al interior. Se lo preguntamos a ML
+// directo con /items/{id}/shipping_options por código postal.
+// Verificado el 18/8/2026 en REDFISHOK: MLA3158321706 (FULL 0, 38 u. propias) ofrece
+// envío sólo a CABA y GBA; una publicación de la misma cuenta con 1 sola unidad en FULL
+// llega a Córdoba, Neuquén y Salta.
+const CP_ZONAS = [
+  { cp: '1425', zona: 'CABA' },
+  { cp: '5000', zona: 'Córdoba' },
+  { cp: '5500', zona: 'Mendoza' },
+  { cp: '4400', zona: 'Salta' },
+];
+
+async function chequearAlcanceEnvio(itemId, headers) {
+  const llega = async cp => {
+    try {
+      const r = await fetch(`${ML_API}/items/${itemId}/shipping_options?zip_code=${cp}`, { headers });
+      if (!r.ok) return false;                       // 404 NSOPublicAPI = no hay envío a ese CP
+      const d = await r.json();
+      return (d.options || []).length > 0;
+    } catch(e) { return null; }
+  };
+  const res = await Promise.all(CP_ZONAS.map(z => llega(z.cp)));
+  if (res.some(x => x === null)) return null;        // error de red: sin dato, no cero
+  const zonas = CP_ZONAS.filter((z, i) => res[i]).map(z => z.zona);
+  return { zonas, alcance: zonas.length, total: CP_ZONAS.length };
+}
+
 async function fetchStockPorUbicacion(upid, headers) {
   const s = await fetch(`${ML_API}/user-products/${upid}/stock`, { headers }).then(r => r.json());
   if (!Array.isArray(s?.locations)) return null;
@@ -2736,7 +2765,7 @@ async function buildStockPorUbicacionMap(itemDetails, headers, opts = {}) {
 // ya no opere por FULL (mismo criterio que /api/logistica/full-stock).
 // La usan la regla del Centro de Inteligencia y el botón de la sección Publicaciones.
 async function detectarFullSinStockConDeposito(clientId, opts = {}) {
-  const { min_unidades = 1, dias_ventas = 30, max_consultas = 500 } = opts;
+  const { min_unidades = 1, dias_ventas = 30, max_consultas = 500, max_alcance = 250 } = opts;
   const token = await getClientToken(clientId);
   if (!token) return null;
   const headers = { 'Authorization': `Bearer ${token}` };
@@ -2815,11 +2844,35 @@ async function detectarFullSinStockConDeposito(clientId, opts = {}) {
     }));
     if (i + 8 < aConsultar.length) await new Promise(r => setTimeout(r, 120));
   }
-  // Primero las que ML dejó de ofrecer (ofertado 0): esas no venden nada hasta reponer
-  // FULL o cambiarles el envío. Las que siguen ofertadas se despachan por Flex.
-  hits.sort((a, b) => (a.ofertado > 0) - (b.ofertado > 0)
+
+  // 4. Alcance de envío de las que siguen ofertadas. Es el dato que decide si "sigue
+  //    viva" significa algo: con el FULL en cero sólo las cubre Flex, y Flex no sale de
+  //    su zona. Las que ML ya no ofrece (ofertado 0) no necesitan la consulta.
+  //    Una publicación tiene un solo alcance, aunque figure en varias filas por variación.
+  const ofertadas = [...new Set(hits.filter(h => h.ofertado).map(h => h.id))];
+  const alcanceDe = {};
+  const aMedir = ofertadas.slice(0, max_alcance);
+  for (let i = 0; i < aMedir.length; i += 6) {
+    await Promise.all(aMedir.slice(i, i + 6).map(async id => {
+      alcanceDe[id] = await chequearAlcanceEnvio(id, headers).catch(() => null);
+    }));
+    if (i + 6 < aMedir.length) await new Promise(r => setTimeout(r, 120));
+  }
+  hits.forEach(h => {
+    const a = h.ofertado ? alcanceDe[h.id] : null;
+    h.alcance       = a ? a.alcance : null;          // null = sin medir / sin dato
+    h.zonas         = a ? a.zonas   : null;
+    h.alcance_total = CP_ZONAS.length;
+  });
+  const alcanceTruncado = ofertadas.length > aMedir.length;
+
+  // Orden por gravedad: primero las que ML ya no ofrece, después las que quedaron
+  // encerradas en la zona de Flex, y al final las que igual llegan a todo el país.
+  const gravedad = h => !h.ofertado ? 0 : (h.alcance !== null && h.alcance < CP_ZONAS.length ? 1 : 2);
+  hits.sort((a, b) => gravedad(a) - gravedad(b)
                    || b.vendidas - a.vendidas || b.stock_deposito - a.stock_deposito);
-  return { hits, en_full: candidatos.length, consultadas: aConsultar.length, truncado, dias_ventas };
+  return { hits, en_full: candidatos.length, consultadas: aConsultar.length, truncado,
+           alcance_truncado: alcanceTruncado, dias_ventas };
 }
 
 // Regla 12 — Sin stock en FULL pero con stock en el depósito propio
@@ -2834,31 +2887,37 @@ async function evalRuleFullSinStockConDeposito(client) {
     console.log(`[ALERTA full_sin_stock] ${client.name}: fulfillment=${en_full} consultadas=${consultadas} hits=${hits.length}`);
     if (!hits.length) { await resolveAlerta(client.id, 'full_sin_stock_con_deposito'); return null; }
 
-    const unidades  = hits.reduce((s, h) => s + h.stock_deposito, 0);
-    const conVenta  = hits.filter(h => h.vendidas > 0);
-    // Las que ML dejó de ofrecer son las urgentes. Con Flex habilitado la publicación
-    // sigue viva y se despacha desde el depósito propio: molesta (paga Flex en vez de
-    // FULL) pero no pierde la venta, así que no levanta la alerta a crítica.
-    const frenadas  = hits.filter(h => !h.ofertado);
-    if (!frenadas.length) { await resolveAlerta(client.id, 'full_sin_stock_con_deposito'); return null; }
-    const severidad = frenadas.some(h => h.vendidas > 0) ? 'critical' : 'warning';
+    const unidades = hits.reduce((s, h) => s + h.stock_deposito, 0);
+    const conVenta = hits.filter(h => h.vendidas > 0);
+    // Tres situaciones muy distintas detrás del mismo "FULL en cero":
+    //  · frenadas  — ML directamente dejó de ofrecerlas: no venden nada.
+    //  · encerradas — sólo las cubre Flex, que no sale de su zona: pierden el interior.
+    //  · el resto  — siguen llegando a todo el país, no hay nada que hacer.
+    const frenadas   = hits.filter(h => !h.ofertado);
+    const encerradas = hits.filter(h => h.ofertado && h.alcance !== null && h.alcance < h.alcance_total);
+    const problema   = [...frenadas, ...encerradas];
+    if (!problema.length) { await resolveAlerta(client.id, 'full_sin_stock_con_deposito'); return null; }
+
+    const severidad = problema.some(h => h.vendidas > 0) ? 'critical' : 'warning';
     const corto = t => (t || '').length > 45 ? t.slice(0, 45) + '…' : (t || '');
-    const lista = frenadas.slice(0, max_items).map(h =>
-      `• ${corto(h.title)}: 0 en FULL · ${h.stock_deposito} u. en depósito` +
+    const lista = problema.slice(0, max_items).map(h =>
+      `• ${corto(h.title)}: ${h.ofertado ? `sólo llega a ${h.zonas.join('/')}` : 'ML no la ofrece'}` +
+      ` · ${h.stock_deposito} u. en depósito` +
       (h.vendidas ? ` · ${h.vendidas} vendidas/${dias_ventas}d` : '')
     ).join('\n');
-    const resto = frenadas.length > max_items ? `\n…y ${frenadas.length - max_items} más` : '';
+    const resto = problema.length > max_items ? `\n…y ${problema.length - max_items} más` : '';
     const nota  = truncado ? `\n(se revisaron las ${max_consultas} publicaciones FULL con más ventas)` : '';
-    const porFlex = hits.length - frenadas.length;
-    const notaFlex = porFlex
-      ? `\nOtras ${porFlex} con el FULL en cero se siguen despachando por Flex desde el depósito: no pierden la venta, pero pagan Flex.` : '';
-    const unidadesFrenadas = frenadas.reduce((s, h) => s + h.stock_deposito, 0);
-    const titulo = `${frenadas.length} publicación${frenadas.length !== 1 ? 'es' : ''} frenada${frenadas.length !== 1 ? 's' : ''} por FULL en cero con ${unidadesFrenadas} u. en depósito`;
+    const uProblema = problema.reduce((s, h) => s + h.stock_deposito, 0);
+    const detalle = frenadas.length && encerradas.length
+      ? `${frenadas.length} que ML dejó de ofrecer y ${encerradas.length} que quedaron encerradas en la zona de Flex`
+      : frenadas.length ? `ML dejó de ofrecerlas` : `quedaron encerradas en la zona de Flex: no ofrecen envío al interior`;
+    const titulo = `${problema.length} publicación${problema.length !== 1 ? 'es' : ''} con el FULL en cero perdiendo ventas — ${uProblema} u. en depósito`;
     return upsertAlerta(client.id, 'full_sin_stock_con_deposito', severidad,
       titulo,
-      `ML dejó de ofrecerlas: están en FULL con el inventario de fulfillment en 0 y sin Flex que las cubra. ` +
-      `Reponer FULL o cambiarles el envío desde el panel de ML (por API no se puede):\n${lista}${resto}${notaFlex}${nota}`,
-      { items: hits.slice(0, 50), total: hits.length, frenadas: frenadas.length, por_flex: porFlex,
+      `Están en FULL con el inventario de fulfillment en 0: ${detalle}. ` +
+      `Reponer FULL, o cambiarles el envío desde el panel de ML (por API no se puede):\n${lista}${resto}${nota}`,
+      { items: hits.slice(0, 50), total: hits.length, frenadas: frenadas.length,
+        encerradas: encerradas.length, con_problema: problema.length,
         unidades_deposito: unidades, con_venta: conVenta.length, truncado }
     );
   } catch(e) { console.error(`[ALERTA full_sin_stock_con_deposito] ${client.name}:`, e.message); return null; }
@@ -9878,8 +9937,10 @@ app.get('/api/publicaciones/full-sin-stock', requireAuth, async (req, res) => {
     const data = {
       items: r.hits,
       total: r.hits.length,
-      frenadas: r.hits.filter(h => !h.ofertado).length,
-      por_flex: r.hits.filter(h => h.ofertado).length,
+      frenadas:   r.hits.filter(h => !h.ofertado).length,
+      encerradas: r.hits.filter(h => h.ofertado && h.alcance !== null && h.alcance < h.alcance_total).length,
+      alcance_truncado: r.alcance_truncado,
+      zonas_medidas: CP_ZONAS.map(z => z.zona),
       unidades_deposito: r.hits.reduce((s, h) => s + h.stock_deposito, 0),
       en_full: r.en_full,
       consultadas: r.consultadas,
