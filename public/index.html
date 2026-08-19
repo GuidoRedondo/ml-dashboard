@@ -2422,6 +2422,24 @@ function getSession() {
 function getSessionUser() { return _sessionUser || getCookie('ml_session_user'); }
 function getSessionRole() { return _sessionRole || getCookie('ml_session_role'); }
 
+// -- FECHAS: toda la app muestra y calcula en hora argentina ------------------
+// El dashboard lo usan consultores y clientes desde cualquier lado; sin esto la
+// fecha salia en la zona del navegador (o en UTC, via toISOString) y los dias no
+// coincidian con los del panel de ML.
+//   ymd(d)        -> 'YYYY-MM-DD' del dia argentino (default: hoy)
+//   dART(v)       -> Date listo para formatear; un 'YYYY-MM-DD' pelado se ancla al
+//                    mediodia argentino para que no se corra un dia al mostrarlo
+const ART_TZ = 'America/Argentina/Buenos_Aires';
+function ymd(d) {
+  const x = (d === undefined) ? new Date() : (d instanceof Date ? d : dART(d));
+  if (!x || isNaN(x.getTime())) return null;
+  return x.toLocaleDateString('en-CA', { timeZone: ART_TZ });
+}
+function dART(v) {
+  if (v instanceof Date) return v;
+  if (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v)) return new Date(v + 'T12:00:00-03:00');
+  return new Date(v);
+}
 // Helper: get the currently selected client from allClients
 function getActiveClient() {
   if (!allClients.length) return null;
@@ -2766,7 +2784,7 @@ function renderClientsList() {
     const esEx        = c.tipo_cuenta === 'ex_cliente';
     const nameJs = c.name.replace(/'/g,"\\'");
     const connected = c.ml_user_id ? `<span class="status s-ok">● Conectado</span>` : `<span class="status s-off">● Sin conectar</span>`;
-    const expires = c.token_expires_at ? new Date(c.token_expires_at).toLocaleString('es-AR') : '—';
+    const expires = c.token_expires_at ? dART(c.token_expires_at).toLocaleString('es-AR', { timeZone: ART_TZ }) : '—';
     const tokenStatus = !c.ml_user_id ? '—'
       : c.refresh_token
         ? `<span style="color:#16a34a;font-size:11px;font-weight:600">✓ Permanente</span>`
@@ -3222,8 +3240,9 @@ async function mlFetch(path, token) {
 function getRangeDates(days) {
   const now = new Date();
   const from = new Date(now - days * 24 * 60 * 60 * 1000);
-  const pad = n => String(n).padStart(2,'0');
-  const fmt = d => d.getFullYear() + '-' + pad(d.getMonth()+1) + '-' + pad(d.getDate()) + 'T00:00:00.000-00:00';
+  // Dia argentino + offset -03:00. Antes armaba el dia local y le pegaba un offset
+  // UTC, asi que el rango arrancaba a las 21:00 del dia anterior.
+  const fmt = d => ymd(d) + 'T00:00:00.000-03:00';
   return { from: fmt(from), to: fmt(now) };
 }
 
@@ -3596,7 +3615,7 @@ function buildSevenDayChart() {
   const labels = [];
   for (let i = 0; i < DAYS; i++) {
     const d = new Date(now - (DAYS - 1 - i) * 86400000);
-    labels.push(d.toLocaleDateString('es-AR', { weekday: 'short', day: '2-digit' }).replace('.', ''));
+    labels.push(d.toLocaleDateString('es-AR', { timeZone: ART_TZ, weekday: 'short', day: '2-digit' }).replace('.', ''));
   }
 
   // Resumen: total y promedio/día
@@ -3699,7 +3718,7 @@ function buildEvolutionChart() {
   const labels = [];
   for (let i = 0; i < days; i++) {
     const d = new Date(now - (days - 1 - i) * 24*60*60*1000);
-    labels.push(d.toLocaleDateString('es-AR', { day:'2-digit', month:'short' }).replace('.',''));
+    labels.push(d.toLocaleDateString('es-AR', { timeZone: ART_TZ, day:'2-digit', month:'short' }).replace('.',''));
   }
 
   // Estado activo de series (persistente)
@@ -3960,7 +3979,7 @@ function renderEvoKpis() {
     const endDate = new Date(cur.week_end + 'T12:00:00');
     const isCurrentWeek = today >= startDate && today <= endDate;
     if (isCurrentWeek) {
-      const startTxt = startDate.toLocaleDateString('es-AR', { weekday: 'short', day: 'numeric', month: 'short' });
+      const startTxt = startDate.toLocaleDateString('es-AR', { timeZone: ART_TZ, weekday: 'short', day: 'numeric', month: 'short' });
       noteEl.innerHTML = `⚠️ <strong>Semana en curso</strong> · datos desde el ${startTxt} — los números son parciales y pueden aparecer bajos respecto a semanas anteriores`;
       noteEl.style.display = 'block';
     } else {
@@ -4023,10 +4042,10 @@ function renderEvoWeekCards() {
     const start = new Date(w.week_start + 'T12:00:00');
     const end   = new Date(w.week_end   + 'T12:00:00');
     const sameMonth = start.getMonth() === end.getMonth();
-    const monthStr = end.toLocaleDateString('es-AR', { month: 'short' }).replace('.', '');
+    const monthStr = end.toLocaleDateString('es-AR', { timeZone: ART_TZ, month: 'short' }).replace('.', '');
     const rangeTxt = sameMonth
       ? `${start.getDate()}–${end.getDate()} ${monthStr}`
-      : `${start.getDate()} ${start.toLocaleDateString('es-AR',{month:'short'}).replace('.','')} – ${end.getDate()} ${monthStr}`;
+      : `${start.getDate()} ${start.toLocaleDateString('es-AR',{ timeZone: ART_TZ, month:'short' }).replace('.','')} – ${end.getDate()} ${monthStr}`;
 
     const isCurrent = (i === lastIdx);
     const tooltip = `Sem ${i+1} · ${w.week_start} a ${w.week_end}
@@ -4110,7 +4129,7 @@ function renderEvoChart() {
 
   const labels = data.map(w => {
     const d = new Date(w.week_start + 'T12:00:00');
-    return d.toLocaleDateString('es-AR', { day: '2-digit', month: 'short' }).replace('.', '');
+    return d.toLocaleDateString('es-AR', { timeZone: ART_TZ, day: '2-digit', month: 'short' }).replace('.', '');
   });
   const vals = data.map(w => w[metric] || 0);
   const publiVals = data.map(w => w.inversion_publi || 0);
@@ -4368,7 +4387,7 @@ function exportPubsExcel() {
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Publicaciones');
   const client = getActiveClient();
-  const fecha  = new Date().toISOString().slice(0,10);
+  const fecha  = ymd(new Date());
   XLSX.writeFile(wb, `Publicaciones_${(client?.name||'').replace(/\s+/g,'_')}_${fecha}.xlsx`);
   showToast('✅ Excel descargado');
 }
@@ -4401,7 +4420,7 @@ async function exportarCMV() {
   ws['!cols'] = [{ wch: 16 }, { wch: 12 }, { wch: 50 }, { wch: 12 }, { wch: 20 }, { wch: 18 }, { wch: 22 }, { wch: 25 }];
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'CMV');
-  const fecha = new Date().toISOString().slice(0,10);
+  const fecha = ymd(new Date());
   XLSX.writeFile(wb, `CMV_${client.name || 'cliente'}_${fecha}.xlsx`);
   showToast('✅ CMV exportado — completá la columna "Costo unitario" y volvé a importar');
 }
@@ -4508,7 +4527,7 @@ async function chequearFullSinStock(refresh) {
   const avisoFallidas = fallidas.length
     ? `<div style="font-size:11px;color:#dc2626;margin-top:8px">No se pudo revisar: ${fallidas.join(', ')} (token vencido o sin permisos)</div>` : '';
   const pie = generado
-    ? `<div style="font-size:10px;color:var(--muted);margin-top:10px">Datos ${cacheado ? 'cacheados' : 'frescos'} · ${new Date(generado).toLocaleString('es-AR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})} · se revisaron ${enFull} publicaciones en FULL</div>` : '';
+    ? `<div style="font-size:10px;color:var(--muted);margin-top:10px">Datos ${cacheado ? 'cacheados' : 'frescos'} · ${dART(generado).toLocaleString('es-AR',{ timeZone: ART_TZ, day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit' })} · se revisaron ${enFull} publicaciones en FULL</div>` : '';
 
   if (!items.length) {
     panel.innerHTML = `<div style="background:var(--surface);border:1px solid var(--border);border-left:4px solid #16a34a;border-radius:12px;padding:18px 20px">
@@ -4804,7 +4823,7 @@ async function chequearMedidasEnvio(refresh) {
   const avisoFallidas = fallidas.length
     ? `<div style="font-size:11px;color:#dc2626;margin-top:8px">No se pudo revisar: ${fallidas.join(', ')} (token vencido o sin permisos)</div>` : '';
   const pie = generado
-    ? `<div style="font-size:10px;color:var(--muted);margin-top:10px">Datos ${cacheado ? 'cacheados' : 'frescos'} · ${new Date(generado).toLocaleString('es-AR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})} · se revisaron ${revisadas} publicaciones activas, pausadas y en revisión</div>` : '';
+    ? `<div style="font-size:10px;color:var(--muted);margin-top:10px">Datos ${cacheado ? 'cacheados' : 'frescos'} · ${dART(generado).toLocaleString('es-AR',{ timeZone: ART_TZ, day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit' })} · se revisaron ${revisadas} publicaciones activas, pausadas y en revisión</div>` : '';
 
   if (!items.length) {
     panel.innerHTML = `<div style="background:var(--surface);border:1px solid var(--border);border-left:4px solid #16a34a;border-radius:12px;padding:18px 20px">
@@ -4859,7 +4878,7 @@ function exportMedidasEnvioExcel() {
   }));
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Medidas de envio');
-  XLSX.writeFile(wb, `Medidas_envio_${new Date().toISOString().slice(0,10)}.xlsx`);
+  XLSX.writeFile(wb, `Medidas_envio_${ymd(new Date())}.xlsx`);
   showToast(`✅ Excel descargado (${rows.length} filas)`);
 }
 
@@ -4953,7 +4972,7 @@ function renderSaludCmv() {
       </tr></thead><tbody>${filas}</tbody></table></div>
       ${d.total_problemas > 200 ? `<div style="font-size:11px;color:var(--muted);margin-top:8px">Se muestran las 200 más importantes de ${d.total_problemas}. El Excel las trae todas.</div>` : ''}`
       : '<div style="padding:18px;text-align:center;color:#16a34a;font-size:12px">No hay nada para corregir</div>'}
-    <div style="font-size:10px;color:var(--muted);margin-top:10px">Ordenado por facturación: primero lo que más plata mueve. Datos ${d.cached ? 'cacheados' : 'frescos'}${d.generado ? ' · ' + new Date(d.generado).toLocaleString('es-AR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}) : ''}</div>
+    <div style="font-size:10px;color:var(--muted);margin-top:10px">Ordenado por facturación: primero lo que más plata mueve. Datos ${d.cached ? 'cacheados' : 'frescos'}${d.generado ? ' · ' + dART(d.generado).toLocaleString('es-AR',{ timeZone: ART_TZ, day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit' }) : ''}</div>
   </div>`;
 }
 
@@ -4976,7 +4995,7 @@ function exportSaludCmvExcel() {
   }));
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Salud del CMV');
-  XLSX.writeFile(wb, `Salud_CMV_${new Date().toISOString().slice(0,10)}.xlsx`);
+  XLSX.writeFile(wb, `Salud_CMV_${ymd(new Date())}.xlsx`);
   showToast(`✅ Excel descargado (${rows.length} filas)`);
 }
 
@@ -5001,7 +5020,7 @@ function exportFullSinStockExcel() {
   }));
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'FULL en cero');
-  XLSX.writeFile(wb, `FULL_en_cero_${new Date().toISOString().slice(0,10)}.xlsx`);
+  XLSX.writeFile(wb, `FULL_en_cero_${ymd(new Date())}.xlsx`);
   showToast('✅ Excel descargado');
 }
 
@@ -5773,8 +5792,8 @@ function initConversionTab() {
   const dFrom = document.getElementById('convDateFrom');
   const dTo   = document.getElementById('convDateTo');
   if (!_convInitialized) {
-    const today = new Date().toISOString().slice(0, 10);
-    const from = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+    const today = ymd(new Date());
+    const from = ymd(new Date(Date.now() - 30 * 86400000));
     dFrom.value = from;
     dTo.value   = today;
     _convInitialized = true;
@@ -6322,7 +6341,7 @@ function exportCicloVidaExcel() {
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Ciclo de Vida');
   const client = getActiveClient();
-  const fecha = new Date().toISOString().slice(0, 10);
+  const fecha = ymd(new Date());
   XLSX.writeFile(wb, `CicloVida_${(client?.name||'cliente').replace(/\s+/g,'_')}_${fecha}.xlsx`);
 }
 
@@ -6571,7 +6590,7 @@ function renderSeguimiento(data) {
 
   let rows = '';
   items.forEach(item => {
-    const marcadaDate = new Date(item.marcada_at).toLocaleDateString('es-AR', {day:'2-digit',month:'short',year:'2-digit'});
+    const marcadaDate = dART(item.marcada_at).toLocaleDateString('es-AR', { timeZone: ART_TZ, day:'2-digit',month:'short',year:'2-digit' });
     const titulo = (item.titulo || item.mla);
     const cur = item.cur, act = item.actual, dl = item.delta;
     let chips = '';
@@ -6647,8 +6666,8 @@ async function toggleSegEvolucion(id, mla, row) {
   const days = parseInt(document.getElementById('segDaysSelect')?.value || 14);
   const now  = new Date();
   const from = new Date(now.getTime() - days * 24*60*60*1000);
-  const dateFrom = from.toISOString().slice(0,10);
-  const dateTo   = now.toISOString().slice(0,10);
+  const dateFrom = ymd(from);
+  const dateTo   = ymd(now);
 
   const sub   = document.getElementById(`seg-sub-${id}`);
   const canvas = document.getElementById(`seg-canvas-${id}`);
@@ -6937,7 +6956,7 @@ function renderLoQuePaso() {
       ${cols.map(c => celda(c, p)).join('')}
     </tr>`).join('');
 
-  const fecha = d.fetched_at ? new Date(d.fetched_at).toLocaleString('es-AR', { day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit' }) : '';
+  const fecha = d.fetched_at ? dART(d.fetched_at).toLocaleString('es-AR', { timeZone: ART_TZ, day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit' }) : '';
 
   el.innerHTML = `
     <div class="kpi-card" style="padding:16px 18px;margin-bottom:12px">
@@ -7445,7 +7464,7 @@ function exportDescuentosExcel() {
   const wb = XLSX.utils.book_new();
   const ws = XLSX.utils.json_to_sheet(rows);
   XLSX.utils.book_append_sheet(wb, ws, 'Descuentos');
-  XLSX.writeFile(wb, `Descuentos_HotSale_${new Date().toISOString().slice(0,10)}.xlsx`);
+  XLSX.writeFile(wb, `Descuentos_HotSale_${ymd(new Date())}.xlsx`);
   showToast('✅ Excel descargado');
 }
 
@@ -7799,7 +7818,7 @@ function renderUmbralesTabla(items, client, riskLabel, riskDesc) {
 function renderUmbralesHistorial(historial) {
   if (!historial.length) return '<div style="padding:30px;text-align:center;color:var(--muted);font-size:13px">Sin acciones registradas</div>';
   const fmt$ = n => n != null ? '$' + Math.round(n).toLocaleString('es-AR') : '—';
-  const fmtDate = d => d ? new Date(d).toLocaleDateString('es-AR', { day:'2-digit', month:'2-digit', year:'numeric' }) : '';
+  const fmtDate = d => d ? dART(d).toLocaleDateString('es-AR', { timeZone: ART_TZ, day:'2-digit', month:'2-digit', year:'numeric' }) : '';
 
   const rows = historial.map(a => {
     const color = a.accion === 'aplicada' ? '#22c55e' : a.accion === 'ignorada' ? '#6b7280' : '#f59e0b';
@@ -9285,8 +9304,8 @@ function renderVentas(orders) {
   };
   const fmtDate = d => {
     const dt = new Date(d);
-    return dt.toLocaleDateString('es-AR',{day:'2-digit',month:'2-digit',year:'numeric'}) + ' ' +
-           dt.toLocaleTimeString('es-AR',{hour:'2-digit',minute:'2-digit'});
+    return dt.toLocaleDateString('es-AR',{ timeZone: ART_TZ, day:'2-digit',month:'2-digit',year:'numeric' }) + ' ' +
+           dt.toLocaleTimeString('es-AR',{ timeZone: ART_TZ, hour:'2-digit',minute:'2-digit' });
   };
   const pctColor = p => parseFloat(p) >= 60 ? '#00e676' : parseFloat(p) >= 40 ? '#FFD700' : '#ff5252';
 
@@ -9447,7 +9466,7 @@ async function descargarTablaRentabilidad() {
   const ws = XLSX.utils.json_to_sheet(rows);
   ws['!cols'] = [4, 18, 45, 14, 10, 14, 14, 12, 12, 12, 10, 9].map(w => ({ wch: w }));
   XLSX.utils.book_append_sheet(wb, ws, 'Rentabilidad');
-  const fecha = new Date().toISOString().slice(0, 10);
+  const fecha = ymd(new Date());
   XLSX.writeFile(wb, `Rentabilidad_${client.name.replace(/\s+/g,'_')}_${fecha}.xlsx`);
   showToast('✅ Excel descargado');
 }
@@ -9601,16 +9620,16 @@ function getDateRange() {
   const now  = new Date();
   const from2 = new Date(now.getTime() - days * 24*60*60*1000);
   return {
-    date_from: from2.toISOString().slice(0,10),
-    date_to:   now.toISOString().slice(0,10)
+    date_from: ymd(from2),
+    date_to:   ymd(now)
   };
 }
 
 function setQuickRange(days) {
   const now  = new Date();
   const from = new Date(now.getTime() - days * 24*60*60*1000);
-  const toStr   = now.toISOString().slice(0,10);
-  const fromStr = from.toISOString().slice(0,10);
+  const toStr   = ymd(now);
+  const fromStr = ymd(from);
   const fromEl = document.getElementById('globalDateFrom');
   const toEl   = document.getElementById('globalDateTo');
   if (fromEl) fromEl.value = fromStr;
@@ -10438,7 +10457,7 @@ function renderTopGanancia() {
   const th = (label, align, title) =>
     `<th style="text-align:${align};padding:6px 4px;color:var(--muted);font-weight:600;white-space:nowrap"${title ? ` title="${title}"` : ''}>${label}</th>`;
 
-  const fecha = data.fetched_at ? new Date(data.fetched_at).toLocaleString('es-AR', { day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit' }) : '';
+  const fecha = data.fetched_at ? dART(data.fetched_at).toLocaleString('es-AR', { timeZone: ART_TZ, day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit' }) : '';
 
   cont.innerHTML = `
     <div class="kpi-card" style="padding:18px">
@@ -10811,7 +10830,7 @@ function exportTopGananciaExcel() {
   const ws = XLSX.utils.json_to_sheet(rows);
   ws['!cols'] = [4, 15, 14, 45, 9, 14, 13, 13, 12, 11, 11, 10, 20, 12, 18, 14, 10, 15, 14, 15, 11].map(w => ({ wch: w }));
   XLSX.utils.book_append_sheet(wb, ws, 'Top ganancia');
-  const fecha = new Date().toISOString().slice(0, 10);
+  const fecha = ymd(new Date());
   XLSX.writeFile(wb, `TopGanancia_${client.name.replace(/\s+/g,'_')}_${fecha}.xlsx`);
 }
 
@@ -10938,7 +10957,7 @@ function _pregFecha(iso) {
   if (!iso) return '';
   const d = new Date(iso);
   if (isNaN(d)) return '';
-  return d.toLocaleString('es-AR', { day:'2-digit', month:'2-digit', year:'numeric', hour:'2-digit', minute:'2-digit' });
+  return d.toLocaleString('es-AR', { timeZone: ART_TZ, day:'2-digit', month:'2-digit', year:'numeric', hour:'2-digit', minute:'2-digit' });
 }
 function _pregTimeColor(mins) {
   if (mins === null || mins === undefined) return 'var(--muted)';
@@ -11267,7 +11286,7 @@ function exportarPreguntasExcel() {
     XLSX.utils.book_append_sheet(wb, wsR, 'Ranking');
   }
 
-  const fecha = new Date().toISOString().slice(0,10);
+  const fecha = ymd(new Date());
   XLSX.writeFile(wb, `Preguntas_${(client?.name||'cliente').replace(/\s+/g,'_')}_${fecha}.xlsx`);
 }
 
@@ -11303,7 +11322,7 @@ function exportPerformanceExcel() {
   const ws = XLSX.utils.json_to_sheet(rows);
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Performance');
-  XLSX.writeFile(wb, 'performance_ml_' + new Date().toISOString().slice(0,10) + '.xlsx');
+  XLSX.writeFile(wb, 'performance_ml_' + ymd(new Date()) + '.xlsx');
   showToast('✅ Excel descargado');
 }
 
@@ -11415,11 +11434,11 @@ function initApp() {
   const from = new Date(now.getTime() - days * 24*60*60*1000);
   const fromEl = document.getElementById('globalDateFrom');
   const toEl   = document.getElementById('globalDateTo');
-  if (fromEl) fromEl.value = from.toISOString().slice(0,10);
-  if (toEl)   toEl.value   = now.toISOString().slice(0,10);
+  if (fromEl) fromEl.value = ymd(from);
+  if (toEl)   toEl.value   = ymd(now);
 
   // Fechas por defecto en el reporte hotsale = hoy en Argentina
-  const artToday = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Argentina/Buenos_Aires' });
+  const artToday = ymd();
   const hsFrom = document.getElementById('hotsaleDateFrom');
   const hsTo   = document.getElementById('hotsaleDateTo');
   if (hsFrom) hsFrom.value = artToday;
@@ -11687,8 +11706,8 @@ async function loadOpinConversion() {
   }
   _opinConvState = 'loading';
   renderOpiniones();
-  const today = new Date().toISOString().slice(0, 10);
-  const from  = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+  const today = ymd(new Date());
+  const from  = ymd(new Date(Date.now() - 30 * 86400000));
   try {
     const data = await apiCall('GET', `/api/reporte/visitas?client_id=${client.id}&date_from=${from}&date_to=${today}`);
     if (data && data.items) {
@@ -12640,7 +12659,7 @@ function diagGetLast3Months() {
     const d = new Date(today.getFullYear(), today.getMonth() - i, 1);
     const y = d.getFullYear();
     const m = d.getMonth();
-    const label = d.toLocaleDateString('es-AR', { month: 'long', year: 'numeric' });
+    const label = d.toLocaleDateString('es-AR', { timeZone: ART_TZ, month: 'long', year: 'numeric' });
     const mesStr = `${y}-${String(m+1).padStart(2,'0')}-01`;
     const lastDay = new Date(y, m+1, 0).getDate();
     months.push({
@@ -13301,7 +13320,7 @@ function diagExportPDF() {
       ${kpi('Pareto 80%', fmtP(rd.pub_pareto_pct))}
     </div>`;
 
-  const hoy = new Date().toLocaleDateString('es-AR', {day:'2-digit', month:'long', year:'numeric'});
+  const hoy = new Date().toLocaleDateString('es-AR', { timeZone: ART_TZ, day:'2-digit', month:'long', year:'numeric' });
   const rango = cols.filter(c=>c.data).map(c=>c.label).join(' · ') || cols.map(c=>c.label).join(' · ');
   const notas = refCol?.data?.manuales?.notas || '';
 
@@ -13541,7 +13560,7 @@ function exportFotosExcel() {
   if (!_fotosData || !_fotosData.length) { showToast('Sin datos — cargá la sección Fotos primero'); return; }
   const XLSX = window.XLSX;
   const client = getActiveClient();
-  const fecha  = new Date().toISOString().slice(0,10);
+  const fecha  = ymd(new Date());
 
   const toRow = i => {
     const estado = i.photo_count === 0 ? 'Sin fotos'
@@ -14064,7 +14083,7 @@ function exportFullStockExcel() {
   const ws = XLSX.utils.json_to_sheet(rows);
   ws['!cols'] = [18,40,22,16,12,12,11,12,13,11,16,14,13,20,13,16].map(w => ({ wch: w }));
   XLSX.utils.book_append_sheet(wb, ws, 'Stock FULL');
-  const fecha = new Date().toISOString().slice(0,10);
+  const fecha = ymd(new Date());
   XLSX.writeFile(wb, `StockFULL_${clientName.replace(/\s+/g,'_')}_${fecha}.xlsx`);
   showToast('✅ Excel descargado');
 }
@@ -14085,7 +14104,7 @@ async function descargarTemplateExcel() {
     const client = allClients.find(c => String(c.id) === String(clientId));
     const clientName = client?.name || 'Cliente';
     const XLSX = window.XLSX;
-    const hoy = new Date().toISOString().slice(0,10);
+    const hoy = ymd(new Date());
 
     const wsData = [
       [`PLANILLA DE COSTOS — ${clientName} | ${data.items.length} publicaciones activas`],
@@ -14193,7 +14212,7 @@ function initReporte() {
     const now = new Date();
     // Mes en curso primero
     const valActual = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
-    const labelActual = now.toLocaleDateString('es-AR', { month: 'long', year: 'numeric' });
+    const labelActual = now.toLocaleDateString('es-AR', { timeZone: ART_TZ, month: 'long', year: 'numeric' });
     const oActual = document.createElement('option');
     oActual.value = valActual;
     oActual.textContent = '📍 ' + labelActual.charAt(0).toUpperCase() + labelActual.slice(1) + ' (en curso)';
@@ -14201,7 +14220,7 @@ function initReporte() {
     // Últimos 6 meses cerrados
     for (let i = 1; i <= 6; i++) {
       const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
-      const label = d.toLocaleDateString('es-AR', { month: 'long', year: 'numeric' });
+      const label = d.toLocaleDateString('es-AR', { timeZone: ART_TZ, month: 'long', year: 'numeric' });
       const val = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
       const o = document.createElement('option');
       o.value = val; o.textContent = label.charAt(0).toUpperCase() + label.slice(1);
@@ -14640,7 +14659,7 @@ function descargarComparacionPDF(mes_a, mes_b) {
   const cmPctB = parseFloat(factB) ? (parseFloat(b?.utilidad_antes_gf)||0) / parseFloat(factB) * 100 : null;
   const cmPctD = (cmPctA != null && cmPctB != null) ? cmPctA - cmPctB : null;
   const fmtNum = v => v?.toLocaleString('es-AR') ?? '—';
-  const hoy = new Date().toLocaleDateString('es-AR', {day:'2-digit', month:'long', year:'numeric'});
+  const hoy = new Date().toLocaleDateString('es-AR', { timeZone: ART_TZ, day:'2-digit', month:'long', year:'numeric' });
 
   const kpis = `<div class="kpis">
     ${kpi('Facturación', a?.ingresos?.facturacion, b?.ingresos?.facturacion, diff?.facturacion, fmt)}
@@ -14890,7 +14909,7 @@ function descargarSinCosto(clientId) {
   const client = allClients.find(c => String(c.id) === String(clientId));
   const clientName = client ? client.name : 'Cliente';
   const XLSX = window.XLSX;
-  const hoy = new Date().toISOString().slice(0,10);
+  const hoy = ymd(new Date());
   const wsData = [
     ['SIN COSTO — ' + clientName + ' | ' + sinCosto.length + ' productos'],
     ['Completa la columna Costo Unitario (ARS). Guarda y sube el archivo al dashboard.'],
@@ -15081,7 +15100,7 @@ async function generarPyL() {
 
   const avisoActual = period.esMesActual
     ? `<div style="background:#fef3c7;border:1px solid #fcd34d;border-radius:8px;padding:10px 16px;margin-bottom:14px;font-size:12px;color:#92400e;display:flex;align-items:center;gap:8px">
-        📍 <strong>Mes en curso</strong> — datos del 1 al ${period.date_to.slice(8)} de ${new Date(period.date_to).toLocaleDateString('es-AR',{month:'long'})}. Los números son parciales y van a cambiar.
+        📍 <strong>Mes en curso</strong> — datos del 1 al ${period.date_to.slice(8)} de ${dART(period.date_to).toLocaleDateString('es-AR',{ timeZone: ART_TZ, month:'long' })}. Los números son parciales y van a cambiar.
        </div>` : '';
 
   el.innerHTML = avisoActual + '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">⏳ Calculando P&L... puede tardar un momento</div>';
@@ -15750,8 +15769,8 @@ function renderMisTareasLista(data) {
       const color = estadoColor[t.estado] || '#94a3b8';
       const label = estadoLabel[t.estado] || t.estado;
       const vencida = t.fecha_venc && t.estado !== 'resuelto' && new Date(t.fecha_venc) < new Date();
-      const fechaVenc = t.fecha_venc ? new Date(t.fecha_venc).toLocaleDateString('es-AR',{day:'2-digit',month:'2-digit',year:'numeric'}) : '';
-      const fechaCreacion = t.created_at ? new Date(t.created_at).toLocaleDateString('es-AR',{day:'2-digit',month:'2-digit'}) : '';
+      const fechaVenc = t.fecha_venc ? dART(t.fecha_venc).toLocaleDateString('es-AR',{ timeZone: ART_TZ, day:'2-digit',month:'2-digit',year:'numeric' }) : '';
+      const fechaCreacion = t.created_at ? dART(t.created_at).toLocaleDateString('es-AR',{ timeZone: ART_TZ, day:'2-digit',month:'2-digit' }) : '';
 
       html += `
         <div style="background:var(--surface);border:1px solid ${vencida?'#ef4444':'var(--border)'};border-radius:8px;padding:10px 14px;${t.estado==='resuelto'?'opacity:0.6':''}">
@@ -15934,13 +15953,13 @@ function renderEntradasBit() {
   const fmtDate = d => {
     if (!d) return null;
     const dt = new Date(d);
-    return dt.toLocaleDateString('es-AR', { day:'2-digit', month:'2-digit', year:'numeric' });
+    return dt.toLocaleDateString('es-AR', { timeZone: ART_TZ, day:'2-digit', month:'2-digit', year:'numeric' });
   };
   const fmtTs = d => {
     if (!d) return '';
     const dt = new Date(d);
-    return dt.toLocaleDateString('es-AR',{day:'2-digit',month:'2-digit'}) + ' ' +
-           dt.toLocaleTimeString('es-AR',{hour:'2-digit',minute:'2-digit'});
+    return dt.toLocaleDateString('es-AR',{ timeZone: ART_TZ, day:'2-digit',month:'2-digit' }) + ' ' +
+           dt.toLocaleTimeString('es-AR',{ timeZone: ART_TZ, hour:'2-digit',minute:'2-digit' });
   };
 
   const tipoCfg = {
@@ -15957,7 +15976,7 @@ function renderEntradasBit() {
   const cards = filtered.map(e => {
     const tc = tipoCfg[e.tipo] || tipoCfg.nota;
     const sc = estadoCfg[e.estado] || estadoCfg.pendiente;
-    const hoy = new Date().toISOString().slice(0,10);
+    const hoy = ymd(new Date());
     const vencido = e.fecha_venc && e.fecha_venc.slice(0,10) < hoy && e.estado !== 'resuelto';
     const fechaVencStr = e.fecha_venc
       ? `<span style="font-size:11px;color:${vencido?'#dc2626':'var(--muted)'};font-weight:${vencido?'700':'400'}">
@@ -16427,7 +16446,7 @@ function exportTendenciaExcel() {
     XLSX.utils.book_append_sheet(wb, ws, a.label.slice(0, 31));
   });
 
-  const fecha = new Date().toISOString().slice(0, 10);
+  const fecha = ymd(new Date());
   XLSX.writeFile(wb, `Tendencia_${(client?.name || 'cliente').replace(/\s+/g, '_')}_${fecha}.xlsx`);
 }
 
@@ -16591,7 +16610,7 @@ function exportCurvaABC() {
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Curva ABC');
   const client = getActiveClient();
-  const fecha = new Date().toISOString().slice(0,10);
+  const fecha = ymd(new Date());
   XLSX.writeFile(wb, `CurvaABC_${(client?.name||'cliente').replace(/\s+/g,'_')}_${fecha}.xlsx`);
 }
 
@@ -18373,7 +18392,7 @@ function renderPromoCandidatos() {
       </tr></thead><tbody>${filas}</tbody></table></div>`
       : '<div style="padding:24px;text-align:center;color:var(--muted);font-size:12px">Ninguna publicación con ese filtro</div>'}
     ${aviso}${avisoCmv}
-    <div style="font-size:10px;color:var(--muted);margin-top:10px">Datos ${d.cached ? 'cacheados' : 'frescos'} · ${d.generado ? new Date(d.generado).toLocaleString('es-AR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}) : ''}</div>`;
+    <div style="font-size:10px;color:var(--muted);margin-top:10px">Datos ${d.cached ? 'cacheados' : 'frescos'} · ${d.generado ? dART(d.generado).toLocaleString('es-AR',{ timeZone: ART_TZ, day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit' }) : ''}</div>`;
 }
 
 function exportPromoCandidatosExcel() {
@@ -18407,7 +18426,7 @@ function exportPromoCandidatosExcel() {
   })));
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Que meter');
-  XLSX.writeFile(wb, `Promociones_que_meter_${new Date().toISOString().slice(0,10)}.xlsx`);
+  XLSX.writeFile(wb, `Promociones_que_meter_${ymd(new Date())}.xlsx`);
   showToast(`✅ Excel descargado (${rows.length} filas)`);
 }
 
@@ -18443,7 +18462,7 @@ function exportarPromocionesExcel() {
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Promociones');
 
-  const fecha = new Date().toISOString().slice(0,10);
+  const fecha = ymd(new Date());
   XLSX.writeFile(wb, `Promociones_${(client?.name||'cliente').replace(/\s+/g,'_')}_${fecha}.xlsx`);
   showToast(`📥 ${rows.length} promociones exportadas`);
 }
@@ -18734,7 +18753,7 @@ function renderTokenStatus(data) {
     const cfg = statusCfg[c.status] || statusCfg.unknown;
     const maxMins = 360; // 6hs
     const pct = c.mins_left === null ? 0 : Math.max(0, Math.min(100, (c.mins_left / maxMins) * 100));
-    const lastUp = c.last_updated ? new Date(c.last_updated).toLocaleString('es-AR', {day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}) : '—';
+    const lastUp = c.last_updated ? dART(c.last_updated).toLocaleString('es-AR', { timeZone: ART_TZ, day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit' }) : '—';
 
     return `<div style="background:${cfg.bg};border:1.5px solid ${cfg.border};border-radius:12px;padding:16px 18px">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
@@ -18779,7 +18798,7 @@ function renderTokenStatus(data) {
 // ── BOOT ──────────────────────────────────────────────────────────────────────
 window.addEventListener('DOMContentLoaded', () => {
   const datEl = document.getElementById('currentDate');
-  if (datEl) datEl.textContent = new Date().toLocaleDateString('es-AR', {day:'2-digit',month:'long',year:'numeric'});
+  if (datEl) datEl.textContent = new Date().toLocaleDateString('es-AR', { timeZone: ART_TZ, day:'2-digit',month:'long',year:'numeric' });
   // Read sid from URL first - keep it in URL until app fully loads
   const urlParams = new URLSearchParams(window.location.search);
   const urlSession = urlParams.get('sid');
@@ -19184,7 +19203,7 @@ function exportStockExcel() {
   const ws = XLSX.utils.json_to_sheet(data);
   ws['!cols'] = [16,18,50,10,12,14,16,12,16,8].map(w => ({ wch: w }));
   XLSX.utils.book_append_sheet(wb, ws, 'Stock');
-  const fecha = new Date().toISOString().slice(0,10);
+  const fecha = ymd(new Date());
   XLSX.writeFile(wb, `Stock_${(client?.name||'').replace(/\s+/g,'_')}_${fecha}.xlsx`);
   showToast('✅ Excel descargado');
 }
@@ -19371,7 +19390,7 @@ function ciAlertaGroup(titulo, alertas, bg, color) {
     <div style="font-size:13px;font-weight:600;color:${color};margin-bottom:10px;font-family:var(--font-b)">${titulo} (${alertas.length})</div>
     <div style="display:flex;flex-direction:column;gap:8px">`;
   alertas.forEach(a => {
-    const fecha = new Date(a.created_at).toLocaleDateString('es-AR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'});
+    const fecha = dART(a.created_at).toLocaleDateString('es-AR',{ timeZone: ART_TZ, day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit' });
     const vistaBadge = a.estado === 'vista' ? ' <span style="font-size:10px;background:#e5e7eb;color:#6b7280;padding:2px 6px;border-radius:4px">Vista</span>' : '';
     html += `<div style="background:${bg};border:1px solid ${color}30;border-radius:10px;padding:14px 16px;display:flex;align-items:flex-start;gap:12px">
       <div style="flex:1">
@@ -21055,7 +21074,7 @@ function _planRenderCalendario() {
         const vencida = fecha < hoy;
         const proxima = !vencida && fecha < en7dias;
         const claseFecha = vencida ? 'vencida' : (proxima ? 'proxima' : '');
-        const dateStr = fecha.toLocaleDateString('es-AR', { day: '2-digit', month: 'short', year: 'numeric' });
+        const dateStr = fecha.toLocaleDateString('es-AR', { timeZone: ART_TZ, day: '2-digit', month: 'short', year: 'numeric' });
         return `
           <div class="plan-cal-item" onclick="planOpenModalEdit(${a.id})" style="cursor:pointer;">
             <div class="plan-cal-fecha ${claseFecha}">${dateStr}</div>

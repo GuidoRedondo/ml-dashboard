@@ -250,7 +250,7 @@ module.exports = function registerMlSkuRoutes(app, ctx) {
 
       res.setHeader('Content-Type', 'text/csv; charset=utf-8');
       res.setHeader('Content-Disposition',
-        `attachment; filename="mla_sku_${client.name}_${new Date().toISOString().slice(0,10)}.csv"`);
+        `attachment; filename="mla_sku_${client.name}_${new Date().toLocaleDateString('en-CA', { timeZone: 'America/Argentina/Buenos_Aires' })}.csv"`);
       res.send('MLA,SKU\n' + filas.join('\n'));
 
     } catch (e) {

@@ -1,3 +1,10 @@
+// ── ZONA HORARIA ──────────────────────────────────────────────────────────────
+// Toda la app opera en hora argentina. Railway corre en UTC, y sin esto cualquier
+// `new Date()` local (getHours, getDate, parseos sin offset) caía en UTC: entre las
+// 21:00 y las 24:00 ART las ventas se contaban al día siguiente. Va antes de todo
+// require para que ningún módulo cachee la zona vieja.
+process.env.TZ = 'America/Argentina/Buenos_Aires';
+
 const express = require('express');
 const cookieParser = require('cookie-parser');
 const cors = require('cors');
@@ -58,6 +65,31 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const ML_API = 'https://api.mercadolibre.com';
 const ART = 'America/Argentina/Buenos_Aires';
+
+// -- HELPERS DE FECHA (siempre en hora argentina) -----------------------------
+// Regla: cualquier "dia calendario" de la app es un dia argentino. Nunca usar
+// toISOString().slice(0,10) para eso -- toISOString() SIEMPRE devuelve UTC, asi que
+// una venta de las 22:30 del lunes salia como martes. Pasa por ymd().
+//
+//   ymd(d)          -> 'YYYY-MM-DD' del instante d en hora argentina (default: ahora)
+//   ymdShift(s, n)  -> corre n dias sobre un 'YYYY-MM-DD' (n negativo = para atras)
+//   mlFrom(s)       -> 00:00:00 ART de ese dia, en el formato que pide la API de ML
+//   mlTo(s)         -> 23:59:59 ART de ese dia, idem
+// El timeZone va explicito ademas del process.env.TZ: doble cinturon por si algun
+// dia el proceso arranca con otra zona.
+function ymd(d = new Date()) {
+  if (d === null || d === '') return null;   // columnas de DB que vienen vacias
+  const x = (d instanceof Date) ? d : new Date(d);
+  if (isNaN(x.getTime())) return null;
+  return x.toLocaleDateString('en-CA', { timeZone: ART }); // en-CA = YYYY-MM-DD
+}
+function ymdShift(ymdStr, n) {
+  // Mediodia UTC como ancla: cae siempre dentro del mismo dia argentino (09:00 ART),
+  // asi sumar/restar 86400000 nunca se pasa de dia por el offset.
+  return ymd(new Date(new Date(ymdStr + 'T12:00:00Z').getTime() + n * 86400000));
+}
+const mlFrom = ymdStr => new Date(ymdStr + 'T00:00:00-03:00').toISOString().slice(0,19) + '.000-00:00';
+const mlTo   = ymdStr => new Date(ymdStr + 'T23:59:59-03:00').toISOString().slice(0,19) + '.000-00:00';
 
 // IVA contenido en un monto bruto (precio final con IVA) dada una alícuota en %.
 // Ej: ivaContenido(1210, 21) = 210. Default 21% si no se especifica.
@@ -156,6 +188,12 @@ function mesesDesde(fecha) {
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false }
+});
+
+// Cada conexion nueva arranca en hora argentina: NOW(), CURRENT_DATE y cualquier
+// timestamptz que se lea o escriba quedan en ART, igual que el resto de la app.
+pool.on('connect', (client) => {
+  client.query(`SET TIME ZONE '${ART}'`).catch(e => console.error('[DB] SET TIME ZONE:', e.message));
 });
 
 // Evitar que un error de DB tire abajo toda la app
@@ -624,6 +662,50 @@ async function initDB() {
     if (fix) console.log('[migración] FKs de clients revisados');
   } catch (e) {
     console.error('[migración] no se pudieron arreglar los FKs de clients:', e.message);
+  }
+
+  // ── migración: TIMESTAMP → TIMESTAMPTZ ──────────────────────────────────────
+  // Las columnas se crearon como TIMESTAMP (sin zona): guardan una hora pelada, sin
+  // decir de dónde. Hasta hoy eso venía funcionando de casualidad porque el proceso
+  // y la base coincidían de zona; con la app en hora argentina, esa hora pelada se
+  // leería como ART y todos los registros viejos aparecerían corridos.
+  // La convertimos a TIMESTAMPTZ declarando la zona en la que realmente se escribió:
+  // NO la hardcodeamos, la leemos de pg_settings.reset_val, que es el TimeZone por
+  // defecto de la base — el mismo que Postgres usó para convertir cada NOW() al
+  // guardarlo. Con eso el instante queda fijado y de acá en más ni la zona del server
+  // ni la del navegador pueden correr un dato.
+  // Es idempotente — a partir de la segunda corrida el SELECT no devuelve nada.
+  try {
+    const tzRow = await pool.query(`SELECT reset_val FROM pg_settings WHERE name = 'TimeZone'`);
+    const tzOrigen = (tzRow.rows[0] && tzRow.rows[0].reset_val) || 'UTC';
+    const pend = await pool.query(`
+      SELECT c.table_name, c.column_name
+        FROM information_schema.columns c
+        JOIN information_schema.tables t
+          ON t.table_schema = c.table_schema AND t.table_name = c.table_name
+       WHERE c.table_schema = 'public'
+         AND t.table_type   = 'BASE TABLE'
+         AND c.data_type    = 'timestamp without time zone'
+       ORDER BY c.table_name, c.column_name
+    `);
+    // ALTER TABLE no admite parámetros bindeados: la zona va interpolada, escapada.
+    const tzLiteral = `'${tzOrigen.replace(/'/g, "''")}'`;
+    let ok = 0;
+    for (const col of pend.rows) {
+      try {
+        await pool.query(
+          `ALTER TABLE public."${col.table_name}"
+             ALTER COLUMN "${col.column_name}" TYPE TIMESTAMPTZ
+             USING "${col.column_name}" AT TIME ZONE ${tzLiteral}`
+        );
+        ok++;
+      } catch (e) {
+        console.error(`[migración TZ] ${col.table_name}.${col.column_name}:`, e.message);
+      }
+    }
+    if (pend.rows.length) console.log(`[migración TZ] ${ok}/${pend.rows.length} columnas pasadas a TIMESTAMPTZ (los valores guardados estaban en ${tzOrigen})`);
+  } catch (e) {
+    console.error('[migración TZ] no se pudo revisar el schema:', e.message);
   }
 
   // Create default admin if not exists (password: admin123 - change after first login)
@@ -1629,7 +1711,7 @@ async function fetchUserVisitsRange(uid, dateFrom, dateTo, headers) {
 // byDay al rango pedido. Funciona para período actual y para período anterior
 // (siempre que dateFrom no sea muy viejo — capamos en 365 días).
 async function fetchUserVisits(uid, dateFrom, dateTo, headers) {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = ymd(new Date());
   const dayMs = 86400000;
   const daysFromTodayToFrom = Math.round((new Date(today) - new Date(dateFrom)) / dayMs) + 1;
 
@@ -1654,8 +1736,7 @@ async function fetchUserVisits(uid, dateFrom, dateTo, headers) {
 // ── REPORTE HOTSALE ───────────────────────────────────────────────────────────
 
 async function generateHotsaleReport(dateFrom, dateTo) {
-  const ART = 'America/Argentina/Buenos_Aires';
-  const artToday = new Date().toLocaleDateString('en-CA', { timeZone: ART });
+  const artToday = ymd();
   const from = dateFrom || artToday;
   const to   = dateTo   || artToday;
 
@@ -1664,15 +1745,14 @@ async function generateHotsaleReport(dateFrom, dateTo) {
   let cur = new Date(from + 'T12:00:00Z');
   const end = new Date(to + 'T12:00:00Z');
   while (cur <= end && days.length < 10) {
-    days.push(cur.toISOString().slice(0, 10));
+    days.push(ymd(cur));
     cur = new Date(cur.getTime() + 86400000);
   }
   const prevDays = days.map(d =>
-    new Date(new Date(d + 'T12:00:00Z').getTime() - 7 * 86400000).toISOString().slice(0, 10)
+    ymd(new Date(new Date(d + 'T12:00:00Z').getTime() - 7 * 86400000))
   );
 
-  const toML = (dateYMD, end) =>
-    new Date(dateYMD + (end ? 'T23:59:59-03:00' : 'T00:00:00-03:00')).toISOString().slice(0,19) + '.000-00:00';
+  const toML = (dateYMD, end) => end ? mlTo(dateYMD) : mlFrom(dateYMD);
 
   const curFrom  = toML(days[0], false);
   const curTo    = toML(days[days.length - 1], true);
@@ -1711,8 +1791,7 @@ async function generateHotsaleReport(dateFrom, dateTo) {
       const byDate = (orders) => {
         const map = {};
         for (const o of orders) {
-          const d = new Date(o.date_closed || o.date_created)
-            .toLocaleDateString('en-CA', { timeZone: ART });
+          const d = ymd(o.date_closed || o.date_created);
           if (!map[d]) map[d] = [];
           map[d].push(o);
         }
@@ -2028,8 +2107,8 @@ async function evalRuleRoasBajo(client) {
     const advId = adv.advertiser_id;
     const { roas_min = 3, dias = 3 } = regla.umbral || {};
     const now = new Date();
-    const fromDate = new Date(now.getTime() - dias*24*60*60*1000).toISOString().slice(0,10);
-    const toDate = now.toISOString().slice(0,10);
+    const fromDate = ymd(new Date(now.getTime() - dias*24*60*60*1000));
+    const toDate = ymd(now);
     const metrics = 'cost,total_amount,roas';
     const url = `${ML_API}/advertising/${siteId}/advertisers/${advId}/product_ads/campaigns/search?limit=50&offset=0&date_from=${fromDate}&date_to=${toDate}&metrics=${metrics}&metrics_summary=true`;
     const data = await fetch(url, { headers: h2 }).then(r => r.json()).catch(() => ({}));
@@ -2243,8 +2322,8 @@ async function evalRuleTacosAlto(client) {
     if (!advertisers.length) return null;
     const adv = advertisers.find(a => a.site_id === siteId) || advertisers[0];
     const advId = adv.advertiser_id;
-    const fromStr = fromDate.toISOString().slice(0,10);
-    const toStr = now.toISOString().slice(0,10);
+    const fromStr = ymd(fromDate);
+    const toStr = ymd(now);
     const adsData = await fetch(
       `${ML_API}/advertising/${siteId}/advertisers/${advId}/product_ads/campaigns/search?limit=50&offset=0&date_from=${fromStr}&date_to=${toStr}&metrics=cost&metrics_summary=true`,
       { headers: h2 }
@@ -2367,8 +2446,8 @@ async function evalRuleTacosProductoAlto(client) {
 
     const now = new Date();
     const fromDate = new Date(now.getTime() - dias*24*60*60*1000);
-    const fromStr = fromDate.toISOString().slice(0,10);
-    const toStr   = now.toISOString().slice(0,10);
+    const fromStr = ymd(fromDate);
+    const toStr   = ymd(now);
 
     // 1. Gasto de pauta por ítem
     const spendByItem = {};
@@ -3392,7 +3471,6 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
     // Totales de visitas — vía endpoint agregado de usuario (cuenta TODO el
     // catálogo, no solo ítems con ventas). Antes sumábamos per-item sobre
     // soldItemIds y daba 3-5x menos que el panel de ML.
-    const ymd = d => d.toISOString().slice(0, 10);
     const [uv, puv] = await Promise.all([
       fetchUserVisits(uid, ymd(curFrom), ymd(curTo), headers),
       fetchUserVisits(uid, ymd(prevFrom), ymd(prevTo), headers),
@@ -3476,10 +3554,10 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
     // obligaría a volver a pedirlos.
     const zonasPorItem      = {};
 
-    const ARG_MS = -3 * 60 * 60 * 1000;
     curData.orders.forEach((order, orderIdx) => {
-      const argDate = new Date(new Date(order.date_created).getTime() + ARG_MS);
-      const hour    = argDate.getUTCHours();
+      // El proceso corre en hora argentina (process.env.TZ), asi que getHours() ya
+      // devuelve la hora local del comprador. Antes se restaban 3hs a mano.
+      const hour = new Date(order.date_created).getHours();
       byHour[hour]++;
 
       const shipId = order.shipping && order.shipping.id;
@@ -3641,8 +3719,8 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
       if (advertisers.length) {
         const adv = advertisers.find(a => a.site_id === (user.site_id || 'MLA')) || advertisers[0];
         const siteId = user.site_id || 'MLA';
-        const fromDate = curFrom.toISOString().slice(0,10);
-        const toDate = curTo.toISOString().slice(0,10);
+        const fromDate = ymd(curFrom);
+        const toDate = ymd(curTo);
         const url = `${ML_API}/advertising/${siteId}/advertisers/${adv.advertiser_id}/product_ads/campaigns/search?limit=50&date_from=${fromDate}&date_to=${toDate}&metrics=cost&metrics_summary=true`;
         const adsData = await fetch(url, { headers: { ...headers, 'api-version': '2' } }).then(r => r.json()).catch(() => ({}));
         adsSpend = parseFloat((adsData.metrics_summary || {}).cost) || 0;
@@ -3660,8 +3738,8 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
       if (advertisers.length) {
         const adv = advertisers.find(a => a.site_id === (user.site_id || 'MLA')) || advertisers[0];
         const siteId   = user.site_id || 'MLA';
-        const fromDate = curFrom.toISOString().slice(0,10);
-        const toDate   = curTo.toISOString().slice(0,10);
+        const fromDate = ymd(curFrom);
+        const toDate   = ymd(curTo);
         const adsDash = dedupAdsPorItem(await fetchPadsAds(siteId, adv.advertiser_id, { ...headers, 'api-version': '2' },
           { date_from: fromDate, date_to: toDate, metrics: 'cost' }));
         adsDash.forEach(ad => {
@@ -3949,7 +4027,7 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
         by_day_ventas:  byDayVentas,
         by_day_fac:     byDayFac,
         by_day_visitas: byDayVisitas,
-        date_from:     curFrom.toISOString().slice(0,10),
+        date_from:     ymd(curFrom),
       },
       top_items: topItems,
       orders_detail,
@@ -4144,8 +4222,8 @@ app.get('/api/facturacion-rango', requireAuth, async (req, res) => {
     const headers = { 'Authorization': `Bearer ${token}` };
     const user = await fetch(`${ML_API}/users/me`, { headers }).then(r => r.json());
     if (user.error) return res.status(403).json({ error: 'token invalido' });
-    const fromStr = req.query.date_from + 'T00:00:00.000-00:00';
-    const toStr   = req.query.date_to   + 'T23:59:59.000-00:00';
+    const fromStr = mlFrom(req.query.date_from);
+    const toStr   = mlTo(req.query.date_to);
     const data = await fetchAllOrders(user.id, headers, fromStr, toStr);
     res.json({ amount: data.amount, orders: data.orders.length });
   } catch (e) {
@@ -4169,8 +4247,8 @@ app.get('/api/formas-pago', requireAuth, async (req, res) => {
     const user = await fetch(`${ML_API}/users/me`, { headers }).then(r => r.json());
     if (user.error) return res.status(403).json({ error: 'token invalido' });
 
-    const fromStr = date_from + 'T00:00:00.000-00:00';
-    const toStr   = date_to   + 'T23:59:59.000-00:00';
+    const fromStr = mlFrom(date_from);
+    const toStr   = mlTo(date_to);
     const { orders } = await fetchAllOrders(user.id, headers, fromStr, toStr);
 
     const porCuotas = {};   // cuotas -> { ordenes, monto }
@@ -4329,14 +4407,14 @@ app.get('/api/ads', requireAuth, async (req, res) => {
       const durMs   = Math.round((curTo - curFrom) / (24*60*60*1000)) * 24*60*60*1000;
       const pTo     = new Date(curFrom.getTime() - 24*60*60*1000);
       const pFrom   = new Date(pTo.getTime() - durMs);
-      prevFromDate  = pFrom.toISOString().slice(0,10);
-      prevToDate    = pTo.toISOString().slice(0,10);
+      prevFromDate  = ymd(pFrom);
+      prevToDate    = ymd(pTo);
     } else {
       const from = new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
-      fromDate = from.toISOString().slice(0,10);
-      toDate   = now.toISOString().slice(0,10);
-      prevFromDate = new Date(from.getTime() - days * 24 * 60 * 60 * 1000).toISOString().slice(0,10);
-      prevToDate   = from.toISOString().slice(0,10);
+      fromDate = ymd(from);
+      toDate   = ymd(now);
+      prevFromDate = ymd(new Date(from.getTime() - days * 24 * 60 * 60 * 1000));
+      prevToDate   = ymd(from);
     }
     const metrics = 'clicks,prints,cost,cpc,acos,direct_amount,indirect_amount,total_amount,direct_units_quantity,units_quantity,cvr,roas';
     console.log(`[ADS] client=${clientId} from=${fromDate} to=${toDate}`);
@@ -4394,8 +4472,8 @@ app.get('/api/ads-anuncios', requireAuth, async (req, res) => {
     const adv  = advertisers.find(a => a.site_id === siteId) || advertisers[0];
     const advId = adv.advertiser_id;
 
-    const fromDate = req.query.date_from || new Date(Date.now() - 30*24*60*60*1000).toISOString().slice(0,10);
-    const toDate   = req.query.date_to   || new Date().toISOString().slice(0,10);
+    const fromDate = req.query.date_from || ymd(new Date(Date.now() - 30*24*60*60*1000));
+    const toDate   = req.query.date_to   || ymd(new Date());
 
     // ── 1. Fetch todos los ítems con anuncios + métricas ─────────────────────
     const metrics = 'clicks,prints,cost,cpc,acos,direct_amount,indirect_amount,total_amount,direct_units_quantity,indirect_units_quantity,units_quantity,cvr,roas,ctr';
@@ -4541,14 +4619,14 @@ app.get('/api/item/conversion-diaria', requireAuth, async (req, res) => {
     const uid = user.id;
 
     const today    = new Date();
-    const toDate   = req.query.date_to   || today.toISOString().slice(0,10);
-    const fromDate = req.query.date_from || new Date(today.getTime() - 30*24*60*60*1000).toISOString().slice(0,10);
+    const toDate   = req.query.date_to   || ymd(today);
+    const fromDate = req.query.date_from || ymd(new Date(today.getTime() - 30*24*60*60*1000));
     const from = new Date(fromDate + 'T00:00:00');
     const to   = new Date(toDate   + 'T23:59:59');
 
     // Lista de días del rango (YYYY-MM-DD)
     const dayKeys = [];
-    for (let d = new Date(from); d <= to; d.setDate(d.getDate() + 1)) dayKeys.push(d.toISOString().slice(0,10));
+    for (let d = new Date(from); d <= to; d.setDate(d.getDate() + 1)) dayKeys.push(ymd(d));
 
     // ── Visitas por día (last=N, ML ignora date_from en este endpoint) ──
     const daysSinceFrom = Math.max(1, Math.ceil((today - from) / (24*60*60*1000)) + 1);
@@ -4714,8 +4792,8 @@ app.get('/api/items-full', requireAuth, async (req, res) => {
       effectiveDays = parseInt(req.query.days) || 30;
       curFrom  = new Date(now.getTime() - effectiveDays * 24 * 60 * 60 * 1000);
       curTo    = now;
-      fromDate = curFrom.toISOString().slice(0,10);
-      toDate   = now.toISOString().slice(0,10);
+      fromDate = ymd(curFrom);
+      toDate   = ymd(now);
     }
 
     // ── 1. Sales data ────────────────────────────────────────────────────────
@@ -5047,9 +5125,11 @@ app.post('/api/diagnostico/calcular', requireAuth, async (req, res) => {
     // lo aislamos con dos ventanas ?last=N usando el total_visits (que sí viene correcto):
     //   visitas(mes) = total(inicio de mes → hoy) − total(día siguiente a fin de mes → hoy)
     const dayMs = 86400000;
-    const todayStr = new Date().toISOString().slice(0,10);
+    const todayStr = ymd(new Date());
     const daysStart = Math.max(1, Math.round((new Date(todayStr) - new Date(dateFromStr)) / dayMs) + 1);
-    const dayAfterEnd = new Date(new Date(dateToStr).getTime() + dayMs).toISOString().slice(0,10);
+    // ymdShift y no ymd(+1 día): dateToStr es un 'YYYY-MM-DD' pelado, que Date parsea
+    // como medianoche UTC — leerlo en hora argentina devolvería el día anterior.
+    const dayAfterEnd = ymdShift(dateToStr, 1);
     const daysAfter = Math.round((new Date(todayStr) - new Date(dayAfterEnd)) / dayMs) + 1;
     const aggStart = await fetchUserVisitsLastN(uid, daysStart, headers);
     let visitas = aggStart ? aggStart.total : 0;
@@ -5113,8 +5193,8 @@ app.post('/api/diagnostico/calcular', requireAuth, async (req, res) => {
     try {
       const siteId = user.site_id || 'MLA';
       const h2 = { 'Authorization': `Bearer ${token}`, 'Api-Version': '2' };
-      const fromStr = dateFrom.toISOString().slice(0,10);
-      const toStr   = dateTo.toISOString().slice(0,10);
+      const fromStr = ymd(dateFrom);
+      const toStr   = ymd(dateTo);
       const metrics = 'cost,clicks,prints,total_amount,units_quantity';
 
       // Get advertiser id
@@ -5838,7 +5918,7 @@ async function calcularMargenRealPorMla(client_id, date_from, date_to) {
       sale_fee: Math.round(com), cmv_total: Math.round(cmv), has_cost: costsMap[m.mla_id] != null,
       envio_real: envReal, flex_imp: flexImp, publi_real: publi, iva_dif: ivaDif, iibb,
       impuestos, reembolsos,
-      fotos_ultima_fecha: m.fecha_fotos ? m.fecha_fotos.toISOString().slice(0, 10) : null,
+      fotos_ultima_fecha: m.fecha_fotos ? ymd(m.fecha_fotos) : null,
       fotos_meses: mesesDesde(m.fecha_fotos),
       units_full: m.units_full, units_flex: m.units_flex,
       // Cargos que ML cobró igual por operaciones canceladas: no facturan, pero pegan en el
@@ -6194,7 +6274,7 @@ async function analizarSaludCmv(clientId, { dias = 60 } = {}) {
   // Ventas del período, para pesar los problemas por facturación y no por cantidad
   const hasta = new Date();
   const desde = new Date(hasta.getTime() - dias * 86400000);
-  const iso = d => d.toISOString().slice(0, 10);
+  const iso = d => ymd(d);
   const ventas = {};
   const headers = { 'Authorization': `Bearer ${token}` };
   const me = await fetch(`${ML_API}/users/me`, { headers }).then(r => r.json()).catch(() => ({}));
@@ -6956,8 +7036,8 @@ app.get('/api/reporte/visitas', requireAuth, async (req, res) => {
     const clientId = parseInt(req.query.client_id);
     if (!clientId) return res.status(400).json({ error: 'client_id requerido' });
 
-    const today = new Date().toISOString().slice(0, 10);
-    const defaultFrom = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+    const today = ymd(new Date());
+    const defaultFrom = ymd(new Date(Date.now() - 30 * 86400000));
     const dateFrom = req.query.date_from || defaultFrom;
     const dateTo   = req.query.date_to   || today;
     const forceRefresh = String(req.query.force_refresh || '').toLowerCase() === 'true';
@@ -7025,7 +7105,7 @@ app.get('/api/reporte/visitas', requireAuth, async (req, res) => {
     const totalItems = activeIds.length;
     const truncated = totalItems > VISITAS_MAX_ITEMS;
     if (truncated) {
-      const from90 = new Date(Date.now() - 90 * 86400000).toISOString().slice(0, 10);
+      const from90 = ymd(new Date(Date.now() - 90 * 86400000));
       const rev90 = {};
       // Si el período pedido cubre o excede 90d, reuso salesByMla. Si no, traigo aparte.
       if (dateFrom <= from90) {
@@ -7283,8 +7363,8 @@ async function computeCicloVida(clientId, { forceRefresh = false } = {}) {
     if (!uid) { const e = new Error('Cliente sin ml_user_id'); e.status = 400; throw e; }
 
     const nowMs   = Date.now();
-    const today   = new Date(nowMs).toISOString().slice(0, 10);
-    const from30  = new Date(nowMs - 30 * 86400000).toISOString().slice(0, 10);
+    const today   = ymd(new Date(nowMs));
+    const from30  = ymd(new Date(nowMs - 30 * 86400000));
     const win30Ms = nowMs - 30 * 86400000;
     const fmt = d => new Date(d).toISOString().slice(0, 19) + '.000-00:00';
 
@@ -7471,7 +7551,6 @@ async function computeCicloVida(clientId, { forceRefresh = false } = {}) {
       );
       const estMap = {};
       estRows.rows.forEach(r => { estMap[r.mla_id] = r; });
-      const ymd = d => d ? new Date(d).toISOString().slice(0, 10) : null;
       const estUpserts = [];
       items.forEach(it => {
         const prev = estMap[it.mla_id];
@@ -7614,8 +7693,8 @@ app.get('/api/reporte/ads', requireAuth, async (req, res) => {
     const clientId = parseInt(req.query.client_id);
     if (!clientId) return res.status(400).json({ error: 'client_id requerido' });
 
-    const today = new Date().toISOString().slice(0, 10);
-    const defaultFrom = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+    const today = ymd(new Date());
+    const defaultFrom = ymd(new Date(Date.now() - 30 * 86400000));
     const dateFrom = req.query.date_from || defaultFrom;
     const dateTo   = req.query.date_to   || today;
 
@@ -7768,11 +7847,11 @@ app.get('/api/reporte/publicaciones', requireAuth, async (req, res) => {
             descripcion_chars: descChars,
             tiene_descripcion: descChars > 0,
             health: typeof b.health === 'number' ? b.health : null,
-            imagenes_ultima_fecha:  fImg  ? fImg.toISOString().slice(0, 10)  : null,
+            imagenes_ultima_fecha:  fImg  ? ymd(fImg)  : null,
             imagenes_meses:         mesesDesde(fImg),
-            descripcion_ultima_fecha: fDesc ? fDesc.toISOString().slice(0, 10) : null,
+            descripcion_ultima_fecha: fDesc ? ymd(fDesc) : null,
             descripcion_meses:      mesesDesde(fDesc),
-            ultimo_cambio_fecha:    fUlt  ? fUlt.toISOString().slice(0, 10)  : null,
+            ultimo_cambio_fecha:    fUlt  ? ymd(fUlt)  : null,
             ultimo_cambio_meses:    mesesDesde(fUlt),
             tags,
             warnings_calidad: warnings,
@@ -8228,8 +8307,8 @@ app.get('/api/reporte/full', requireAuth, async (req, res) => {
       metadatos: {
         days,
         total_items_activos: allItemIds.length,
-        date_from: fromDate.toISOString().slice(0, 10),
-        date_to: now.toISOString().slice(0, 10),
+        date_from: ymd(fromDate),
+        date_to: ymd(now),
       },
     });
   } catch(e) {
@@ -8384,7 +8463,7 @@ app.get('/api/reporte/campanas-historicas', requireAuth, async (req, res) => {
         promo_id: p.promo_id || null,
         promo_type: p.promo_type || null,
         periodo: { from: p.from, to: p.to },
-        baseline: { from: dBaseFrom.toISOString().slice(0, 10), to: dBaseTo.toISOString().slice(0, 10) },
+        baseline: { from: ymd(dBaseFrom), to: ymd(dBaseTo) },
         items_en_campana: filtroAplicado ? itemsSet.size : null,
         filtro_items_aplicado: filtroAplicado,
         campana: camp,
@@ -8663,8 +8742,8 @@ app.get('/api/reporte/candidatos-clip', requireAuth, async (req, res) => {
         days,
         top: topN,
         pool_size: candidatePool,
-        date_from: fromDate.toISOString().slice(0, 10),
-        date_to: now.toISOString().slice(0, 10),
+        date_from: ymd(fromDate),
+        date_to: ymd(now),
         nota: 'Candidatos = top SKUs por revenue del período sin video_id. Para impacto cualitativo: ML prioriza listings con clip — lift de visibilidad estimado 1.5–2x según rubro.',
       },
     });
@@ -8798,8 +8877,8 @@ app.get('/api/reporte/candidatos-fotos', requireAuth, async (req, res) => {
         top: topN,
         min_imagenes: minImagenes,
         pool_size: candidatePool,
-        date_from: fromDate.toISOString().slice(0, 10),
-        date_to: now.toISOString().slice(0, 10),
+        date_from: ymd(fromDate),
+        date_to: ymd(now),
         nota: 'Candidatos = top SKUs por revenue con n_imagenes<umbral. Umbrales SKILL: ≥6 verde, 3-5 amarillo, <3 rojo. doble_palanca_apagada=true si también le falta video.',
       },
     });
@@ -8860,7 +8939,7 @@ app.get('/api/item-fees', requireAuth, async (req, res) => {
     let shippingCostSample = null;
     if (uid) {
       try {
-        const from = new Date(Date.now() - 180 * 86400000).toISOString().slice(0,10) + 'T00:00:00.000-00:00';
+        const from = mlFrom(ymd(new Date(Date.now() - 180 * 86400000)));
         const ordRes = await fetch(
           `${ML_API}/orders/search?seller=${uid}&item.id=${item_id}&order.date_created.from=${encodeURIComponent(from)}&sort=date_desc&limit=10`,
           { headers: authHeaders }
@@ -9307,7 +9386,7 @@ app.get('/api/ventas-por-hora', requireAuth, async (req, res) => {
     const uid = user.id;
 
     // Acepta date_from/date_to explícitos o days_back
-    // Importante: usar la misma construcción que /api/dashboard (sin TZ = UTC en Railway)
+    // Importante: usar la misma construcción que /api/dashboard (el proceso corre en ART)
     let dateTo, dateFrom;
     if (req.query.date_from && req.query.date_to) {
       dateFrom = new Date(req.query.date_from + 'T00:00:00');
@@ -9324,15 +9403,12 @@ app.get('/api/ventas-por-hora', requireAuth, async (req, res) => {
     // Obtener modo real de cada envío (igual que el dashboard — fuente de verdad)
     const modeMap = await fetchShippingModes(orders, headers);
 
-    // Argentina = UTC-3, sin DST
-    const ARG_OFFSET_MS = -3 * 60 * 60 * 1000;
     const days = {}; // { "YYYY-MM-DD": { hour: { flex, me, full } } }
 
     orders.forEach(order => {
-      const utc  = new Date(order.date_created);
-      const arg  = new Date(utc.getTime() + ARG_OFFSET_MS);
-      const date = arg.toISOString().slice(0, 10);
-      const hour = arg.getUTCHours();
+      const arg  = new Date(order.date_created);
+      const date = ymd(arg);        // dia argentino
+      const hour = arg.getHours();  // hora argentina (process.env.TZ)
 
       // Clasificar por modo real del envío; fallback a logistic_type del order
       const shipId = order.shipping?.id;
@@ -9370,9 +9446,7 @@ app.get('/api/logistica/cortes', requireAuth, async (req, res) => {
     const siteId  = user.site_id || 'MLA';
 
     // Día actual en Argentina (0=Dom … 6=Sáb)
-    const ARG_OFFSET_MS = -3 * 60 * 60 * 1000;
-    const nowArg   = new Date(Date.now() + ARG_OFFSET_MS);
-    const todayDow = nowArg.getUTCDay();
+    const todayDow = new Date().getDay();
     const ML_DAYS  = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
     const todayKey = ML_DAYS[todayDow];
 
@@ -10380,8 +10454,8 @@ app.get('/api/categorias-ventas', requireAuth, async (req, res) => {
     const uid      = user.id;
     const siteId   = user.site_id || 'MLA';
 
-    const fromDate = req.query.date_from || new Date(Date.now() - 30*24*60*60*1000).toISOString().slice(0,10);
-    const toDate   = req.query.date_to   || new Date().toISOString().slice(0,10);
+    const fromDate = req.query.date_from || ymd(new Date(Date.now() - 30*24*60*60*1000));
+    const toDate   = req.query.date_to   || ymd(new Date());
     const fmt      = d => d.toISOString().slice(0,19) + '.000-00:00';
 
     // ── 1. Ventas por ítem del período ───────────────────────────────────────
@@ -11379,14 +11453,14 @@ app.get('/api/promociones/desglose', requireAuth, async (req, res) => {
     }, precio).catch(() => null);
 
     // 3b. Publicidad imputada: inversión PADS del ítem (30d) / unidades vendidas (30d)
-    const from30Str = new Date(Date.now() - 30 * 86400000).toISOString().slice(0,10);
-    const toStr     = new Date().toISOString().slice(0,10);
+    const from30Str = ymd(new Date(Date.now() - 30 * 86400000));
+    const toStr     = ymd(new Date());
     const adsMap    = await fetchAdsByItemMap(headers, from30Str, toStr);
     const adSpend30 = adsMap[itemId] || 0;
     let units30 = 0;
     if (adSpend30 > 0 && uid) {
       try {
-        const from30iso = from30Str + 'T00:00:00.000-00:00';
+        const from30iso = mlFrom(from30Str);
         const ord30 = await fetch(`${ML_API}/orders/search?seller=${uid}&item.id=${itemId}&order.date_created.from=${encodeURIComponent(from30iso)}&limit=50`, { headers }).then(r => r.json());
         (ord30.results || []).forEach(o => (o.order_items || []).forEach(oi => { if (oi.item?.id === itemId) units30 += (oi.quantity || 0); }));
       } catch(_) {}
@@ -11400,7 +11474,7 @@ app.get('/api/promociones/desglose', requireAuth, async (req, res) => {
     let envioSeller = null, envioFuente = null;
     if (uid) {
       try {
-        const from = new Date(Date.now() - 180 * 86400000).toISOString().slice(0,10) + 'T00:00:00.000-00:00';
+        const from = mlFrom(ymd(new Date(Date.now() - 180 * 86400000)));
         const ord = await fetch(
           `${ML_API}/orders/search?seller=${uid}&item.id=${itemId}&order.date_created.from=${encodeURIComponent(from)}&sort=date_desc&limit=10`,
           { headers }
@@ -12262,7 +12336,7 @@ app.delete('/api/bitacora/:id', requireAuth, async (req, res) => {
 async function checkBitacoraVencimientos() {
   if (!transporter) return;
   try {
-    const hoy = new Date().toISOString().slice(0,10);
+    const hoy = ymd(new Date());
     const r = await pool.query(
       `SELECT b.*, c.name AS client_name
        FROM bitacora b
@@ -12296,10 +12370,10 @@ async function checkBitacoraVencimientos() {
   }
 }
 
-// Ejecutar el chequeo de vencimientos cada día a las 8am (UTC-3 = 11am UTC)
+// Ejecutar el chequeo de vencimientos cada día a las 8am hora argentina
 const now = new Date();
-const msHasta11UTC = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 11, 0, 0, 0) - now;
-const delay = msHasta11UTC > 0 ? msHasta11UTC : msHasta11UTC + 24*60*60*1000;
+const msHasta8 = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 8, 0, 0, 0) - now;
+const delay = msHasta8 > 0 ? msHasta8 : msHasta8 + 24*60*60*1000;
 setTimeout(() => {
   checkBitacoraVencimientos();
   setInterval(checkBitacoraVencimientos, 24*60*60*1000);
@@ -12415,8 +12489,8 @@ app.get('/api/debug/pads', requireAuth, async (req, res) => {
     const advId = adv.advertiser_id;
 
     const now = new Date();
-    const fromStr = new Date(now.getTime() - 30 * 86400000).toISOString().slice(0, 10);
-    const toStr = now.toISOString().slice(0, 10);
+    const fromStr = ymd(new Date(now.getTime() - 30 * 86400000));
+    const toStr = ymd(now);
     const mstr = 'clicks,prints,ctr,cost,cpc,acos,cvr,roas,direct_units_quantity,units_quantity,direct_amount,total_amount';
 
     const campUrl = `${ML_API}/advertising/${siteId}/advertisers/${advId}/product_ads/campaigns/search?date_from=${fromStr}&date_to=${toStr}&metrics=${mstr}&limit=5`;
@@ -12560,7 +12634,7 @@ app.get('/api/debug/app-token', requireAuth, async (req, res) => {
 app.get('/api/debug/visits', requireAuth, async (req, res) => {
   try {
     const clientId = parseInt(req.query.client_id);
-    const date = req.query.date || new Date().toISOString().slice(0,10);
+    const date = req.query.date || ymd(new Date());
     const token = await getClientToken(clientId);
     if (!token) return res.json({ error: 'Sin token' });
     const headers = { Authorization: `Bearer ${token}` };
@@ -12604,8 +12678,8 @@ app.get('/api/debug/user-visits', requireAuth, async (req, res) => {
     if (!uid) return res.json({ error: 'Cliente sin ml_user_id' });
 
     const days = parseInt(req.query.days) || 7;
-    const dateFrom = req.query.date_from || new Date(Date.now() - days * 86400000).toISOString().slice(0,10);
-    const dateTo   = req.query.date_to   || new Date().toISOString().slice(0,10);
+    const dateFrom = req.query.date_from || ymd(new Date(Date.now() - days * 86400000));
+    const dateTo   = req.query.date_to   || ymd(new Date());
 
     const urls = [
       // Lo que el dashboard usa ahora
@@ -12636,7 +12710,7 @@ app.get('/api/debug/user-visits', requireAuth, async (req, res) => {
 
 async function takeSeguimientoSnapshot(seg, token, uid, todayOrders) {
   const headers = { Authorization: `Bearer ${token}` };
-  const today   = new Date().toLocaleDateString('en-CA', { timeZone: ART }); // YYYY-MM-DD
+  const today   = ymd(); // YYYY-MM-DD
 
   // Precio y stock actuales
   const itemRes = await fetch(`${ML_API}/items/${seg.mla}?attributes=price,available_quantity`, { headers })
@@ -12701,9 +12775,9 @@ async function runSeguimientoSnapshotDiario() {
 
 async function buildTodayOrders(uid, token) {
   const headers = { Authorization: `Bearer ${token}` };
-  const today   = new Date().toLocaleDateString('en-CA', { timeZone: ART });
-  const from    = new Date(today + 'T00:00:00-03:00').toISOString().slice(0,19) + '.000-00:00';
-  const to      = new Date(today + 'T23:59:59-03:00').toISOString().slice(0,19) + '.000-00:00';
+  const today   = ymd();
+  const from    = mlFrom(today);
+  const to      = mlTo(today);
   const map = {};
   let offset = 0;
   while (true) {
@@ -12796,8 +12870,8 @@ app.get('/api/seguimiento', requireAuth, async (req, res) => {
     //  2) el día en curso queda afuera — tiene visitas y órdenes a medio contar, y comparar medio
     //     día contra días enteros da caídas que no existen. El dato de hoy se muestra igual, pero
     //     como "último snapshot", no dentro de la comparación.
-    const shift   = (iso, n) => new Date(new Date(iso + 'T12:00:00Z').getTime() + n * 86400000).toISOString().slice(0,10);
-    const today   = new Date().toLocaleDateString('en-CA', { timeZone: ART });
+    const shift   = (iso, n) => ymd(new Date(new Date(iso + 'T12:00:00Z').getTime() + n * 86400000));
+    const today   = ymd();
     const curTo   = shift(today,  -1);
     const curFrom = shift(curTo,  -(rangeDays - 1));
     const prevTo  = shift(curFrom, -1);
@@ -12911,10 +12985,10 @@ app.post('/api/seguimiento/backfill', requireAuth, async (req, res) => {
     );
     if (!segs.rows.length) return res.json({ ok: true, snapshots: 0, message: 'Sin publicaciones en seguimiento' });
 
-    const today    = new Date().toLocaleDateString('en-CA', { timeZone: ART });
-    const fromDate = new Date(new Date(today + 'T12:00:00Z') - days * 86400000).toISOString().slice(0,10);
-    const curFrom  = new Date(fromDate + 'T00:00:00-03:00').toISOString().slice(0,19) + '.000-00:00';
-    const curTo    = new Date(today    + 'T23:59:59-03:00').toISOString().slice(0,19) + '.000-00:00';
+    const today    = ymd();
+    const fromDate = ymd(new Date(new Date(today + 'T12:00:00Z') - days * 86400000));
+    const curFrom  = mlFrom(fromDate);
+    const curTo    = mlTo(today);
 
     // Traer todas las órdenes del período y agrupar por (item, día)
     const ordersByItemDay = {};
@@ -12926,7 +13000,7 @@ app.post('/api/seguimiento/backfill', requireAuth, async (req, res) => {
       ).then(r => r.json()).catch(() => ({ results: [] }));
       const results = data.results || [];
       results.forEach(o => {
-        const day = new Date(o.date_closed || o.date_created).toLocaleDateString('en-CA', { timeZone: ART });
+        const day = ymd(o.date_closed || o.date_created);
         (o.order_items || []).forEach(oi => {
           const id = oi.item?.id;
           if (id) { const k = `${id}_${day}`; ordersByItemDay[k] = (ordersByItemDay[k] || 0) + 1; }
@@ -12940,7 +13014,7 @@ app.post('/api/seguimiento/backfill', requireAuth, async (req, res) => {
     let totalSnapshots = 0;
     const allDays = [];
     { let c = new Date(fromDate + 'T12:00:00Z'); const e = new Date(today + 'T12:00:00Z');
-      while (c <= e) { allDays.push(c.toISOString().slice(0,10)); c = new Date(c.getTime() + 86400000); } }
+      while (c <= e) { allDays.push(ymd(c)); c = new Date(c.getTime() + 86400000); } }
 
     for (const seg of segs.rows) {
       try {
@@ -13075,8 +13149,8 @@ async function fetchPADSMetrics(client, days = PUBLI_WINDOW_DAYS) {
     const uid = userResp.id;
 
     const now = new Date();
-    const fromStr = new Date(now.getTime() - days * 86400000).toISOString().slice(0, 10);
-    const toStr = now.toISOString().slice(0, 10);
+    const fromStr = ymd(new Date(now.getTime() - days * 86400000));
+    const toStr = ymd(now);
     const mstr = 'clicks,prints,ctr,cost,cpc,acos,cvr,roas,direct_units_quantity,units_quantity,direct_amount,total_amount';
 
     const [campData, itemData] = await Promise.all([
@@ -13099,8 +13173,8 @@ async function fetchCampaignFresh(siteId, advId, campaignId, token) {
   try {
     const h2 = { 'Authorization': `Bearer ${token}`, 'api-version': '2' };
     const now = new Date();
-    const fromStr = new Date(now.getTime() - 30 * 86400000).toISOString().slice(0, 10);
-    const toStr = now.toISOString().slice(0, 10);
+    const fromStr = ymd(new Date(now.getTime() - 30 * 86400000));
+    const toStr = ymd(now);
     const mstr = 'clicks,prints,ctr,cost,cpc,acos,cvr,roas,direct_units_quantity,units_quantity,direct_amount,total_amount';
     // ML no expone GET por-campaña en esta cuenta (daba HTTP 404). Usamos el MISMO search que
     // fetchPADSMetrics —que sí responde y trae budget/acos_target/status/strategy top-level— y
@@ -13395,7 +13469,7 @@ async function evalPubliRules(client, { campaigns, items, advId, siteId }, roas_
 }
 
 async function saveMetricasPubli(clientId, { campaigns, items }) {
-  const fecha = new Date().toISOString().slice(0, 10);
+  const fecha = ymd(new Date());
   for (const c of campaigns) {
     const id = c.id || c.campaign_id; if (!id) continue;
     // Snapshot = métricas + estado estructural de la campaña (budget/acos_target/status/strategy).
@@ -13714,7 +13788,7 @@ app.get('/api/admin/tacos-report', requireAuth, requireAdmin, async (req, res) =
     const clients = (await pool.query(`SELECT id, name FROM clients WHERE tipo_cuenta = 'cliente' ORDER BY name`)).rows;
     const now = new Date();
     const from90 = new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000);
-    const fmt = d => d.toISOString().slice(0,10);
+    const fmt = d => ymd(d);
     const dateFrom = fmt(from90);
     const dateTo   = fmt(now);
 
@@ -14849,10 +14923,10 @@ initDB().then(() => {
 
   // ── CRON — Centro de Inteligencia ──────────────────────────────────────────
   if (nodeCron) {
-    // 08:00 y 18:00 ART (UTC-3 → 11:00 y 21:00 UTC)
-    nodeCron.schedule('0 11,21 * * *', () => {
+    // 08:00 y 18:00 ART
+    nodeCron.schedule('0 8,18 * * *', () => {
       runAlertEngine().catch(e => console.error('[CRON] Error:', e.message));
-    }, { timezone: 'UTC' });
+    }, { timezone: ART });
     console.log('[CRON] Motor de alertas programado: 08:00 y 18:00 ART');
 
     // 23:59 ART — Reporte Hotsale diario
@@ -14865,29 +14939,29 @@ initDB().then(() => {
         const sent   = await sendHotsaleSlack(msg);
         console.log(`[HOTSALE] Reporte ${sent ? 'enviado' : 'falló'} — ${report.results.length} clientes`);
       } catch(e) { console.error('[HOTSALE] Cron error:', e.message); }
-    }, { timezone: 'America/Argentina/Buenos_Aires' });
+    }, { timezone: ART });
     console.log('[CRON] Reporte Hotsale programado: 23:59 ART');
 
-    // 06:00 ART (09:00 UTC) — snapshot diario del Ciclo de Vida: persiste el estado
+    // 06:00 ART — snapshot diario del Ciclo de Vida: persiste el estado
     // de segmento por publicación y detecta movimientos (sube/baja de segmento).
-    nodeCron.schedule('0 9 * * *', () => {
+    nodeCron.schedule('0 6 * * *', () => {
       runCicloVidaDiario().catch(e => console.error('[CICLO-VIDA][cron] Error:', e.message));
-    }, { timezone: 'UTC' });
+    }, { timezone: ART });
     console.log('[CRON] Ciclo de Vida programado: 06:00 ART');
 
-    // 07:30 ART (10:30 UTC) — motor de publicidad. Con ventana de PUBLI_WINDOW_DAYS días la
+    // 07:30 ART — motor de publicidad. Con ventana de PUBLI_WINDOW_DAYS días la
     // corrida tiene que ser diaria: una campaña que se dio vuelta el martes hay que verla el
     // miércoles, no el mes que viene. No spamea porque publiDecisionExists dedupea 7 días la
     // misma sugerencia sobre el mismo objeto, y solo entran clientes con publi_activa=true.
-    nodeCron.schedule('30 10 * * *', () => {
+    nodeCron.schedule('30 7 * * *', () => {
       runPubliAnalyzer({ tipo: 'cron' }).catch(e => console.error('[PUBLI][cron] Error:', e.message));
-    }, { timezone: 'UTC' });
+    }, { timezone: ART });
     console.log(`[CRON] Motor de publicidad programado: 07:30 ART (ventana ${PUBLI_WINDOW_DAYS}d)`);
 
     // 23:45 ART — cierre del día en Seguimiento. Tarde a propósito: agarra el día casi completo.
     nodeCron.schedule('45 23 * * *', () => {
       runSeguimientoSnapshotDiario().catch(e => console.error('[SEGUIMIENTO][cron] Error:', e.message));
-    }, { timezone: 'America/Argentina/Buenos_Aires' });
+    }, { timezone: ART });
     console.log('[CRON] Snapshots de Seguimiento programados: 23:45 ART');
   }
 }).catch(e => { console.error('DB init error:', e); process.exit(1); });

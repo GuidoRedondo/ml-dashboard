@@ -91,6 +91,24 @@ Single large HTML file with inline CSS and JavaScript. All sections are rendered
 - `getActiveClient()` is the single source of truth for the currently selected client. Never read the active client from any other source (URL params, a global variable, localStorage directly, etc.).
 - `apiCall(path, options)` must be used for **all** fetch calls from the frontend to the backend. It injects the session header automatically. Never call `fetch('/api/...')` directly.
 
+### Timezone — the whole app runs on Argentina time
+
+Every calendar day in this app is an **Argentine** day (`America/Argentina/Buenos_Aires`). A sale at 22:30 ART belongs to that day, not the next one.
+
+- `server.js` sets `process.env.TZ` on its very first line, and every pooled PG connection runs `SET TIME ZONE`. So `NOW()`, `CURRENT_DATE`, `getHours()`, `getDate()` and `new Date('YYYY-MM-DDTHH:mm:ss')` (no offset) are all already in ART — don't add manual `-3h` offsets.
+- **Never use `toISOString().slice(0,10)` to get a day.** `toISOString()` is always UTC regardless of `TZ`, so it rolls over at 21:00 ART. Use the helpers instead — they exist in both `server.js` and `public/index.html`:
+
+| Helper | Where | Use for |
+|---|---|---|
+| `ymd(d)` | both | `'YYYY-MM-DD'` of an instant, in ART (no arg = today) |
+| `ymdShift(s, n)` | server | move n days over a `'YYYY-MM-DD'` (anchors at noon, never slips) |
+| `mlFrom(s)` / `mlTo(s)` | server | start/end of an Argentine day in the format ML's API expects |
+| `dART(v)` | frontend | `Date` ready to format; a bare `'YYYY-MM-DD'` is anchored at ART noon so it doesn't display one day early |
+
+- A bare `'YYYY-MM-DD'` string parses as **UTC midnight**. Feeding it to `ymd()` returns the previous day — use `ymdShift()` (server) or `dART()` (frontend) for those.
+- Frontend date/time formatting always passes `timeZone: ART_TZ`, so the view doesn't depend on the viewer's location.
+- Timestamp columns are `TIMESTAMPTZ`. `initDB()` carries an idempotent migration off the old zone-less `TIMESTAMP`; keep new columns `TIMESTAMPTZ`.
+
 ### MercadoLibre API limitations (confirmed for non-certified apps)
 
 These are hard limits — do not attempt workarounds or assume they'll change:
