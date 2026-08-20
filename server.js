@@ -11412,6 +11412,27 @@ app.post('/api/promociones/preparar-excel', requireAuth, async (req, res) => {
       return res.status(400).json({ error: 'El archivo no tiene filas de publicaciones para procesar' });
     }
 
+    // ¿El archivo es de ESTA cuenta? Es fácil equivocarse de cliente en el selector, y el
+    // resultado sería catastrófico en silencio: ninguna publicación tendría costo y el
+    // archivo saldría con la campaña entera apagada. Se chequea pidiéndole a ML unas pocas
+    // publicaciones del archivo con el token del cliente: las propias vuelven, las ajenas no.
+    const tokenChequeo = await getClientToken(clientId);
+    if (tokenChequeo) {
+      const muestra = doc.filas.slice(0, 12).map(f => f.item_id);
+      try {
+        const d = await fetch(`${ML_API}/items?ids=${muestra.join(',')}&attributes=id`, {
+          headers: { 'Authorization': `Bearer ${tokenChequeo}` } }).then(r => r.json());
+        const propias = (Array.isArray(d) ? d : []).filter(x => x.code === 200 && x.body && x.body.id).length;
+        if (muestra.length >= 3 && propias === 0) {
+          return res.status(400).json({
+            error: `Ninguna de las publicaciones del archivo pertenece a ${cli.name}. ` +
+                   `¿Está seleccionada la cuenta correcta? El archivo arranca con ${muestra[0]}.`,
+            codigo: 'cuenta_distinta',
+          });
+        }
+      } catch (_) { /* si el chequeo falla se sigue: no vale frenar por eso */ }
+    }
+
     // Costos del cliente
     const costsRes = await pool.query(
       'SELECT mla_id, costo_unit, alicuota_iva FROM product_costs WHERE client_id=$1', [clientId]);
@@ -11501,6 +11522,24 @@ app.post('/api/promociones/preparar-excel', requireAuth, async (req, res) => {
       return { margen_pesos: margen, margen_pct: +(margen / precio * 100).toFixed(1) };
     };
 
+    // Sin CMV la regla es no meter la publicación. Si eso alcanza a casi todo el archivo,
+    // lo que sale no es una decisión: es la campaña apagada entera. Se frena acá, porque
+    // subirlo sin mirar deja al cliente afuera de la promoción.
+    const conCosto = doc.filas.filter(f => costo[f.item_id] > 0).length;
+    const cobertura = doc.filas.length ? conCosto / doc.filas.length : 0;
+    if (cobertura < 0.10) {
+      return res.status(400).json({
+        error: conCosto === 0
+          ? `${cli.name} no tiene ningún costo cargado, así que no hay forma de saber qué conviene: ` +
+            `el archivo saldría con las ${doc.filas.length} publicaciones marcadas "no aplicar" y la campaña quedaría vacía. ` +
+            `Cargá el CMV en Rentabilidad y volvé a subirlo.`
+          : `Sólo ${conCosto} de ${doc.filas.length} publicaciones del archivo tienen CMV cargado (${Math.round(cobertura * 100)}%). ` +
+            `Con tan poca cobertura el archivo saldría con casi toda la campaña apagada. Cargá más costos en Rentabilidad.`,
+        codigo: 'sin_cmv',
+        con_costo: conCosto, total: doc.filas.length,
+      });
+    }
+
     const r = await prepararExcelPromos(buffer, { margenA, pisoPct: piso });
 
     // El detalle completo puede ser enorme (1000+ filas): se manda acotado para la vista
@@ -11523,6 +11562,7 @@ app.post('/api/promociones/preparar-excel', requireAuth, async (req, res) => {
       campania: r.campania || '',
       piso_pct: piso,
       resumen: r.resumen,
+      cobertura_cmv_pct: Math.round(cobertura * 100),
       detalle,
       archivo: r.buffer.toString('base64'),
       nombre: (nombre || 'promociones.xlsx').replace(/\.xlsx$/i, '') + '_preparado.xlsx',
