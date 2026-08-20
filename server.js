@@ -3760,7 +3760,13 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
       : '0.0';
 
     // Build rentabilidad now that adsSpend is available
-    const totalEgresos = totalSaleFee + totalTaxes + totalSellerShip + totalCancelled + adsSpend;
+    // Las anulaciones NO se restan: fetchAllOrders trae sólo status=paid, así que una orden
+    // cancelada nunca entró a la facturación — descontarla era restar plata que no se había
+    // sumado. Encima el monto sólo cubría las primeras 50 canceladas (la búsqueda no pagina),
+    // con lo que el castigo era además arbitrario: en Potenza, 50 de 970. Las devoluciones con
+    // movimiento real de plata las liquida el P&L de Rentabilidad como egreso_reembolsos, que
+    // es el criterio Método Redondo. Acá `anulaciones` queda como dato informativo.
+    const totalEgresos = totalSaleFee + totalTaxes + totalSellerShip + adsSpend;
     const netoML = (totalFacturacion + totalBuyerShip) - totalEgresos;
 
     // Revenue del período anterior por ítem (para tendencia)
@@ -3804,6 +3810,7 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
       impuestos:        totalTaxes,
       costo_envios:     totalSellerShip,
       resultado_envios: totalBuyerShip - totalSellerShip,
+      // Informativo: NO entra en total_egresos ni en la utilidad (ver totalEgresos arriba).
       anulaciones:      totalCancelled,
       // Se completan después de calcular CMV
     };
@@ -4024,12 +4031,12 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
       });
     }
 
-    // Publicidad, IVA neto, IIBB y anulaciones NO vienen partidos por día: PADS los devuelve
-    // agregados al rango y el IVA se liquida por período. Se reparten proporcionalmente a la
-    // facturación de cada día — para IIBB el reparto es exacto (es un % de la facturación),
-    // para el resto es una aproximación. Con este criterio la suma de la serie diaria da
-    // exactamente la utilidad del período, así que el gráfico cierra contra la KPI.
-    const cargasPeriodo = adsSpend + ivaNetoDash + iibbEstimadoDash + totalCancelled;
+    // Publicidad, IVA neto e IIBB NO vienen partidos por día: PADS los devuelve agregados al
+    // rango y el IVA se liquida por período. Se reparten proporcionalmente a la facturación de
+    // cada día — para IIBB el reparto es exacto (es un % de la facturación), para el resto es
+    // una aproximación. Con este criterio la suma de la serie diaria da exactamente la
+    // utilidad del período, así que el gráfico cierra contra la KPI.
+    const cargasPeriodo = adsSpend + ivaNetoDash + iibbEstimadoDash;
     const facTotalDias  = byDayFac.reduce((s, v) => s + v, 0);
     // Sin ningún costo cargado la ganancia sería la facturación menos comisiones: un número
     // inventado. Mismo criterio que la KPI de utilidad — sin CMV no se muestra.
