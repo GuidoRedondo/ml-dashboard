@@ -1003,8 +1003,8 @@ tbody td {
       <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:12px;margin-bottom:16px">
         <div class="kpi-card"><div class="kpi-label">💰 IMPORTE RECIBIDO</div><div class="kpi-value" id="kpiRecibido">—</div><div class="kpi-delta" id="kpiRecibidoDelta"></div><div class="kpi-sub" id="kpiRecibidoSub">Neto tras comisiones, envío e impuestos</div></div>
         <div class="kpi-card"><div class="kpi-label">📈 % RECIBIDO</div><div class="kpi-value" id="kpiPctRecibido">—</div><div class="kpi-delta" id="kpiPctRecibidoDelta"></div><div class="kpi-sub" id="kpiPctRecibidoSub">Sobre facturación bruta</div></div>
-        <div class="kpi-card"><div class="kpi-label">🟢 UTILIDAD <span id="kpiUtilidadCMVWarn" style="color:#ff9100;font-size:10px"></span></div><div class="kpi-value" id="kpiUtilidad">—</div><div class="kpi-delta" id="kpiUtilidadDelta"></div><div class="kpi-sub" id="kpiUtilidadSub">Neto ML − CMV − IVA − IIBB</div></div>
-        <div class="kpi-card"><div class="kpi-label">📊 MARGEN % <span id="kpiMargenCMVWarn" style="color:#ff9100;font-size:10px"></span></div><div class="kpi-value" id="kpiMargen">—</div><div class="kpi-delta" id="kpiMargenDelta"></div><div class="kpi-sub" id="kpiMargenSub">Utilidad / Facturación</div></div>
+        <div class="kpi-card"><div class="kpi-label">🟢 CONTRIB. MARGINAL <span id="kpiUtilidadCMVWarn" style="color:#ff9100;font-size:10px"></span></div><div class="kpi-value" id="kpiUtilidad">—</div><div class="kpi-delta" id="kpiUtilidadDelta"></div><div class="kpi-sub" id="kpiUtilidadSub">Neto ML − CMV − IVA − IIBB · sin gastos fijos</div></div>
+        <div class="kpi-card"><div class="kpi-label">📊 CM % <span id="kpiMargenCMVWarn" style="color:#ff9100;font-size:10px"></span></div><div class="kpi-value" id="kpiMargen">—</div><div class="kpi-delta" id="kpiMargenDelta"></div><div class="kpi-sub" id="kpiMargenSub">Contrib. marginal / Facturación</div></div>
       </div>
 
       <!-- BLOQUE 4: Reputación y Calidad -->
@@ -4072,35 +4072,55 @@ function buildEvolutionChart() {
     }
   }
 
-  // Línea vertical de hover
-  const hoverLine = `<line id="chartHoverLine" x1="-1" y1="${padT}" x2="-1" y2="${padT+innerH}" stroke="rgba(255,255,255,.3)" stroke-width="1" pointer-events="none"/>`;
-  const hoverTip  = `<g id="chartTip" opacity="0" pointer-events="none">
-    <rect id="chartTipBg" x="0" y="0" width="168" height="112" rx="6" fill="rgba(20,20,30,.92)" stroke="rgba(255,255,255,.1)" stroke-width="1"/>
-    <text id="chartTipDate" x="8" y="14" font-size="10" fill="rgba(255,255,255,.6)" font-family="sans-serif"></text>
-    <text id="chartTipFac"  x="8" y="30" font-size="11" fill="#FFD700" font-family="sans-serif" font-weight="600"></text>
-    <text id="chartTipGan"  x="8" y="45" font-size="11" fill="#00c853" font-family="sans-serif" font-weight="700"></text>
-    <text id="chartTipVent" x="8" y="60" font-size="11" fill="#00e676" font-family="sans-serif"></text>
-    <text id="chartTipVis"  x="8" y="75" font-size="11" fill="#8ea2ff" font-family="sans-serif"></text>
-    <text id="chartTipConv" x="8" y="90" font-size="11" fill="#22d3ee" font-family="sans-serif" font-weight="600"></text>
-    <text id="chartTipTacos" x="8" y="105" font-size="11" fill="#ff9100" font-family="sans-serif" font-weight="600"></text>
-  </g>`;
+  // ── Hover ────────────────────────────────────────────────────────────────
+  // Línea vertical + un punto sobre cada serie activa + un cuadro con los valores del día.
+  // Antes el cuadro era SVG con <text> fijos: no se podía agregar ni sacar una fila según
+  // qué series estuvieran prendidas, y las etiquetas quedaban estiradas porque el viewBox
+  // se deforma en Y. Ahora el cuadro es un div HTML sobre el gráfico y los puntos van en
+  // el SVG. Los datos quedan en window._chartDatos y chartHover los lee de ahí, en vez de
+  // viajar serializados en el atributo onmousemove.
+  const hoverLine = `<line id="chartHoverLine" x1="-1" y1="${padT}" x2="-1" y2="${padT+innerH}" stroke="rgba(255,255,255,.35)" stroke-width="1" pointer-events="none"/>`;
+  const hoverDots = `<g id="chartHoverDots" pointer-events="none"></g>`;
 
-  // Overlay transparente para capturar hover
-  const visitasRound = visitasByDay.map(v => Math.round(v));
-  const convRound    = convByDay.map(v => +v.toFixed(2));
-  const cmRound      = hayCmChart  ? cmByDay.map(v => Math.round(v)) : null;
-  const tacosRound   = hayAdsChart ? tacosByDay.map(v => +v.toFixed(2)) : null;
-  // Etiquetas largas para el tooltip: "mié 20 ago", que es lo que hace falta al pasar el
-  // mouse — el eje X ya alcanza para ubicarse mientras se mira el gráfico entero.
+  // Etiquetas largas para el hover: "mié 20 ago". El eje X ya alcanza para ubicarse
+  // mientras se mira el gráfico entero; acá hace falta la fecha completa.
   const labelsTip = fechas.map(f => dART(f).toLocaleDateString('es-AR',
     { timeZone: ART_TZ, weekday: 'short', day: '2-digit', month: 'short' }).replace(/\./g, ''));
+
+  // Sólo entran al hover las series que están prendidas: el cuadro muestra lo que se ve.
+  const yBar = v => padT + innerH - innerH * (v / maxVentas);
+  const datosHover = [
+    series.fac ? { key:'fac', color:'#FFD700', nombre:'Facturación', tipo:'money',
+                   vals: facByDay, ys: facByDay.map(yMoney) } : null,
+    dibujarCm ? { key:'cm', color:'#00c853', nombre:'Contrib. marginal', tipo:'money', pctDe:'fac',
+                   vals: cmByDay, ys: cmByDay.map(yMoney) } : null,
+    series.ventas ? { key:'ventas', color:'#00e676', nombre:'Ventas', tipo:'ordenes',
+                   vals: ventasByDay, ys: ventasByDay.map(yBar) } : null,
+    series.visitas && visitasByDay.some(v => v > 0)
+      ? { key:'visitas', color:'#6366f1', nombre:'Visitas', tipo:'num',
+          vals: visitasByDay.map(v => Math.round(v)),
+          ys: visitasByDay.map(v => padT + innerH - (v / maxVisitas) * innerH) } : null,
+    series.conversion && convByDay.some(v => v > 0)
+      ? { key:'conversion', color:'#22d3ee', nombre:'Conversión', tipo:'pct',
+          vals: convByDay, ys: convByDay.map(v => padT + innerH - (v / maxConv) * innerH) } : null,
+    dibujarTacos ? { key:'tacos', color:'#ff9100', nombre:'TACOS', tipo:'pct',
+                   vals: tacosByDay, ys: tacosByDay.map(v => padT + innerH - (v / maxTacos) * innerH) } : null,
+  ].filter(Boolean);
+
+  window._chartDatos = {
+    days, padL, padT, innerW, innerH, W, H,
+    labels: labelsTip, facByDay, series: datosHover,
+  };
+
   const overlay = `<rect x="${padL}" y="${padT}" width="${innerW}" height="${innerH}" fill="transparent"
-    onmousemove="chartHover(event, this, ${days}, ${padL}, ${innerW}, ${JSON.stringify(labelsTip)}, ${JSON.stringify(facByDay)}, ${JSON.stringify(ventasByDay)}, ${JSON.stringify(visitasRound)}, ${JSON.stringify(convRound)}, ${JSON.stringify(cmRound)}, ${JSON.stringify(tacosRound)})"
-    onmouseleave="document.getElementById('chartTip').setAttribute('opacity','0');document.getElementById('chartHoverLine').setAttribute('x1','-1');document.getElementById('chartHoverLine').setAttribute('x2','-1')"/>`;
+    onmousemove="chartHover(event, this)" onmouseleave="chartHoverOut()"/>`;
 
   chartEl.innerHTML = `<svg width="100%" height="${H}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
-    ${grid}${ceroLine}${barsSvg}${facArea}${facPath}${cmArea}${cmPath}${visitasPath}${convPath}${convDots}${tacosPath}${xLabels}${peakLabels}${hoverLine}${hoverTip}${overlay}
-  </svg>`;
+    ${grid}${ceroLine}${barsSvg}${facArea}${facPath}${cmArea}${cmPath}${visitasPath}${convPath}${convDots}${tacosPath}${xLabels}${peakLabels}${hoverLine}${hoverDots}${overlay}
+  </svg>
+  <div id="chartTipBox" style="position:absolute;top:0;left:0;display:none;pointer-events:none;
+    background:rgba(20,20,30,.96);border:1px solid var(--border);border-radius:8px;padding:8px 10px;
+    box-shadow:0 6px 20px rgba(0,0,0,.45);font-size:11px;line-height:1.55;white-space:nowrap;z-index:5"></div>`;
 
   // Leyenda = filtros. Cada chip prende o apaga su serie; el estado queda guardado en
   // window._chartSeries, así el gráfico se redibuja con lo que el usuario dejó elegido.
@@ -4544,53 +4564,83 @@ function _initEvoControls() {
   });
 }
 
-function chartHover(e, el, days, padL, innerW, labels, facByDay, ventasByDay, visitasByDay, convByDay, cmByDay, tacosByDay) {
-  const rect = el.closest('svg').getBoundingClientRect();
-  const xRel = e.clientX - rect.left;
-  const idx  = Math.min(days-1, Math.max(0, Math.round((xRel - padL) / innerW * (days-1))));
-
-  const xPos = padL + (idx / (days-1||1)) * innerW;
-  document.getElementById('chartHoverLine').setAttribute('x1', xPos);
-  document.getElementById('chartHoverLine').setAttribute('x2', xPos);
-
-  const tip = document.getElementById('chartTip');
-  const tipDate = document.getElementById('chartTipDate');
-  const tipFac  = document.getElementById('chartTipFac');
-  const tipVent = document.getElementById('chartTipVent');
-  const tipVis  = document.getElementById('chartTipVis');
-  const tipConv = document.getElementById('chartTipConv');
-  const tipGan  = document.getElementById('chartTipGan');
-  const tipTac  = document.getElementById('chartTipTacos');
-
-  const vis  = visitasByDay ? (visitasByDay[idx] || 0) : 0;
-  const conv = convByDay ? (convByDay[idx] || 0) : 0;
-
-  tipDate.textContent = labels[idx] || '';
-  tipFac.textContent  = facByDay[idx] > 0 ? '$' + Math.round(facByDay[idx]).toLocaleString('es-AR') : '—';
-  tipVent.textContent = (ventasByDay[idx] || 0) + ' ventas';
-  if (tipVis)  tipVis.textContent  = vis > 0 ? vis.toLocaleString('es-AR') + ' visitas' : '— visitas';
-  if (tipConv) tipConv.textContent = conv > 0 ? 'Conv. ' + conv.toFixed(1) + '%' : 'Conv. —';
-  if (tipGan) {
-    const g = cmByDay ? cmByDay[idx] : null;
-    if (g == null) { tipGan.textContent = ''; }
-    else {
-      const signo = g < 0 ? '-' : '';
-      const pct = facByDay[idx] > 0 ? ' (' + (g / facByDay[idx] * 100).toFixed(0) + '%)' : '';
-      tipGan.textContent = 'CM ' + signo + '$' + Math.abs(g).toLocaleString('es-AR') + pct;
-      tipGan.setAttribute('fill', g >= 0 ? '#00c853' : '#ff5252');
-    }
+// Hover del gráfico de evolución diaria: marca el día señalado con un punto sobre cada
+// serie activa y muestra un cuadro con los valores. Los datos salen de window._chartDatos,
+// que arma buildEvolutionChart, así que acá no hay que repetir la geometría.
+function _chartFmtVal(tipo, v, pctSobre) {
+  if (v == null) return '—';
+  if (tipo === 'money') {
+    const signo = v < 0 ? '-' : '';
+    const extra = (pctSobre > 0) ? ` <span style="opacity:.6">(${(v / pctSobre * 100).toFixed(0)}%)</span>` : '';
+    return signo + '$' + Math.round(Math.abs(v)).toLocaleString('es-AR') + extra;
   }
-  if (tipTac) {
-    const t = tacosByDay ? tacosByDay[idx] : null;
-    tipTac.textContent = t == null ? '' : (t > 0 ? 'TACOS ' + t.toFixed(1) + '%' : 'TACOS —');
-  }
-
-  let tipX = xPos + 8;
-  if (tipX + 176 > 900) tipX = xPos - 178;
-  tip.setAttribute('transform', `translate(${tipX}, 16)`);
-  tip.setAttribute('opacity', '1');
+  if (tipo === 'pct')     return v.toFixed(1) + '%';
+  if (tipo === 'ordenes') return Math.round(v).toLocaleString('es-AR') + (Math.round(v) === 1 ? ' orden' : ' órdenes');
+  return Math.round(v).toLocaleString('es-AR');
 }
 
+function chartHover(e, el) {
+  const D = window._chartDatos;
+  if (!D) return;
+  const svg = el.closest('svg');
+  const rect = svg.getBoundingClientRect();
+  // El SVG se estira: en X el viewBox mide D.W y en pantalla rect.width, así que hay que
+  // pasar el cursor a unidades del viewBox antes de buscar la columna.
+  const escalaX = rect.width > 0 ? (D.W / rect.width) : 1;
+  const xVb = (e.clientX - rect.left) * escalaX;
+  const anchoCol = D.innerW / D.days;
+  // Misma geometría que las series: la columna i está centrada en padL + (i+0.5)*anchoCol.
+  const idx = Math.min(D.days - 1, Math.max(0, Math.floor((xVb - D.padL) / anchoCol)));
+  const xPos = D.padL + (idx + 0.5) * anchoCol;
+
+  const linea = document.getElementById('chartHoverLine');
+  if (linea) { linea.setAttribute('x1', xPos); linea.setAttribute('x2', xPos); }
+
+  // Un punto por serie, en el valor de ese día. Los círculos se dibujan como elipses
+  // porque el viewBox está estirado en Y y un <circle> saldría ovalado.
+  const escalaY = rect.height > 0 ? (D.H / rect.height) : 1;
+  const dots = document.getElementById('chartHoverDots');
+  if (dots) {
+    dots.innerHTML = D.series.map(s => {
+      const y = s.ys[idx];
+      if (y == null || isNaN(y)) return '';
+      return `<ellipse cx="${xPos.toFixed(1)}" cy="${y.toFixed(1)}" rx="3.5" ry="${(3.5 * escalaY).toFixed(1)}"`
+           + ` fill="${s.color}" stroke="rgba(10,10,15,.85)" stroke-width="1"/>`;
+    }).join('');
+  }
+
+  // Cuadro con los valores del día
+  const box = document.getElementById('chartTipBox');
+  if (box) {
+    const facDia = D.facByDay ? D.facByDay[idx] : 0;
+    box.innerHTML =
+      `<div style="color:var(--muted);margin-bottom:4px;font-weight:600">${D.labels[idx] || ''}</div>`
+      + D.series.map(s => {
+        const v = s.vals[idx];
+        const color = (s.tipo === 'money' && v < 0) ? '#ff5252' : s.color;
+        return `<div style="display:flex;align-items:center;gap:6px">
+          <span style="width:7px;height:7px;border-radius:50%;background:${s.color};flex:none"></span>
+          <span style="color:var(--muted)">${s.nombre}</span>
+          <span style="margin-left:auto;padding-left:10px;font-weight:700;color:${color}">${_chartFmtVal(s.tipo, v, s.pctDe === 'fac' ? facDia : 0)}</span>
+        </div>`;
+      }).join('');
+    // Posición en píxeles reales del contenedor, no en unidades del viewBox.
+    box.style.display = 'block';
+    const xPx = xPos / escalaX;
+    const ancho = box.offsetWidth || 170;
+    box.style.left = (xPx + ancho + 14 > rect.width ? Math.max(0, xPx - ancho - 12) : xPx + 12) + 'px';
+    box.style.top  = '6px';
+  }
+}
+
+function chartHoverOut() {
+  const linea = document.getElementById('chartHoverLine');
+  if (linea) { linea.setAttribute('x1', '-1'); linea.setAttribute('x2', '-1'); }
+  const dots = document.getElementById('chartHoverDots');
+  if (dots) dots.innerHTML = '';
+  const box = document.getElementById('chartTipBox');
+  if (box) box.style.display = 'none';
+}
 function toggleChartSeries(key) {
   if (!window._chartSeries) window._chartSeries = { fac: true, ventas: true, visitas: true, conversion: true, cm: true, tacos: true };
   window._chartSeries[key] = !window._chartSeries[key];
@@ -9333,6 +9383,8 @@ function renderRentabilidad(R, allProducts, costsMap) {
     return { ...p, costo_unit: costoUnit, cmv, utilidad, margen: parseFloat(margen.toFixed(1)), rentabilidad: rentabilidad != null ? parseFloat(rentabilidad.toFixed(1)) : null, hasCMV };
   });
 
+  // Contribución marginal, NO utilidad: no descuenta gastos fijos (ni IVA ni IIBB, que sí
+  // descuenta stats.utilidad del backend — ver el TODO(IIBB) de abajo).
   const utilidad_final = R.neto_ml - cmvTotal;
   const resultado_envios = R.resultado_envios != null ? R.resultado_envios : (R.envios_cobrados - R.costo_envios);
   const base = R.facturacion || 1;
@@ -9385,7 +9437,7 @@ function renderRentabilidad(R, allProducts, costsMap) {
       ${kpiCard('🚚','COSTO NETO ENVÍOS',  resultado_envios,   resultado_envios>=0?'#00e676':'#ff5252', pct(Math.abs(resultado_envios), base)+' s/facturación')}
       ${kpiCard('📣','INVERSIÓN ADS',    -R.inversion_ads,    '#ff9100', pct(R.inversion_ads, base)+' s/facturación')}
       ${kpiCard('📦','CMV',              -cmvTotal,            cmvTotal>0?'#ff9100':'var(--muted)', cmvTotal>0?pct(cmvTotal,base)+' s/facturación':'Sin costos cargados')}
-      ${kpiCard('🎯','UTILIDAD FINAL',    utilidad_final,     utilidad_final>=0?'#FFD700':'#ff5252', cmvTotal>0?pct(Math.abs(utilidad_final),base)+' s/facturación · '+(utilidad_final/cmvTotal*100).toFixed(1)+'% s/costo':'Sin CMV aún')}
+      ${kpiCard('🎯','CONTRIB. MARGINAL', utilidad_final,     utilidad_final>=0?'#FFD700':'#ff5252', cmvTotal>0?pct(Math.abs(utilidad_final),base)+' s/facturación · '+(utilidad_final/cmvTotal*100).toFixed(1)+'% s/costo':'Sin CMV aún')}
     </div>
 
     <!-- Tabla productos -->
