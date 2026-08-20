@@ -3711,6 +3711,9 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
 
     // Fetch ads spend to include in calculation
     let adsSpend = 0;
+    // Se guardan para poder pedir después el gasto DÍA POR DÍA (PADS no tiene agregación
+    // diaria: probado aggregation/group_by/granularity, todas devuelven el mismo total).
+    let advIdDash = null, siteIdDash = user.site_id || 'MLA';
     try {
       const advData = await fetch(`${ML_API}/advertising/advertisers?product_id=PADS`, {
         headers: { ...headers, 'Content-Type': 'application/json', 'Api-Version': '1' }
@@ -3719,6 +3722,7 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
       if (advertisers.length) {
         const adv = advertisers.find(a => a.site_id === (user.site_id || 'MLA')) || advertisers[0];
         const siteId = user.site_id || 'MLA';
+        advIdDash = adv.advertiser_id;
         const fromDate = ymd(curFrom);
         const toDate = ymd(curTo);
         const url = `${ML_API}/advertising/${siteId}/advertisers/${adv.advertiser_id}/product_ads/campaigns/search?limit=50&date_from=${fromDate}&date_to=${toDate}&metrics=cost&metrics_summary=true`;
@@ -4031,18 +4035,56 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
       });
     }
 
-    // Publicidad, IVA neto e IIBB NO vienen partidos por día: PADS los devuelve agregados al
-    // rango y el IVA se liquida por período. Se reparten proporcionalmente a la facturación de
-    // cada día — para IIBB el reparto es exacto (es un % de la facturación), para el resto es
-    // una aproximación. Con este criterio la suma de la serie diaria da exactamente la
-    // utilidad del período, así que el gráfico cierra contra la KPI.
-    const cargasPeriodo = adsSpend + ivaNetoDash + iibbEstimadoDash;
-    const facTotalDias  = byDayFac.reduce((s, v) => s + v, 0);
-    // Sin ningún costo cargado la ganancia sería la facturación menos comisiones: un número
-    // inventado. Mismo criterio que la KPI de utilidad — sin CMV no se muestra.
-    const byDayGanancia = hasCMVDash
+    // ── Publicidad por día ────────────────────────────────────────────────────
+    // PADS no expone agregación diaria: probamos aggregation=daily/DAILY, group_by=date,
+    // granularity=day y metrics_daily — todas devuelven el mismo total del rango, y los
+    // endpoints /metrics dan 404. Así que se pide un día por vez, en paralelo. Es barato
+    // (7 días medidos en 545 ms) y la suma de los días da exactamente el total del rango.
+    const byDayAds = new Array(totalDays).fill(0);
+    if (advIdDash) {
+      const h2 = { ...headers, 'api-version': '2' };
+      // De a 10 para no abrir 30 conexiones de golpe contra PADS.
+      for (let b = 0; b < fechasDias.length; b += 10) {
+        const tanda = fechasDias.slice(b, b + 10);
+        await Promise.all(tanda.map(async (f, k) => {
+          const url = `${ML_API}/advertising/${siteIdDash}/advertisers/${advIdDash}/product_ads/campaigns/search`
+                    + `?limit=1&offset=0&date_from=${f}&date_to=${f}&metrics=cost&metrics_summary=true`;
+          try {
+            const d = await fetch(url, { headers: h2 }).then(r => r.json());
+            byDayAds[b + k] = parseFloat((d.metrics_summary || {}).cost) || 0;
+          } catch (_) { /* un día que falla queda en 0 y lo absorbe el ajuste de abajo */ }
+        }));
+      }
+    }
+    const facTotalDias = byDayFac.reduce((s, v) => s + v, 0);
+    // Si algún día no respondió, la suma diaria queda corta contra el total del período.
+    // El faltante se reparte por facturación para que el gráfico siga cerrando con la KPI.
+    const adsSumaDias  = byDayAds.reduce((s, v) => s + v, 0);
+    const adsResiduo   = adsSpend - adsSumaDias;
+    if (Math.abs(adsResiduo) > 0.5 && facTotalDias > 0) {
+      byDayAds.forEach((_, i) => { byDayAds[i] += adsResiduo * (byDayFac[i] / facTotalDias); });
+    }
+
+    // TACOS diario = inversión en publicidad / facturación del día. Es el mismo criterio que
+    // la KPI de TACOS del período, día por día.
+    const byDayTacos = byDayAds.map((ads, i) => byDayFac[i] > 0 ? (ads / byDayFac[i]) * 100 : null);
+
+    // ── Contribución marginal por día ─────────────────────────────────────────
+    // Se llama contribución marginal y no ganancia porque NO descuenta gastos fijos: es lo
+    // que deja la operación de cada día para pagar la estructura. Publicidad va con el dato
+    // real del día (arriba); IVA neto e IIBB no se pueden partir por día — el IVA se liquida
+    // por período — así que se reparten proporcionalmente a la facturación. Para IIBB el
+    // reparto es exacto (es un % de la facturación). Con este criterio la suma de la serie
+    // da exactamente la utilidad del período: el gráfico cierra contra la KPI.
+    const cargasPeriodo = ivaNetoDash + iibbEstimadoDash;
+    // Sin ningún costo cargado la CM sería facturación menos comisiones: un número inventado.
+    // Mismo criterio que la KPI de utilidad — sin CMV no se muestra.
+    const byDayCm = hasCMVDash
       ? byDayBruto.map((bruto, i) =>
-          bruto - (facTotalDias > 0 ? cargasPeriodo * (byDayFac[i] / facTotalDias) : 0))
+          bruto - byDayAds[i] - (facTotalDias > 0 ? cargasPeriodo * (byDayFac[i] / facTotalDias) : 0))
+      : null;
+    const byDayCmPct = byDayCm
+      ? byDayCm.map((v, i) => byDayFac[i] > 0 ? (v / byDayFac[i]) * 100 : null)
       : null;
 
     // Hoy / ayer para la card. Sólo existen si el rango elegido llega hasta hoy; con un
@@ -4051,10 +4093,10 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
     const idxHoy    = idxDeFecha(hoyStr);
     const idxAyer   = idxDeFecha(ymdShift(hoyStr, -1));
     // Promedio por día sobre días CERRADOS: hoy es parcial y hundiría el promedio.
-    const diasCerrados = byDayGanancia
-      ? byDayGanancia.filter((_, i) => i !== idxHoy)
+    const diasCerrados = byDayCm
+      ? byDayCm.filter((_, i) => i !== idxHoy)
       : [];
-    const gananciaDiaProm = diasCerrados.length
+    const cmDiaProm = diasCerrados.length
       ? diasCerrados.reduce((s, v) => s + v, 0) / diasCerrados.length
       : null;
 
@@ -4102,13 +4144,18 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
         by_day_ventas:  byDayVentas,
         by_day_fac:     byDayFac,
         by_day_visitas: byDayVisitas,
-        by_day_ganancia: byDayGanancia,
+        // Contribución marginal: no descuenta gastos fijos, por eso no se llama ganancia.
+        by_day_cm:       byDayCm,
+        by_day_cm_pct:   byDayCmPct,
+        by_day_ads:      byDayAds,
+        by_day_tacos:    byDayTacos,
         by_day_fechas:   fechasDias,
-        // Card "Ganancia de hoy" — null si el rango no llega hasta hoy o si no hay CMV.
-        ganancia_hoy:      (byDayGanancia && idxHoy  >= 0) ? byDayGanancia[idxHoy]  : null,
-        ganancia_ayer:     (byDayGanancia && idxAyer >= 0) ? byDayGanancia[idxAyer] : null,
-        ganancia_dia_prom: gananciaDiaProm,
+        // Card "Contribución marginal de hoy" — null si el rango no llega hasta hoy o sin CMV.
+        cm_hoy:            (byDayCm && idxHoy  >= 0) ? byDayCm[idxHoy]  : null,
+        cm_ayer:           (byDayCm && idxAyer >= 0) ? byDayCm[idxAyer] : null,
+        cm_dia_prom:       cmDiaProm,
         fac_hoy:           idxHoy >= 0 ? byDayFac[idxHoy]    : null,
+        ads_hoy:           idxHoy >= 0 ? byDayAds[idxHoy]    : null,
         ordenes_hoy:       idxHoy >= 0 ? byDayVentas[idxHoy] : null,
         date_from:     ymd(curFrom),
       },
