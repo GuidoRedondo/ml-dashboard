@@ -145,11 +145,32 @@ async function leerExcelPromos(buffer) {
   if (!wbXml) throw new Error('El archivo no parece un Excel válido (falta workbook.xml)');
   const relsXml = await zip.file('xl/_rels/workbook.xml.rels')?.async('string') || '';
 
-  const hojas = [...wbXml.matchAll(/<sheet[^>]*name="([^"]+)"[^>]*r:id="([^"]+)"[^>]*\/?>/g)]
-    .map(m => ({ nombre: desesc(m[1]), rid: m[2] }));
+  // Los atributos se leen uno por uno y no con una regex que asuma su orden: Excel y las
+  // librerías que reescriben el archivo no lo respetan (openpyxl pone Target antes que Id).
+  // Importa de verdad, porque es muy probable que el usuario abra el Excel para mirarlo y
+  // lo guarde antes de subirlo, y ahí Excel reescribe todas estas partes.
+  const attr = (frag, nombre) => {
+    // Sin regex dinamico: el nombre puede traer dos puntos (r:id) y hay que exigir que
+    // el atributo empiece donde dice, para no confundir id con r:id.
+    const marca = nombre + '="';
+    let i = -1;
+    while ((i = frag.indexOf(marca, i + 1)) >= 0) {
+      const antes = i === 0 ? ' ' : frag[i - 1];
+      if (!/\s/.test(antes)) continue;
+      const desde = i + marca.length;
+      const hasta = frag.indexOf('"', desde);
+      return hasta < 0 ? null : frag.slice(desde, hasta);
+    }
+    return null;
+  };
+  const hojas = [...wbXml.matchAll(/<sheet\b([^>]*)\/?>/g)]
+    .map(m => ({ nombre: desesc(attr(m[1], 'name') || ''), rid: attr(m[1], 'r:id') }))
+    .filter(h => h.nombre && h.rid);
   const rels = {};
-  [...relsXml.matchAll(/<Relationship[^>]*Id="([^"]+)"[^>]*Target="([^"]+)"/g)]
-    .forEach(m => { rels[m[1]] = m[2]; });
+  [...relsXml.matchAll(/<Relationship\b([^>]*)\/?>/g)].forEach(m => {
+    const id = attr(m[1], 'Id'), target = attr(m[1], 'Target');
+    if (id && target) rels[id] = target;
+  });
 
   const hoja = hojas.find(h => h.nombre === HOJA_DATOS);
   if (!hoja) {
