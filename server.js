@@ -11057,7 +11057,7 @@ function cargoFijoMLServer(precio) {
 // Comisión y envío del vendedor AL PRECIO DE CAMPAÑA. No alcanza con escalar los del
 // precio de lista: abajo de $33.000 aparece el cargo fijo y cambia el envío gratis, así
 // que un descuento puede cruzar el umbral y comerse más de lo que parece.
-async function feesAlPrecio(item, precio, headers, cache) {
+async function feesAlPrecio(item, precio, headers, cache, contador) {
   // La clave NO lleva el precio exacto a propósito: percentage_fee es fijo por categoría y
   // tipo de publicación — verificado pidiendo la misma categoría a $3.000, $12.000, $35.000,
   // $90.000 y $250.000: siempre el mismo %. Lo que sí se mueve por precio es el cargo fijo,
@@ -11071,6 +11071,10 @@ async function feesAlPrecio(item, precio, headers, cache) {
   // OJO: por eso este margen NO descuenta envío del vendedor; es margen antes de envío.
   const key = `${item.listing_type_id}|${item.category_id}|${item.logistic_type}|${getEscalaIdx(precio)}`;
   if (cache.has(key)) return cache.get(key);
+  // El contador cuenta LLAMADAS REALES, no consultas: antes se incrementaba afuera en cada
+  // oferta, aciertos de caché incluidos, así que el tope cortaba el análisis de una cuenta
+  // grande aunque no se estuviera pidiendo nada a ML.
+  if (contador) contador.n++;
   let out = { com_pct: null, envio: null };
   try {
     const qs = new URLSearchParams({
@@ -11246,7 +11250,8 @@ async function analizarCandidatosPromo(clientId) {
   // 5. Margen por oferta. Solo pedimos comisión donde hay costo: sin CMV el margen no se
   //    puede calcular igual, y son cientos de llamadas.
   const feeCache = new Map();
-  let feesUsados = 0, truncado = false;
+  const feeCount = { n: 0 };
+  let truncado = false;
   const items = [];
   for (const mla of mlas) {
     const m = meta[mla];
@@ -11260,9 +11265,8 @@ async function analizarCandidatosPromo(clientId) {
     // Margen al precio de hoy: sin esto el número de la campaña no dice nada. Lo que
     // importa no es "deja 30%", es cuánto se resigna contra no hacer nada.
     let margenHoy = null;
-    if (tieneCosto && m.precio_actual > 0 && feesUsados < PROMO_MAX_FEES) {
-      const f0 = await feesAlPrecio(m, m.precio_actual, headers, feeCache);
-      feesUsados++;
+    if (tieneCosto && m.precio_actual > 0 && feeCount.n < PROMO_MAX_FEES) {
+      const f0 = await feesAlPrecio(m, m.precio_actual, headers, feeCache, feeCount);
       if (f0.com_pct != null) {
         margenHoy = margenEnPromo({
           precio: m.precio_actual, costo: costo[mla], alic: alic[mla] ?? 21,
@@ -11288,9 +11292,8 @@ async function analizarCandidatosPromo(clientId) {
         seller_pct: oferta.seller_percentage ?? null,
         descuento_pct: (!aDefinir && lista > 0) ? +((1 - precio / lista) * 100).toFixed(1) : null,
       };
-      if (tieneCosto && precio > 0 && feesUsados < PROMO_MAX_FEES) {
-        const f = await feesAlPrecio(m, precio, headers, feeCache);
-        feesUsados++;
+      if (tieneCosto && precio > 0 && feeCount.n < PROMO_MAX_FEES) {
+        const f = await feesAlPrecio(m, precio, headers, feeCache, feeCount);
         if (f.com_pct != null) {
           Object.assign(base, { com_pct: f.com_pct }, margenEnPromo({
             precio, costo: costo[mla], alic: alic[mla] ?? 21,
@@ -11340,7 +11343,7 @@ async function analizarCandidatosPromo(clientId) {
   }
 
   items.sort((a, b) => (b.prioridad || 0) - (a.prioridad || 0) || (b.vendidas || 0) - (a.vendidas || 0));
-  return { campanias: metaCamp, items, truncado, fees_usados: feesUsados };
+  return { campanias: metaCamp, items, truncado, fees_usados: feeCount.n };
 }
 
 // Envuelve el análisis con el cache: lo usan el endpoint y el motor de alertas, y el
