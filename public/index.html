@@ -3868,7 +3868,7 @@ function buildEvolutionChart() {
   if (!window._chartSeries) window._chartSeries = { fac: true, ventas: true, visitas: true, conversion: true, cm: true, tacos: true };
   if (window._chartSeries.conversion === undefined) window._chartSeries.conversion = true;
   if (window._chartSeries.cm    === undefined) window._chartSeries.cm    = true;
-  if (window._chartSeries.tacos === undefined) window._chartSeries.tacos = false;
+  if (window._chartSeries.tacos === undefined) window._chartSeries.tacos = true;
 
   const W = chartEl.clientWidth || 900;
   const H = 220;
@@ -4592,7 +4592,7 @@ function chartHover(e, el, days, padL, innerW, labels, facByDay, ventasByDay, vi
 }
 
 function toggleChartSeries(key) {
-  if (!window._chartSeries) window._chartSeries = { fac: true, ventas: true, visitas: true, conversion: true, cm: true, tacos: false };
+  if (!window._chartSeries) window._chartSeries = { fac: true, ventas: true, visitas: true, conversion: true, cm: true, tacos: true };
   window._chartSeries[key] = !window._chartSeries[key];
   buildEvolutionChart();
 }
