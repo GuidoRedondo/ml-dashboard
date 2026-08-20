@@ -12268,13 +12268,17 @@ app.get('/api/bitacora/all-tasks', requireAuth, async (req, res) => {
 // ── Proxy genérico para endpoints de ML (evita CORS) ──
 app.get('/api/proxy-ml', requireAuth, async (req, res) => {
   try {
-    const { path, client_id } = req.query;
+    const { path, client_id, api_version } = req.query;
     if (!path || !client_id) return res.status(400).json({ error: 'Falta path o client_id' });
     const clientRes = await pool.query('SELECT * FROM clients WHERE id=$1', [client_id]);
     if (!clientRes.rows.length) return res.status(404).json({ error: 'Cliente no encontrado' });
     const client = clientRes.rows[0];
     const url = `${ML_API}${path}`;
-    const r = await fetch(url, { headers: { 'Authorization': `Bearer ${client.access_token}` } });
+    // api_version: los endpoints de publicidad (PADS) no responden sin el header de versión
+    // — advertisers pide 1 y product_ads pide 2. Sin esto el proxy no sirve para sondearlos.
+    const proxyHeaders = { 'Authorization': `Bearer ${client.access_token}` };
+    if (api_version) { proxyHeaders['api-version'] = String(api_version); proxyHeaders['Api-Version'] = String(api_version); }
+    const r = await fetch(url, { headers: proxyHeaders });
     const data = await r.json();
     res.status(r.status).json(data);
   } catch(e) { res.status(500).json({ error: e.message }); }
