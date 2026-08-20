@@ -11040,7 +11040,10 @@ async function fetchAdsByItemMap(headers, fromDate, toDate, siteId = 'MLA') {
 // cada publicación y cuánto margen queda. La carga sigue siendo a mano en el panel.
 const _promoCandCache = new Map();          // client_id → { ts, data }
 const PROMO_CAND_TTL   = 2 * 60 * 60 * 1000;
-const PROMO_MAX_FEES   = 400;               // tope de consultas de comisión por corrida
+// Tope de consultas de comisión por corrida. Es una red de seguridad, no un límite de
+// trabajo: desde que la caché deja de llevar el precio exacto en la clave, una cuenta
+// entera resuelve con unas pocas decenas de llamadas (una por categoría × escala).
+const PROMO_MAX_FEES   = 1200;
 const PROMO_ESTADOS    = new Set(['started', 'pending']);
 
 // Cargo fijo por venta de ML — mismo escalón que usa el front (cargoFijoML)
@@ -11055,7 +11058,14 @@ function cargoFijoMLServer(precio) {
 // precio de lista: abajo de $33.000 aparece el cargo fijo y cambia el envío gratis, así
 // que un descuento puede cruzar el umbral y comerse más de lo que parece.
 async function feesAlPrecio(item, precio, headers, cache) {
-  const key = `${item.listing_type_id}|${item.category_id}|${item.logistic_type}|${Math.round(precio)}`;
+  // La clave NO lleva el precio exacto a propósito: percentage_fee es fijo por categoría y
+  // tipo de publicación — verificado pidiendo la misma categoría a $3.000, $12.000, $35.000,
+  // $90.000 y $250.000: siempre el mismo %. Lo que sí se mueve por precio es el cargo fijo,
+  // que ya se calcula local con CARGO_FIJO_ESCALAS, y el envío, que cambia al cruzar el
+  // umbral de los $33.000; por eso la clave lleva la escala y no el monto. Con el precio
+  // exacto adentro casi no había aciertos de caché y cada oferta gastaba una llamada: por
+  // eso hacía falta un tope (PROMO_MAX_FEES) que dejaba medio catálogo sin margen.
+  const key = `${item.listing_type_id}|${item.category_id}|${item.logistic_type}|${item.peso}|${getEscalaIdx(precio)}`;
   if (cache.has(key)) return cache.get(key);
   let out = { com_pct: null, envio: null };
   try {
@@ -11154,23 +11164,33 @@ async function analizarCandidatosPromo(clientId) {
   const metaCamp = [];
   const vistos = new Set();   // la paginación de ML repite filas entre páginas
   for (const c of campanias) {
-    let offset = 0, total = null, n = 0;
-    for (let guard = 0; guard < 20; guard++) {
+    // Este endpoint NO pagina por offset: pedirle offset=50 devuelve otra vez las primeras
+    // 50 filas (medido en AB Fitness — 4 páginas de 50 daban 50 publicaciones distintas de
+    // 384). Se paginaba así y el análisis veía apenas un tercio del catálogo candidato.
+    // La paginación real es por cursor: paging.searchAfter -> &search_after=.
+    let total = null, n = 0, cursor = null;
+    for (let guard = 0; guard < 60; guard++) {
       const url = `${ML_API}/seller-promotions/promotions/${c.id}/items` +
-                  `?promotion_type=${c.type}&app_version=v2&limit=50&offset=${offset}`;
+                  `?promotion_type=${c.type}&app_version=v2&limit=50` +
+                  (cursor ? `&search_after=${encodeURIComponent(cursor)}` : '');
       const r = await fetch(url, { headers }).then(r => r.json()).catch(() => ({}));
       const res = r.results || [];
       if (total == null) total = r.paging?.total ?? res.length;
+      let nuevos = 0;
       res.forEach(x => {
         const k = `${c.id}|${x.id}`;
         if (vistos.has(k)) return;
         vistos.add(k);
         // status "candidate" = se puede meter. "started" ya está adentro.
         (ofertasPorItem[x.id] = ofertasPorItem[x.id] || []).push({ camp: c, oferta: x });
-        n++;
+        n++; nuevos++;
       });
-      offset += 50;
-      if (!res.length || offset >= total) break;
+      cursor = r.paging?.searchAfter || null;
+      // Sin cursor, sin filas, o una vuelta entera sin nada nuevo: no hay más para traer.
+      if (!cursor || !res.length || nuevos === 0 || n >= total) break;
+    }
+    if (total != null && n < total) {
+      console.warn(`[PROMO CAND] ${c.id} (${c.type}): traje ${n} de ${total} candidatos`);
     }
     metaCamp.push({
       id: c.id, type: c.type, name: c.name || c.type, status: c.status,
@@ -11293,6 +11313,13 @@ async function analizarCandidatosPromo(clientId) {
     });
     const best = ofertas[0] || null;
     const ver = veredictoPromo(best, margenHoy);
+    // Veredicto propio de CADA oferta, no sólo de la mejor: al filtrar por una campaña
+    // concreta (que es como se carga en el panel, campaña por campaña) hay que poder
+    // decir si conviene entrar A ESA, aunque otra campaña deje más margen.
+    ofertas.forEach(o => {
+      const v = veredictoPromo(o, margenHoy);
+      o.veredicto = v.veredicto; o.motivo = v.motivo; o.prioridad = v.prioridad;
+    });
     items.push({
       mla_id: mla, title: m.title, precio_actual: m.precio_actual, stock: m.stock,
       vendidas: m.vendidas, has_cost: tieneCosto, costo_sospechoso: costoSospechoso,

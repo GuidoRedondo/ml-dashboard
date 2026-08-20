@@ -18525,6 +18525,7 @@ const PROMO_VEREDICTOS = {
 let _promoCand = null;
 let _promoFiltro = 'todas';     // todas | meter | evaluar | no_meter | sin_costo
 let _promoSoloUrgentes = false;
+let _promoCampania = null;      // id de campaña, o null = todas juntas
 const PROMO_URGENTE_DIAS = 7;
 
 function switchPromoTab(tab) {
@@ -18559,22 +18560,54 @@ async function loadPromoCandidatos(refresh) {
   renderPromoCandidatos();
 }
 
+// Devuelve las publicaciones a mostrar, cada una con `_foco`: la oferta sobre la que se
+// está decidiendo. Sin filtro de campaña es la mejor de todas; con filtro, la de esa
+// campaña — que es como se carga en el panel de ML, campaña por campaña.
 function promoFiltrados() {
   if (!_promoCand) return [];
   let items = _promoCand.items || [];
+
+  if (_promoCampania) {
+    items = items
+      .filter(i => (i.ofertas || []).some(o => o.promo_id === _promoCampania))
+      .map(i => ({ ...i, _foco: (i.ofertas || []).find(o => o.promo_id === _promoCampania) }));
+  } else {
+    items = items.map(i => ({ ...i, _foco: (i.ofertas || [])[0] || null }));
+  }
+
   if (_promoSoloUrgentes) {
     const urgentes = new Set((_promoCand.campanias || [])
       .filter(c => c.dias_para_cierre != null && c.dias_para_cierre <= PROMO_URGENTE_DIAS)
       .map(c => c.id));
     items = items.filter(i => (i.ofertas || []).some(o => urgentes.has(o.promo_id)));
   }
-  if (['meter','evaluar','no_meter'].includes(_promoFiltro)) items = items.filter(i => i.veredicto === _promoFiltro);
+  // Con una campaña elegida, el veredicto que manda es el de ESA oferta.
+  const ver = i => (_promoCampania && i._foco) ? i._foco.veredicto : i.veredicto;
+  if (['meter','evaluar','no_meter'].includes(_promoFiltro)) items = items.filter(i => ver(i) === _promoFiltro);
   if (_promoFiltro === 'sin_costo') items = items.filter(i => !i.has_cost);
   return items;
 }
 
+// Conteo por veredicto de lo que se está mirando, para que los botones de filtro no
+// muestren el total de la cuenta cuando hay una campaña elegida.
+function promoConteos() {
+  if (!_promoCand) return { total: 0 };
+  const guardado = _promoFiltro;
+  _promoFiltro = 'todas';
+  const base = promoFiltrados();
+  _promoFiltro = guardado;
+  const ver = i => (_promoCampania && i._foco) ? i._foco.veredicto : i.veredicto;
+  const c = { total: base.length, sin_costo: base.filter(i => !i.has_cost).length };
+  base.forEach(i => { c[ver(i)] = (c[ver(i)] || 0) + 1; });
+  return c;
+}
+
 function setPromoFiltro(f) { _promoFiltro = f; renderPromoCandidatos(); }
 function togglePromoUrgentes() { _promoSoloUrgentes = !_promoSoloUrgentes; renderPromoCandidatos(); }
+function setPromoCampania(id) {
+  _promoCampania = (_promoCampania === id) ? null : id;
+  renderPromoCandidatos();
+}
 function togglePromoFila(mla) {
   const el = document.getElementById(`promo-det-${mla}`);
   if (el) el.style.display = el.style.display === 'none' ? '' : 'none';
@@ -18602,32 +18635,40 @@ function renderPromoCandidatos() {
     const color = urge ? '#dc2626' : (c.status === 'pending' ? '#f59e0b' : 'var(--muted)');
     const cierra = dd == null ? 'sin fecha de cierre'
                  : (dd <= 0 ? 'cierra hoy' : `cierra en ${dd} día${dd !== 1 ? 's' : ''}`);
-    return `<div style="min-width:190px;flex:1;padding:10px 12px;background:var(--surface2);border:1px solid ${urge ? '#dc2626' : 'var(--border)'};border-radius:10px">
-      <div style="font-size:12px;font-weight:700;color:var(--text);font-family:var(--font-b)">${c.name}</div>
-      <div style="font-size:10px;color:var(--muted);margin-top:2px">${c.type}${c.status === 'pending' ? ' · arranca pronto' : ''}</div>
-      <div style="font-size:11px;color:${color};margin-top:4px;font-weight:${urge ? '700' : '400'}">${cierra}</div>
-      <div style="font-size:10px;color:var(--muted);margin-top:2px">${c.candidatos} candidatas</div>
+    const sel = _promoCampania === c.id;
+    return `<div onclick="setPromoCampania('${c.id}')" title="${sel ? 'Ver todas las campañas juntas' : 'Ver sólo esta campaña'}"
+      style="min-width:190px;flex:1;padding:10px 12px;cursor:pointer;user-select:none;transition:all .15s;
+      background:${sel ? 'var(--accent)' : 'var(--surface2)'};
+      border:2px solid ${sel ? 'var(--accent)' : (urge ? '#dc2626' : 'var(--border)')};border-radius:10px">
+      <div style="font-size:12px;font-weight:700;color:${sel ? '#fff' : 'var(--text)'};font-family:var(--font-b)">${sel ? '✓ ' : ''}${c.name}</div>
+      <div style="font-size:10px;color:${sel ? 'rgba(255,255,255,.85)' : 'var(--muted)'};margin-top:2px">${c.type}${c.status === 'pending' ? ' · arranca pronto' : ''}</div>
+      <div style="font-size:11px;color:${sel ? '#fff' : color};margin-top:4px;font-weight:${urge || sel ? '700' : '400'}">${cierra}</div>
+      <div style="font-size:10px;color:${sel ? 'rgba(255,255,255,.85)' : 'var(--muted)'};margin-top:2px">${c.candidatos} candidatas</div>
     </div>`;
   }).join('');
 
   const items = promoFiltrados();
+  const cnt = promoConteos();
   const btn = (f, txt, n) => `<button onclick="setPromoFiltro('${f}')" class="sync-btn"
     style="padding:4px 10px;font-size:11px;${_promoFiltro === f ? 'background:var(--accent);color:#fff' : ''}">${txt}${n != null ? ` (${n})` : ''}</button>`;
 
   const filas = items.map(i => {
-    const best = (i.ofertas || [])[0];
+    // _foco: la oferta sobre la que se decide (la de la campaña elegida, o la mejor).
+    const best = i._foco || (i.ofertas || [])[0];
     const nOf = (i.ofertas || []).length;
+    const margenFoco = best ? best.margen_pesos : null;
+    const margenFocoPct = best ? best.margen_pct : null;
     let margenCell, borde;
-    if (i.margen_mejor == null) {
+    if (margenFoco == null) {
       margenCell = i.costo_sospechoso
         ? `<span style="color:#f59e0b" title="El costo cargado es menos del 5% del precio: revisá el CMV">CMV dudoso</span>`
         : `<span style="color:var(--muted)">sin CMV</span>`;
       borde = 'var(--border)';
-    } else if (i.margen_mejor > 0) {
-      margenCell = `<span style="color:#16a34a;font-weight:700">${_pm(i.margen_mejor)}</span> <span style="color:var(--muted);font-size:10px">${i.margen_mejor_pct}%</span>`;
+    } else if (margenFoco > 0) {
+      margenCell = `<span style="color:#16a34a;font-weight:700">${_pm(margenFoco)}</span> <span style="color:var(--muted);font-size:10px">${margenFocoPct}%</span>`;
       borde = '#16a34a';
     } else {
-      margenCell = `<span style="color:#dc2626;font-weight:700">${_pm(i.margen_mejor)}</span> <span style="color:var(--muted);font-size:10px">${i.margen_mejor_pct}%</span>`;
+      margenCell = `<span style="color:#dc2626;font-weight:700">${_pm(margenFoco)}</span> <span style="color:var(--muted);font-size:10px">${margenFocoPct}%</span>`;
       borde = '#dc2626';
     }
     const detalle = (i.ofertas || []).map(o => {
@@ -18646,19 +18687,22 @@ function renderPromoCandidatos() {
         <td style="padding:4px 8px;font-size:11px">${m}</td></tr>`;
     }).join('');
 
-    const vd = PROMO_VEREDICTOS[i.veredicto] || { icono: '', label: i.veredicto || '', color: 'var(--muted)' };
+    const vFoco = (_promoCampania && best) ? best.veredicto : i.veredicto;
+    const mFoco = (_promoCampania && best) ? best.motivo   : i.motivo;
+    const resignaFoco = (_promoCampania && best) ? best.resigna_pp : i.resigna_pp;
+    const vd = PROMO_VEREDICTOS[vFoco] || { icono: '', label: vFoco || '', color: 'var(--muted)' };
     return `<tr style="border-bottom:1px solid var(--border);border-left:3px solid ${borde}">
       <td style="padding:8px;font-size:11px;white-space:nowrap;color:${vd.color};font-weight:600">${vd.icono} ${vd.label}</td>
       <td style="padding:8px;font-size:11px;white-space:nowrap">
         <a href="https://articulo.mercadolibre.com.ar/${i.mla_id.replace('MLA','MLA-')}" target="_blank" style="color:var(--accent);text-decoration:none">${i.mla_id}</a></td>
       <td style="padding:8px;font-size:12px">${(i.title || '').slice(0,52)}
-        ${i.motivo ? `<div style="font-size:10px;color:var(--muted);margin-top:2px">${i.motivo}</div>` : ''}</td>
+        ${mFoco ? `<div style="font-size:10px;color:var(--muted);margin-top:2px">${mFoco}</div>` : ''}</td>
       <td style="padding:8px;font-size:11px;text-align:center">${i.vendidas || 0}</td>
       <td style="padding:8px;font-size:11px;white-space:nowrap">${_pm(i.precio_actual)}${i.margen_hoy_pct != null ? ` <span style="color:var(--muted);font-size:10px">${i.margen_hoy_pct}%</span>` : ''}</td>
       <td style="padding:8px;font-size:11px;white-space:nowrap">${best && !best.precio_a_definir ? _pm(best.precio_campania) : '—'}</td>
       <td style="padding:8px;font-size:11px">${best ? best.promo_name.slice(0,24) : '—'}</td>
       <td style="padding:8px;font-size:11px;white-space:nowrap">${margenCell}</td>
-      <td style="padding:8px;font-size:11px;white-space:nowrap">${i.resigna_pp != null ? `<span style="color:${i.resigna_pp > 15 ? '#dc2626' : 'var(--muted)'}">-${i.resigna_pp} pp</span>` : '—'}</td>
+      <td style="padding:8px;font-size:11px;white-space:nowrap">${resignaFoco != null ? `<span style="color:${resignaFoco > 15 ? '#dc2626' : 'var(--muted)'}">-${resignaFoco} pp</span>` : '—'}</td>
       <td style="padding:8px;font-size:11px;text-align:center">
         <span onclick="togglePromoFila('${i.mla_id}')" style="cursor:pointer;color:var(--accent)">${nOf} ▾</span></td>
     </tr>
@@ -18679,19 +18723,30 @@ function renderPromoCandidatos() {
   cont.innerHTML = `
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px">${tarjetas}</div>
     <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px">
-      ${btn('todas','Todas', d.total_items)}
-      ${btn('meter','✅ Meter', (d.por_veredicto||{}).meter)}
-      ${btn('evaluar','⚠️ Evaluar', (d.por_veredicto||{}).evaluar)}
-      ${btn('no_meter','⛔ No meter', (d.por_veredicto||{}).no_meter)}
-      ${btn('sin_costo','Sin CMV', d.total_items - d.con_costo)}
+      ${btn('todas','Todas', cnt.total)}
+      ${btn('meter','✅ Meter', cnt.meter || 0)}
+      ${btn('evaluar','⚠️ Evaluar', cnt.evaluar || 0)}
+      ${btn('no_meter','⛔ No meter', cnt.no_meter || 0)}
+      ${btn('sin_costo','Sin CMV', cnt.sin_costo || 0)}
       <button onclick="togglePromoUrgentes()" class="sync-btn" style="padding:4px 10px;font-size:11px;${_promoSoloUrgentes ? 'background:#dc2626;color:#fff' : ''}">⏰ Cierran en ${PROMO_URGENTE_DIAS} días</button>
       <div style="flex:1"></div>
       <button onclick="exportPromoCandidatosExcel()" class="sync-btn" style="padding:4px 10px;font-size:11px">📥 Excel</button>
       <button onclick="loadPromoCandidatos(true)" class="sync-btn" style="padding:4px 10px;font-size:11px">🔄 Actualizar</button>
     </div>
+    ${_promoCampania ? (() => {
+      const c = camps.find(x => x.id === _promoCampania) || {};
+      const meter = cnt.meter || 0;
+      const suma = promoFiltrados().filter(i => i._foco && i._foco.veredicto === 'meter')
+                     .reduce((a, i) => a + (i._foco.margen_pesos || 0), 0);
+      return `<div style="background:var(--surface2);border-left:3px solid var(--accent);border-radius:8px;padding:10px 12px;margin-bottom:10px;font-size:12px">
+        Mostrando sólo <strong>${c.name || _promoCampania}</strong> · ${cnt.total} publicaciones candidatas ·
+        <strong style="color:#16a34a">${meter} conviene meter</strong>${meter ? `, que dejan ${_pm(suma)} de margen por unidad sumadas` : ''}.
+        <span style="color:var(--muted)">El Excel de abajo sale con esta campaña sola, lista para cargar en el panel.</span>
+        <button onclick="setPromoCampania('${_promoCampania}')" class="sync-btn" style="padding:2px 8px;font-size:11px;margin-left:8px">Ver todas</button>
+      </div>`; })() : ''}
     <div style="font-size:12px;color:var(--muted);margin-bottom:10px">
       ML no deja cargar promociones por API, así que esto resuelve la decisión y la carga va a mano en el Centro de Promociones.
-      El margen es por unidad, ya con comisión, envío, IVA e IIBB, y sin publicidad.
+      Clickeá una campaña de arriba para verla sola. El margen es por unidad, ya con comisión, envío, IVA e IIBB, y sin publicidad.
     </div>
     ${items.length ? `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse">
       <thead><tr style="border-bottom:2px solid var(--border)">
@@ -18715,9 +18770,11 @@ function exportPromoCandidatosExcel() {
   const items = promoFiltrados();
   if (!items.length) { showToast('No hay datos para exportar'); return; }
   const rows = [];
-  items.forEach(i => (i.ofertas || []).forEach(o => rows.push({
-    'Que hacer': (PROMO_VEREDICTOS[i.veredicto] || {}).label || i.veredicto || '',
-    Motivo: i.motivo || '',
+  // Con una campaña elegida se exporta SOLO esa oferta por publicación: el Excel es la
+  // lista para cargar esa campaña en el panel, no un catálogo de todas las opciones.
+  items.forEach(i => (_promoCampania ? [i._foco].filter(Boolean) : (i.ofertas || [])).forEach(o => rows.push({
+    'Que hacer': (PROMO_VEREDICTOS[o.veredicto || i.veredicto] || {}).label || o.veredicto || i.veredicto || '',
+    Motivo: o.motivo || i.motivo || '',
     MLA: i.mla_id,
     Publicacion: i.title || '',
     Vendidas: i.vendidas || 0,
@@ -18742,7 +18799,12 @@ function exportPromoCandidatosExcel() {
   })));
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Que meter');
-  XLSX.writeFile(wb, `Promociones_que_meter_${ymd(new Date())}.xlsx`);
+  const camp = _promoCampania
+    ? ((_promoCand.campanias || []).find(c => c.id === _promoCampania) || {}).name || _promoCampania
+    : 'todas';
+  const cli = (getActiveClient()?.name || 'cliente').replace(/\s+/g, '_');
+  const limpio = String(camp).replace(/[^\wáéíóúñÁÉÍÓÚÑ]+/g, '_').slice(0, 40);
+  XLSX.writeFile(wb, `Promos_${cli}_${limpio}_${ymd(new Date())}.xlsx`);
   showToast(`✅ Excel descargado (${rows.length} filas)`);
 }
 
