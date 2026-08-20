@@ -1350,6 +1350,36 @@ tbody td {
         <button class="sync-btn" onclick="loadPromociones()">🔄 Actualizar</button>
       </div>
       <div id="promoContent"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Cargando...</div></div>
+
+      <!-- Preparador del Excel de carga masiva de ML. ML no deja adherir por API, pero el
+           Centro de Promociones acepta este archivo: acá se completa solo. -->
+      <div id="promoPrepararBox" style="display:none">
+        <div class="kpi-card" style="padding:18px;margin-bottom:16px;border-left:3px solid #16a34a">
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px">
+            <div class="kpi-label" style="flex:1">📄 PREPARAR EL EXCEL DE CARGA MASIVA</div>
+            <div style="display:flex;align-items:center;gap:6px">
+              <span style="font-size:11px;color:var(--muted)">Piso de CM</span>
+              <input id="promoPiso" type="number" min="0" max="90" step="1" value="10"
+                onchange="guardarPisoCm()" title="Debajo de este margen la publicación no entra a la campaña"
+                style="width:64px;padding:4px 6px;border-radius:6px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:12px;text-align:right">
+              <span style="font-size:11px;color:var(--muted)">%</span>
+            </div>
+          </div>
+          <div style="font-size:12px;color:var(--muted);margin-bottom:12px;line-height:1.6">
+            Bajá el Excel desde el Centro de Promociones de ML, subilo acá y te lo devuelvo completado:
+            marca cuáles entran, cuáles no, y si a alguna le conviene un descuento menor, le sube el precio
+            al mínimo que respeta tu piso de margen. Después lo subís a ML tal cual.
+            <strong>Es el mismo archivo</strong> — sólo se tocan las columnas que ML deja editar.
+          </div>
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+            <input type="file" id="promoArchivo" accept=".xlsx" onchange="prepararExcelPromo()"
+              style="font-size:12px;color:var(--text)">
+            <span id="promoPrepararEstado" style="font-size:12px;color:var(--muted)"></span>
+          </div>
+          <div id="promoPrepararResultado" style="margin-top:14px"></div>
+        </div>
+      </div>
+
       <div id="promoQueMeterContent" style="display:none"></div>
     </div>
 
@@ -18610,14 +18640,182 @@ function switchPromoTab(tab) {
   const bA  = document.getElementById('promoTabActivas');
   const bQ  = document.getElementById('promoTabQueMeter');
   const on  = 'var(--accent)', off = '';
+  const prep = document.getElementById('promoPrepararBox');
   if (tab === 'quemeter') {
     act.style.display = 'none'; que.style.display = '';
+    if (prep) { prep.style.display = ''; sincronizarPisoCm(); }
     bQ.style.background = on; bA.style.background = off;
     if (!_promoCand) loadPromoCandidatos(false);
   } else {
     act.style.display = ''; que.style.display = 'none';
+    if (prep) prep.style.display = 'none';
     bA.style.background = on; bQ.style.background = off;
   }
+}
+
+// ── Preparador del Excel de carga masiva de promociones ─────────────────────
+// El archivo va y vuelve en base64: el backend es el que tiene el CMV, la comisión y
+// el piso de cada cliente, y además edita el .xlsx conservando la hoja oculta que ML
+// usa para reconocer que es el archivo que te dio.
+let _promoPrepArchivo = null;   // { nombre, base64 } del resultado, para descargar
+
+function sincronizarPisoCm() {
+  const cli = getActiveClient();
+  const el = document.getElementById('promoPiso');
+  if (el && cli && cli.piso_cm_promo_pct != null) el.value = parseFloat(cli.piso_cm_promo_pct);
+}
+
+async function guardarPisoCm() {
+  const cli = getActiveClient();
+  const el = document.getElementById('promoPiso');
+  if (!cli || !el) return;
+  const v = parseFloat(el.value);
+  if (isNaN(v) || v < 0 || v > 90) { showToast('El piso tiene que estar entre 0 y 90'); sincronizarPisoCm(); return; }
+  try {
+    await apiCall('PUT', `/api/clients/${cli.id}/piso-cm-promo`, { piso_cm_promo_pct: v });
+    cli.piso_cm_promo_pct = v;   // para que no haya que recargar la lista de clientes
+    showToast(`✅ Piso de CM de ${cli.name}: ${v}%`);
+  } catch (e) {
+    showToast('No se pudo guardar: ' + e.message);
+    sincronizarPisoCm();
+  }
+}
+
+async function prepararExcelPromo() {
+  const input  = document.getElementById('promoArchivo');
+  const estado = document.getElementById('promoPrepararEstado');
+  const cont   = document.getElementById('promoPrepararResultado');
+  const cli    = getActiveClient();
+  if (!input || !input.files || !input.files[0]) return;
+  if (!cli) { showToast('Elegí una cuenta primero'); input.value = ''; return; }
+
+  const file = input.files[0];
+  if (!/\.xlsx$/i.test(file.name)) {
+    estado.textContent = 'Tiene que ser el .xlsx que baja el Centro de Promociones';
+    input.value = ''; return;
+  }
+  estado.innerHTML = `⏳ Procesando <strong>${file.name}</strong>… puede tardar un minuto`;
+  cont.innerHTML = '';
+  _promoPrepArchivo = null;
+
+  try {
+    const base64 = await new Promise((resolve, reject) => {
+      const fr = new FileReader();
+      fr.onload  = () => resolve(String(fr.result).split(',')[1]);
+      fr.onerror = () => reject(new Error('No pude leer el archivo'));
+      fr.readAsDataURL(file);
+    });
+
+    const piso = parseFloat(document.getElementById('promoPiso')?.value);
+    const r = await apiCall('POST', '/api/promociones/preparar-excel', {
+      client_id: cli.id, archivo: base64, nombre: file.name,
+      piso_pct: isNaN(piso) ? null : piso,
+    });
+
+    _promoPrepArchivo = { nombre: r.nombre, base64: r.archivo };
+    estado.innerHTML = `✅ Listo: <strong>${r.resumen.total}</strong> publicaciones analizadas`;
+    renderPrepararResultado(r);
+  } catch (e) {
+    estado.innerHTML = `<span style="color:#dc2626">${e.message}</span>`;
+  } finally {
+    input.value = '';   // permite volver a subir el mismo archivo
+  }
+}
+
+function descargarExcelPreparado() {
+  if (!_promoPrepArchivo) return;
+  const bin = atob(_promoPrepArchivo.base64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  const blob = new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = _promoPrepArchivo.nombre;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  showToast('✅ Archivo descargado — subilo al Centro de Promociones');
+}
+
+const PREP_ESTADOS = {
+  ok_como_viene:         { icono: '✅', label: 'Entra al precio de ML',  color: '#16a34a' },
+  ajustado:              { icono: '✏️', label: 'Entra con precio ajustado', color: '#0ea5e9' },
+  no_llega:              { icono: '⛔', label: 'No llega al piso',       color: '#dc2626' },
+  no_llega_cofinanciada: { icono: '⛔', label: 'No llega (la banca ML)', color: '#dc2626' },
+  sin_cmv:               { icono: '❓', label: 'Sin CMV cargado',        color: '#f59e0b' },
+  sin_precio:            { icono: '—',  label: 'Sin precio en el archivo', color: 'var(--muted)' },
+};
+
+function renderPrepararResultado(r) {
+  const cont = document.getElementById('promoPrepararResultado');
+  if (!cont) return;
+  const s = r.resumen;
+  const m = n => '$' + Math.round(n || 0).toLocaleString('es-AR');
+
+  const porEstado = {};
+  (r.detalle || []).forEach(d => { porEstado[d.estado] = (porEstado[d.estado] || 0) + 1; });
+
+  const tarjeta = (val, txt, color) => `
+    <div style="flex:1;min-width:120px;padding:10px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:10px">
+      <div style="font-size:22px;font-weight:700;color:${color};font-family:var(--font-b)">${val}</div>
+      <div style="font-size:11px;color:var(--muted);margin-top:2px">${txt}</div>
+    </div>`;
+
+  // Suma de la CM de las que entran: cuánto deja la campaña por unidad vendida
+  const cmEntran = (r.detalle || [])
+    .filter(d => d.accion && !/^no /i.test(d.accion))
+    .reduce((a, d) => a + (d.margen_pesos || 0), 0);
+
+  const filas = (r.detalle || [])
+    .slice()
+    .sort((a, b) => (a.estado === b.estado ? 0 : (a.estado === 'ajustado' ? -1 : 1)))
+    .slice(0, 400)
+    .map(d => {
+      const e = PREP_ESTADOS[d.estado] || { icono: '', label: d.estado, color: 'var(--muted)' };
+      return `<tr style="border-bottom:1px solid var(--border)">
+        <td style="padding:6px 8px;font-size:11px;white-space:nowrap;color:${e.color};font-weight:600">${e.icono} ${e.label}</td>
+        <td style="padding:6px 8px;font-size:11px;white-space:nowrap">
+          <a href="https://articulo.mercadolibre.com.ar/${String(d.item_id).replace('MLA','MLA-')}" target="_blank" style="color:var(--accent);text-decoration:none">${d.item_id}</a></td>
+        <td style="padding:6px 8px;font-size:11px">${d.titulo || ''}</td>
+        <td style="padding:6px 8px;font-size:11px;white-space:nowrap">${d.precio_ml != null ? m(d.precio_ml) : '—'}</td>
+        <td style="padding:6px 8px;font-size:11px;white-space:nowrap;font-weight:${d.estado === 'ajustado' ? 700 : 400};color:${d.estado === 'ajustado' ? '#0ea5e9' : 'inherit'}">${d.estado === 'ajustado' ? m(d.precio_final) + ` <span style="font-size:10px;color:var(--muted)">-${d.descuento}%</span>` : '—'}</td>
+        <td style="padding:6px 8px;font-size:11px;white-space:nowrap;color:${d.margen_pct == null ? 'var(--muted)' : (d.margen_pct > 0 ? '#16a34a' : '#dc2626')}">${d.margen_pct != null ? d.margen_pct + '%' : '—'}</td>
+        <td style="padding:6px 8px;font-size:11px;white-space:nowrap;font-weight:600">${d.accion || '—'}</td>
+      </tr>`;
+    }).join('');
+
+  cont.innerHTML = `
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
+      ${tarjeta(s.aplicar, 'entran a la campaña', '#16a34a')}
+      ${tarjeta(s.no_aplicar, 'quedan afuera', '#dc2626')}
+      ${tarjeta(s.ajustadas, 'con precio ajustado', '#0ea5e9')}
+      ${tarjeta(s.sin_cmv, 'sin CMV cargado', '#f59e0b')}
+      ${tarjeta(m(cmEntran), 'CM por unidad, sumando las que entran', 'var(--text)')}
+    </div>
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px">
+      <button onclick="descargarExcelPreparado()" class="sync-btn" style="background:#16a34a;color:#fff;border:none;padding:8px 16px">
+        📥 Descargar el Excel para subir a ML</button>
+      <span style="font-size:11px;color:var(--muted)">
+        ${r.campania ? `Campaña <strong>${r.campania}</strong> · ` : ''}piso de CM ${r.piso_pct}% · cliente ${r.cliente}
+      </span>
+    </div>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:10px;line-height:1.6">
+      Al subirlo, revisá la columna <strong>Observaciones y errores</strong> que devuelve ML: si la campaña
+      es por tramos puede rechazar un descuento menor al del tramo, y esas filas hay que corregirlas.
+      El margen sale del <strong>Recibís</strong> del propio archivo cuando está —ya neto de comisión y envío—
+      y de la comisión estimada cuando no.
+    </div>
+    ${filas ? `<div style="overflow-x:auto;max-height:520px;overflow-y:auto"><table style="width:100%;border-collapse:collapse">
+      <thead><tr style="border-bottom:2px solid var(--border);position:sticky;top:0;background:var(--surface)">
+        <th style="padding:6px 8px;text-align:left;font-size:11px;color:var(--muted)">Qué pasa</th>
+        <th style="padding:6px 8px;text-align:left;font-size:11px;color:var(--muted)">MLA</th>
+        <th style="padding:6px 8px;text-align:left;font-size:11px;color:var(--muted)">Publicación</th>
+        <th style="padding:6px 8px;text-align:left;font-size:11px;color:var(--muted)">Precio de ML</th>
+        <th style="padding:6px 8px;text-align:left;font-size:11px;color:var(--muted)">Precio ajustado</th>
+        <th style="padding:6px 8px;text-align:left;font-size:11px;color:var(--muted)">CM</th>
+        <th style="padding:6px 8px;text-align:left;font-size:11px;color:var(--muted)">Se escribe</th>
+      </tr></thead><tbody>${filas}</tbody></table>
+      ${(r.detalle || []).length > 400 ? `<div style="font-size:11px;color:var(--muted);padding:8px">Se listan 400 de ${r.detalle.length}. El archivo las lleva todas.</div>` : ''}
+      </div>` : ''}`;
 }
 
 async function loadPromoCandidatos(refresh) {

@@ -6,6 +6,7 @@
 process.env.TZ = 'America/Argentina/Buenos_Aires';
 
 const express = require('express');
+const { prepararExcelPromos, leerExcelPromos } = require('./promo_excel');
 const cookieParser = require('cookie-parser');
 const cors = require('cors');
 const fetch = require('node-fetch');
@@ -463,6 +464,10 @@ async function initDB() {
       ALTER TABLE clients ADD COLUMN IF NOT EXISTS roas_target NUMERIC DEFAULT 4;
       ALTER TABLE clients ADD COLUMN IF NOT EXISTS tasa_iibb_pct DECIMAL(5,2) DEFAULT 4.00;
       UPDATE clients SET tasa_iibb_pct = 4.00 WHERE tasa_iibb_pct IS NULL;
+      -- Piso de contribución marginal para entrar a una promoción. Es por cliente porque
+      -- no es lo mismo un catálogo de bajo ticket que uno de alto.
+      ALTER TABLE clients ADD COLUMN IF NOT EXISTS piso_cm_promo_pct DECIMAL(5,2) DEFAULT 10.00;
+      UPDATE clients SET piso_cm_promo_pct = 10.00 WHERE piso_cm_promo_pct IS NULL;
       ALTER TABLE clients ADD COLUMN IF NOT EXISTS condicion_iva VARCHAR(30) DEFAULT 'responsable_inscripto';
       UPDATE clients SET condicion_iva = 'responsable_inscripto' WHERE condicion_iva IS NULL;
       -- Alícuota de IVA por producto (10.5 / 21 / 27 / etc). El producto factura y compra
@@ -957,7 +962,7 @@ app.get('/api/clients', requireAuth, async (req, res) => {
     if (req.user.role === 'cliente' && req.user.client_id) {
       // Cliente solo ve su propia cuenta
       query = `SELECT id, name, ml_user_id, site_id, active, token_expires_at, updated_at,
-               roas_target, tasa_iibb_pct, condicion_iva, publi_activa, tipo_cuenta,
+               roas_target, tasa_iibb_pct, condicion_iva, publi_activa, tipo_cuenta, piso_cm_promo_pct,
                (refresh_token IS NOT NULL AND refresh_token != '') AS has_refresh_token
                FROM clients WHERE id = $1`;
       params = [req.user.client_id];
@@ -966,7 +971,7 @@ app.get('/api/clients', requireAuth, async (req, res) => {
       // sobre cuentas activas, así nadie pierde tiempo en una cuenta que no está vigente.
       const soloClientes = req.user.role === 'admin' ? '' : `WHERE tipo_cuenta = 'cliente'`;
       query = `SELECT id, name, ml_user_id, site_id, active, token_expires_at, updated_at,
-               roas_target, tasa_iibb_pct, condicion_iva, publi_activa, tipo_cuenta,
+               roas_target, tasa_iibb_pct, condicion_iva, publi_activa, tipo_cuenta, piso_cm_promo_pct,
                (refresh_token IS NOT NULL AND refresh_token != '') AS has_refresh_token
                FROM clients ${soloClientes} ORDER BY name`;
     }
@@ -11366,6 +11371,182 @@ async function obtenerCandidatosPromo(clientId, { refresh = false } = {}) {
   _promoCandCache.set(clientId, { ts: Date.now(), data });
   return data;
 }
+
+// ── Carga masiva de promociones: preparar el Excel de ML ─────────────────────
+// ML no deja adherir publicaciones por API (403 PolicyAgent), pero el Centro de
+// Promociones tiene carga masiva por Excel. Acá se recibe ese archivo tal como lo
+// bajó el usuario y se devuelve completado: qué publicación entra, cuál no, y a qué
+// precio, según el CMV cargado y el piso de contribución marginal del cliente.
+//
+// El archivo viaja en base64 dentro del JSON en vez de multipart para no sumar una
+// dependencia de uploads: un archivo de 1200 filas pesa ~250 KB (330 KB en base64) y el
+// límite global del server es 10 MB, así que entra holgado. Es una acción manual, no un
+// flujo caliente.
+app.post('/api/promociones/preparar-excel', requireAuth, async (req, res) => {
+  try {
+    const { client_id, archivo, nombre, piso_pct } = req.body || {};
+    const clientId = parseInt(client_id);
+    if (!clientId || !archivo) return res.status(400).json({ error: 'Faltan client_id o archivo' });
+
+    const cRes = await pool.query(
+      'SELECT name, tasa_iibb_pct, condicion_iva, piso_cm_promo_pct FROM clients WHERE id=$1', [clientId]);
+    if (!cRes.rows.length) return res.status(404).json({ error: 'Cliente no encontrado' });
+    const cli = cRes.rows[0];
+    const tasaIibb   = parseFloat(cli.tasa_iibb_pct) || 0;
+    const esMonotrib = (cli.condicion_iva || 'responsable_inscripto') === 'monotributista';
+    const piso = piso_pct != null && piso_pct !== ''
+      ? parseFloat(piso_pct)
+      : (parseFloat(cli.piso_cm_promo_pct) || 10);
+
+    const buffer = Buffer.from(String(archivo).replace(/^data:[^,]*,/, ''), 'base64');
+    if (!buffer.length) return res.status(400).json({ error: 'El archivo llegó vacío' });
+
+    // Primera pasada: leer para saber qué publicaciones hay que costear.
+    let doc;
+    try {
+      doc = await leerExcelPromos(buffer);
+    } catch (e) {
+      return res.status(400).json({ error: e.message });
+    }
+    if (!doc.filas.length) {
+      return res.status(400).json({ error: 'El archivo no tiene filas de publicaciones para procesar' });
+    }
+
+    // Costos del cliente
+    const costsRes = await pool.query(
+      'SELECT mla_id, costo_unit, alicuota_iva FROM product_costs WHERE client_id=$1', [clientId]);
+    const costo = {}, alic = {};
+    costsRes.rows.forEach(r => {
+      costo[r.mla_id] = parseFloat(r.costo_unit) || 0;
+      alic[r.mla_id]  = parseFloat(r.alicuota_iva) || 21;
+    });
+
+    // Sólo se le pide la comisión a ML por las publicaciones que tienen costo cargado y
+    // que el archivo NO trae con "Recibís": para el resto no hace falta estimarla.
+    const necesitanFee = doc.filas.filter(f =>
+      f.recibe == null && costo[f.item_id] != null && costo[f.item_id] > 0).map(f => f.item_id);
+    const meta = {};
+    if (necesitanFee.length) {
+      const token = await getClientToken(clientId);
+      if (token) {
+        const headers = { 'Authorization': `Bearer ${token}` };
+        const ids = [...new Set(necesitanFee)];
+        for (let i = 0; i < ids.length; i += 20) {
+          const b = ids.slice(i, i + 20);
+          try {
+            const d = await fetch(`${ML_API}/items?ids=${b.join(',')}&attributes=id,listing_type_id,category_id,shipping`, { headers })
+              .then(r => r.json());
+            (Array.isArray(d) ? d : []).forEach(r => {
+              if (r.code !== 200 || !r.body) return;
+              const x = r.body;
+              meta[x.id] = {
+                listing_type_id: x.listing_type_id, category_id: x.category_id,
+                logistic_type: x.shipping?.logistic_type || 'cross_docking',
+                shipping_mode: x.shipping?.mode || 'me2',
+                peso: x.shipping?.dimensions?.weight || 500,
+              };
+            });
+          } catch (_) {}
+        }
+      }
+    }
+
+    // Comisión y envío por publicación, sólo para las que no traen "Recibís". No hace
+    // falta pedirla a cada precio: el porcentaje es fijo por categoría y lo único que se
+    // mueve es el cargo fijo, que tiene cuatro escalas. Con una consulta por escala
+    // alcanza para evaluar cualquier precio, y feesAlPrecio ya cachea por categoría.
+    const feeCache = new Map();
+    const feeCount = { n: 0 };
+    const feesPorItem = {};
+    const tokenML = await getClientToken(clientId);
+    const headersML = tokenML ? { 'Authorization': `Bearer ${tokenML}` } : null;
+    if (headersML) {
+      const preciosMuestra = CARGO_FIJO_ESCALAS.map(e => (e.hasta === Infinity ? e.desde + 1000 : Math.round((e.desde + e.hasta) / 2)));
+      for (const itemId of [...new Set(necesitanFee)]) {
+        const m = meta[itemId];
+        if (!m || !m.category_id) continue;
+        feesPorItem[itemId] = {};
+        for (const pr of preciosMuestra) {
+          if (feeCount.n >= PROMO_MAX_FEES) break;
+          const fee = await feesAlPrecio(m, pr, headersML, feeCache, feeCount);
+          if (fee.com_pct != null) feesPorItem[itemId][getEscalaIdx(pr)] = fee;
+        }
+      }
+    }
+
+    // Margen por unidad a un precio dado. `neto` es lo que el archivo dice que se cobra
+    // (columna Recibís, ya sin comisión ni envío); si no viene, se estima con la comisión
+    // de la categoría más el cargo fijo de la escala de ese precio.
+    const margenA = (itemId, precio, neto) => {
+      const c = costo[itemId];
+      if (c == null || c <= 0 || !precio) return null;
+      // Un costo por debajo del 5% del precio es casi siempre un error de carga (moneda
+      // equivocada): daría un margen fantasía y metería la publicación en la campaña.
+      if (c / precio < 0.05) return null;
+      let enMano = neto;
+      if (enMano == null) {
+        const fee = (feesPorItem[itemId] || {})[getEscalaIdx(precio)];
+        if (!fee || fee.com_pct == null) return null;   // sin comisión conocida no se inventa
+        enMano = precio - (Math.round(precio * fee.com_pct / 100) + cargoFijoMLServer(precio)) - (fee.envio || 0);
+      }
+      const a = alic[itemId] ?? 21;
+      // El IVA crédito de los servicios de ML se toma sobre lo que ML efectivamente
+      // retuvo (precio − lo que queda en mano), que ya incluye comisión y envío.
+      const retenidoML = Math.max(0, precio - enMano);
+      const ivaV = esMonotrib ? 0 : ivaContenido(precio, a);
+      const ivaC = esMonotrib ? 0 : ivaContenido(c, a) + ivaContenido(retenidoML, IVA_SERVICIOS_PCT);
+      const ivaDif = Math.round(ivaV - ivaC);
+      const iibb = Math.round(precio * (tasaIibb / 100));
+      const margen = Math.round(enMano - c - ivaDif - iibb);
+      return { margen_pesos: margen, margen_pct: +(margen / precio * 100).toFixed(1) };
+    };
+
+    const r = await prepararExcelPromos(buffer, { margenA, pisoPct: piso });
+
+    // El detalle completo puede ser enorme (1000+ filas): se manda acotado para la vista
+    // y el archivo lleva todo.
+    const detalle = r.detalle.map(d => ({
+      item_id: d.item_id, titulo: String(d.titulo || '').slice(0, 70), sku: d.sku || '',
+      estado: d.estado, motivo: d.motivo, accion: d.accion_escrita || null,
+      precio_ml: d.precio_ml ?? d.precio ?? null, precio_final: d.precio ?? null,
+      descuento: d.descuento ?? null, margen_pct: d.margen_pct ?? null,
+      margen_pesos: d.margen_pesos ?? null, recibe: d.recibe ?? null,
+    }));
+
+    console.log(`[PROMO EXCEL] cliente=${cli.name} archivo="${nombre || 's/n'}" filas=${r.resumen.total} ` +
+                `aplicar=${r.resumen.aplicar} no=${r.resumen.no_aplicar} ajustadas=${r.resumen.ajustadas} ` +
+                `sinCMV=${r.resumen.sin_cmv} piso=${piso}% feesML=${feeCount.n}`);
+
+    res.json({
+      ok: true,
+      cliente: cli.name,
+      campania: r.campania || '',
+      piso_pct: piso,
+      resumen: r.resumen,
+      detalle,
+      archivo: r.buffer.toString('base64'),
+      nombre: (nombre || 'promociones.xlsx').replace(/\.xlsx$/i, '') + '_preparado.xlsx',
+    });
+  } catch (e) {
+    console.error('[PROMO EXCEL]', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Piso de contribución marginal por cliente, el que usa el preparador del Excel.
+app.put('/api/clients/:id/piso-cm-promo', requireAuth, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin' && req.user.role !== 'colaborador') {
+      return res.status(403).json({ error: 'Sin permiso' });
+    }
+    const piso = parseFloat(req.body?.piso_cm_promo_pct);
+    if (isNaN(piso) || piso < 0 || piso > 90) {
+      return res.status(400).json({ error: 'El piso tiene que ser un número entre 0 y 90' });
+    }
+    await pool.query('UPDATE clients SET piso_cm_promo_pct=$1 WHERE id=$2', [piso, parseInt(req.params.id)]);
+    res.json({ ok: true, piso_cm_promo_pct: piso });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
 
 app.get('/api/promociones/candidatos', requireAuth, async (req, res) => {
   try {

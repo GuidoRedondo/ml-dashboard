@@ -7,12 +7,13 @@
     "seed:plan": "node seed-plan-master.js"
   },
   "dependencies": {
+    "cookie-parser": "^1.4.6",
     "cors": "^2.8.5",
     "express": "^4.18.2",
+    "jszip": "^3.10.1",
+    "node-cron": "^3.0.3",
     "node-fetch": "^2.6.9",
     "pg": "^8.11.3",
-    "cookie-parser": "^1.4.6",
-    "node-cron": "^3.0.3",
     "resend": "^4.0.0"
   }
 }
