@@ -14327,6 +14327,7 @@ function renderFsTable() {
   const colMap = {
     mla:       i => i.id,
     title:     i => (i.title || '').toLowerCase(),
+    precio:    i => i.price           ?? -1,
     full:      i => i.stock_full      ?? -1,
     sold:      i => i.units_sold_period ?? -1,
     ritmo:     i => i.daily_rate      ?? -1,
@@ -14370,6 +14371,16 @@ function renderFsTable() {
     const cleanTitle = item.variation_id && item.title.includes(' — ')
       ? item.title.split(' — ')[0]
       : item.title;
+    // Precio: si hay descuento vigente, el de lista va tachado arriba y el real abajo.
+    const pReal = item.price;
+    const pList = item.original_price;
+    const dctoPct = (pList && pReal && pList > pReal) ? Math.round((pList - pReal) / pList * 100) : 0;
+    const precioCell = pReal == null
+      ? '<span style="font-size:12px;color:var(--muted)">—</span>'
+      : (dctoPct > 0
+          ? `<div style="font-size:11px;color:var(--muted);text-decoration:line-through">${fmt$(pList)}</div>
+             <div style="font-size:13px;font-weight:700;color:#16a34a">${fmt$(pReal)}<span style="margin-left:5px;font-size:10px;font-weight:700;color:#fff;background:#16a34a;padding:1px 5px;border-radius:4px">-${dctoPct}%</span></div>`
+          : `<div style="font-size:13px;font-weight:600;color:var(--text)">${fmt$(pReal)}</div>`);
 
     return `<tr>
       <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;white-space:nowrap">
@@ -14382,6 +14393,9 @@ function renderFsTable() {
           ? `<span style="font-size:11px;font-weight:600;color:var(--text)">${item.sku}</span>${skuLabel !== '—' ? '<br><span style="font-size:10px;color:var(--muted)">' + skuLabel + '</span>' : ''}`
           : `<span style="font-size:11px;color:var(--muted)">${skuLabel}</span>`
         }
+      </td>
+      <td style="padding:8px 10px;border-bottom:1px solid var(--border);text-align:right;white-space:nowrap">
+        ${precioCell}
       </td>
       <td style="padding:8px 10px;border-bottom:1px solid var(--border);text-align:center">
         <div style="font-size:13px;font-weight:700;color:#6366f1">${item.stock_full ?? '—'}</div>
@@ -14404,6 +14418,7 @@ function renderFsTable() {
         ${thLabel('mla',       'MLA',            'left')}
         ${thLabel('title',     'Título',         'left')}
         <th style="padding:8px 10px;text-align:left;font-size:11px;font-weight:600;color:var(--muted);border-bottom:1px solid var(--border)">SKU / Variante</th>
+        ${thLabel('precio',    'Precio', 'right')}
         ${thLabel('full',      'Stock FULL')}
         ${thLabel('sold',      'Ventas ' + pd + 'd')}
         ${thLabel('ritmo',     'Ritmo/día')}
@@ -14412,7 +14427,7 @@ function renderFsTable() {
         ${thLabel('exceso',    'Exceso')}
         ${thLabel('suggested', 'Sugerido a enviar')}
       </tr></thead>
-      <tbody>${rows || '<tr><td colspan="10" style="padding:30px;text-align:center;color:var(--muted)">Sin ítems para el filtro seleccionado</td></tr>'}</tbody>
+      <tbody>${rows || '<tr><td colspan="11" style="padding:30px;text-align:center;color:var(--muted)">Sin ítems para el filtro seleccionado</td></tr>'}</tbody>
     </table>
   </div>
   <div style="font-size:11px;color:var(--muted);margin-top:10px;padding:0 2px">
@@ -14486,6 +14501,9 @@ function exportFullStockExcel() {
       'Título':            cleanTitle,
       'SKU / Variante':    skuLabel,
       'SKU (código)':      i.sku || '',
+      'Precio de lista':   (i.original_price && i.price && i.original_price > i.price) ? i.original_price : (i.price ?? ''),
+      'Precio con dcto':   (i.original_price && i.price && i.original_price > i.price) ? i.price : '',
+      'Descuento %':       (i.original_price && i.price && i.original_price > i.price) ? Math.round((i.original_price - i.price) / i.original_price * 100) : 0,
       'FULL':              i.is_full ? 'FULL activo' : 'Sin FULL',
       'Stock FULL':        i.stock_full       ?? 0,
       'Reservado':         i.stock_reserved   ?? 0,
@@ -14503,7 +14521,7 @@ function exportFullStockExcel() {
 
   const wb = XLSX.utils.book_new();
   const ws = XLSX.utils.json_to_sheet(rows);
-  ws['!cols'] = [18,40,22,16,12,12,11,12,13,11,16,14,13,20,13,16].map(w => ({ wch: w }));
+  ws['!cols'] = [18,40,22,16,15,15,11,12,12,11,12,13,11,16,14,13,20,13,16].map(w => ({ wch: w }));
   XLSX.utils.book_append_sheet(wb, ws, 'Stock FULL');
   const fecha = ymd(new Date());
   XLSX.writeFile(wb, `StockFULL_${clientName.replace(/\s+/g,'_')}_${fecha}.xlsx`);

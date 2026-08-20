@@ -9967,11 +9967,29 @@ app.get('/api/logistica/full-stock', requireAuth, async (req, res) => {
       const group = detailBatches.slice(g, g + DETAIL_CONCURRENCY);
       await Promise.all(group.map(async batch => {
       try {
-        const data = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,title,price,available_quantity,shipping,inventory_id,seller_custom_field,attributes,variations&include_attributes=all`, { headers }).then(r => r.json());
+        const data = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,title,price,original_price,sale_price,promotions,available_quantity,shipping,inventory_id,seller_custom_field,attributes,variations&include_attributes=all`, { headers }).then(r => r.json());
         (Array.isArray(data) ? data : []).forEach(r => {
           if (r.code !== 200 || !r.body) return;
           const b = r.body;
           const lt       = b.shipping?.logistic_type || '';
+          // ── Precio de vitrina vs precio de lista ────────────────────────────
+          // El precio que ve el comprador puede venir pisado por una promo/campaña.
+          // El multiget devuelve price (lista o ya con descuento propio),
+          // original_price (lista tachado cuando el seller puso oferta directa) y
+          // promotions[] (campañas de ML). Nos quedamos con el menor de todos como
+          // precio real y con el mayor como precio tachado.
+          const bPrice    = parseFloat(b.price) || 0;
+          const bOriginal = b.original_price ? parseFloat(b.original_price) : null;
+          const bSaleRaw  = b.sale_price;
+          const bSale     = bSaleRaw != null
+            ? (typeof bSaleRaw === 'object' ? parseFloat(bSaleRaw.amount ?? bSaleRaw.regular_amount ?? 0) : parseFloat(bSaleRaw))
+            : null;
+          const bPromos   = (b.promotions || []).map(p => parseFloat(p.price)).filter(v => v > 0);
+          const cands     = [bPrice, bSale, ...bPromos].filter(v => v > 0);
+          const realPrice = cands.length ? Math.min(...cands) : bPrice;
+          const listPrice = Math.max(bOriginal || 0, bPrice, realPrice) || null;
+          // Ratio de descuento del ítem: se aplica a cada variación con precio propio.
+          const discRatio = (listPrice && listPrice > 0) ? realPrice / listPrice : 1;
           const mSku     = manualSkuLog[b.id] || null;   // SKU manual (por MLA) pisa lo de ML
           const itemSku  = mSku || extractSku(b);
           // FULL se determina por la presencia de inventory_id (el inventario de
@@ -9983,12 +10001,18 @@ app.get('/api/logistica/full-stock', requireAuth, async (req, res) => {
             // Ítem con variaciones → una fila por variante
             b.variations.forEach(v => {
               const varName = (v.attribute_combinations || []).map(a => a.value_name).join(' / ') || `Var ${v.id}`;
+              // La variación puede tener precio propio; la promo vive a nivel ítem,
+              // así que le aplicamos el mismo ratio de descuento.
+              const vList = parseFloat(v.original_price ?? v.price ?? b.price) || null;
+              const vBase = parseFloat(v.price ?? b.price) || 0;
+              const vReal = (vBase && discRatio < 1) ? Math.round(vBase * discRatio) : vBase;
               const varSku  = mSku || v.attributes?.find(a => a.id === 'SELLER_SKU')?.value_name || v.seller_custom_field || itemSku || null;
               const varInv  = v.inventory_id || null;
               allItems.push({
                 id:           b.id,
                 title:        `${b.title} — ${varName}`,
-                price:        v.price || b.price,
+                price:        vReal,
+                original_price: (vList && vList > vReal) ? vList : null,
                 variation_id: v.id,
                 inventory_id: varInv,
                 is_full:      !!varInv,   // tentativo: se confirma en paso 6 con stock real
@@ -10001,7 +10025,8 @@ app.get('/api/logistica/full-stock', requireAuth, async (req, res) => {
             allItems.push({
               id:           b.id,
               title:        b.title,
-              price:        b.price,
+              price:        realPrice,
+              original_price: (listPrice && listPrice > realPrice) ? listPrice : null,
               variation_id: null,
               inventory_id: b.inventory_id || null,
               is_full:      !!b.inventory_id,   // tentativo: se confirma en paso 6 con stock real
@@ -10100,6 +10125,8 @@ app.get('/api/logistica/full-stock', requireAuth, async (req, res) => {
         title:             item.title,
         variation_id:      item.variation_id,
         sku:               item.sku,
+        price:             item.price ?? null,
+        original_price:    (item.original_price && item.price && item.original_price > item.price) ? item.original_price : null,
         is_full:           isFull,
         logistic_type:     logisticType,
         stock_full:        stock.stock_full,
