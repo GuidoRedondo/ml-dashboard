@@ -12747,42 +12747,6 @@ app.get('/api/debug/publi-eval', requireAuth, async (req, res) => {
 });
 
 // ── DEBUG APP TOKEN ──────────────────────────────────────────────────────────
-// TEMPORAL — sondeo de ESCRITURA de promociones. Contesta la única pregunta que no se
-// puede responder leyendo: si ML sigue bloqueando la escritura para apps no certificadas.
-// Va contra un item que NO EXISTE (MLA0 + ceros) y un promotion_id inventado, así que no
-// puede aplicar una promo real en la cuenta de ningún cliente pase lo que pase: si el
-// bloqueo se levantó, la respuesta va a ser un error de recurso, no un cambio. Se borra
-// apenas tengamos la respuesta.
-app.get('/api/debug/promo-write-probe', requireAuth, async (req, res) => {
-  try {
-    const clientId = parseInt(req.query.client_id);
-    const token = await getClientToken(clientId);
-    if (!token) return res.status(403).json({ error: 'Cliente no conectado' });
-    const ITEM_FALSO = 'MLA0000000000';
-    const pruebas = [];
-    const intentar = async (nombre, url, method, body) => {
-      try {
-        const r = await fetch(url, {
-          method,
-          headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-          body: body ? JSON.stringify(body) : undefined,
-        });
-        const txt = await r.text();
-        pruebas.push({ nombre, method, status: r.status, respuesta: txt.slice(0, 400) });
-      } catch (e) { pruebas.push({ nombre, method, error: e.message }); }
-    };
-    await intentar('POST seller-promotions/items (item inexistente)',
-      `${ML_API}/seller-promotions/items/${ITEM_FALSO}?app_version=v2`, 'POST',
-      { promotion_id: 'NO-EXISTE-000', promotion_type: 'DEAL', deal_price: 1 });
-    await intentar('DELETE seller-promotions/items (item inexistente)',
-      `${ML_API}/seller-promotions/items/${ITEM_FALSO}?app_version=v2&promotion_id=NO-EXISTE-000&promotion_type=DEAL`, 'DELETE');
-    await intentar('POST users/promotions (crear campaña propia)',
-      `${ML_API}/seller-promotions/users/${req.query.uid || 0}/promotions?app_version=v2`, 'POST',
-      { name: 'PROBE', type: 'SELLER_CAMPAIGN' });
-    res.json({ nota: 'sondeo sin efecto: item y promocion inexistentes', pruebas });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
 app.get('/api/debug/app-token', requireAuth, async (req, res) => {
   try {
     const clientId = parseInt(req.query.client_id);
