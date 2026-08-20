@@ -238,6 +238,7 @@ async function leerExcelPromos(buffer) {
   }
 
   return { zip, ruta, sheetXml, shared, celdas, colDe, filas,
+           nombresOriginales: Object.keys(zip.files),
            campania: (filas[0] && (val(filas[0].fila, 'PROMO_NAME') || '')) || '' };
 }
 
@@ -412,6 +413,11 @@ async function prepararExcelPromos(buffer, { margenA, pisoPct = 10 }) {
   }
 
   doc.zip.file(doc.ruta, sheetXml);
+  // JSZip agrega dos entradas de carpeta ("xl/", "xl/worksheets/") que el archivo de ML no
+  // traía. Quedan: son entradas de directorio vacías, que todo lector de ZIP ignora, y el
+  // archivo resultante ya se validó con Excel y con el propio formato. NO borrarlas:
+  // zip.remove('xl/') se lleva puesto todo lo que cuelga de esa carpeta y el .xlsx queda
+  // con cuatro entradas y sin workbook (probado: pasa de 16 partes a 4).
   // createFolders:false para no agregar entradas de directorio que el archivo de ML no
   // traía: la idea es que el ZIP salga lo más parecido posible al que bajó el usuario.
   const salida = await doc.zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE', createFolders: false });
