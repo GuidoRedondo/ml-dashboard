@@ -984,10 +984,21 @@ tbody td {
 
       <!-- BLOQUE 3: Financiero -->
       <div style="font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.08em;margin-bottom:8px">💰 FINANCIERO</div>
+      <!-- Ganancia del día: el pulso de hoy, separado de las KPI del período -->
+      <div style="display:grid;grid-template-columns:1.4fr 1fr 1fr;gap:12px;margin-bottom:12px">
+        <div class="kpi-card" id="kpiGananciaHoyCard" style="border-color:rgba(0,230,118,.35)">
+          <div class="kpi-label">💵 GANANCIA HOY <span id="kpiGananciaHoyWarn" style="color:#ff9100;font-size:10px"></span></div>
+          <div class="kpi-value" id="kpiGananciaHoy" style="font-size:32px">—</div>
+          <div class="kpi-delta" id="kpiGananciaHoyDelta"></div>
+          <div class="kpi-sub" id="kpiGananciaHoySub">Día en curso — parcial</div>
+        </div>
+        <div class="kpi-card"><div class="kpi-label">📅 GANANCIA / DÍA</div><div class="kpi-value" id="kpiGananciaDia">—</div><div class="kpi-delta" id="kpiGananciaDiaDelta"></div><div class="kpi-sub" id="kpiGananciaDiaSub">Promedio de días cerrados</div></div>
+        <div class="kpi-card"><div class="kpi-label">🚦 PUNTO DE EQUILIBRIO DIARIO</div><div class="kpi-value" id="kpiBreakeven">—</div><div class="kpi-delta" id="kpiBreakevenDelta"></div><div class="kpi-sub" id="kpiBreakevenSub">Días del período que dieron ganancia</div></div>
+      </div>
       <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:12px;margin-bottom:16px">
         <div class="kpi-card"><div class="kpi-label">💰 IMPORTE RECIBIDO</div><div class="kpi-value" id="kpiRecibido">—</div><div class="kpi-delta" id="kpiRecibidoDelta"></div><div class="kpi-sub" id="kpiRecibidoSub">Neto tras comisiones, envío e impuestos</div></div>
         <div class="kpi-card"><div class="kpi-label">📈 % RECIBIDO</div><div class="kpi-value" id="kpiPctRecibido">—</div><div class="kpi-delta" id="kpiPctRecibidoDelta"></div><div class="kpi-sub" id="kpiPctRecibidoSub">Sobre facturación bruta</div></div>
-        <div class="kpi-card"><div class="kpi-label">🟢 UTILIDAD <span id="kpiUtilidadCMVWarn" style="color:#ff9100;font-size:10px"></span></div><div class="kpi-value" id="kpiUtilidad">—</div><div class="kpi-delta" id="kpiUtilidadDelta"></div><div class="kpi-sub" id="kpiUtilidadSub">Neto ML − CMV − Ads</div></div>
+        <div class="kpi-card"><div class="kpi-label">🟢 UTILIDAD <span id="kpiUtilidadCMVWarn" style="color:#ff9100;font-size:10px"></span></div><div class="kpi-value" id="kpiUtilidad">—</div><div class="kpi-delta" id="kpiUtilidadDelta"></div><div class="kpi-sub" id="kpiUtilidadSub">Neto ML − CMV − IVA − IIBB</div></div>
         <div class="kpi-card"><div class="kpi-label">📊 MARGEN % <span id="kpiMargenCMVWarn" style="color:#ff9100;font-size:10px"></span></div><div class="kpi-value" id="kpiMargen">—</div><div class="kpi-delta" id="kpiMargenDelta"></div><div class="kpi-sub" id="kpiMargenSub">Utilidad / Facturación</div></div>
       </div>
 
@@ -3532,6 +3543,93 @@ function updateDashboard() {
       : '<span style="color:var(--muted);font-size:11px">vs período anterior</span>';
   }
 
+  // ── Ganancia diaria ───────────────────────────────────────────────────────
+  // La serie viene del backend ya neta de todo (comisión, impuestos, envío, CMV, y el
+  // prorrateo diario de publicidad, IVA e IIBB). Acá sólo se consolidan las cuentas
+  // conectadas por fecha: dos cuentas pueden traer rangos distintos.
+  const serieGan = {};
+  let hayGanancia = false, cuentasSinCMV = 0;
+  let ganHoy = null, ganAyer = null, facHoy = null, ordHoy = null;
+  connected.forEach(acc => {
+    const s = acc.data?.stats;
+    if (!s) return;
+    if (!Array.isArray(s.by_day_ganancia) || !Array.isArray(s.by_day_fechas)) { cuentasSinCMV++; return; }
+    hayGanancia = true;
+    s.by_day_fechas.forEach((f, i) => { serieGan[f] = (serieGan[f] || 0) + (s.by_day_ganancia[i] || 0); });
+    if (s.ganancia_hoy  != null) ganHoy  = (ganHoy  || 0) + s.ganancia_hoy;
+    if (s.ganancia_ayer != null) ganAyer = (ganAyer || 0) + s.ganancia_ayer;
+    if (s.fac_hoy       != null) facHoy  = (facHoy  || 0) + s.fac_hoy;
+    if (s.ordenes_hoy   != null) ordHoy  = (ordHoy  || 0) + s.ordenes_hoy;
+  });
+  const hoyYmd    = ymd();
+  const fechasGan = Object.keys(serieGan).sort();
+  const cerrados  = fechasGan.filter(f => f !== hoyYmd).map(f => serieGan[f]);
+
+  const ghEl = document.getElementById('kpiGananciaHoy');
+  if (ghEl) {
+    const warnEl  = document.getElementById('kpiGananciaHoyWarn');
+    const subEl   = document.getElementById('kpiGananciaHoySub');
+    const deltaEl = document.getElementById('kpiGananciaHoyDelta');
+    if (!hayGanancia) {
+      // Sin CMV la ganancia sería facturación menos comisiones: un número inventado.
+      ghEl.textContent = '—'; ghEl.style.color = '';
+      if (warnEl)  warnEl.textContent = '⚠ sin CMV';
+      if (subEl)   subEl.textContent = 'Cargá los costos en Rentabilidad para verla';
+      if (deltaEl) deltaEl.innerHTML = '';
+    } else if (ganHoy == null) {
+      // El rango elegido no llega hasta hoy (período histórico).
+      ghEl.textContent = '—'; ghEl.style.color = '';
+      if (warnEl)  warnEl.textContent = '';
+      if (subEl)   subEl.textContent = 'El rango elegido no incluye hoy';
+      if (deltaEl) deltaEl.innerHTML = '';
+    } else {
+      ghEl.textContent = formatMoney(ganHoy);
+      ghEl.style.color = ganHoy >= 0 ? '#00e676' : '#ff5252';
+      if (warnEl) warnEl.textContent = cuentasSinCMV ? `⚠ ${cuentasSinCMV} cuenta(s) sin CMV` : '';
+      const margenHoy = (facHoy > 0) ? (ganHoy / facHoy * 100) : null;
+      if (subEl) subEl.textContent = 'Día en curso · '
+        + (ordHoy != null ? `${ordHoy} vta${ordHoy === 1 ? '' : 's'}` : '—')
+        + (margenHoy != null ? ` · margen ${margenHoy.toFixed(1)}%` : '');
+      if (deltaEl) deltaEl.innerHTML = (ganAyer != null && ganAyer !== 0)
+        ? deltaHtml(((ganHoy - ganAyer) / Math.abs(ganAyer) * 100).toFixed(1)).replace('vs período anterior', 'vs ayer')
+        : '<span style="color:var(--muted);font-size:11px">sin dato de ayer</span>';
+    }
+  }
+
+  const gdEl = document.getElementById('kpiGananciaDia');
+  if (gdEl) {
+    const prom = cerrados.length ? cerrados.reduce((a, b) => a + b, 0) / cerrados.length : null;
+    gdEl.textContent = prom != null ? formatMoney(prom) : '—';
+    gdEl.style.color = prom != null ? (prom >= 0 ? '#00e676' : '#ff5252') : '';
+    const subEl = document.getElementById('kpiGananciaDiaSub');
+    if (subEl) subEl.textContent = prom != null
+      ? `Promedio de ${cerrados.length} día${cerrados.length === 1 ? '' : 's'} cerrado${cerrados.length === 1 ? '' : 's'}`
+      : 'Sin días cerrados en el rango';
+    const deltaEl = document.getElementById('kpiGananciaDiaDelta');
+    // Comparación contra la ganancia de hoy: sirve para leer si el día viene por arriba o
+    // por abajo del promedio, sabiendo que hoy todavía es parcial.
+    if (deltaEl) deltaEl.innerHTML = (prom != null && ganHoy != null && prom !== 0)
+      ? deltaHtml(((ganHoy - prom) / Math.abs(prom) * 100).toFixed(1)).replace('vs período anterior', 'hoy vs promedio')
+      : '';
+  }
+
+  const beEl = document.getElementById('kpiBreakeven');
+  if (beEl) {
+    const verdes = cerrados.filter(v => v > 0).length;
+    beEl.textContent = cerrados.length ? `${verdes}/${cerrados.length}` : '—';
+    const pctVerdes = cerrados.length ? (verdes / cerrados.length * 100) : null;
+    beEl.style.color = pctVerdes == null ? '' : (pctVerdes >= 80 ? '#00e676' : pctVerdes >= 50 ? '#ff9100' : '#ff5252');
+    const subEl = document.getElementById('kpiBreakevenSub');
+    if (subEl) subEl.textContent = cerrados.length
+      ? (pctVerdes.toFixed(0) + '% de los días cerrados dejó ganancia')
+      : 'Días del período que dieron ganancia';
+    const deltaEl = document.getElementById('kpiBreakevenDelta');
+    const rojos = cerrados.length - verdes;
+    if (deltaEl) deltaEl.innerHTML = cerrados.length
+      ? `<span style="color:${rojos ? '#ff5252' : 'var(--muted)'};font-size:11px">${rojos} día${rojos === 1 ? '' : 's'} en rojo</span>`
+      : '';
+  }
+
   // Reputación — solo la medalla de la primera cuenta
   const firstWithRep = connected.find(acc => acc.data.reputation);
   const repBadgeEl = document.getElementById('reputationBadge');
@@ -3669,23 +3767,44 @@ function buildEvolutionChart() {
   try {
 
   const range  = getDateRange();
-  const fromMs = new Date(range.date_from).getTime();
-  const toMs   = new Date(range.date_to).getTime();
-  const days   = (fromMs && toMs) ? Math.max(1, Math.round((toMs - fromMs) / (1000*60*60*24))) : (state.rangeDays || 30);
+  // Días CALENDARIO del rango, contando los dos extremos: del 21/7 al 20/8 son 31 días,
+  // no 30. Antes se restaban los timestamps y quedaba uno de menos, así que el gráfico
+  // perdía el primer día del período (el backend sí lo manda).
+  const days   = (range.date_from && range.date_to)
+    ? Math.max(1, Math.round((dART(range.date_to) - dART(range.date_from)) / (1000*60*60*24)) + 1)
+    : (state.rangeDays || 30);
   const now    = Date.now();
 
+  // Eje de fechas: días calendario argentinos terminando en el último día del rango.
+  // El backend manda by_day_fechas, así que cada punto se ubica por su fecha y no por
+  // posición en el array — con dos cuentas de rangos distintos no se corre nada.
+  const fechaFinChart = range.date_to ? ymd(dART(range.date_to)) : ymd();
+  const fechas = [];
+  for (let i = days - 1; i >= 0; i--) {
+    fechas.push(ymd(new Date(dART(fechaFinChart).getTime() - i * 24*60*60*1000)));
+  }
+  const idxDeFechaChart = {};
+  fechas.forEach((f, i) => { idxDeFechaChart[f] = i; });
+
   // Buckets diarios
-  const facByDay    = new Array(days).fill(0);
-  const ventasByDay = new Array(days).fill(0);
-  const visitasByDay= new Array(days).fill(0);
+  const facByDay      = new Array(days).fill(0);
+  const ventasByDay   = new Array(days).fill(0);
+  const visitasByDay  = new Array(days).fill(0);
+  const gananciaByDay = new Array(days).fill(0);
+  let hayGananciaChart = false;
 
   connected.forEach(acc => {
     const s = acc.data?.stats;
     if (!s) return;
+    // Índice del punto i de esta cuenta dentro del eje del gráfico. Si la cuenta no manda
+    // fechas (respuesta vieja en caché) se cae al índice posicional de antes.
+    const F  = Array.isArray(s.by_day_fechas) ? s.by_day_fechas : null;
+    const at = i => F ? (idxDeFechaChart[F[i]] !== undefined ? idxDeFechaChart[F[i]] : -1)
+                      : (i < days ? i : -1);
     // Usar by_day del backend si están disponibles
     if (s.by_day_fac && s.by_day_ventas) {
-      s.by_day_fac.forEach((v, i) => { if (i < days) facByDay[i] += v; });
-      s.by_day_ventas.forEach((v, i) => { if (i < days) ventasByDay[i] += v; });
+      s.by_day_fac.forEach((v, i)    => { const j = at(i); if (j >= 0) facByDay[j]    += v; });
+      s.by_day_ventas.forEach((v, i) => { const j = at(i); if (j >= 0) ventasByDay[j] += v; });
     } else {
       // Fallback a orders_detail
       (acc.data.orders_detail || []).forEach(o => {
@@ -3698,9 +3817,16 @@ function buildEvolutionChart() {
         }
       });
     }
+    // Ganancia por día. Sólo viene si la cuenta tiene CMV cargado: sin costos el backend
+    // manda null y la serie no se dibuja (sería facturación menos comisiones, un número
+    // que no es la ganancia de nadie).
+    if (Array.isArray(s.by_day_ganancia)) {
+      hayGananciaChart = true;
+      s.by_day_ganancia.forEach((v, i) => { const j = at(i); if (j >= 0) gananciaByDay[j] += v; });
+    }
     // Visitas: reales por día si el backend las trae (by_day_visitas); si no, uniforme.
     if (Array.isArray(s.by_day_visitas) && s.by_day_visitas.some(v => v > 0)) {
-      s.by_day_visitas.forEach((v, i) => { if (i < days) visitasByDay[i] += v; });
+      s.by_day_visitas.forEach((v, i) => { const j = at(i); if (j >= 0) visitasByDay[j] += v; });
     } else {
       const totalVisits = s.total_visits || 0;
       if (totalVisits > 0 && days > 0) {
@@ -3715,15 +3841,13 @@ function buildEvolutionChart() {
   const convByDay = ventasByDay.map((v, i) => visitasByDay[i] > 0 ? (v / visitasByDay[i]) * 100 : 0);
 
   // Labels de fechas
-  const labels = [];
-  for (let i = 0; i < days; i++) {
-    const d = new Date(now - (days - 1 - i) * 24*60*60*1000);
-    labels.push(d.toLocaleDateString('es-AR', { timeZone: ART_TZ, day:'2-digit', month:'short' }).replace('.',''));
-  }
+  const labels = fechas.map(f =>
+    dART(f).toLocaleDateString('es-AR', { timeZone: ART_TZ, day:'2-digit', month:'short' }).replace('.',''));
 
   // Estado activo de series (persistente)
-  if (!window._chartSeries) window._chartSeries = { fac: true, ventas: true, visitas: true, conversion: true };
+  if (!window._chartSeries) window._chartSeries = { fac: true, ventas: true, visitas: true, conversion: true, ganancia: true };
   if (window._chartSeries.conversion === undefined) window._chartSeries.conversion = true;
+  if (window._chartSeries.ganancia === undefined) window._chartSeries.ganancia = true;
 
   const W = chartEl.clientWidth || 900;
   const H = 220;
@@ -3736,6 +3860,15 @@ function buildEvolutionChart() {
   const maxVentas = Math.max(...ventasByDay, 1);
   const maxVisitas= Math.max(...visitasByDay, 1);
   const maxConv   = Math.max(...convByDay, 0.01);
+
+  // Facturación y ganancia comparten el eje de plata: la distancia entre las dos líneas
+  // es, literalmente, todo lo que se va en comisiones, impuestos, envíos, publicidad y
+  // costo de producto. Si algún día dio pérdida el piso baja abajo del cero y se dibuja
+  // la línea de cero como referencia.
+  const dibujarGan = hayGananciaChart && series.ganancia && gananciaByDay.some(v => v !== 0);
+  const yMoneyTop  = Math.max(maxFac, ...(dibujarGan ? gananciaByDay : []), 1);
+  const yMoneyBot  = Math.min(0, ...(dibujarGan ? gananciaByDay : []));
+  const yMoney = v => padT + innerH - ((v - yMoneyBot) / ((yMoneyTop - yMoneyBot) || 1)) * innerH;
 
   // Determinar cuántas etiquetas mostrar
   const step = days <= 14 ? 1 : days <= 31 ? Math.ceil(days/10) : Math.ceil(days/8);
@@ -3767,14 +3900,33 @@ function buildEvolutionChart() {
     const barSpacingFac = innerW / days;
     const pts = facByDay.map((v, i) => {
       const x = padL + (i + 0.5) * barSpacingFac;
-      const y = padT + innerH - (v / maxFac) * innerH;
-      return `${x.toFixed(1)},${y.toFixed(1)}`;
+      return `${x.toFixed(1)},${yMoney(v).toFixed(1)}`;
     });
     facPath = `<polyline points="${pts.join(' ')}" fill="none" stroke="#FFD700" stroke-width="2" stroke-linejoin="round"/>`;
-    const areaBot   = padT + innerH;
+    const areaBot   = yMoney(0).toFixed(1);
     const areaLeft  = padL + 0.5 * (innerW / days);
     const areaRight = padL + (days - 0.5) * (innerW / days);
     facArea = `<polygon points="${areaLeft},${areaBot} ${pts.join(' ')} ${areaRight},${areaBot}" fill="#FFD700" opacity="0.06"/>`;
+  }
+
+  // Línea de ganancia — mismo eje que la facturación
+  let ganPath = '', ganArea = '', ceroLine = '';
+  if (dibujarGan) {
+    const barSpacingGan = innerW / days;
+    const pts = gananciaByDay.map((v, i) => {
+      const x = padL + (i + 0.5) * barSpacingGan;
+      return `${x.toFixed(1)},${yMoney(v).toFixed(1)}`;
+    });
+    const yCero = yMoney(0);
+    ganPath = `<polyline points="${pts.join(' ')}" fill="none" stroke="#00c853" stroke-width="2.5" stroke-linejoin="round"/>`;
+    const areaLeft  = padL + 0.5 * barSpacingGan;
+    const areaRight = padL + (days - 0.5) * barSpacingGan;
+    ganArea = `<polygon points="${areaLeft},${yCero.toFixed(1)} ${pts.join(' ')} ${areaRight},${yCero.toFixed(1)}" fill="#00c853" opacity="0.12"/>`;
+    // La línea de cero sólo aparece si hubo días en pérdida: sin ella no se distingue
+    // un día flojo de un día que costó plata.
+    if (yMoneyBot < 0) {
+      ceroLine = `<line x1="${padL}" y1="${yCero.toFixed(1)}" x2="${padL + innerW}" y2="${yCero.toFixed(1)}" stroke="rgba(255,82,82,.45)" stroke-width="1" stroke-dasharray="3 3"/>`;
+    }
   }
 
   // Línea de visitas
@@ -3831,7 +3983,7 @@ function buildEvolutionChart() {
     const maxFacIdx = facByDay.indexOf(maxFacVal);
     if (maxFacVal > 0) {
       const x = padL + (maxFacIdx / (days - 1 || 1)) * innerW;
-      const y = padT + innerH - (maxFacVal / maxFac) * innerH - 6;
+      const y = yMoney(maxFacVal) - 6;
       const label = '$' + Math.round(maxFacVal/1000).toLocaleString('es-AR') + 'K';
       const yFac = Math.max(y, 12);
       peakLabels += `<rect x="${(x-22).toFixed(1)}" y="${(yFac-10).toFixed(1)}" width="44" height="13" rx="3" fill="rgba(0,0,0,.6)"/>`;
@@ -3851,26 +4003,43 @@ function buildEvolutionChart() {
     }
   }
 
+  // El día más flojo de ganancia: el que hay que ir a mirar. Se marca sólo si hubo alguno
+  // en rojo — en un mes sano el gráfico no se ensucia con etiquetas.
+  if (dibujarGan) {
+    const minGanVal = Math.min(...gananciaByDay);
+    const minGanIdx = gananciaByDay.indexOf(minGanVal);
+    if (minGanVal < 0) {
+      const x = padL + (minGanIdx + 0.5) * (innerW / days);
+      const y = Math.min(yMoney(minGanVal) + 14, padT + innerH - 2);
+      const label = '-$' + Math.round(Math.abs(minGanVal)/1000).toLocaleString('es-AR') + 'K';
+      peakLabels += `<circle cx="${x.toFixed(1)}" cy="${yMoney(minGanVal).toFixed(1)}" r="3" fill="#ff5252"/>`;
+      peakLabels += `<rect x="${(x-22).toFixed(1)}" y="${(y-10).toFixed(1)}" width="44" height="13" rx="3" fill="rgba(0,0,0,.6)"/>`;
+      peakLabels += `<text x="${x.toFixed(1)}" y="${y.toFixed(1)}" text-anchor="middle" font-size="9" fill="#ff5252" font-family="sans-serif" font-weight="700">${label}</text>`;
+    }
+  }
+
   // Línea vertical de hover
   const hoverLine = `<line id="chartHoverLine" x1="-1" y1="${padT}" x2="-1" y2="${padT+innerH}" stroke="rgba(255,255,255,.3)" stroke-width="1" pointer-events="none"/>`;
   const hoverTip  = `<g id="chartTip" opacity="0" pointer-events="none">
-    <rect id="chartTipBg" x="0" y="0" width="132" height="82" rx="6" fill="rgba(20,20,30,.92)" stroke="rgba(255,255,255,.1)" stroke-width="1"/>
+    <rect id="chartTipBg" x="0" y="0" width="150" height="97" rx="6" fill="rgba(20,20,30,.92)" stroke="rgba(255,255,255,.1)" stroke-width="1"/>
     <text id="chartTipDate" x="8" y="14" font-size="10" fill="rgba(255,255,255,.6)" font-family="sans-serif"></text>
     <text id="chartTipFac"  x="8" y="30" font-size="11" fill="#FFD700" font-family="sans-serif" font-weight="600"></text>
-    <text id="chartTipVent" x="8" y="45" font-size="11" fill="#00e676" font-family="sans-serif"></text>
-    <text id="chartTipVis"  x="8" y="60" font-size="11" fill="#8ea2ff" font-family="sans-serif"></text>
-    <text id="chartTipConv" x="8" y="75" font-size="11" fill="#22d3ee" font-family="sans-serif" font-weight="600"></text>
+    <text id="chartTipGan"  x="8" y="45" font-size="11" fill="#00c853" font-family="sans-serif" font-weight="700"></text>
+    <text id="chartTipVent" x="8" y="60" font-size="11" fill="#00e676" font-family="sans-serif"></text>
+    <text id="chartTipVis"  x="8" y="75" font-size="11" fill="#8ea2ff" font-family="sans-serif"></text>
+    <text id="chartTipConv" x="8" y="90" font-size="11" fill="#22d3ee" font-family="sans-serif" font-weight="600"></text>
   </g>`;
 
   // Overlay transparente para capturar hover
   const visitasRound = visitasByDay.map(v => Math.round(v));
   const convRound    = convByDay.map(v => +v.toFixed(2));
+  const ganRound     = hayGananciaChart ? gananciaByDay.map(v => Math.round(v)) : null;
   const overlay = `<rect x="${padL}" y="${padT}" width="${innerW}" height="${innerH}" fill="transparent"
-    onmousemove="chartHover(event, this, ${days}, ${padL}, ${innerW}, ${JSON.stringify(labels)}, ${JSON.stringify(facByDay)}, ${JSON.stringify(ventasByDay)}, ${JSON.stringify(visitasRound)}, ${JSON.stringify(convRound)})"
+    onmousemove="chartHover(event, this, ${days}, ${padL}, ${innerW}, ${JSON.stringify(labels)}, ${JSON.stringify(facByDay)}, ${JSON.stringify(ventasByDay)}, ${JSON.stringify(visitasRound)}, ${JSON.stringify(convRound)}, ${JSON.stringify(ganRound)})"
     onmouseleave="document.getElementById('chartTip').setAttribute('opacity','0');document.getElementById('chartHoverLine').setAttribute('x1','-1');document.getElementById('chartHoverLine').setAttribute('x2','-1')"/>`;
 
   chartEl.innerHTML = `<svg width="100%" height="${H}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
-    ${grid}${barsSvg}${facArea}${facPath}${visitasPath}${convPath}${convDots}${xLabels}${peakLabels}${hoverLine}${hoverTip}${overlay}
+    ${grid}${ceroLine}${barsSvg}${facArea}${facPath}${ganArea}${ganPath}${visitasPath}${convPath}${convDots}${xLabels}${peakLabels}${hoverLine}${hoverTip}${overlay}
   </svg>`;
 
   // Leyenda clickeable
@@ -3878,8 +4047,10 @@ function buildEvolutionChart() {
   const totVisitas = visitasByDay.reduce((a,b)=>a+b,0);
   const totVentas  = ventasByDay.reduce((a,b)=>a+b,0);
   const convProm   = totVisitas > 0 ? (totVentas / totVisitas * 100) : 0;
+  const totGan = gananciaByDay.reduce((a,b)=>a+b,0);
   const legends = [
     { key: 'fac',        color: '#FFD700', label: '— Facturación', total: fmt(facByDay.reduce((a,b)=>a+b,0)), type: 'line' },
+    ...(hayGananciaChart ? [{ key: 'ganancia', color: '#00c853', label: '— Ganancia', total: fmt(totGan), type: 'line' }] : []),
     { key: 'ventas',     color: '#00e676', label: '█ Ventas',       total: totVentas.toLocaleString('es-AR') + ' órd.', type: 'bar' },
     { key: 'visitas',    color: '#6366f1', label: '- - Visitas',    total: totVisitas > 0 ? Math.round(totVisitas).toLocaleString('es-AR') : '', type: 'dash' },
     { key: 'conversion', color: '#22d3ee', label: '— Conversión',   total: totVisitas > 0 ? convProm.toFixed(1) + '%' : '', type: 'line' },
@@ -4296,7 +4467,7 @@ function _initEvoControls() {
   });
 }
 
-function chartHover(e, el, days, padL, innerW, labels, facByDay, ventasByDay, visitasByDay, convByDay) {
+function chartHover(e, el, days, padL, innerW, labels, facByDay, ventasByDay, visitasByDay, convByDay, gananciaByDay) {
   const rect = el.closest('svg').getBoundingClientRect();
   const xRel = e.clientX - rect.left;
   const idx  = Math.min(days-1, Math.max(0, Math.round((xRel - padL) / innerW * (days-1))));
@@ -4311,6 +4482,7 @@ function chartHover(e, el, days, padL, innerW, labels, facByDay, ventasByDay, vi
   const tipVent = document.getElementById('chartTipVent');
   const tipVis  = document.getElementById('chartTipVis');
   const tipConv = document.getElementById('chartTipConv');
+  const tipGan  = document.getElementById('chartTipGan');
 
   const vis  = visitasByDay ? (visitasByDay[idx] || 0) : 0;
   const conv = convByDay ? (convByDay[idx] || 0) : 0;
@@ -4320,15 +4492,25 @@ function chartHover(e, el, days, padL, innerW, labels, facByDay, ventasByDay, vi
   tipVent.textContent = (ventasByDay[idx] || 0) + ' ventas';
   if (tipVis)  tipVis.textContent  = vis > 0 ? vis.toLocaleString('es-AR') + ' visitas' : '— visitas';
   if (tipConv) tipConv.textContent = conv > 0 ? 'Conv. ' + conv.toFixed(1) + '%' : 'Conv. —';
+  if (tipGan) {
+    const g = gananciaByDay ? gananciaByDay[idx] : null;
+    if (g == null) { tipGan.textContent = ''; }
+    else {
+      const signo = g < 0 ? '-' : '';
+      const margen = facByDay[idx] > 0 ? ' (' + (g / facByDay[idx] * 100).toFixed(0) + '%)' : '';
+      tipGan.textContent = 'Ganancia ' + signo + '$' + Math.abs(g).toLocaleString('es-AR') + margen;
+      tipGan.setAttribute('fill', g >= 0 ? '#00c853' : '#ff5252');
+    }
+  }
 
   let tipX = xPos + 8;
-  if (tipX + 140 > 900) tipX = xPos - 142;
+  if (tipX + 158 > 900) tipX = xPos - 160;
   tip.setAttribute('transform', `translate(${tipX}, 16)`);
   tip.setAttribute('opacity', '1');
 }
 
 function toggleChartSeries(key) {
-  if (!window._chartSeries) window._chartSeries = { fac: true, ventas: true, visitas: true };
+  if (!window._chartSeries) window._chartSeries = { fac: true, ventas: true, visitas: true, conversion: true, ganancia: true };
   window._chartSeries[key] = !window._chartSeries[key];
   buildEvolutionChart();
 }

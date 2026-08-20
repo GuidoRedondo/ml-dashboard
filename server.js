@@ -3864,7 +3864,10 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
     const ivaVentasDash   = (hasCMVDash && !esMonotribDash) ? ivaDebitoProdDash + ivaContenido(Math.max(0, curData.amount - revenueProdDash), IVA_SERVICIOS_PCT) : 0;
     const ivaComprasDash  = (hasCMVDash && !esMonotribDash) ? ivaCreditoCmvDash + ivaContenido(totalSaleFee + totalSellerShip, IVA_SERVICIOS_PCT) : 0;
     const ivaNetoDash     = (hasCMVDash && !esMonotribDash) ? Math.max(0, ivaVentasDash - ivaComprasDash) : 0;
-    const utilidadDash    = hasCMVDash ? netoML - cmv_total_dash - adsSpend - ivaNetoDash - iibbEstimadoDash : null;
+    // Publicidad NO se resta acá: netoML ya la descontó dentro de totalEgresos. Restarla de
+    // nuevo la contaba dos veces y la utilidad del Dashboard salía más baja que la del P&L
+    // de Rentabilidad (/api/reporte/pyl), que siempre la contó una sola vez.
+    const utilidadDash    = hasCMVDash ? netoML - cmv_total_dash - ivaNetoDash - iibbEstimadoDash : null;
     const margenDash      = hasCMVDash && curData.amount > 0 ? (utilidadDash / curData.amount * 100) : null;
 
     // ── Período anterior — métricas financieras ───────────────────────────────
@@ -3958,30 +3961,95 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
       };
     }).sort((a,b) => new Date(b.date) - new Date(a.date));
 
-    // Calcular by_day para el gráfico
+    // ── Series diarias del gráfico + ganancia por día ─────────────────────────
+    // Los buckets son días CALENDARIO argentinos, no ventanas de 24hs contadas desde la
+    // hora de curFrom: una venta de las 22:30 del lunes pertenece al lunes. by_day_fechas
+    // viaja al frontend para que las etiquetas no tengan que adivinar qué día es cada punto.
     const dayMs = 24*60*60*1000;
-    const fromDate = curFrom;
-    const totalDays = Math.max(1, Math.round((curTo - fromDate) / dayMs));
-    const byDayVentas = new Array(totalDays).fill(0);
-    const byDayFac    = new Array(totalDays).fill(0);
+    const totalDays = Math.max(1, Math.round((curTo - curFrom) / dayMs));
+    const fechaFinDias = ymd(curTo);
+    const fechasDias = [];
+    const idxByFecha = {};
+    for (let i = totalDays - 1; i >= 0; i--) {
+      const f = ymdShift(fechaFinDias, -i);
+      idxByFecha[f] = fechasDias.length;
+      fechasDias.push(f);
+    }
+    const idxDeFecha = f => (f && idxByFecha[f] !== undefined) ? idxByFecha[f] : -1;
+    // Índice para una ORDEN del período. Si su fecha se sale del eje (típico: se creó el
+    // último día y se cerró después del corte) se pega al día más cercano en vez de
+    // descartarse — así la serie diaria suma exactamente lo mismo que la KPI del período.
+    const idxDeOrden = f => {
+      const i = idxDeFecha(f);
+      if (i >= 0) return i;
+      if (!f) return totalDays - 1;
+      return f < fechasDias[0] ? 0 : totalDays - 1;
+    };
+
+    const byDayVentas  = new Array(totalDays).fill(0);
+    const byDayFac     = new Array(totalDays).fill(0);
+    const byDayVisitas = new Array(totalDays).fill(0);
+    // Ganancia "de mostrador" del día: todo lo que se puede imputar a una orden concreta.
+    // Ingresos (producto + envío que pagó el comprador) menos comisión, impuestos de la
+    // operación, envío que absorbió el vendedor y CMV de las unidades despachadas.
+    const byDayBruto   = new Array(totalDays).fill(0);
+
     curData.orders.forEach(o => {
-      const oDate = new Date(o.date_closed || o.date_approved || o.date_created);
-      const dayIdx = Math.floor((oDate - fromDate) / dayMs);
-      if (dayIdx >= 0 && dayIdx < totalDays) {
-        byDayVentas[dayIdx] += 1;
-        byDayFac[dayIdx]    += (o.order_items||[]).reduce((s,oi) => s+(parseFloat(oi.unit_price)||0)*(oi.quantity||0), 0);
-      }
+      const idx = idxDeOrden(ymd(o.date_closed || o.date_approved || o.date_created));
+      byDayVentas[idx] += 1;
+      let fac = 0, comision = 0, cmv = 0, envioVend = 0, envioComp = 0;
+      (o.order_items || []).forEach(oi => {
+        const qty = oi.quantity || 0;
+        const id  = oi.item && oi.item.id;
+        fac      += (parseFloat(oi.unit_price) || 0) * qty;
+        comision += parseFloat(oi.sale_fee) || 0;
+        const c = id ? costsMapDash[id] : null;
+        if (c != null && c > 0) cmv += c * qty;
+        // Mismo reparto de envío que orders_detail: sale de repartirEnvioPorItem, así un
+        // carrito no le carga el envío entero a cada una de sus órdenes.
+        const e = id ? envioPorItem[`${o.id}|${id}`] : null;
+        if (e) { envioVend += e.seller; envioComp += e.buyer; }
+      });
+      const impuestos = parseFloat((o.taxes || {}).amount) || 0;
+      byDayFac[idx]   += fac;
+      byDayBruto[idx] += fac + envioComp - comision - impuestos - envioVend - cmv;
     });
 
     // Visitas reales por día (desde uv.byDay) — mismo índice diario que ventas/fac, para
     // que el gráfico diario calcule conversión verídica (ventas/visitas) por día.
-    const byDayVisitas = new Array(totalDays).fill(0);
     if (uv && uv.byDay) {
       Object.entries(uv.byDay).forEach(([day, n]) => {
-        const idx = Math.floor((new Date(day + 'T12:00:00') - fromDate) / dayMs);
-        if (idx >= 0 && idx < totalDays) byDayVisitas[idx] += n;
+        const idx = idxDeFecha(day);
+        if (idx >= 0) byDayVisitas[idx] += n;
       });
     }
+
+    // Publicidad, IVA neto, IIBB y anulaciones NO vienen partidos por día: PADS los devuelve
+    // agregados al rango y el IVA se liquida por período. Se reparten proporcionalmente a la
+    // facturación de cada día — para IIBB el reparto es exacto (es un % de la facturación),
+    // para el resto es una aproximación. Con este criterio la suma de la serie diaria da
+    // exactamente la utilidad del período, así que el gráfico cierra contra la KPI.
+    const cargasPeriodo = adsSpend + ivaNetoDash + iibbEstimadoDash + totalCancelled;
+    const facTotalDias  = byDayFac.reduce((s, v) => s + v, 0);
+    // Sin ningún costo cargado la ganancia sería la facturación menos comisiones: un número
+    // inventado. Mismo criterio que la KPI de utilidad — sin CMV no se muestra.
+    const byDayGanancia = hasCMVDash
+      ? byDayBruto.map((bruto, i) =>
+          bruto - (facTotalDias > 0 ? cargasPeriodo * (byDayFac[i] / facTotalDias) : 0))
+      : null;
+
+    // Hoy / ayer para la card. Sólo existen si el rango elegido llega hasta hoy; con un
+    // rango histórico quedan en null y el frontend no dibuja la card.
+    const hoyStr    = ymd();
+    const idxHoy    = idxDeFecha(hoyStr);
+    const idxAyer   = idxDeFecha(ymdShift(hoyStr, -1));
+    // Promedio por día sobre días CERRADOS: hoy es parcial y hundiría el promedio.
+    const diasCerrados = byDayGanancia
+      ? byDayGanancia.filter((_, i) => i !== idxHoy)
+      : [];
+    const gananciaDiaProm = diasCerrados.length
+      ? diasCerrados.reduce((s, v) => s + v, 0) / diasCerrados.length
+      : null;
 
     res.json({
       user,
@@ -4027,6 +4095,14 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
         by_day_ventas:  byDayVentas,
         by_day_fac:     byDayFac,
         by_day_visitas: byDayVisitas,
+        by_day_ganancia: byDayGanancia,
+        by_day_fechas:   fechasDias,
+        // Card "Ganancia de hoy" — null si el rango no llega hasta hoy o si no hay CMV.
+        ganancia_hoy:      (byDayGanancia && idxHoy  >= 0) ? byDayGanancia[idxHoy]  : null,
+        ganancia_ayer:     (byDayGanancia && idxAyer >= 0) ? byDayGanancia[idxAyer] : null,
+        ganancia_dia_prom: gananciaDiaProm,
+        fac_hoy:           idxHoy >= 0 ? byDayFac[idxHoy]    : null,
+        ordenes_hoy:       idxHoy >= 0 ? byDayVentas[idxHoy] : null,
         date_from:     ymd(curFrom),
       },
       top_items: topItems,
