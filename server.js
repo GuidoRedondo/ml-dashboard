@@ -11065,7 +11065,11 @@ async function feesAlPrecio(item, precio, headers, cache) {
   // umbral de los $33.000; por eso la clave lleva la escala y no el monto. Con el precio
   // exacto adentro casi no había aciertos de caché y cada oferta gastaba una llamada: por
   // eso hacía falta un tope (PROMO_MAX_FEES) que dejaba medio catálogo sin margen.
-  const key = `${item.listing_type_id}|${item.category_id}|${item.logistic_type}|${item.peso}|${getEscalaIdx(precio)}`;
+  // El peso NO va en la clave: listing_prices devuelve el envío del vendedor en 0 siempre
+  // (medido: 968 ofertas de Luminocity, todas 0), así que lo único que hacía era romper la
+  // caché — cada peso distinto forzaba otra llamada y el análisis volvía a truncarse.
+  // OJO: por eso este margen NO descuenta envío del vendedor; es margen antes de envío.
+  const key = `${item.listing_type_id}|${item.category_id}|${item.logistic_type}|${getEscalaIdx(precio)}`;
   if (cache.has(key)) return cache.get(key);
   let out = { com_pct: null, envio: null };
   try {
