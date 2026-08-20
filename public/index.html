@@ -1241,6 +1241,8 @@ tbody td {
         <h2 style="margin:0;font-family:var(--font-b);flex:1">💳 Ventas</h2>
         <input type="text" id="ventasSearch" placeholder="Buscar por # orden o producto..." oninput="filterVentas()"
           style="padding:7px 12px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:12px;width:220px">
+        <button class="sync-btn" onclick="exportVentasExcel()" id="btnExportVentas"
+          title="Descarga las órdenes que estás viendo, con los filtros aplicados">📥 Excel</button>
       </div>
       <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap">
         <button id="vf-all"      onclick="setVentasMode('all')"      class="vf-btn vf-active">Todos</button>
@@ -9539,9 +9541,12 @@ async function loadVentas() {
   const allOrders = [];
   connected.forEach(acc => {
     (acc.data.orders_detail || []).forEach(o => {
+      // OJO con el nombre del campo: orders_detail manda `qty`, no `quantity`. Con
+      // p.quantity la expresión daba undefined y caía siempre en 1, así que una orden de
+      // 3 unidades computaba el costo de una sola: el CMV salía corto y la CM inflada.
       const cmvOrden = (o.productos || []).reduce((s, p) => {
         const c = costoMap[p.id];
-        return s + (c ? c * (p.quantity || 1) : 0);
+        return s + (c ? c * (p.qty ?? p.quantity ?? 1) : 0);
       }, 0);
       const hasCMV = cmvOrden > 0;
 
@@ -9553,7 +9558,7 @@ async function loadVentas() {
       const esMonotrib = esMonotributistaActivo();
       let alicOrden = 21, maxPesoCmv = -1;
       (o.productos || []).forEach(p => {
-        const cmvP = (costoMap[p.id] || 0) * (p.quantity || 1);
+        const cmvP = (costoMap[p.id] || 0) * (p.qty ?? p.quantity ?? 1);
         if (cmvP > maxPesoCmv) { maxPesoCmv = cmvP; alicOrden = alicMap[p.id] ?? 21; }
       });
       const aO = alicOrden / 100;
@@ -9580,10 +9585,12 @@ function setVentasMode(mode) {
   filterVentas();
 }
 
-function filterVentas() {
+// Órdenes que se están viendo: modo de envío + búsqueda. La usan la tabla, el paginador
+// y el Excel, para que los tres muestren exactamente lo mismo.
+function ventasFiltradas() {
+  if (!window._ventasData) return [];
   const q    = (document.getElementById('ventasSearch')?.value || '').toLowerCase();
   const mode = window._ventasMode || 'all';
-  if (!window._ventasData) return;
 
   const modeMatch = (o) => {
     if (mode === 'all') return true;
@@ -9596,12 +9603,16 @@ function filterVentas() {
     return true;
   };
 
-  const filtered = window._ventasData.filter(o =>
+  return window._ventasData.filter(o =>
     modeMatch(o) &&
     (!q || String(o.id).includes(q) ||
       (o.productos||[]).some(p => (p.title||'').toLowerCase().includes(q) || (p.id||'').toLowerCase().includes(q)))
   );
-  renderVentas(filtered);
+}
+
+function filterVentas() {
+  if (!window._ventasData) return;
+  renderVentas(ventasFiltradas());
 }
 
 function renderVentas(orders) {
@@ -9691,7 +9702,7 @@ function renderVentas(orders) {
         <table style="width:100%;border-collapse:collapse">
           <thead>
             <tr style="border-bottom:2px solid rgba(255,255,255,.1)">
-              ${['Fecha','# Orden','Producto','Facturación','Comisión','Impuestos','Res. Envío','Neto','% Neto','CMV','Utilidad','Modo envío'].map(h => `<th ${thStyle(h)}>${h}</th>`).join('')}
+              ${['Fecha','# Orden','Producto','Facturación','Comisión','Impuestos','Res. Envío','Neto','% Neto','CMV','CM','Modo envío'].map(h => `<th ${thStyle(h)}>${h}</th>`).join('')}
             </tr>
           </thead>
           <tbody>${rows}</tbody>
@@ -9701,14 +9712,79 @@ function renderVentas(orders) {
     </div>`;
 }
 
+// Excel de Ventas: baja las órdenes que se están viendo, con los filtros puestos y TODAS
+// las páginas (la tabla muestra de a 50). Una fila por orden, más una solapa con el detalle
+// producto por producto, que es lo que hace falta para cruzar contra el CMV.
+function exportVentasExcel() {
+  const XLSX = window.XLSX;
+  if (!XLSX) { showToast('Librería Excel no disponible'); return; }
+  const orders = ventasFiltradas();
+  if (!orders.length) { showToast('No hay órdenes para exportar'); return; }
+
+  const fechaHora = d => {
+    const dt = new Date(d);
+    return dt.toLocaleDateString('es-AR', { timeZone: ART_TZ, day: '2-digit', month: '2-digit', year: 'numeric' })
+      + ' ' + dt.toLocaleTimeString('es-AR', { timeZone: ART_TZ, hour: '2-digit', minute: '2-digit' });
+  };
+  const r2 = n => (n == null ? '' : Math.round(n * 100) / 100);
+
+  const variasCuentas = new Set(orders.map(o => o._account)).size > 1;
+  const filas = orders.map(o => ({
+    Fecha:              fechaHora(o.date),
+    'Orden':            String(o.id),
+    ...(variasCuentas ? { Cuenta: o._account || '' } : {}),
+    Estado:             o.status || '',
+    'Modo envio':       o.mode || '',
+    Productos:          (o.productos || []).map(p => p.title).join(' | '),
+    MLAs:               (o.productos || []).map(p => p.id).join(' | '),
+    Unidades:           (o.productos || []).reduce((a, p) => a + (p.qty || 0), 0),
+    'Facturacion':      r2(o.facturacion),
+    'Comision':         r2(-o.comision),
+    Impuestos:          r2(-(o.impuestos || 0)),
+    'Envio cobrado':    r2(o.envio_comprador),
+    'Envio pagado':     r2(-(o.envio_vendedor || 0)),
+    'Resultado envio':  r2((o.envio_comprador || 0) - (o.envio_vendedor || 0)),
+    Neto:               r2(o.neto),
+    '% Neto':           o.pct_recibido != null ? parseFloat(o.pct_recibido) : '',
+    CMV:                o.hasCMV ? r2(-o.cmv) : '',
+    'IVA neto':         o.ivaNeto != null ? r2(-o.ivaNeto) : '',
+    'CM':               o.utilidad != null ? r2(o.utilidad) : '',
+    'CM %':             (o.utilidad != null && o.facturacion > 0) ? Math.round(o.utilidad / o.facturacion * 1000) / 10 : '',
+  }));
+
+  // Solapa 2: una fila por producto vendido, para tablas dinámicas por SKU.
+  const detalle = [];
+  orders.forEach(o => (o.productos || []).forEach(p => detalle.push({
+    Fecha:       fechaHora(o.date),
+    'Orden':     String(o.id),
+    MLA:         p.id || '',
+    Producto:    p.title || '',
+    Cantidad:    p.qty || 0,
+    'Precio unitario': r2(p.price),
+    'Subtotal':  r2((p.price || 0) * (p.qty || 0)),
+    'Modo envio': o.mode || '',
+  })));
+
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.json_to_sheet(filas);
+  ws['!cols'] = [{wch:17},{wch:14},{wch:10},{wch:16},{wch:46},{wch:26},{wch:9},{wch:13},{wch:12},{wch:11},{wch:13},{wch:13},{wch:15},{wch:13},{wch:9},{wch:13},{wch:11},{wch:13},{wch:8}];
+  XLSX.utils.book_append_sheet(wb, ws, 'Ventas');
+  const ws2 = XLSX.utils.json_to_sheet(detalle);
+  ws2['!cols'] = [{wch:17},{wch:14},{wch:15},{wch:50},{wch:9},{wch:15},{wch:13},{wch:16}];
+  XLSX.utils.book_append_sheet(wb, ws2, 'Detalle por producto');
+
+  const cli   = (getActiveClient()?.name || 'cliente').replace(/\s+/g, '_');
+  const modo  = (window._ventasMode && window._ventasMode !== 'all') ? '_' + window._ventasMode : '';
+  const rango = getDateRange();
+  XLSX.writeFile(wb, `Ventas_${cli}${modo}_${rango.date_from}_a_${rango.date_to}.xlsx`);
+  showToast(`✅ Excel descargado (${filas.length} órdenes)`);
+}
+
 function ventasPage(p) {
   window._ventasPage = p;
-  const q = (document.getElementById('ventasSearch')?.value || '').toLowerCase();
-  const filtered = !q ? window._ventasData : window._ventasData.filter(o =>
-    String(o.id).includes(q) ||
-    (o.productos||[]).some(pr => (pr.title||'').toLowerCase().includes(q) || (pr.id||'').toLowerCase().includes(q))
-  );
-  renderVentas(filtered);
+  // Antes acá se re-filtraba sólo por el buscador: al pasar de página se perdía el filtro
+  // de modo de envío y volvían a aparecer todas las órdenes.
+  renderVentas(ventasFiltradas());
   document.getElementById('ventasContent').scrollIntoView({ behavior: 'smooth' });
 }
 
