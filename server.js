@@ -9167,6 +9167,10 @@ require('./backend_competencia_categoria')(app, { pool, requireAuth, getClientTo
 // Crea su propia tabla ml_sku_cache (idempotente) y monta las rutas en /api/ml.
 require('./backend_ml_skus')(app, { pool, requireAuth, getClientToken });
 
+// Impacto del aumento de tarifas ML del 1/9/2026 — módulo aparte
+// (backend_impacto_costos.js). Monta GET /api/impacto-costos.
+require('./backend_impacto_costos')(app, { pool, requireAuth, getClientToken, ML_API });
+
 app.get('/api/competencia/categorias', requireAuth, async (req, res) => {
   try {
     const { client_id } = req.query;

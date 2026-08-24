@@ -784,6 +784,9 @@ tbody td {
       <div class="nav-item" data-page="reporte" onclick="showPage('reporte',this);initReporte()">
         <span class="nav-icon">📊</span> Reporte Financiero
       </div>
+      <div class="nav-item" data-page="impacto-costos" onclick="showPage('impacto-costos',this);initImpactoCostos()">
+        <span class="nav-icon">⚠️</span> Impacto Costos 1/9
+      </div>
       <div class="nav-item" data-page="informe-mensual" onclick="showPage('informe-mensual',this);cargarSectionInformeMensual();initPFTabla()">
         <span class="nav-icon">📄</span> Informe Mensual
       </div>
@@ -1682,6 +1685,27 @@ tbody td {
       </div>
       <div id="reporte-comparar-panel" style="display:none">
         <div id="reporteCompararContent"></div>
+      </div>
+    </div>
+
+    <!-- IMPACTO COSTOS 1/9/2026 -->
+    <div class="page" id="page-impacto-costos">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;flex-wrap:wrap">
+        <h2 style="margin:0;font-family:var(--font-b);flex:1">⚠️ Impacto del aumento de costos ML — 1/9/2026</h2>
+        <label style="font-size:12px;color:var(--muted)">Desde
+          <input type="date" id="icDesde" style="margin-left:4px;padding:5px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;background:var(--surface);color:var(--text)">
+        </label>
+        <label style="font-size:12px;color:var(--muted)">Hasta
+          <input type="date" id="icHasta" style="margin-left:4px;padding:5px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;background:var(--surface);color:var(--text)">
+        </label>
+        <button class="sync-btn" onclick="loadImpactoCostos()">🔄 Calcular</button>
+      </div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:18px">
+        Compara, publicación por publicación y sobre ventas reales, cuánto se paga hoy de cargo fijo
+        y envío contra cuánto se va a pagar desde el 1/9/2026.
+      </div>
+      <div id="impactoCostosContent">
+        <div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Elegí el rango y tocá Calcular</div>
       </div>
     </div>
 
@@ -11801,6 +11825,7 @@ const SECCIONES = [
   { id: 'preguntas',        label: '❓ Preguntas',             optIn: true },
   { id: 'plan',             label: '🗓️ Plan de Trabajo',       optIn: true },
   { id: 'informe-mensual',  label: '📄 Informe Mensual',      optIn: true },
+  { id: 'impacto-costos',   label: '⚠️ Impacto Costos 1/9',    optIn: true },
   { id: 'decisiones-publi', label: '🎛️ Motor de Publicidad',   optIn: true },
 ];
 
@@ -21762,6 +21787,207 @@ function _planRenderCalendario() {
     </div>
   `;
   cont.innerHTML = html;
+}
+
+// ── IMPACTO DE COSTOS 1/9/2026 ────────────────────────────────────────────────
+// Misma lógica que la skill `impacto-costos-sep26` que genera los PDF por cliente,
+// pero corriendo dentro del Dashboard: se recalcula con las ventas del período que
+// se elija en vez de quedar congelado el día que se generó el archivo.
+// El cálculo vive en backend_impacto_costos.js (GET /api/impacto-costos).
+
+let _icData = null;
+
+function initImpactoCostos() {
+  const d = document.getElementById('icDesde'), h = document.getElementById('icHasta');
+  if (d && !d.value) {
+    // Últimos 30 días, igual que la corrida por defecto de la skill.
+    const hoy = new Date();
+    h.value = ymd(hoy);
+    d.value = ymd(new Date(hoy.getTime() - 29 * 24 * 3600 * 1000));
+  }
+  if (!_icData) loadImpactoCostos();
+}
+
+async function loadImpactoCostos() {
+  const el = document.getElementById('impactoCostosContent');
+  const client = getActiveClient();
+  if (!client) {
+    el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">Seleccioná una cuenta en el topbar</div>';
+    return;
+  }
+  const desde = document.getElementById('icDesde').value;
+  const hasta = document.getElementById('icHasta').value;
+  el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">⏳ Calculando sobre las ventas reales del período…</div>';
+  try {
+    const data = await apiCall('GET',
+      `/api/impacto-costos?client_id=${client.id}&date_from=${desde}&date_to=${hasta}`);
+    if (!data)            { el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">Sin permisos o token vencido</div>'; return; }
+    if (data.error)       { el.innerHTML = `<div style="color:var(--muted);padding:40px;text-align:center">${data.error}</div>`; return; }
+    _icData = data;
+    renderImpactoCostos(data);
+  } catch (e) {
+    el.innerHTML = `<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Error: ${e.message}</div>`;
+  }
+}
+
+function renderImpactoCostos(r) {
+  const el = document.getElementById('impactoCostosContent');
+  const $ = n => (n < 0 ? '-' : '') + '$' + Math.round(Math.abs(n || 0)).toLocaleString('es-AR');
+  const pc = (n, d = 1) => n == null ? '—' : (n * 100).toFixed(d) + '%';
+  const t = r.transaccional || {}, c = r.cuenta || {};
+  const ROJO = '#dc2626', VERDE = '#10b981';
+
+  const card = (label, valor, sub, color) => `
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px">
+      <div style="font-size:11px;color:var(--muted);margin-bottom:4px">${label}</div>
+      <div style="font-size:20px;font-weight:700;font-family:var(--font-b);${color ? `color:${color}` : ''}">${valor}</div>
+      ${sub ? `<div style="font-size:11px;color:var(--muted);margin-top:3px">${sub}</div>` : ''}
+    </div>`;
+
+  // ── Lo que se lleva ML: la métrica robusta, no depende del CMV ni del P&L ──
+  const kpis = `
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px;margin-bottom:22px">
+      ${card('Sobrecosto por mes', $(r.impacto_mensual),
+             `${pc(r.impacto_pct_facturacion, 2)} de la facturación · ${$(r.impacto_anualizado)} al año`, ROJO)}
+      ${card('Se lleva ML hoy', $(t.ml_hoy), `${pc(t.take_hoy)} de la facturación`)}
+      ${card('Se lleva ML desde el 1/9', $(t.ml_sep),
+             `${pc(t.take_sep)} · +${((t.take_delta_pp || 0) * 100).toFixed(2)} pp`, ROJO)}
+      ${card('Publicaciones analizadas', r.n_items,
+             `${$(r.facturacion)} facturados en el período`)}
+    </div>`;
+
+  // ── Rentabilidad de la cuenta. Solo si el P&L pasó la validación de consistencia ──
+  let bloqueCuenta = '';
+  if (c.utilidad_actual != null) {
+    bloqueCuenta = `
+      <h3 style="font-family:var(--font-b);font-size:15px;margin:24px 0 10px">Qué le pasa a la rentabilidad de la cuenta</h3>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px;margin-bottom:8px">
+        ${card('Utilidad final hoy', $(c.utilidad_actual), `margen ${pc(c.margen_actual, 2)}`)}
+        ${card('Utilidad proyectada', $(c.utilidad_proyectada),
+               `margen ${pc(c.margen_proyectado, 2)} · ${pc(c.caida_utilidad_pct)} menos`,
+               c.da_perdida ? ROJO : undefined)}
+        ${card('Golpe real a la utilidad', $(c.impacto_neto),
+               c.es_ri ? `bruto ${$(c.impacto_bruto)} − ${$(c.iva_recuperado)} de IVA que recuperás`
+                       : 'monotributo: no hay crédito fiscal, el golpe es el bruto entero', ROJO)}
+        ${card('Suba pareja necesaria', pc(c.suba_pareja_necesaria, 2),
+               'para dejar la utilidad igual — mejor hacerlo selectivo')}
+      </div>
+      ${c.da_perdida ? `<div style="background:${ROJO}15;border:1px solid ${ROJO};color:${ROJO};border-radius:8px;padding:10px 12px;font-size:13px;font-weight:600;margin-bottom:8px">🚨 La cuenta pasa a pérdida con las tarifas nuevas.</div>` : ''}`;
+  } else {
+    bloqueCuenta = `
+      <div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:10px 12px;font-size:12px;color:var(--muted);margin:20px 0">
+        Sin utilidad ni margen de la cuenta: el P&L no pasó la validación de consistencia
+        (${r.pyl_msg || 'sin detalle'}). El sobrecosto de arriba igual vale — sale de las ventas,
+        no del P&L.
+      </div>`;
+  }
+
+  // ── Tablas ──
+  const filaMov = a => {
+    const z = a.zona_muerta, p = a.plan || {};
+    const salida = z
+      ? `bajar a <b>${$(z.piso_sugerido)}</b> (gana ${$(z.ganancia_si_baja)}/u)` +
+        (p.subir ? `<br>o subir a <b>${$(p.subir.precio)}</b> (+${pc(p.subir.delta_pct)})` : '')
+      : (p.subir ? `subir a <b>${$(p.subir.precio)}</b> (+${pc(p.subir.delta_pct)})` : '—');
+    return `<tr>
+      <td style="font-family:monospace;font-size:11px">${a.mla_id}</td>
+      <td style="font-size:12px">${(a.title || '').slice(0, 58)}</td>
+      <td style="text-align:right">${$(a.precio)}</td>
+      <td style="text-align:center;font-size:11px">${z ? z.umbral : '—'}</td>
+      <td style="text-align:right">${a.units}</td>
+      <td style="text-align:right;color:${ROJO}">${$(a.delta_total)}</td>
+      <td style="font-size:11px">${salida}</td>
+    </tr>`;
+  };
+
+  const tabla = (titulo, subtitulo, filas, encabezados) => !filas.length ? '' : `
+    <h3 style="font-family:var(--font-b);font-size:15px;margin:24px 0 4px">${titulo}</h3>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:8px">${subtitulo}</div>
+    <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px">
+      <thead><tr style="background:var(--surface2)">
+        ${encabezados.map(h => `<th style="padding:7px 8px;text-align:left;font-size:11px;color:var(--muted);white-space:nowrap">${h}</th>`).join('')}
+      </tr></thead>
+      <tbody>${filas.join('')}</tbody>
+    </table></div>`;
+
+  const encMov = ['MLA', 'Publicación', 'Precio hoy', 'Umbral', 'Un.', 'Sobrecosto/mes', 'Qué hacer'];
+
+  const bloqueZona = tabla(
+    `Publicaciones que hay que mover antes del 1/9 (${r.zona_muerta.length})`,
+    'Quedan en una <b>zona muerta</b>: el precio de hoy les deja menos plata que bajar debajo del ' +
+    'umbral. Subir un poco tampoco alcanza — hay que salir para alguno de los dos lados.',
+    r.zona_muerta.slice(0, 25).map(filaMov), encMov);
+
+  const bloqueNeg = tabla(
+    `Pasan a perder plata el 1/9 (${r.caen_negativo.length})`,
+    'Hoy dejan margen positivo. Con las tarifas nuevas, no.',
+    r.caen_negativo.slice(0, 25).map(a => `<tr>
+      <td style="font-family:monospace;font-size:11px">${a.mla_id}</td>
+      <td style="font-size:12px">${(a.title || '').slice(0, 58)}</td>
+      <td style="text-align:right">${$(a.precio)}</td>
+      <td style="text-align:right">${pc(a.margen_actual)}</td>
+      <td style="text-align:right;color:${ROJO};font-weight:600">${pc(a.margen_sep)}</td>
+      <td style="text-align:right;color:${ROJO}">${$(a.delta_total)}</td>
+    </tr>`),
+    ['MLA', 'Publicación', 'Precio', 'Margen hoy', 'Margen 1/9', 'Sobrecosto/mes']);
+
+  const bloqueSubir = tabla(
+    `Hay que subirles el precio (${r.a_subir.length})`,
+    'No están atrapadas entre umbrales: alcanza con subir hasta recuperar el margen de hoy.',
+    r.a_subir.slice(0, 25).map(filaMov), encMov);
+
+  const bloqueTop = tabla(
+    'Dónde se va la plata',
+    'Las publicaciones que más sobrecosto suman en el mes, tengan o no problema de margen.',
+    r.top_impacto.map(filaMov), encMov);
+
+  // ── Oportunidades ──
+  let opor = '';
+  if (r.candidatos_kit.length) {
+    opor += `<div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px;margin-bottom:12px">
+      <div style="font-weight:700;font-family:var(--font-b);margin-bottom:6px">Armar kits</div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:8px">Un kit de menos de $33.000 paga
+      <b>un solo cargo fijo</b>, no uno por unidad. Acá el cargo fijo pesa tanto que agrupar de a 2 o 3
+      cambia el margen de forma inmediata.</div>
+      <ul style="margin:0;padding-left:18px;font-size:12px">${r.candidatos_kit.map(a =>
+        `<li><b>${(a.title || '').slice(0, 50)}</b> — ${$(a.precio)}, ${a.units} u. El cargo fijo se lleva ${pc(a.costo_sep / a.precio, 0)} del precio.</li>`).join('')}</ul></div>`;
+  }
+  if (r.franja_favorable.length) {
+    opor += `<div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px;margin-bottom:12px">
+      <div style="font-weight:700;font-family:var(--font-b);margin-bottom:6px">Ventaja en productos pesados</div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:8px">Entre $33.000 y $49.999 el envío de
+      productos pesados casi no aumentó. Con la inflación corriendo es una baja real: el costo logístico de
+      estas publicaciones quedó más competitivo que el del resto del mercado.</div>
+      <ul style="margin:0;padding-left:18px;font-size:12px">${r.franja_favorable.map(a =>
+        `<li>${(a.title || '').slice(0, 50)} — ${$(a.precio)}</li>`).join('')}</ul></div>`;
+  }
+  if (opor) opor = `<h3 style="font-family:var(--font-b);font-size:15px;margin:24px 0 10px">Dónde hay oportunidad</h3>` + opor;
+
+  // ── Notas de calidad del dato: lo que el informe NO puede afirmar ──
+  const notas = [];
+  if (r.cobertura_costos < 0.85) {
+    notas.push(`Los márgenes salen del ${pc(r.cobertura_costos, 0)} de las publicaciones, que son las que
+      tienen el costo cargado. El sobrecosto en pesos no depende del CMV y está completo.`);
+  }
+  if (r.comision_fuera_de_rango) {
+    notas.push(`${r.comision_fuera_de_rango} publicaciones tenían la comisión fuera de rango: se les aplicó
+      la mediana de esta cuenta (${pc(r.comision_mediana)}).`);
+  }
+  const sinPeso = r.n_items - (r.pesos_reales || 0);
+  if (sinPeso > 0) {
+    notas.push(`${sinPeso} de ${r.n_items} publicaciones no tienen peso declarado: se calcularon con
+      ${r.peso_default_kg} kg. En productos pesados eso subestima el costo de envío.`);
+  }
+  notas.push(`El costo de envío se calcula con el peso declarado. ML factura por el mayor entre peso físico
+    y volumétrico, y el divisor volumétrico no está en la API: los bultos grandes y livianos quedan
+    subestimados.`);
+  const bloqueNotas = `
+    <div style="margin-top:26px;padding-top:14px;border-top:1px solid var(--border);font-size:11px;color:var(--muted);line-height:1.7">
+      ${notas.map(n => '• ' + n).join('<br>')}
+    </div>`;
+
+  el.innerHTML = kpis + bloqueCuenta + bloqueZona + bloqueNeg + bloqueSubir +
+                 bloqueTop + opor + bloqueNotas;
 }
 </script>
 </body>
