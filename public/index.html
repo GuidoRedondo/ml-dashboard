@@ -1429,6 +1429,7 @@ tbody td {
     <div class="page" id="page-logistica">
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap">
         <h2 style="margin:0;font-family:var(--font-b);flex:1">🚚 Logística</h2>
+        <button class="sync-btn" id="logisticaExcelBtn" onclick="exportarReputacionEnvios()" style="display:none">📥 Excel</button>
         <button class="sync-btn" id="logisticaRefreshBtn" onclick="refreshLogisticaTab()">🔄 Actualizar</button>
       </div>
       <!-- Tabs -->
@@ -1820,6 +1821,7 @@ tbody td {
     <div class="page" id="page-reputacion">
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap">
         <h2 style="margin:0;font-family:var(--font-b);flex:1">⭐ Reputación</h2>
+        <button class="sync-btn" onclick="exportarReputacionEnvios()">📥 Excel</button>
         <button class="sync-btn" onclick="loadReputacion({calcular:true})">🔄 Actualizar</button>
       </div>
       <div id="reputacionContent"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Cargando...</div></div>
@@ -14170,6 +14172,346 @@ function renderLogistica(data) {
 
 // ── STOCK FULL ────────────────────────────────────────────────────────────────
 
+// ── EXPORT A EXCEL — Reputación + Envíos ─────────────────────────────────────
+// Un solo archivo con las dos secciones, porque en la call se miran juntas: la
+// reputación dice qué está midiendo ML y los envíos dicen por qué. La primera
+// solapa es la única que se lee en voz alta: hallazgo con números y qué hacer.
+// Las demás son el respaldo para cuando el cliente pregunta "¿cuáles?".
+
+// Reglas de lectura de los datos. Cada una devuelve una fila sólo si el dato la
+// dispara: un Excel con 30 sugerencias genéricas no lo lee nadie.
+function _sugerenciasReputacionEnvios(rep, des, mes) {
+  const out = [];
+  const push = (prioridad, tema, hallazgo, sugerencia) => out.push({ prioridad, tema, hallazgo, sugerencia });
+  const pct = v => v == null ? null : +(v * 100).toFixed(2);
+
+  // 1. Las métricas contra el límite de ML.
+  const m = (rep && rep.metricas) || {};
+  [['Reclamos', m.reclamos], ['Cancelaciones', m.cancelaciones], ['Envíos demorados', m.demoras]].forEach(([nombre, x]) => {
+    if (!x || x.rate == null || x.limite == null) return;
+    const p = pct(x.rate), lim = x.limite * 100;
+    if (p > lim) {
+      push('CRÍTICO', 'Reputación', `${nombre} en ${p}% (${x.casos} casos), por encima del límite de ML de ${lim}%.`,
+        'ML ya está recortando exposición. Es lo primero a resolver: mirá el detalle de casos para ver qué se repite.');
+    } else if (p > lim * 0.5) {
+      push('Atención', 'Reputación', `${nombre} en ${p}% (${x.casos} casos), contra un límite de ${lim}%.`,
+        'Todavía adentro pero a mitad de camino. Vale seguirlo de cerca este mes.');
+    }
+  });
+  if (m.mediaciones && m.mediaciones.casos) {
+    const disputas = m.mediaciones.disputas || 0;
+    if (disputas > 0) {
+      push('Atención', 'Reputación', `${m.mediaciones.casos} mediaciones en 60 días, de las cuales ${disputas} escalaron a disputa.`,
+        'Las que llegan a disputa casi siempre terminan en reintegro. Revisá los motivos: si se repiten, el problema es de la publicación o del producto, no del caso puntual.');
+    }
+  }
+
+  // 2. Lo que vence: reclamos abiertos con acción del vendedor.
+  const abiertos = (rep && rep.abiertos) || [];
+  const conAccion = abiertos.filter(a => a.accion);
+  if (conAccion.length) {
+    const prox = conAccion.filter(a => a.vence).sort((a, b) => String(a.vence).localeCompare(String(b.vence)))[0];
+    push('CRÍTICO', 'Reclamos abiertos', `${conAccion.length} de ${abiertos.length} reclamos abiertos esperan una respuesta tuya${prox && prox.vence ? `, el más urgente vence el ${new Date(prox.vence).toLocaleString('es-AR', { timeZone: ART_TZ, day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}` : ''}.`,
+      'No contestar dentro del plazo se resuelve a favor del comprador. Ver solapa "Reclamos abiertos".');
+  } else if (abiertos.length) {
+    push('Seguimiento', 'Reclamos abiertos', `${abiertos.length} reclamos abiertos, ninguno esperando acción tuya.`,
+      'Están en manos de ML o del comprador. Sólo seguirlos.');
+  }
+
+  // 3. Envíos que hay que empujar hoy.
+  const alertas = (des && des.alertas) || [];
+  if (alertas.length) {
+    const peor = alertas[0];
+    push('CRÍTICO', 'Envíos demorados', `${alertas.length} envíos en curso pasados de fecha, el peor con ${peor.horas_vencido >= 24 ? (peor.horas_vencido / 24).toFixed(1) + ' días' : Math.round(peor.horas_vencido) + ' horas'} de atraso.`,
+      'Cada uno de estos suma a la métrica de demoras. Ver solapa "Envíos demorados hoy".');
+  }
+
+  // 4. Comparación entre canales de entrega.
+  const per = des && des.periodo;
+  if (per && per.envios && per.envios.length) {
+    const modos = {};
+    per.envios.forEach(e => {
+      if (!modos[e.modo]) modos[e.modo] = { envios: 0, aTiempo: 0, tarde: 0, desp: [] };
+      const x = modos[e.modo];
+      x.envios++;
+      if (e.puntual === true) x.aTiempo++;
+      if (e.puntual === false) x.tarde++;
+      if (e.despacho_h != null) x.desp.push(e.despacho_h);
+    });
+    const conJuicio = Object.entries(modos)
+      .map(([k, v]) => ({ modo: k, ...v, pct: (v.aTiempo + v.tarde) ? v.aTiempo / (v.aTiempo + v.tarde) * 100 : null }))
+      .filter(x => x.pct != null && x.envios >= 20)
+      .sort((a, b) => b.pct - a.pct);
+    if (conJuicio.length >= 2) {
+      const mejor = conJuicio[0], peor = conJuicio[conJuicio.length - 1];
+      if (mejor.pct - peor.pct >= 15) {
+        push('Importante', 'Forma de entrega', `Por ${peor.modo} llega a tiempo el ${peor.pct.toFixed(1)}% (${peor.envios} envíos), contra ${mejor.pct.toFixed(1)}% por ${mejor.modo}.`,
+          `${peor.tarde} entregas tarde en el mes por ese canal. Si el producto lo permite, mover volumen a ${mejor.modo}; si no, avisar el plazo real en la publicación para que el comprador no lo viva como incumplimiento.`);
+      }
+    }
+    // Despacho propio: es lo único de esta lista que depende de la operación del cliente.
+    const propios = Object.entries(modos).filter(([k]) => k !== 'FULL').flatMap(([, v]) => v.desp);
+    if (propios.length >= 10) {
+      const s = [...propios].sort((a, b) => a - b);
+      const med = s[Math.floor(s.length / 2)];
+      if (med > 24) {
+        push('Importante', 'Despacho', `La mitad de los envíos propios tarda más de ${(med / 24).toFixed(1)} días en salir desde que entra la venta.`,
+          'Es la métrica que ML mide como demora y la única que se corrige puertas adentro. Apuntar a despachar dentro del día hábil.');
+      }
+    }
+  }
+
+  // 5. Publicaciones que concentran problemas de envío.
+  if (per && per.envios) {
+    const porItem = {};
+    per.envios.forEach(e => {
+      if (!e.item) return;
+      if (!porItem[e.item]) porItem[e.item] = { envios: 0, probl: 0 };
+      porItem[e.item].envios++;
+      if (e.puntual === false || e.estado === 'no_entregado' || e.estado === 'devuelto') porItem[e.item].probl++;
+    });
+    const criticas = Object.entries(porItem)
+      .map(([id, v]) => ({ id, ...v, pct: v.probl / v.envios * 100 }))
+      .filter(x => x.envios >= 5 && x.pct >= 30)
+      .sort((a, b) => b.probl - a.probl);
+    if (criticas.length) {
+      const t = (per.items && per.items[criticas[0].id]) || criticas[0].id;
+      push('Importante', 'Publicaciones', `${criticas.length} publicaciones con 30% o más de envíos con problema. La peor: "${t}" (${criticas[0].probl} de ${criticas[0].envios}).`,
+        'Cuando se repite en la misma publicación no es mala suerte: suele ser embalaje, medidas mal declaradas o una expectativa de entrega que no se cumple. Ver solapa "Publicaciones con problemas".');
+    }
+  }
+
+  // 6. Ventas que no se concretaron.
+  const det = (rep && rep.detalle) || {};
+  const can = det.canceladas || [];
+  if (can.length) {
+    const plata = can.reduce((s, x) => s + (x.monto || 0), 0);
+    push('Importante', 'Ventas caídas', `${can.length} ventas no se concretaron en ${mes}${det.ventas_mes ? ` (${(can.length / det.ventas_mes * 100).toFixed(1)}% de las ventas del mes)` : ''}, por $${Math.round(plata).toLocaleString('es-AR')} de facturación bruta.`,
+      'Ver solapa "Ventas caídas por producto": lo que importa no es el total sino qué productos lo concentran.');
+
+    const porProd = {};
+    can.forEach(c => {
+      if (!c.item) return;
+      if (!porProd[c.item]) porProd[c.item] = { n: 0, monto: 0 };
+      porProd[c.item].n++;
+      porProd[c.item].monto += c.monto || 0;
+    });
+    const graves = Object.entries(porProd)
+      .map(([id, v]) => {
+        const tot = (det.ventas_item || {})[id];
+        return { id, ...v, ventas: tot ? tot.ventas : null, tasa: tot && tot.ventas ? v.n / tot.ventas * 100 : null };
+      })
+      .filter(x => x.tasa != null && x.tasa >= 20 && x.ventas >= 5)
+      .sort((a, b) => b.monto - a.monto);
+    graves.slice(0, 5).forEach(g => {
+      const t = (det.items && det.items[g.id]) || g.id;
+      push('Importante', 'Ventas caídas', `"${t}": se cayeron ${g.n} de ${g.ventas} ventas (${g.tasa.toFixed(0)}%), $${Math.round(g.monto).toLocaleString('es-AR')}.`,
+        'Un producto que pierde 1 de cada 5 ventas tiene un problema propio: stock que no estaba, precio que se dudó, o una publicación que promete algo distinto.');
+    });
+  }
+
+  // 7. Qué dicen los motivos de los casos post-venta.
+  const casos = det.casos || [];
+  if (casos.length >= 10) {
+    const cuenta = m2 => casos.filter(c => m2.test(c.motivo || '')).length;
+    const expectativa = cuenta(/no lo quiero|arrepent|no es el color|no cumple con las caracter|otro tipo de producto/i);
+    const noLlego = cuenta(/no recib|no lleg[óo] el paquete|fecha de entrega/i);
+    if (expectativa / casos.length >= 0.4) {
+      push('Importante', 'Contenido', `${expectativa} de ${casos.length} casos post-venta son por arrepentimiento o porque el producto no era lo esperado (${(expectativa / casos.length * 100).toFixed(0)}%).`,
+        'Eso no se arregla con logística: es la publicación prometiendo distinto. Fotos con medidas y escala reales, y ficha completa en los que más se repiten.');
+    }
+    if (noLlego / casos.length >= 0.15) {
+      push('Importante', 'Logística', `${noLlego} de ${casos.length} casos post-venta son porque el paquete no llegó o llegó fuera de fecha (${(noLlego / casos.length * 100).toFixed(0)}%).`,
+        'Cruzar con la solapa "Envíos con problema" para ver si se concentra en un canal.');
+    }
+  }
+
+  if (!out.length) {
+    push('OK', 'General', 'Ninguna métrica pasó los umbrales de alerta en el período.',
+      'Nada urgente. Mantener el seguimiento mensual.');
+  }
+  const orden = { 'CRÍTICO': 0, 'Importante': 1, 'Atención': 2, 'Seguimiento': 3, 'OK': 4 };
+  out.sort((a, b) => (orden[a.prioridad] ?? 9) - (orden[b.prioridad] ?? 9));
+  return out;
+}
+
+async function exportarReputacionEnvios() {
+  const client = getActiveClient();
+  if (!client || !client.id) { showToast('Seleccioná una cuenta primero'); return; }
+  if (typeof XLSX === 'undefined') { showToast('La librería de Excel todavía no cargó, probá de nuevo en un segundo'); return; }
+
+  const mes = _repMes || _desempMes || mesART(0).val;
+  showToast('⏳ Armando el Excel…');
+
+  try {
+    // El botón está en las dos secciones, así que puede faltar cualquiera de los dos
+    // lados. Se piden en paralelo y sólo lo que no esté cargado para ese mes.
+    const faltaRep = !_repData || _repData.mes !== mes;
+    const faltaDes = !_desempData || _desempData.mes !== mes;
+    const [rep, des] = await Promise.all([
+      faltaRep ? apiCall('GET', `/api/reputacion?client_id=${client.id}&mes=${mes}`) : Promise.resolve(_repData),
+      faltaDes ? apiCall('GET', `/api/logistica/desempenio?client_id=${client.id}&mes=${mes}`) : Promise.resolve(_desempData)
+    ]);
+    if (faltaRep && rep && !rep.error) _repData = rep;
+    if (faltaDes && des && !des.error) _desempData = des;
+
+    const wb = XLSX.utils.book_new();
+    const hoja = (nombre, filas, anchos) => {
+      if (!filas || !filas.length) return;
+      const ws = XLSX.utils.json_to_sheet(filas);
+      if (anchos) ws['!cols'] = anchos.map(w => ({ wch: w }));
+      XLSX.utils.book_append_sheet(wb, ws, nombre.slice(0, 31));
+    };
+
+    // 1. Sugerencias
+    hoja('Acciones sugeridas', _sugerenciasReputacionEnvios(rep, des, mesLabel(mes)).map(s => ({
+      Prioridad: s.prioridad, Tema: s.tema, 'Qué pasa': s.hallazgo, 'Qué hacer': s.sugerencia
+    })), [12, 18, 70, 80]);
+
+    // 2. Métricas
+    const m = (rep && rep.metricas) || {};
+    hoja('Reputación', [
+      ['Reclamos', m.reclamos, 'ML'], ['Cancelaciones', m.cancelaciones, 'ML'],
+      ['Mediaciones', m.mediaciones, 'calculada por el Dashboard'], ['Envíos demorados', m.demoras, 'ML']
+    ].filter(([, x]) => x).map(([nombre, x, fuente]) => ({
+      Métrica: nombre,
+      Porcentaje: x.rate != null ? +(x.rate * 100).toFixed(2) : null,
+      Casos: x.casos,
+      'Límite ML': x.limite != null ? +(x.limite * 100).toFixed(2) : 'sin publicar',
+      Fuente: fuente,
+      Período: m.periodo === '60 days' ? 'últimos 60 días' : m.periodo,
+      'Ventas del período': m.ventas
+    })), [20, 12, 8, 12, 26, 16, 18]);
+
+    // 3. Reclamos abiertos
+    hoja('Reclamos abiertos', ((rep && rep.abiertos) || []).map(a => ({
+      Motivo: a.motivo || '', Tipo: a.tipo === 'returns' ? 'Devolución' : 'Mediación',
+      Etapa: a.etapa === 'dispute' ? 'Disputa' : 'Reclamo',
+      Abierto: a.fecha || '', Orden: a.order_id,
+      'Acción pendiente': a.accion === 'send_message_to_complainant' ? 'Responder al comprador' : (a.accion || 'Esperando a ML o al comprador'),
+      Vence: a.vence ? new Date(a.vence).toLocaleString('es-AR', { timeZone: ART_TZ }) : ''
+    })), [42, 12, 10, 12, 20, 26, 20]);
+
+    // 4. Casos post-venta del mes
+    const det = (rep && rep.detalle) || {};
+    const tipoNom = { mediations: 'Mediación', returns: 'Devolución', cancel_purchase: 'Pedido de cancelación', cancel_sale: 'Cancelación de venta' };
+    hoja('Casos post-venta', (det.casos || []).map(c => ({
+      Fecha: c.fecha || '', Tipo: tipoNom[c.tipo] || c.tipo,
+      Etapa: c.etapa === 'dispute' ? 'Disputa' : (c.etapa || ''),
+      Estado: c.estado === 'closed' ? 'Cerrado' : 'Abierto',
+      Motivo: c.motivo || '', Orden: c.order_id
+    })), [12, 22, 12, 10, 46, 20]);
+
+    // 5. Ventas caídas por producto
+    const can = det.canceladas || [];
+    const porProd = {};
+    can.forEach(c => {
+      const k = c.item || 'sin_producto';
+      if (!porProd[k]) porProd[k] = { n: 0, unidades: 0, monto: 0, motivos: {} };
+      porProd[k].n++;
+      porProd[k].unidades += c.cantidad || 0;
+      porProd[k].monto += c.monto || 0;
+      porProd[k].motivos[c.motivo] = (porProd[k].motivos[c.motivo] || 0) + 1;
+    });
+    hoja('Ventas caídas por producto', Object.entries(porProd).map(([id, v]) => {
+      const tot = (det.ventas_item || {})[id];
+      const motivoTop = Object.entries(v.motivos).sort((a, b) => b[1] - a[1])[0];
+      return {
+        MLA: id === 'sin_producto' ? '' : id,
+        Producto: (det.items && det.items[id]) || '',
+        'Ventas caídas': v.n,
+        'Ventas del mes': tot ? tot.ventas : null,
+        '% que se cayó': tot && tot.ventas ? +(v.n / tot.ventas * 100).toFixed(1) : null,
+        Unidades: v.unidades,
+        'Plata perdida': Math.round(v.monto),
+        'Motivo más repetido': motivoTop ? motivoTop[0] : ''
+      };
+    }).sort((a, b) => b['Plata perdida'] - a['Plata perdida']), [16, 60, 14, 14, 14, 10, 15, 42]);
+
+    // 6. Ventas caídas, una por una
+    hoja('Ventas caídas detalle', can.map(c => ({
+      Fecha: c.fecha || '', Orden: c.order_id, MLA: c.item || '',
+      Producto: (det.items && det.items[c.item]) || '',
+      Unidades: c.cantidad, Monto: Math.round(c.monto),
+      'Quién la cortó': c.grupo, Motivo: c.motivo, 'Pedida por': c.pedida_por || ''
+    })), [12, 20, 16, 55, 10, 14, 16, 46, 14]);
+
+    // 7. Envíos: resumen por forma de entrega
+    const per = des && des.periodo;
+    if (per && per.envios) {
+      const modos = {};
+      per.envios.forEach(e => {
+        if (!modos[e.modo]) modos[e.modo] = { envios: 0, aTiempo: 0, tarde: 0, noEnt: 0, dev: 0, canc: 0, desp: [], entr: [] };
+        const x = modos[e.modo];
+        x.envios++;
+        if (e.puntual === true) x.aTiempo++;
+        if (e.puntual === false) x.tarde++;
+        if (e.estado === 'no_entregado') x.noEnt++;
+        if (e.estado === 'devuelto') x.dev++;
+        if (e.estado === 'cancelado') x.canc++;
+        if (e.despacho_h != null) x.desp.push(e.despacho_h);
+        if (e.entrega_d != null) x.entr.push(e.entrega_d);
+      });
+      const med = a => { if (!a.length) return null; const s = [...a].sort((x, y) => x - y); return s[Math.floor(s.length / 2)]; };
+      hoja('Envíos por forma de entrega', Object.entries(modos).map(([k, v]) => ({
+        'Forma de entrega': k,
+        Envíos: v.envios,
+        '% a tiempo': (v.aTiempo + v.tarde) ? +(v.aTiempo / (v.aTiempo + v.tarde) * 100).toFixed(1) : null,
+        'Llegaron tarde': v.tarde,
+        'Despacho (hs, mediana)': k === 'FULL' ? 'lo hace ML' : (med(v.desp) != null ? +med(v.desp).toFixed(1) : null),
+        'Entrega (días, prom)': v.entr.length ? +(v.entr.reduce((a, b) => a + b, 0) / v.entr.length).toFixed(1) : null,
+        'No entregados': v.noEnt, Devueltos: v.dev, Cancelados: v.canc
+      })), [20, 10, 12, 15, 22, 20, 14, 12, 12]);
+
+      // 8. Envíos con problema, uno por uno
+      const conProblema = per.envios.filter(e => e.puntual === false || e.estado === 'no_entregado' || e.estado === 'devuelto');
+      hoja('Envíos con problema', conProblema.map(e => ({
+        MLA: e.item || '', Producto: (per.items && per.items[e.item]) || '',
+        'Forma de entrega': e.modo,
+        Estado: { entregado: 'Entregado tarde', no_entregado: 'No entregado', devuelto: 'Devuelto', cancelado: 'Cancelado', en_curso: 'En curso' }[e.estado] || e.estado,
+        'Fecha de venta': e.fecha || '', 'Prometido para': e.limite || '', Entregado: e.entregado || '',
+        'Despacho (hs)': e.despacho_h, 'Entrega (días)': e.entrega_d
+      })), [16, 55, 18, 18, 14, 15, 14, 14, 14]);
+
+      // 9. Ranking de publicaciones
+      const porItem = {};
+      per.envios.forEach(e => {
+        if (!e.item) return;
+        if (!porItem[e.item]) porItem[e.item] = { envios: 0, tarde: 0, noEnt: 0, dev: 0, desp: [] };
+        const p = porItem[e.item];
+        p.envios++;
+        if (e.puntual === false) p.tarde++;
+        if (e.estado === 'no_entregado') p.noEnt++;
+        if (e.estado === 'devuelto') p.dev++;
+        if (e.despacho_h != null) p.desp.push(e.despacho_h);
+      });
+      hoja('Publicaciones con problemas', Object.entries(porItem)
+        .map(([id, p]) => ({
+          MLA: id, Producto: (per.items && per.items[id]) || '',
+          Envíos: p.envios, 'Llegaron tarde': p.tarde, 'No entregados': p.noEnt, Devueltos: p.dev,
+          'Con problema': p.tarde + p.noEnt + p.dev,
+          '% con problema': +(((p.tarde + p.noEnt + p.dev) / p.envios) * 100).toFixed(1),
+          'Despacho (hs, mediana)': p.desp.length ? +[...p.desp].sort((a, b) => a - b)[Math.floor(p.desp.length / 2)].toFixed(1) : null
+        }))
+        .filter(x => x['Con problema'] > 0)
+        .sort((a, b) => b['Con problema'] - a['Con problema']), [16, 55, 10, 15, 15, 12, 14, 15, 22]);
+    }
+
+    // 10. Envíos demorados hoy
+    hoja('Envíos demorados hoy', ((des && des.alertas) || []).map(a => ({
+      MLA: a.item_id || '', Producto: a.title || '', 'Forma de entrega': a.modo,
+      Estado: a.substatus || a.status,
+      'Tenía que salir': a.expected_date ? new Date(a.expected_date).toLocaleString('es-AR', { timeZone: ART_TZ }) : '',
+      'Atraso (horas)': a.horas_vencido
+    })), [16, 55, 18, 20, 22, 14]);
+
+    const fecha = ymd(new Date());
+    XLSX.writeFile(wb, `Reputacion_y_Envios_${(client.name || '').replace(/\s+/g, '_')}_${mes}_${fecha}.xlsx`);
+    showToast('✅ Excel descargado');
+  } catch (e) {
+    showToast('No pude armar el Excel: ' + e.message);
+  }
+}
 // ── REPUTACIÓN ────────────────────────────────────────────────────────────────
 // Las cuatro métricas con las que se juega la exposición de la cuenta, y abajo el
 // detalle de qué hay atrás: qué reclamos están abiertos, qué pasó en el mes y qué
@@ -14798,6 +15140,8 @@ function switchLogisticaTab(tab) {
   });
   if (tab === 'fullstock' && !_fullStockData) loadFullStock();
   if (tab === 'desempenio' && !_desempData) loadDesempenioEnvios();
+  const btnXls = document.getElementById('logisticaExcelBtn');
+  if (btnXls) btnXls.style.display = tab === 'desempenio' ? '' : 'none';
 }
 
 function refreshLogisticaTab() {
