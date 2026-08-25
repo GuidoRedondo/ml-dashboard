@@ -633,6 +633,18 @@ async function initDB() {
       PRIMARY KEY (client_id, mes)
     );
     CREATE INDEX IF NOT EXISTS idx_reputacion_fetched ON reputacion_cache(fetched_at);
+    -- Rendimiento de cupones y campañas por mes (Promociones > Rendimiento). El
+    -- desglose de quién financia cada descuento sólo sale de /orders/{id}/discounts,
+    -- que es UNA llamada por orden: una cuenta de 1.000 ventas/mes son 1.000 requests.
+    -- Mismo criterio de TTL que los otros caches pesados: 12h.
+    CREATE TABLE IF NOT EXISTS promo_rendimiento_cache (
+      client_id  INTEGER NOT NULL,
+      mes        TEXT NOT NULL,
+      data       JSONB NOT NULL,
+      fetched_at TIMESTAMPTZ DEFAULT NOW(),
+      PRIMARY KEY (client_id, mes)
+    );
+    CREATE INDEX IF NOT EXISTS idx_promo_rend_fetched ON promo_rendimiento_cache(fetched_at);
     -- Precio REAL (con descuento de promoción/campaña) por publicación. El descuento no viene
     -- ni en el multiget /items?ids= ni en /items/{id}: sólo en /items/{id}/prices, que es una
     -- llamada por ítem. Con cuentas de 800+ publicaciones eso es carísimo, así que se cachea.
@@ -12527,6 +12539,261 @@ app.get('/api/promociones/desglose', requireAuth, async (req, res) => {
     });
   } catch(e) {
     console.error('[PROMO_DESGLOSE]', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── Promociones › Rendimiento ────────────────────────────────────────────────
+// Cuánto se vendió con cada cupón y cada campaña de descuento, y — lo que no se ve
+// en ningún panel de ML — cuánto de ese descuento lo bancó ML y cuánto el vendedor.
+//
+// La fuente es /orders/{id}/discounts, que sí anda con la app sin certificar y
+// devuelve por orden el detalle de cada descuento con amounts:{total, seller}.
+// Cuatro casos, que se distinguen por el bloque `supplier`:
+//
+//   type=discount + funding_mode:seller + offer_id  -> descuento de precio, paga el vendedor
+//   type=coupon   + meli_campaign "P-MLA…"          -> cupón de campaña de ML, paga ML
+//   type=coupon   + campaign_id sin meli_campaign   -> cupón cofinanciado
+//   type=coupon   + todo null                       -> cupón propio (seguidores / carrito)
+//
+// Ponerle NOMBRE a cada uno necesita dos joins, porque el campaign_id numérico que
+// viene en la orden no se puede resolver contra ningún endpoint (probado: 400/404):
+//   · meli_campaign ("P-MLA17909016") matchea el id del catálogo /seller-promotions/users
+//   · offer_id ("OFFER-MLA…") matchea el ref_id de /seller-promotions/items/{item_id}
+// El cupón propio no trae ningún id, así que se infiere contra las reglas de las
+// campañas SELLER_COUPON_CAMPAIGN del catálogo (monto fijo exacto o % del subtotal).
+app.get('/api/promociones/rendimiento', requireAuth, async (req, res) => {
+  try {
+    const clientId = parseInt(req.query.client_id);
+    const mes      = (req.query.mes || ymd().slice(0,7)).slice(0,7);   // YYYY-MM
+    const refresh  = req.query.refresh === '1' || req.query.refresh === 'true';
+    if (!clientId || !/^\d{4}-\d{2}$/.test(mes)) return res.status(400).json({ error: 'client_id y mes (YYYY-MM) requeridos' });
+
+    if (!refresh) {
+      const c = await pool.query(
+        `SELECT data, fetched_at FROM promo_rendimiento_cache
+          WHERE client_id=$1 AND mes=$2 AND fetched_at > NOW() - INTERVAL '12 hours'`, [clientId, mes]);
+      if (c.rows.length) return res.json({ ...c.rows[0].data, cacheado: true, fetched_at: c.rows[0].fetched_at });
+    }
+
+    const token = await getClientToken(clientId);
+    if (!token) return res.status(403).json({ error: 'Sin token' });
+    const cli = await pool.query('SELECT ml_user_id FROM clients WHERE id=$1', [clientId]);
+    const uid = cli.rows[0]?.ml_user_id;
+    if (!uid) return res.json({ error: 'Cliente sin cuenta de ML conectada' });
+    const headers = { Authorization: `Bearer ${token}` };
+
+    const desde = mes + '-01';
+    const hasta = ymdShift(ymdShift(desde, 32).slice(0,8) + '01', -1);   // último día del mes
+    const warnings = [];
+
+    // 1. Catálogo de campañas del vendedor: es el único lugar con los nombres.
+    let catalogo = [];
+    try {
+      const cat = await mlGet(`/seller-promotions/users/${uid}?app_version=v2`, token);
+      catalogo = cat.results || [];
+    } catch(e) { warnings.push(`No se pudo leer el catálogo de campañas: ${e.message}`); }
+    const porIdCampana = new Map(catalogo.map(c => [c.id, c]));
+    const cuponesPropios = catalogo.filter(c => /COUPON/i.test(c.type || ''));
+
+    // 2. Órdenes pagas del mes.
+    const { orders } = await fetchAllOrders(uid, headers, mlFrom(desde), mlTo(hasta));
+    if (!orders.length) {
+      const vacio = { mes, desde, hasta, ordenes_analizadas: 0, ordenes_con_descuento: 0, ordenes_sin_leer: 0,
+        totales: { facturacion: 0, facturacion_con_desc: 0, unidades: 0, desc_total: 0, desc_ml: 0, desc_seller: 0 },
+        campanas: [], cupones_catalogo: cuponesPropios.map(c => ({ ...c, uso_ordenes: 0, uso_facturacion: 0, uso_desc: 0 })),
+        warnings };
+      return res.json(vacio);
+    }
+
+    // 3. Desglose de descuentos, una llamada por orden.
+    const DISC_CONCURRENCY = 10;
+    const desglosePorOrden = new Map();
+    let sinLeer = 0;
+    for (let i = 0; i < orders.length; i += DISC_CONCURRENCY) {
+      const chunk = orders.slice(i, i + DISC_CONCURRENCY);
+      await Promise.all(chunk.map(async o => {
+        try {
+          const r = await fetch(`${ML_API}/orders/${o.id}/discounts`, { headers });
+          if (!r.ok) { sinLeer++; return; }
+          const d = await r.json();
+          if (d && Array.isArray(d.details) && d.details.length) desglosePorOrden.set(o.id, d.details);
+        } catch(e) { sinLeer++; }
+      }));
+    }
+    if (sinLeer) warnings.push(`${sinLeer} de ${orders.length} órdenes no devolvieron desglose (ML responde error en órdenes viejas o canceladas): no están contadas.`);
+
+    // 4. offer_id -> campaña. Sólo para los ítems que efectivamente tuvieron descuento
+    //    de precio, y una sola vez por ítem.
+    const itemsConOferta = new Set();
+    desglosePorOrden.forEach(dets => dets.forEach(d => {
+      if (d.supplier?.offer_id) (d.items || []).forEach(it => { if (it.id) itemsConOferta.add(it.id); });
+    }));
+    const porRefId = new Map();
+    const itemsArr = [...itemsConOferta];
+    for (let i = 0; i < itemsArr.length; i += DISC_CONCURRENCY) {
+      const chunk = itemsArr.slice(i, i + DISC_CONCURRENCY);
+      await Promise.all(chunk.map(async itemId => {
+        try {
+          const r = await fetch(`${ML_API}/seller-promotions/items/${itemId}?app_version=v2`, { headers });
+          if (!r.ok) return;
+          const arr = await r.json();
+          (Array.isArray(arr) ? arr : []).forEach(p => { if (p.ref_id) porRefId.set(p.ref_id, p); });
+        } catch(e) { /* el ítem sigue sin nombre de campaña, cae en el genérico */ }
+      }));
+    }
+
+    // 5. Clasificar y agregar.
+    //    El cupón propio no trae id: se infiere contra las reglas del catálogo. Matchea
+    //    sólo si UNA campaña explica el monto — con dos candidatas queda sin identificar,
+    //    porque adivinar acá sería inventarle ventas a un cupón.
+    const inferirCuponPropio = (montoDesc, baseFacturacion) => {
+      const cand = cuponesPropios.filter(c => {
+        if (c.sub_type === 'FIXED_AMOUNT' && c.fixed_amount) return Math.abs(montoDesc - c.fixed_amount) <= 1;
+        if (c.sub_type === 'FIXED_PERCENTAGE' && c.fixed_percentage && baseFacturacion > 0)
+          return Math.abs(montoDesc - baseFacturacion * c.fixed_percentage / 100) <= Math.max(1, baseFacturacion * 0.002);
+        return false;
+      });
+      return cand.length === 1 ? cand[0] : null;
+    };
+
+    const camp = new Map();   // key -> agregado
+    const bucket = (key, nombre, categoria, tipo, campanaId) => {
+      if (!camp.has(key)) camp.set(key, {
+        key, id: campanaId || null, nombre, categoria, tipo: tipo || null,
+        ordenes: new Set(), unidades: 0, facturacion: 0, desc_total: 0, desc_ml: 0, desc_seller: 0,
+        items: new Map(),
+      });
+      return camp.get(key);
+    };
+
+    let factTotal = 0, unidadesTotal = 0;
+    const ordenesConDesc = new Set();
+
+    for (const o of orders) {
+      const oi = o.order_items || [];
+      oi.forEach(it => { factTotal += (parseFloat(it.unit_price) || 0) * (it.quantity || 0); unidadesTotal += (it.quantity || 0); });
+
+      const dets = desglosePorOrden.get(o.id);
+      if (!dets) continue;
+      ordenesConDesc.add(o.id);
+
+      for (const d of dets) {
+        const sup = d.supplier || {};
+        const lineas = (d.items || []).map(li => {
+          // element_id es el índice 1-based del order_item; el id es el MLA por si no viene.
+          const oiRef = (li.element_id && oi[li.element_id - 1]) || oi.find(x => x.item?.id === li.id) || null;
+          const unit  = oiRef ? (parseFloat(oiRef.unit_price) || 0) : 0;
+          const qty   = li.quantity || oiRef?.quantity || 0;
+          return {
+            item_id: li.id || oiRef?.item?.id || '?',
+            title:   oiRef?.item?.title || li.id || '—',
+            unidades: qty,
+            facturacion: unit * qty,
+            desc_total: parseFloat(li.amounts?.total) || 0,
+            desc_seller: parseFloat(li.amounts?.seller) || 0,
+          };
+        });
+        const dTot  = lineas.reduce((s,l) => s + l.desc_total, 0);
+        const dSel  = lineas.reduce((s,l) => s + l.desc_seller, 0);
+        const fact  = lineas.reduce((s,l) => s + l.facturacion, 0);
+
+        let key, nombre, categoria, tipo = null, campanaId = null;
+        if (d.type === 'discount' || sup.offer_id) {
+          const promo = sup.offer_id ? porRefId.get(sup.offer_id) : null;
+          if (promo) {
+            campanaId = promo.id || null;
+            nombre    = promo.name || promo.type || 'Campaña de descuento';
+            tipo      = promo.type || null;
+            key       = 'desc:' + (promo.id || promo.type || nombre);
+          } else {
+            nombre = 'Descuento de precio (sin campaña)';
+            key    = 'desc:propio';
+          }
+          categoria = 'descuento_precio';
+        } else if (sup.meli_campaign) {
+          campanaId = sup.meli_campaign;
+          const cat = porIdCampana.get(sup.meli_campaign);
+          nombre    = cat?.name || sup.meli_campaign;
+          tipo      = cat?.type || null;
+          categoria = dSel > 0 ? 'cupon_cofinanciado' : 'cupon_ml';
+          key       = 'camp:' + sup.meli_campaign;
+        } else if (sup.campaign_id) {
+          categoria = dSel > 0 ? 'cupon_cofinanciado' : 'cupon_ml';
+          nombre    = dSel > 0 ? 'Cupón cofinanciado con ML' : 'Cupón de ML';
+          key       = 'coup:' + categoria;
+        } else {
+          const inf = inferirCuponPropio(dTot, fact);
+          campanaId = inf?.id || null;
+          nombre    = inf?.name || 'Cupón propio (sin identificar)';
+          tipo      = inf?.sub_type || 'SELLER_COUPON_CAMPAIGN';
+          categoria = 'cupon_propio';
+          key       = 'propio:' + (inf?.id || 'sin_id');
+        }
+
+        const b = bucket(key, nombre, categoria, tipo, campanaId);
+        b.ordenes.add(o.id);
+        b.desc_total += dTot; b.desc_seller += dSel; b.desc_ml += (dTot - dSel);
+        b.facturacion += fact;
+        lineas.forEach(l => {
+          b.unidades += l.unidades;
+          const prev = b.items.get(l.item_id) || { item_id: l.item_id, title: l.title, unidades: 0, facturacion: 0, desc_total: 0, desc_seller: 0 };
+          prev.unidades += l.unidades; prev.facturacion += l.facturacion;
+          prev.desc_total += l.desc_total; prev.desc_seller += l.desc_seller;
+          b.items.set(l.item_id, prev);
+        });
+      }
+    }
+
+    const campanas = [...camp.values()].map(b => ({
+      key: b.key, id: b.id, nombre: b.nombre, categoria: b.categoria, tipo: b.tipo,
+      ordenes: b.ordenes.size, unidades: b.unidades,
+      facturacion: Math.round(b.facturacion),
+      desc_total: Math.round(b.desc_total), desc_ml: Math.round(b.desc_ml), desc_seller: Math.round(b.desc_seller),
+      ticket_prom: b.ordenes.size ? Math.round(b.facturacion / b.ordenes.size) : 0,
+      desc_pct: b.facturacion > 0 ? +(b.desc_total / b.facturacion * 100).toFixed(1) : 0,
+      items: [...b.items.values()].sort((a,c) => c.facturacion - a.facturacion)
+              .map(i => ({ ...i, facturacion: Math.round(i.facturacion), desc_total: Math.round(i.desc_total), desc_seller: Math.round(i.desc_seller) })),
+    })).sort((a,b) => b.facturacion - a.facturacion);
+
+    // Los cupones del catálogo que NO aparecen en ninguna orden son la otra mitad del
+    // dato: campañas prendidas que no vendieron nada.
+    const usoPorId = new Map(campanas.filter(c => c.id).map(c => [c.id, c]));
+    const cupones_catalogo = cuponesPropios.map(c => {
+      const u = usoPorId.get(c.id);
+      return {
+        id: c.id, nombre: c.name || c.id, sub_type: c.sub_type, status: c.status,
+        fixed_amount: c.fixed_amount || null, fixed_percentage: c.fixed_percentage || null,
+        min_purchase_amount: c.min_purchase_amount || null,
+        start_date: c.start_date || null, finish_date: c.finish_date || null,
+        uso_ordenes: u?.ordenes || 0, uso_facturacion: u?.facturacion || 0, uso_desc: u?.desc_total || 0,
+      };
+    });
+
+    const out = {
+      mes, desde, hasta,
+      ordenes_analizadas: orders.length,
+      ordenes_con_descuento: ordenesConDesc.size,
+      ordenes_sin_leer: sinLeer,
+      totales: {
+        facturacion: Math.round(factTotal),
+        unidades: unidadesTotal,
+        facturacion_con_desc: campanas.reduce((s,c) => s + c.facturacion, 0),
+        desc_total:  campanas.reduce((s,c) => s + c.desc_total, 0),
+        desc_ml:     campanas.reduce((s,c) => s + c.desc_ml, 0),
+        desc_seller: campanas.reduce((s,c) => s + c.desc_seller, 0),
+      },
+      campanas, cupones_catalogo, warnings,
+    };
+
+    await pool.query(
+      `INSERT INTO promo_rendimiento_cache (client_id, mes, data, fetched_at) VALUES ($1,$2,$3,NOW())
+       ON CONFLICT (client_id, mes) DO UPDATE SET data=$3, fetched_at=NOW()`,
+      [clientId, mes, out]);
+
+    res.json(out);
+  } catch(e) {
+    console.error('[PROMO_RENDIMIENTO]', e.message);
     res.status(500).json({ error: e.message });
   }
 });

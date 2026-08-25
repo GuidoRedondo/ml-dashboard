@@ -1348,6 +1348,7 @@ tbody td {
         <div style="display:flex;gap:6px">
           <button id="promoTabActivas" onclick="switchPromoTab('activas')" class="sync-btn" style="background:var(--accent)">🏷️ Activas</button>
           <button id="promoTabQueMeter" onclick="switchPromoTab('quemeter')" class="sync-btn" title="Campañas abiertas, qué publicaciones podés meter y cuánto margen queda con cada una">🎯 Qué meter</button>
+          <button id="promoTabRendimiento" onclick="switchPromoTab('rendimiento')" class="sync-btn" title="Cuánto se vendió con cada cupón y campaña, y cuánto de ese descuento lo pagó ML y cuánto vos">📊 Rendimiento</button>
         </div>
         <button onclick="exportarPromocionesExcel()" class="sync-btn" style="background:#16a34a;color:#fff;border:none">📥 Excel</button>
         <button class="sync-btn" onclick="loadPromociones()">🔄 Actualizar</button>
@@ -1384,6 +1385,18 @@ tbody td {
       </div>
 
       <div id="promoQueMeterContent" style="display:none"></div>
+
+      <!-- Rendimiento: qué vendió cada cupón / campaña y quién bancó el descuento. -->
+      <div id="promoRendimientoContent" style="display:none">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap">
+          <select id="promoRendMes" onchange="loadPromoRendimiento(false)"
+            style="padding:6px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px"></select>
+          <button class="sync-btn" onclick="loadPromoRendimiento(true)" title="Vuelve a pedirle el desglose a ML (tarda: es una llamada por orden)">🔄 Recalcular</button>
+          <button onclick="exportarRendimientoExcel()" class="sync-btn" style="background:#16a34a;color:#fff;border:none">📥 Excel</button>
+          <span id="promoRendEstado" style="font-size:11px;color:var(--muted)"></span>
+        </div>
+        <div id="promoRendBody"></div>
+      </div>
     </div>
 
     <!-- PREGUNTAS -->
@@ -19652,20 +19665,236 @@ const PROMO_URGENTE_DIAS = 7;
 function switchPromoTab(tab) {
   const act = document.getElementById('promoContent');
   const que = document.getElementById('promoQueMeterContent');
+  const ren = document.getElementById('promoRendimientoContent');
   const bA  = document.getElementById('promoTabActivas');
   const bQ  = document.getElementById('promoTabQueMeter');
+  const bR  = document.getElementById('promoTabRendimiento');
   const on  = 'var(--accent)', off = '';
   const prep = document.getElementById('promoPrepararBox');
+  act.style.display = 'none'; que.style.display = 'none'; ren.style.display = 'none';
+  bA.style.background = off; bQ.style.background = off; bR.style.background = off;
+  if (prep) prep.style.display = 'none';
   if (tab === 'quemeter') {
-    act.style.display = 'none'; que.style.display = '';
+    que.style.display = ''; bQ.style.background = on;
     if (prep) { prep.style.display = ''; sincronizarPisoCm(); }
-    bQ.style.background = on; bA.style.background = off;
     if (!_promoCand) loadPromoCandidatos(false);
+  } else if (tab === 'rendimiento') {
+    ren.style.display = ''; bR.style.background = on;
+    poblarMesesRendimiento();
+    if (!_promoRend) loadPromoRendimiento(false);
   } else {
-    act.style.display = ''; que.style.display = 'none';
-    if (prep) prep.style.display = 'none';
-    bA.style.background = on; bQ.style.background = off;
+    act.style.display = ''; bA.style.background = on;
   }
+}
+
+// ── Promociones › Rendimiento ────────────────────────────────────────────────
+// Qué vendió cada cupón y cada campaña de descuento, separando el descuento que
+// bancó ML del que salió del bolsillo del vendedor. Eso último no lo muestra
+// ningún panel de ML: sale de /orders/{id}/discounts, orden por orden.
+let _promoRend = null;
+
+const PROMO_REND_CATS = {
+  cupon_ml:           { label: 'Cupón de ML',        color: '#22c55e', nota: 'Lo paga ML — a vos no te cuesta nada' },
+  cupon_cofinanciado: { label: 'Cofinanciado',       color: '#f59e0b', nota: 'Lo pagan ML y vos a medias' },
+  cupon_propio:       { label: 'Cupón propio',       color: '#ef4444', nota: 'Sale enteramente de tu margen' },
+  descuento_precio:   { label: 'Descuento de precio',color: '#6366f1', nota: 'Sale enteramente de tu margen' },
+};
+
+function poblarMesesRendimiento() {
+  const sel = document.getElementById('promoRendMes');
+  if (!sel || sel.options.length) return;
+  const hoy = new Date();
+  for (let i = 0; i < 12; i++) {
+    const d = new Date(hoy.getFullYear(), hoy.getMonth() - i, 1);
+    const v = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+    sel.insertAdjacentHTML('beforeend',
+      `<option value="${v}">${d.toLocaleDateString('es-AR',{month:'long',year:'numeric',timeZone:ART_TZ})}</option>`);
+  }
+}
+
+async function loadPromoRendimiento(refresh) {
+  const body = document.getElementById('promoRendBody');
+  const est  = document.getElementById('promoRendEstado');
+  const client = getActiveClient();
+  if (!client || !client.ml_user_id) {
+    body.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">Sin cuenta conectada — seleccioná una cuenta en el topbar</div>';
+    return;
+  }
+  const mes = document.getElementById('promoRendMes').value || '';
+  est.textContent = '';
+  body.innerHTML = `<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">
+    ⏳ Pidiéndole a ML el desglose de descuentos… es una llamada por orden, puede tardar un minuto.</div>`;
+  try {
+    const d = await apiCall('GET', `/api/promociones/rendimiento?client_id=${client.id}&mes=${mes}${refresh ? '&refresh=1' : ''}`);
+    if (!d || d.error) {
+      body.innerHTML = `<div style="color:#ff5252;padding:40px">${d?.error || 'Sin datos'}</div>`;
+      return;
+    }
+    _promoRend = d;
+    if (d.cacheado) est.textContent = `Calculado ${dART(d.fetched_at).toLocaleString('es-AR',{timeZone:ART_TZ})} — tocá Recalcular para actualizar`;
+    renderPromoRendimiento(d);
+  } catch(e) {
+    body.innerHTML = `<div style="color:var(--muted);font-size:13px;padding:40px">Error: ${e.message}</div>`;
+  }
+}
+
+function renderPromoRendimiento(d) {
+  const body = document.getElementById('promoRendBody');
+  const fmt  = n => '$' + Math.round(n||0).toLocaleString('es-AR');
+  const t    = d.totales || {};
+
+  if (!d.campanas.length) {
+    body.innerHTML = `<div style="color:var(--muted);padding:30px;font-size:13px">
+      Ninguna de las ${d.ordenes_analizadas} órdenes del mes tuvo cupón ni descuento.
+      ${d.ordenes_sin_leer ? `<br><span style="font-size:12px">(${d.ordenes_sin_leer} órdenes no devolvieron desglose)</span>` : ''}</div>`;
+    return;
+  }
+
+  // Cuánto del descuento lo pagó ML: es el número que ordena toda la lectura.
+  const pctML = t.desc_total > 0 ? Math.round(t.desc_ml / t.desc_total * 100) : 0;
+  const pctSobreFact = t.facturacion > 0 ? (t.desc_seller / t.facturacion * 100).toFixed(1) : '0';
+
+  const kpis = [
+    ['Facturación del mes', fmt(t.facturacion), '', `${d.ordenes_analizadas} órdenes pagas`],
+    ['Vendido con descuento', fmt(t.facturacion_con_desc), 'var(--accent)',
+      `${d.ordenes_con_descuento} órdenes · ${t.facturacion ? Math.round(t.facturacion_con_desc/t.facturacion*100) : 0}% de la facturación`],
+    ['Descuento total', fmt(t.desc_total), '#f59e0b', `${pctML}% lo puso ML`],
+    ['Lo pagaste vos', fmt(t.desc_seller), '#ef4444', `${pctSobreFact}% de la facturación`],
+    ['Te lo regaló ML', fmt(t.desc_ml), '#22c55e', 'Descuento sin costo para vos'],
+  ];
+
+  const filaCampana = (c, i) => {
+    const cat = PROMO_REND_CATS[c.categoria] || { label: c.categoria, color: 'var(--muted)', nota: '' };
+    const gratis = c.desc_seller === 0 && c.desc_total > 0;
+    return `<tr style="border-bottom:1px solid var(--border)">
+      <td style="padding:10px 12px">
+        <div style="font-size:13px;font-weight:600;line-height:1.4">${_escHtml(c.nombre)}</div>
+        <div style="font-size:11px;color:var(--muted);margin-top:2px">
+          <span style="background:${cat.color}22;color:${cat.color};padding:1px 7px;border-radius:9px;font-weight:700">${cat.label}</span>
+          ${c.id ? `<span style="margin-left:6px;opacity:.7">${_escHtml(c.id)}</span>` : ''}
+        </div>
+      </td>
+      <td style="padding:10px 12px;text-align:right;font-size:13px;font-weight:700;white-space:nowrap">${fmt(c.facturacion)}</td>
+      <td style="padding:10px 12px;text-align:center;font-size:13px">${c.ordenes}</td>
+      <td style="padding:10px 12px;text-align:center;font-size:13px">${c.unidades}</td>
+      <td style="padding:10px 12px;text-align:right;font-size:12px;color:var(--muted);white-space:nowrap">${fmt(c.ticket_prom)}</td>
+      <td style="padding:10px 12px;text-align:right;font-size:13px;white-space:nowrap">${fmt(c.desc_total)}
+        <div style="font-size:11px;color:var(--muted)">${c.desc_pct}% s/venta</div></td>
+      <td style="padding:10px 12px;text-align:right;font-size:13px;font-weight:700;white-space:nowrap;color:${gratis ? '#22c55e' : '#ef4444'}">
+        ${gratis ? 'Gratis' : fmt(c.desc_seller)}</td>
+      <td style="padding:10px 12px;text-align:center">
+        <button onclick="togglePromoRendItems(${i}, this)" style="background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px;padding:4px 10px;cursor:pointer">🔍</button>
+      </td>
+    </tr>
+    <tr id="promoRendItems${i}" style="display:none"><td colspan="8" style="padding:0 12px 12px;background:var(--surface2)">
+      <table style="width:100%;border-collapse:collapse;font-size:12px">
+        <thead><tr style="color:var(--muted)">
+          <th style="text-align:left;padding:6px 8px;font-weight:600">Publicación</th>
+          <th style="text-align:center;padding:6px 8px;font-weight:600">Un.</th>
+          <th style="text-align:right;padding:6px 8px;font-weight:600">Facturación</th>
+          <th style="text-align:right;padding:6px 8px;font-weight:600">Descuento</th>
+          <th style="text-align:right;padding:6px 8px;font-weight:600">Pagaste vos</th>
+        </tr></thead>
+        <tbody>${c.items.map(it => `<tr>
+          <td style="padding:5px 8px"><a href="https://articulo.mercadolibre.com.ar/${String(it.item_id).replace('MLA','MLA-')}" target="_blank" style="color:var(--text);text-decoration:none">${_escHtml(it.title)}</a></td>
+          <td style="padding:5px 8px;text-align:center">${it.unidades}</td>
+          <td style="padding:5px 8px;text-align:right">${fmt(it.facturacion)}</td>
+          <td style="padding:5px 8px;text-align:right">${fmt(it.desc_total)}</td>
+          <td style="padding:5px 8px;text-align:right;color:${it.desc_seller ? '#ef4444' : '#22c55e'}">${it.desc_seller ? fmt(it.desc_seller) : 'Gratis'}</td>
+        </tr>`).join('')}</tbody>
+      </table></td></tr>`;
+  };
+
+  // Cupones propios prendidos que no vendieron nada: la mitad que no se ve en ML.
+  const dormidos = (d.cupones_catalogo || []).filter(c => !c.uso_ordenes);
+
+  body.innerHTML = `
+    <div style="display:flex;gap:12px;margin-bottom:20px;flex-wrap:wrap">
+      ${kpis.map(([l,v,c,sub]) => `<div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px 18px;flex:1;min-width:170px">
+        <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em">${l}</div>
+        <div style="font-size:22px;font-weight:700;font-family:var(--font-b);margin-top:4px;color:${c||'var(--text)'}">${v}</div>
+        <div style="font-size:11px;color:var(--muted);margin-top:3px">${sub}</div>
+      </div>`).join('')}
+    </div>
+
+    ${(d.warnings||[]).length ? `<div style="background:#f59e0b18;border-left:3px solid #f59e0b;border-radius:8px;padding:10px 14px;margin-bottom:16px;font-size:12px;color:var(--muted);line-height:1.6">
+      ${d.warnings.map(w => _escHtml(w)).join('<br>')}</div>` : ''}
+
+    <div style="overflow-x:auto">
+    <table style="width:100%;border-collapse:collapse">
+      <thead><tr style="background:var(--surface2)">
+        <th style="padding:8px 12px;text-align:left;font-size:11px;color:var(--muted);border-bottom:1px solid var(--border)">Cupón / Campaña</th>
+        <th style="padding:8px 12px;text-align:right;font-size:11px;color:var(--muted);border-bottom:1px solid var(--border)">Se vendió</th>
+        <th style="padding:8px 12px;text-align:center;font-size:11px;color:var(--muted);border-bottom:1px solid var(--border)">Órdenes</th>
+        <th style="padding:8px 12px;text-align:center;font-size:11px;color:var(--muted);border-bottom:1px solid var(--border)">Un.</th>
+        <th style="padding:8px 12px;text-align:right;font-size:11px;color:var(--muted);border-bottom:1px solid var(--border)">Ticket</th>
+        <th style="padding:8px 12px;text-align:right;font-size:11px;color:var(--muted);border-bottom:1px solid var(--border)">Descuento</th>
+        <th style="padding:8px 12px;text-align:right;font-size:11px;color:var(--muted);border-bottom:1px solid var(--border)" title="Cuánto de ese descuento salió de tu margen">Pagaste vos</th>
+        <th style="padding:8px 12px;text-align:center;font-size:11px;color:var(--muted);border-bottom:1px solid var(--border)">Detalle</th>
+      </tr></thead>
+      <tbody>${d.campanas.map(filaCampana).join('')}</tbody>
+    </table></div>
+
+    ${dormidos.length ? `<div class="kpi-card" style="padding:16px;margin-top:20px;border-left:3px solid #f59e0b">
+      <div class="kpi-label" style="margin-bottom:10px">😴 CUPONES PRENDIDOS QUE NO VENDIERON NADA EN ${d.mes}</div>
+      <table style="width:100%;border-collapse:collapse;font-size:12px">
+        <tbody>${dormidos.map(c => `<tr style="border-bottom:1px solid var(--border)">
+          <td style="padding:6px 8px;font-weight:600">${_escHtml(c.nombre)}</td>
+          <td style="padding:6px 8px;color:var(--muted)">${c.sub_type === 'FIXED_PERCENTAGE' ? c.fixed_percentage + '% off' : fmt(c.fixed_amount) + ' off'}</td>
+          <td style="padding:6px 8px;color:var(--muted)">${c.min_purchase_amount ? 'desde ' + fmt(c.min_purchase_amount) : ''}</td>
+          <td style="padding:6px 8px;text-align:right;color:var(--muted)">${_escHtml(c.status || '')}</td>
+        </tr>`).join('')}</tbody>
+      </table>
+      <div style="font-size:11px;color:var(--muted);margin-top:10px;line-height:1.6">
+        Están activos y no los usó nadie. O el mínimo de compra está muy por encima de tu ticket, o no los estás difundiendo.
+      </div></div>` : ''}
+
+    <div style="margin-top:14px;font-size:11px;color:var(--muted);line-height:1.7">
+      Fuente: el desglose de descuentos de cada orden paga del mes (${d.ordenes_analizadas} órdenes analizadas).
+      <strong>"Pagaste vos"</strong> es la parte del descuento que financia el vendedor — el resto lo pone ML.
+      Los cupones propios no traen identificador en la orden: se reconocen por el monto contra las reglas de tus campañas,
+      y los que no se pueden atribuir con certeza caen en "Cupón propio (sin identificar)".
+    </div>`;
+}
+
+function togglePromoRendItems(i, btn) {
+  const tr = document.getElementById('promoRendItems' + i);
+  const abierto = tr.style.display !== 'none';
+  tr.style.display = abierto ? 'none' : '';
+  btn.textContent = abierto ? '🔍' : '✕';
+}
+
+function exportarRendimientoExcel() {
+  const d = _promoRend;
+  if (!d || !(d.campanas || []).length) { showToast('No hay rendimiento para exportar'); return; }
+  const cli = getActiveClient();
+  const wb = XLSX.utils.book_new();
+
+  const resumen = d.campanas.map(c => ({
+    'Cupón / Campaña': c.nombre,
+    'Tipo': (PROMO_REND_CATS[c.categoria] || {}).label || c.categoria,
+    'ID': c.id || '',
+    'Se vendió': c.facturacion,
+    'Órdenes': c.ordenes,
+    'Unidades': c.unidades,
+    'Ticket promedio': c.ticket_prom,
+    'Descuento total': c.desc_total,
+    'Lo puso ML': c.desc_ml,
+    'Lo pagaste vos': c.desc_seller,
+    '% desc s/venta': c.desc_pct,
+  }));
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(resumen), 'Por campaña');
+
+  const detalle = [];
+  d.campanas.forEach(c => c.items.forEach(it => detalle.push({
+    'Cupón / Campaña': c.nombre, 'MLA': it.item_id, 'Publicación': it.title,
+    'Unidades': it.unidades, 'Facturación': it.facturacion,
+    'Descuento': it.desc_total, 'Lo pagaste vos': it.desc_seller,
+  })));
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(detalle), 'Por publicación');
+
+  XLSX.writeFile(wb, `Rendimiento_Promos_${(cli?.name||'cliente').replace(/\s+/g,'_')}_${d.mes}.xlsx`);
+  showToast(`📥 ${resumen.length} campañas exportadas`);
 }
 
 // ── Preparador del Excel de carga masiva de promociones ─────────────────────
