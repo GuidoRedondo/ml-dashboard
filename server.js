@@ -2035,6 +2035,7 @@ const REGLAS_DEFAULT = {
   oportunidad_escalable: { habilitada: true, umbral: { cvr_min: 5, gasto_max: 5000, dias: 30 } },
   full_sin_stock_con_deposito: { habilitada: true, umbral: { min_unidades: 1, dias_ventas: 30, max_items: 8, max_consultas: 500 } },
   medidas_envio_invalidas: { habilitada: true, umbral: { min_items: 1, max_items: 8 } },
+  sin_envio_ml_por_medidas: { habilitada: true, umbral: { min_items: 1, max_items: 8, max_consultas: 500 } },
   promo_campania_por_vencer: { habilitada: true, umbral: { dias: 7, min_items: 3, max_items: 6 } },
   cmv_invalido: { habilitada: true, umbral: { cobertura_min: 70, max_items: 6 } },
 };
@@ -3078,6 +3079,92 @@ async function evalRuleMedidasEnvio(client) {
   } catch(e) { console.error(`[ALERTA medidas_envio_invalidas] ${client.name}:`, e.message); return null; }
 }
 
+// Regla 13b — ML ya le sacó el envío por Mercado Envíos por las medidas
+// La regla de arriba INFIERE el problema comparando lo declarado contra el envío real.
+// Esta es la otra mitad: cuando ML ya tomó la decisión y la marcó. La señal es dura y
+// sale de un filtro de items/search — `shipping_tags=lost_me2_by_dimensions`, que es lo
+// que en el panel de ML aparece como las publicaciones a las que hay que corregirles
+// las medidas. Una publicación así queda con shipping.mode "not_specified" y sin
+// methods: no ofrece envío por ML, o sea que pierde envío gratis, FULL y ranking, y
+// puede seguir activa y vendiendo sin que nadie lo note.
+//
+// Prioriza las ACTIVAS: en varias cuentas la mayoría de las marcadas están cerradas o
+// pausadas hace rato y no urge tocarlas. Las que están activas y vendiendo sí.
+async function evalRuleSinEnvioPorMedidas(client) {
+  const regla = await getRegla(client.id, 'sin_envio_ml_por_medidas');
+  if (!regla.habilitada) return null;
+  const { min_items = 1, max_items = 8, max_consultas = 500 } = regla.umbral || {};
+  try {
+    const token = await getClientToken(client.id);
+    if (!token) return null;
+    const cRes = await pool.query('SELECT ml_user_id FROM clients WHERE id=$1', [client.id]);
+    const uid = cRes.rows[0]?.ml_user_id;
+    if (!uid) return null;
+    const headers = { 'Authorization': `Bearer ${token}` };
+
+    // 1. IDs marcados por ML. El filtro achica tanto que nunca se acerca al tope de
+    //    offset 1000 de items/search, pero igual se corta por las dudas.
+    const ids = [];
+    let truncado = false;
+    for (let offset = 0; offset < max_consultas; offset += 100) {
+      const r = await fetch(
+        `${ML_API}/users/${uid}/items/search?shipping_tags=lost_me2_by_dimensions&limit=100&offset=${offset}`,
+        { headers }).then(r => r.json()).catch(() => null);
+      if (!r || r.error || !Array.isArray(r.results)) break;
+      ids.push(...r.results);
+      const total = r.paging?.total || 0;
+      if (ids.length >= total) break;
+      if (offset + 100 >= max_consultas && ids.length < total) { truncado = true; break; }
+    }
+    if (!ids.length) return resolveAlerta(client.id, 'sin_envio_ml_por_medidas');
+
+    // 2. Detalle, para separar las que están vendiendo de las que ya están cerradas.
+    const items = [];
+    const attrs = 'id,title,status,sold_quantity,price,permalink,shipping';
+    for (let i = 0; i < ids.length; i += 20) {
+      const batch = ids.slice(i, i + 20);
+      const data = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=${attrs}`, { headers })
+        .then(r => r.json()).catch(() => []);
+      (Array.isArray(data) ? data : []).forEach(r => {
+        if (r.code !== 200 || !r.body) return;
+        const b = r.body;
+        items.push({
+          id: b.id, title: b.title, status: b.status,
+          vendidas: b.sold_quantity || 0, precio: parseFloat(b.price) || 0,
+          permalink: b.permalink,
+          // Sin methods ni logistic_type, ML no le ofrece envío propio al comprador.
+          sin_envio_ml: (b.shipping?.mode === 'not_specified') || !(b.shipping?.methods || []).length,
+        });
+      });
+    }
+
+    const activas = items.filter(i => i.status === 'active');
+    if (activas.length < min_items) return resolveAlerta(client.id, 'sin_envio_ml_por_medidas');
+
+    const conVenta = activas.filter(i => i.vendidas > 0);
+    const dormidas = items.filter(i => i.status !== 'active');
+    const severidad = conVenta.length ? 'critical' : 'warning';
+
+    const corto = t => (t || '').length > 45 ? t.slice(0, 45) + '…' : (t || '');
+    const orden  = [...activas].sort((a, b) => b.vendidas - a.vendidas || b.precio - a.precio);
+    const lista  = orden.slice(0, max_items)
+      .map(i => `• ${corto(i.title)}${i.vendidas ? ` · ${i.vendidas} vendidas` : ' · sin ventas'}`)
+      .join('\n');
+    const resto  = activas.length > max_items ? `\n…y ${activas.length - max_items} más` : '';
+    const cola   = dormidas.length ? ` (además hay ${dormidas.length} pausada${dormidas.length !== 1 ? 's' : ''} o cerrada${dormidas.length !== 1 ? 's' : ''} con la misma marca).` : '';
+    const nota   = truncado ? `\n(se revisaron las primeras ${max_consultas})` : '';
+
+    return upsertAlerta(client.id, 'sin_envio_ml_por_medidas', severidad,
+      `${activas.length} publicación${activas.length !== 1 ? 'es activas' : ' activa'} sin envío por Mercado Libre por las medidas`,
+      `ML les sacó Mercado Envíos porque las medidas no le cierran: no ofrecen envío gratis, no entran a FULL y pierden ranking, ` +
+      `pero siguen publicadas${conVenta.length ? ` y ${conVenta.length} igual vendieron` : ''}. ` +
+      `Hay que corregirles las medidas desde el panel de ML.${cola}\n${lista}${resto}${nota}`,
+      { items: orden.slice(0, 50), total: items.length, activas: activas.length,
+        con_venta: conVenta.length, dormidas: dormidas.length, truncado }
+    );
+  } catch(e) { console.error(`[ALERTA sin_envio_ml_por_medidas] ${client.name}:`, e.message); return null; }
+}
+
 // Regla 14 — Campaña por vencer con candidatas rentables sin cargar
 // ML no deja adherir por API, así que lo único que podemos hacer es avisar a tiempo:
 // la campaña cierra, hay publicaciones que dejan margen y todavía no están adentro.
@@ -3206,6 +3293,7 @@ async function runAlertEngine({ forceNotify = false, tipo = 'auto' } = {}) {
       evalRuleOportunidadEscalable,
       evalRuleFullSinStockConDeposito,
       evalRuleMedidasEnvio,
+      evalRuleSinEnvioPorMedidas,
       evalRulePromoPorVencer,
       evalRuleSaludCmv,
     ];
@@ -3276,6 +3364,13 @@ const SLACK_TIPO_CONFIG = {
                             if (r.ml_midio_mas_grande) p.push(`${r.ml_midio_mas_grande} medidas más grandes por ML`);
                             return `${a.datos?.total || '?'} publicaciones` + (p.length ? ` · ${p.join(', ')}` : '');
                           } },
+  sin_envio_ml_por_medidas: { emoji: '🚫', label: 'ML les sacó el envío por las medidas', short: (a) => {
+                            const d = a.datos || {};
+                            const p = [`${d.activas ?? '?'} activas`];
+                            if (d.con_venta) p.push(`${d.con_venta} vendieron igual`);
+                            if (d.dormidas)  p.push(`${d.dormidas} pausadas/cerradas`);
+                            return p.join(' · ');
+                          } },
 };
 
 async function sendSlackAlert(newAlerts) {
@@ -3292,7 +3387,7 @@ async function sendSlackAlert(newAlerts) {
   });
 
   // Ordenar: críticas primero, luego warnings
-  const orden = ['reputacion_bajando','cmv_invalido','promo_campania_por_vencer','medidas_envio_invalidas','stock_critico_pareto','full_sin_stock_con_deposito','caida_ventas','tacos_alto','tacos_producto_alto','margen_erosionado','roas_bajo','preguntas_pendientes','producto_sin_ventas'];
+  const orden = ['reputacion_bajando','cmv_invalido','promo_campania_por_vencer','medidas_envio_invalidas','sin_envio_ml_por_medidas','stock_critico_pareto','full_sin_stock_con_deposito','caida_ventas','tacos_alto','tacos_producto_alto','margen_erosionado','roas_bajo','preguntas_pendientes','producto_sin_ventas'];
   const tiposOrdenados = [
     ...orden.filter(k => byTipo[k]),
     ...Object.keys(byTipo).filter(k => !orden.includes(k))

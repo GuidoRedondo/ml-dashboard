@@ -21121,6 +21121,7 @@ const CI_REGLAS_LABELS = {
   cmv_invalido: { titulo: 'CMV mal cargado o incompleto', desc: 'Costos faltantes, en otra escala o moneda, mayores al precio o sin actualizar: mientras estén así el margen de esta cuenta no es real' },
   promo_campania_por_vencer: { titulo: 'Campaña por vencer con candidatas rentables', desc: 'Campañas que cierran en los próximos días con publicaciones que dejan margen y todavía no están cargadas' },
   medidas_envio_invalidas: { titulo: 'Medidas de envío mal declaradas', desc: 'Publicaciones sin medidas, donde el producto no entra en el paquete declarado, o que ML midió más grandes que lo declarado' },
+  sin_envio_ml_por_medidas: { titulo: 'ML les sacó el envío por las medidas', desc: 'Publicaciones que ML marcó para corregir las medidas y dejó sin Mercado Envíos: no ofrecen envío gratis, no entran a FULL y pierden ranking, pero siguen publicadas' },
 };
 
 let _ciActiveTab = 'alertas';
