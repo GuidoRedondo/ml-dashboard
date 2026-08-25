@@ -611,6 +611,18 @@ async function initDB() {
       PRIMARY KEY (client_id, date_from, date_to)
     );
     CREATE INDEX IF NOT EXISTS idx_margen_prod_fetched ON margen_producto_cache(fetched_at);
+    -- Desempeño de envíos del mes (Logística > Desempeño). Calcularlo pide un request
+    -- por envío a /shipments/{id} (ML no tiene búsqueda masiva de envíos: /shipments/search
+    -- da 404), así que una cuenta de 1.500 ventas/mes son ~1.500 llamadas y 1-2 min.
+    -- Mismo criterio de TTL que margen_producto_cache: 12h.
+    CREATE TABLE IF NOT EXISTS envios_desempenio_cache (
+      client_id  INTEGER NOT NULL,
+      mes        TEXT NOT NULL,
+      data       JSONB NOT NULL,
+      fetched_at TIMESTAMPTZ DEFAULT NOW(),
+      PRIMARY KEY (client_id, mes)
+    );
+    CREATE INDEX IF NOT EXISTS idx_envios_desemp_fetched ON envios_desempenio_cache(fetched_at);
     -- Precio REAL (con descuento de promoción/campaña) por publicación. El descuento no viene
     -- ni en el multiget /items?ids= ni en /items/{id}: sólo en /items/{id}/prices, que es una
     -- llamada por ítem. Con cuentas de 800+ publicaciones eso es carísimo, así que se cachea.
@@ -9763,6 +9775,310 @@ app.get('/api/logistica', requireAuth, async (req, res) => {
   } catch(e) { console.error('[LOGISTICA]', e.message); res.status(500).json({ error: e.message }); }
 });
 
+
+// ── DESEMPEÑO DE ENVÍOS ───────────────────────────────────────────────────────
+// Tres bloques, cada uno con su propio costo de API:
+//
+//  1. Reputación (1 request): las métricas con las que ML mide al vendedor —
+//     reclamos, demoras al despachar y cancelaciones de los últimos 60 días.
+//     Vienen en /users/{id} → seller_reputation.metrics. Es el dato oficial:
+//     si acá está en rojo, ML ya lo está penalizando en la exposición.
+//
+//  2. Entregas del mes (1 request por envío, cacheado 12h): ML no tiene búsqueda
+//     masiva de envíos (/shipments/search → 404), así que hay que pedir uno por uno.
+//     De cada /shipments/{id} salen las fechas reales del recorrido.
+//
+//  3. Alerta operativa (pocos requests, siempre fresco): los envíos que están en
+//     curso AHORA y ML ya marca como demorados. Es lo único accionable hoy.
+//
+// Ojo con dos trampas verificadas contra la API:
+//  · El tag "not_delivered" de la orden NO sirve: en julio de REDFISHOK aparecía en
+//    22 de 200 órdenes cuando el filtro real daba 6. Se usa el estado del shipment.
+//  · Los carritos comparten un mismo shipping.id entre varias órdenes, así que los
+//    ids se deduplican antes de pedirlos (si no, se cuenta el mismo envío N veces).
+
+// Modo de envío legible. Mismo criterio que /api/logistica para que los dos
+// tableros de la sección hablen el mismo idioma.
+function modoEnvio(lt) {
+  const t = lt || '';
+  if (t === 'fulfillment') return 'FULL';
+  if (t === 'self_service' || t === 'flex') return 'FLEX';
+  if (t.includes('cross') || t.includes('me2') || t.includes('colect') || t.includes('drop')) return 'Correo';
+  return 'Otro';
+}
+
+// Un envío entregado llega "a tiempo" si el DÍA argentino de la entrega no pasa el
+// día comprometido. Comparar instantes daría siempre tarde: el límite que devuelve
+// ML es medianoche de ese día, y la entrega real es a las 15hs de ese mismo día.
+function llegoATiempo(sh) {
+  const entregado = sh.status_history && sh.status_history.date_delivered;
+  const opt = sh.shipping_option || {};
+  const limite = (opt.estimated_delivery_limit && opt.estimated_delivery_limit.date)
+              || (opt.estimated_delivery_extended && opt.estimated_delivery_extended.date)
+              || (opt.estimated_delivery_time && opt.estimated_delivery_time.date)
+              || null;
+  if (!entregado || !limite) return null;   // sin promesa declarada: no se puede juzgar
+  return ymd(entregado) <= ymd(limite);
+}
+
+const horasEntre = (a, b) => (a && b) ? (new Date(b) - new Date(a)) / 3600000 : null;
+const medianaNum = arr => {
+  if (!arr.length) return null;
+  const s = [...arr].sort((x, y) => x - y);
+  const m = Math.floor(s.length / 2);
+  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+};
+const promNum = arr => arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : null;
+
+// Trae los shipments de a tandas. La concurrencia está medida: 10 en paralelo dan
+// ~28 envíos/segundo contra la API de ML, o sea ~1 min para una cuenta de 1.500.
+async function fetchShipments(ids, headers, concurrency = 10) {
+  const out = [];
+  for (let i = 0; i < ids.length; i += concurrency) {
+    const grupo = ids.slice(i, i + concurrency);
+    const res = await Promise.all(grupo.map(id =>
+      fetch(`${ML_API}/shipments/${id}`, { headers }).then(r => r.json()).catch(() => null)
+    ));
+    res.forEach(sh => { if (sh && sh.id && !sh.error) out.push(sh); });
+  }
+  return out;
+}
+
+async function calcularDesempenioEnvios(uid, headers, desde, hasta) {
+  const { orders } = await fetchOrdersForPyL(uid, headers, mlFrom(desde), mlTo(hasta));
+
+  // Dedup de envíos (los carritos comparten shipping.id) y mapa envío → órdenes.
+  const idsEnvio = [];
+  const ordenesPorEnvio = {};
+  let sinEnvio = 0;
+  orders.forEach(o => {
+    const sid = o.shipping && o.shipping.id;
+    if (!sid) { sinEnvio++; return; }        // venta sin envío (retiro en persona / digital)
+    if (!ordenesPorEnvio[sid]) { ordenesPorEnvio[sid] = []; idsEnvio.push(sid); }
+    ordenesPorEnvio[sid].push(o.id);
+  });
+
+  const shipments = await fetchShipments(idsEnvio, headers);
+
+  const base = () => ({
+    envios: 0, entregados: 0, en_curso: 0, no_entregados: 0, devueltos: 0, cancelados: 0,
+    a_tiempo: 0, tarde: 0, sin_promesa: 0,
+    _despacho: [], _entrega: []
+  });
+  const tot = base();
+  const porModo = {};
+  const porItem = {};
+
+  shipments.forEach(sh => {
+    const modo = modoEnvio(sh.logistic_type);
+    if (!porModo[modo]) porModo[modo] = base();
+    const m = porModo[modo];
+    const h = sh.status_history || {};
+
+    tot.envios++; m.envios++;
+
+    // Estado final del envío. "devuelto" gana sobre "no entregado": es el mismo caso
+    // contado dos veces, y duplicarlo infla el tamaño del problema.
+    if (h.date_returned)                    { tot.devueltos++;     m.devueltos++; }
+    else if (sh.status === 'not_delivered') { tot.no_entregados++; m.no_entregados++; }
+    else if (sh.status === 'cancelled')     { tot.cancelados++;    m.cancelados++; }
+    else if (sh.status === 'delivered')     { tot.entregados++;    m.entregados++; }
+    else                                    { tot.en_curso++;      m.en_curso++; }
+
+    if (sh.status === 'delivered') {
+      const puntual = llegoATiempo(sh);
+      if (puntual === null)   { tot.sin_promesa++; m.sin_promesa++; }
+      else if (puntual)       { tot.a_tiempo++;    m.a_tiempo++; }
+      else                    { tot.tarde++;       m.tarde++; }
+
+      const horas = horasEntre(h.date_handling, h.date_delivered);
+      if (horas != null && horas > 0) { tot._entrega.push(horas / 24); m._entrega.push(horas / 24); }
+    }
+
+    // Despacho: desde que la venta entra a preparación hasta que sale. En FULL lo hace
+    // ML (el stock ya está en su depósito), así que el número sólo mide al vendedor en
+    // FLEX y Correo — por eso se guarda por modo y no en un promedio único.
+    const desp = horasEntre(h.date_handling, h.date_shipped);
+    const despValido = desp != null && desp >= 0 && desp < 24 * 30;
+    if (despValido) { tot._despacho.push(desp); m._despacho.push(desp); }
+
+    // Ranking por publicación.
+    (sh.shipping_items || []).forEach(it => {
+      if (!it.id) return;
+      if (!porItem[it.id]) porItem[it.id] = { item_id: it.id, title: it.description || '', envios: 0, tarde: 0, no_entregados: 0, devueltos: 0, _despacho: [] };
+      const p = porItem[it.id];
+      p.envios++;
+      if (h.date_returned) p.devueltos++;
+      else if (sh.status === 'not_delivered') p.no_entregados++;
+      if (sh.status === 'delivered' && llegoATiempo(sh) === false) p.tarde++;
+      if (despValido) p._despacho.push(desp);
+    });
+  });
+
+  const cerrar = b => {
+    const juzgados = b.a_tiempo + b.tarde;
+    return {
+      envios: b.envios, entregados: b.entregados, en_curso: b.en_curso,
+      no_entregados: b.no_entregados, devueltos: b.devueltos, cancelados: b.cancelados,
+      a_tiempo: b.a_tiempo, tarde: b.tarde, sin_promesa: b.sin_promesa,
+      pct_a_tiempo: juzgados ? +(b.a_tiempo / juzgados * 100).toFixed(1) : null,
+      despacho_horas_mediana: b._despacho.length ? +medianaNum(b._despacho).toFixed(1) : null,
+      despacho_horas_prom:    b._despacho.length ? +promNum(b._despacho).toFixed(1) : null,
+      entrega_dias_prom:      b._entrega.length  ? +promNum(b._entrega).toFixed(1) : null
+    };
+  };
+
+  const modos = {};
+  Object.keys(porModo).forEach(k => { modos[k] = cerrar(porModo[k]); });
+
+  // Sólo publicaciones con algo para mirar: al menos un problema, y volumen mínimo
+  // para que el porcentaje signifique algo.
+  const problemas = Object.values(porItem)
+    .map(p => {
+      const probl = p.tarde + p.no_entregados + p.devueltos;
+      return {
+        item_id: p.item_id, title: p.title, envios: p.envios,
+        tarde: p.tarde, no_entregados: p.no_entregados, devueltos: p.devueltos,
+        problemas: probl,
+        pct_problemas: +((probl / p.envios) * 100).toFixed(1),
+        despacho_horas_mediana: p._despacho.length ? +medianaNum(p._despacho).toFixed(1) : null
+      };
+    })
+    .filter(p => p.problemas > 0 && p.envios >= 3)
+    .sort((a, b) => b.problemas - a.problemas || b.pct_problemas - a.pct_problemas)
+    .slice(0, 25);
+
+  return {
+    desde, hasta,
+    ventas: orders.length,
+    ventas_sin_envio: sinEnvio,
+    envios_unicos: idsEnvio.length,
+    envios_leidos: shipments.length,
+    total: cerrar(tot),
+    por_modo: modos,
+    problemas
+  };
+}
+
+// Envíos en curso que ML ya marca como demorados. /shipments/{id}/sla devuelve el
+// compromiso vigente (status on_time / expected_date). Los de FULL quedan afuera:
+// los despacha ML y el vendedor no puede hacer nada al respecto.
+async function alertasEnviosEnCurso(uid, headers) {
+  const desdeYmd = ymdShift(ymd(), -15);
+  const ids = new Set();
+  for (const est of ['ready_to_ship', 'handling']) {
+    const url = `${ML_API}/orders/search?seller=${uid}&order.date_created.from=${encodeURIComponent(mlFrom(desdeYmd))}&limit=50&shipping.status=${est}`;
+    const r = await fetch(url, { headers }).then(r => r.json()).catch(() => ({}));
+    (r.results || []).forEach(o => { if (o.shipping && o.shipping.id) ids.add(o.shipping.id); });
+  }
+  const shipments = await fetchShipments([...ids], headers);
+  const enCurso = shipments.filter(sh => modoEnvio(sh.logistic_type) !== 'FULL');
+
+  const alertas = [];
+  for (let i = 0; i < enCurso.length; i += 10) {
+    const grupo = enCurso.slice(i, i + 10);
+    await Promise.all(grupo.map(async sh => {
+      const sla = await fetch(`${ML_API}/shipments/${sh.id}/sla`, { headers }).then(r => r.json()).catch(() => null);
+      if (!sla || !sla.expected_date) return;
+      const vencido = new Date(sla.expected_date) < new Date();
+      const demorado = !!(sla.status && sla.status !== 'on_time');
+      if (!vencido && !demorado) return;
+      const it = (sh.shipping_items || [])[0] || {};
+      alertas.push({
+        shipment_id: sh.id,
+        item_id: it.id || null,
+        title: it.description || '',
+        modo: modoEnvio(sh.logistic_type),
+        status: sh.status, substatus: sh.substatus || null,
+        sla_status: sla.status || null,
+        expected_date: sla.expected_date,
+        horas_vencido: vencido ? +((new Date() - new Date(sla.expected_date)) / 3600000).toFixed(1) : 0
+      });
+    }));
+  }
+  alertas.sort((a, b) => b.horas_vencido - a.horas_vencido);
+  return { alertas, en_curso_revisados: enCurso.length };
+}
+
+// GET /api/logistica/desempenio?client_id=&mes=YYYY-MM
+//   solo_cache=1     → devuelve el mes sólo si ya está calculado (para no colgar el render)
+//   force_refresh=1  → ignora el cache y recalcula
+app.get('/api/logistica/desempenio', requireAuth, async (req, res) => {
+  try {
+    const clientId = parseInt(req.query.client_id);
+    const mes = req.query.mes || ymd().slice(0, 7);
+    if (!clientId) return res.status(400).json({ error: 'client_id es requerido' });
+    if (!/^\d{4}-\d{2}$/.test(mes)) return res.status(400).json({ error: 'mes tiene que ser YYYY-MM' });
+
+    const token = await getClientToken(clientId);
+    if (!token) return res.status(403).json({ error: 'Cliente no conectado o token expirado' });
+    const headers = { 'Authorization': `Bearer ${token}` };
+
+    const me = await fetch(`${ML_API}/users/me`, { headers }).then(r => r.json()).catch(() => ({}));
+    if (!me.id) return res.status(403).json({ error: 'No pude leer la cuenta en ML (token inválido)' });
+    const uid = me.id;
+
+    // ── Bloque 1: cómo mide ML a la cuenta (60 días, 1 request) ───────────────
+    // Los límites son los de MercadoLíder: pasarlos cuesta el color y la exposición.
+    const rep = me.seller_reputation || {};
+    const met = rep.metrics || {};
+    const val = (m, k) => (m && m[k] != null ? m[k] : null);
+    const reputacion = {
+      level_id: rep.level_id || null,
+      power_seller_status: rep.power_seller_status || null,
+      periodo: val(met.sales, 'period') || '60 days',
+      ventas: val(met.sales, 'completed') || 0,
+      reclamos:      { rate: val(met.claims, 'rate'),                rate_value: val(met.claims, 'value'),                limite: 0.03 },
+      demoras:       { rate: val(met.delayed_handling_time, 'rate'), rate_value: val(met.delayed_handling_time, 'value'), limite: 0.15 },
+      cancelaciones: { rate: val(met.cancellations, 'rate'),         rate_value: val(met.cancellations, 'value'),         limite: 0.02 }
+    };
+
+    // ── Bloque 3: alertas de hoy (siempre fresco, es lo accionable) ───────────
+    let alertas = { alertas: [], en_curso_revisados: 0 };
+    try { alertas = await alertasEnviosEnCurso(uid, headers); }
+    catch (e) { console.error('[DESEMPENIO alertas]', e.message); }
+
+    // ── Bloque 2: el mes elegido (caro → cache 12h) ───────────────────────────
+    const desde = `${mes}-01`;
+    const primeroSiguiente = ymdShift(desde, 32).slice(0, 7) + '-01';
+    const hastaMes = ymdShift(primeroSiguiente, -1);   // último día del mes elegido
+    const hoy = ymd();
+    const hasta = hastaMes > hoy ? hoy : hastaMes;      // mes en curso: hasta hoy
+
+    const force = req.query.force_refresh === '1';
+    const soloCache = req.query.solo_cache === '1';
+    let periodo = null, cached = false, fetchedAt = null;
+
+    if (!force) {
+      const c = await pool.query(
+        `SELECT data, fetched_at FROM envios_desempenio_cache
+          WHERE client_id=$1 AND mes=$2 AND fetched_at > NOW() - INTERVAL '12 hours'`,
+        [clientId, mes]
+      );
+      if (c.rows[0]) { periodo = c.rows[0].data; cached = true; fetchedAt = c.rows[0].fetched_at; }
+    }
+
+    if (!periodo && soloCache) {
+      return res.json({ mes, reputacion, ...alertas, periodo: null, pendiente: true, cached: false });
+    }
+
+    if (!periodo) {
+      periodo = await calcularDesempenioEnvios(uid, headers, desde, hasta);
+      fetchedAt = new Date();
+      await pool.query(
+        `INSERT INTO envios_desempenio_cache (client_id, mes, data, fetched_at)
+         VALUES ($1,$2,$3,NOW())
+         ON CONFLICT (client_id, mes) DO UPDATE SET data=$3, fetched_at=NOW()`,
+        [clientId, mes, JSON.stringify(periodo)]
+      );
+    }
+
+    res.json({ mes, reputacion, ...alertas, periodo, pendiente: false, cached, fetched_at: fetchedAt });
+  } catch (e) {
+    console.error('[DESEMPENIO]', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
 // ── STOCK FULL ────────────────────────────────────────────────────────────────
 // Trae TODOS los ítems activos de un seller usando search_type=scan (scroll).
 // La paginación por offset de ML corta en offset 1000 (400 Bad Request), así que

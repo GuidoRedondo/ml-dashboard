@@ -1441,9 +1441,14 @@ tbody td {
           style="padding:8px 18px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-2px;font-family:var(--font-b)">
           🏭 Stock FULL
         </button>
+        <button id="tab-logistica-desempenio" onclick="switchLogisticaTab('desempenio')"
+          style="padding:8px 18px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-2px;font-family:var(--font-b)">
+          📊 Desempeño
+        </button>
       </div>
       <div id="logisticaContent"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Cargando...</div></div>
       <div id="fullStockContent" style="display:none"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Seleccioná la pestaña Stock FULL para cargar</div></div>
+      <div id="desempenioContent" style="display:none"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Seleccioná la pestaña Desempeño para cargar</div></div>
     </div>
 
     <!-- ESCALABILIDAD -->
@@ -14160,6 +14165,247 @@ function renderLogistica(data) {
 }
 
 // ── STOCK FULL ────────────────────────────────────────────────────────────────
+
+// ── LOGÍSTICA > DESEMPEÑO DE ENVÍOS ──────────────────────────────────────────
+// El panel se arma en dos tiempos: la reputación y las alertas de hoy son baratas
+// y entran solas al abrir; el análisis del mes pide un request por envío a ML
+// (1-2 min en cuentas grandes), así que sólo se pinta si ya está cacheado y si no
+// espera a que el usuario apriete el botón.
+let _desempData = null;
+let _desempMes = null;
+
+// Etiqueta de un 'YYYY-MM'. Ancla el día 15 con dART para que la zona no corra el mes.
+function mesLabel(mes) {
+  const l = dART(`${mes}-15`).toLocaleDateString('es-AR', { timeZone: ART_TZ, month: 'long', year: 'numeric' });
+  return l.charAt(0).toUpperCase() + l.slice(1);
+}
+
+async function loadDesempenioEnvios(opts = {}) {
+  const el = document.getElementById('desempenioContent');
+  const client = getActiveClient();
+  if (!client || !client.id) {
+    el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">Sin cuenta conectada — seleccioná una cuenta en el topbar</div>';
+    return;
+  }
+  const mes = _desempMes || mesART(0).val;
+  _desempMes = mes;
+
+  const calculando = !!opts.calcular;
+  el.innerHTML = `<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">${
+    calculando
+      ? '⏳ Leyendo los envíos de ' + mesLabel(mes) + ' uno por uno en ML…<br><span style="font-size:12px">En cuentas grandes tarda 1-2 minutos. Después queda cacheado 12 horas.</span>'
+      : '⏳ Consultando desempeño de envíos…'
+  }</div>`;
+
+  try {
+    const qs = [`client_id=${client.id}`, `mes=${mes}`];
+    if (calculando) qs.push('force_refresh=1'); else qs.push('solo_cache=1');
+    const data = await apiCall('GET', `/api/logistica/desempenio?${qs.join('&')}`);
+    if (!data || data.error) {
+      el.innerHTML = `<div style="color:var(--muted);padding:40px;text-align:center">${(data && data.error) || 'Error al cargar'}</div>`;
+      return;
+    }
+    _desempData = data;
+    renderDesempenio(data);
+  } catch (e) {
+    el.innerHTML = `<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Error: ${e.message}</div>`;
+  }
+}
+
+function cambiarMesDesempenio(mes) {
+  _desempMes = mes;
+  loadDesempenioEnvios();
+}
+
+function renderDesempenio(data) {
+  const el = document.getElementById('desempenioContent');
+  const rep = data.reputacion || {};
+  const per = data.periodo;
+
+  // ── Selector de mes ────────────────────────────────────────────────────────
+  const selector = `<div style="display:flex;align-items:center;gap:10px;margin-bottom:18px;flex-wrap:wrap">
+    <span style="font-size:12px;color:var(--muted)">Mes analizado:</span>
+    <select onchange="cambiarMesDesempenio(this.value)" style="padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--text);font-size:13px;font-family:inherit">
+      ${Array.from({length:6},(_,i)=>mesART(i)).map(x => `<option value="${x.val}" ${x.val === data.mes ? "selected" : ""}>${x.label}</option>`).join("")}
+    </select>
+    ${per ? `<button onclick="loadDesempenioEnvios({calcular:true})" style="padding:6px 12px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--muted);font-size:12px;cursor:pointer;font-family:inherit">🔄 Recalcular</button>` : ''}
+    ${data.cached && data.fetched_at ? `<span style="font-size:11px;color:var(--muted)">datos al ${new Date(data.fetched_at).toLocaleString('es-AR', { timeZone: ART_TZ, day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}</span>` : ''}
+  </div>`;
+
+  // ── Bloque 1: cómo te mide ML ──────────────────────────────────────────────
+  const metrica = (label, m, ayuda) => {
+    const pct = m.rate != null ? m.rate * 100 : null;
+    const lim = m.limite * 100;
+    const estado = pct == null ? 'sin' : pct <= lim * 0.5 ? 'bien' : pct <= lim ? 'ojo' : 'mal';
+    const color = { bien: '#16a34a', ojo: '#d97706', mal: '#dc2626', sin: 'var(--muted)' }[estado];
+    const fondo = { bien: '#dcfce7', ojo: '#fef3c7', mal: '#fee2e2', sin: 'var(--surface2)' }[estado];
+    return `<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px">
+      <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em">${label}</div>
+      <div style="display:flex;align-items:baseline;gap:8px;margin-top:6px">
+        <div style="font-size:26px;font-weight:700;font-family:var(--font-b);color:${color}">${pct == null ? '—' : pct.toFixed(2) + '%'}</div>
+        <div style="font-size:12px;color:var(--muted)">${m.rate_value != null ? m.rate_value + ' casos' : ''}</div>
+      </div>
+      <div style="display:flex;align-items:center;gap:6px;margin-top:8px">
+        <span style="background:${fondo};color:${color};padding:2px 8px;border-radius:20px;font-size:11px;font-weight:600">límite ML ${lim}%</span>
+      </div>
+      <div style="font-size:11px;color:var(--muted);margin-top:8px;line-height:1.4">${ayuda}</div>
+    </div>`;
+  };
+
+  const bloque1 = `<div style="margin-bottom:26px">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px">
+      <span style="font-size:16px">🎯</span>
+      <span style="font-size:14px;font-weight:600;font-family:var(--font-b)">Cómo te mide Mercado Libre</span>
+      ${rep.power_seller_status ? `<span style="padding:2px 10px;border-radius:20px;font-size:11px;font-weight:600;background:var(--surface2);color:var(--text)">${rep.power_seller_status}</span>` : ''}
+    </div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:12px">Últimos ${rep.periodo === '60 days' ? '60 días' : rep.periodo} · ${(rep.ventas || 0).toLocaleString('es-AR')} ventas concretadas. Son las métricas oficiales de la cuenta: si se pasan del límite, ML recorta exposición.</div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px">
+      ${metrica('Demoras al despachar', rep.demoras || {}, 'Ventas que salieron más tarde de lo comprometido. Es la única de las tres que se corrige puertas adentro.')}
+      ${metrica('Reclamos', rep.reclamos || {}, 'Compras que terminaron en reclamo. Mezcla producto, publicación y envío.')}
+      ${metrica('Cancelaciones', rep.cancelaciones || {}, 'Ventas canceladas por el vendedor, casi siempre por falta de stock real.')}
+    </div>
+  </div>`;
+
+  // ── Bloque 3: alertas de hoy ───────────────────────────────────────────────
+  const alertas = data.alertas || [];
+  const bloque3 = `<div style="margin-bottom:26px">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px">
+      <span style="font-size:16px">${alertas.length ? '🔴' : '✅'}</span>
+      <span style="font-size:14px;font-weight:600;font-family:var(--font-b)">Envíos en curso demorados</span>
+    </div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:12px">Revisados ${data.en_curso_revisados || 0} envíos pendientes de los últimos 15 días (los de FULL no entran: los despacha ML).</div>
+    ${alertas.length === 0
+      ? `<div style="background:#dcfce7;border:1px solid #86efac;border-radius:12px;padding:14px 16px;font-size:13px;color:#166534">Ningún envío pendiente pasado de fecha. Al día.</div>`
+      : `<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden">
+          <table style="width:100%;border-collapse:collapse">
+            <thead><tr style="background:var(--surface2)">
+              <th style="padding:8px 10px;text-align:left;font-size:11px;font-weight:600;color:var(--muted)">Publicación</th>
+              <th style="padding:8px 10px;text-align:center;font-size:11px;font-weight:600;color:var(--muted)">Modo</th>
+              <th style="padding:8px 10px;text-align:center;font-size:11px;font-weight:600;color:var(--muted)">Estado</th>
+              <th style="padding:8px 10px;text-align:center;font-size:11px;font-weight:600;color:var(--muted)">Compromiso ML</th>
+              <th style="padding:8px 10px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Atraso</th>
+            </tr></thead>
+            <tbody>${alertas.map(a => `<tr>
+              <td style="padding:8px 10px;border-top:1px solid var(--border);font-size:12px;max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+                ${a.item_id ? `<a href="https://articulo.mercadolibre.com.ar/${a.item_id}" target="_blank" style="color:var(--accent);text-decoration:none">${a.title || a.item_id}</a>` : (a.title || '—')}
+              </td>
+              <td style="padding:8px 10px;border-top:1px solid var(--border);font-size:12px;text-align:center">${a.modo}</td>
+              <td style="padding:8px 10px;border-top:1px solid var(--border);font-size:12px;text-align:center">${a.substatus || a.status}</td>
+              <td style="padding:8px 10px;border-top:1px solid var(--border);font-size:12px;text-align:center">${dART(a.expected_date).toLocaleString('es-AR', { timeZone: ART_TZ, day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}</td>
+              <td style="padding:8px 10px;border-top:1px solid var(--border);font-size:12px;text-align:right;font-weight:600;color:${a.horas_vencido > 24 ? '#dc2626' : '#d97706'}">${a.horas_vencido > 0 ? (a.horas_vencido >= 24 ? (a.horas_vencido / 24).toFixed(1) + ' días' : a.horas_vencido.toFixed(0) + ' hs') : (a.sla_status || 'demorado')}</td>
+            </tr>`).join('')}</tbody>
+          </table>
+        </div>`}
+  </div>`;
+
+  // ── Bloque 2: el mes ───────────────────────────────────────────────────────
+  let bloque2;
+  if (!per) {
+    bloque2 = `<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:28px;text-align:center">
+      <div style="font-size:14px;font-weight:600;font-family:var(--font-b);margin-bottom:6px">Entregas de ${mesLabel(data.mes)}</div>
+      <div style="font-size:12px;color:var(--muted);max-width:520px;margin:0 auto 16px;line-height:1.5">
+        ML no permite pedir los envíos en lote: hay que leerlos de a uno. Por eso el análisis del mes se calcula a pedido y queda guardado 12 horas.
+      </div>
+      <button onclick="loadDesempenioEnvios({calcular:true})" style="padding:9px 20px;border:none;border-radius:8px;background:var(--accent);color:#fff;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit">Analizar ${mesLabel(data.mes)}</button>
+    </div>`;
+  } else {
+    const t = per.total || {};
+    const kpi = (label, valor, sub, color) => `<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:14px 16px">
+      <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em">${label}</div>
+      <div style="font-size:23px;font-weight:700;font-family:var(--font-b);margin-top:4px;color:${color || 'var(--text)'}">${valor}</div>
+      <div style="font-size:11px;color:var(--muted);margin-top:3px">${sub || ''}</div>
+    </div>`;
+
+    const pct = t.pct_a_tiempo;
+    const colorPct = pct == null ? 'var(--text)' : pct >= 95 ? '#16a34a' : pct >= 90 ? '#d97706' : '#dc2626';
+    const hs = h => h == null ? '—' : h >= 24 ? (h / 24).toFixed(1) + ' días' : h.toFixed(1) + ' hs';
+
+    const kpis = `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:12px;margin-bottom:18px">
+      ${kpi('Envíos del mes', (t.envios || 0).toLocaleString('es-AR'), `${per.ventas.toLocaleString('es-AR')} ventas`)}
+      ${kpi('Llegaron a tiempo', pct == null ? '—' : pct + '%', `${t.a_tiempo} de ${t.a_tiempo + t.tarde} entregas juzgadas`, colorPct)}
+      ${kpi('Demora en despachar', hs(t.despacho_horas_mediana), 'mediana, de la venta a la salida')}
+      ${kpi('Tiempo hasta entrega', t.entrega_dias_prom == null ? '—' : t.entrega_dias_prom + ' días', 'promedio, punta a punta')}
+      ${kpi('No entregados', (t.no_entregados || 0) + (t.devueltos || 0), `${t.devueltos} devueltos al depósito`, (t.no_entregados + t.devueltos) > 0 ? '#dc2626' : 'var(--text)')}
+      ${kpi('Cancelados', t.cancelados || 0, 'envíos que nunca salieron')}
+    </div>`;
+
+    // Corte por modo: acá se ve si el problema es Flex, el correo o el FULL.
+    const modos = per.por_modo || {};
+    const ordenModos = ['FULL', 'FLEX', 'Correo', 'Otro'].filter(m => modos[m]);
+    const tablaModos = `<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden;margin-bottom:22px">
+      <div style="padding:12px 16px;border-bottom:1px solid var(--border);font-size:13px;font-weight:600;font-family:var(--font-b)">Por tipo de envío</div>
+      <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse">
+        <thead><tr style="background:var(--surface2)">
+          <th style="padding:8px 12px;text-align:left;font-size:11px;font-weight:600;color:var(--muted)">Modo</th>
+          <th style="padding:8px 12px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Envíos</th>
+          <th style="padding:8px 12px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">A tiempo</th>
+          <th style="padding:8px 12px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Despacho</th>
+          <th style="padding:8px 12px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Entrega</th>
+          <th style="padding:8px 12px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">No entregados</th>
+        </tr></thead>
+        <tbody>${ordenModos.map(m => {
+          const x = modos[m];
+          const c = x.pct_a_tiempo == null ? 'var(--muted)' : x.pct_a_tiempo >= 95 ? '#16a34a' : x.pct_a_tiempo >= 90 ? '#d97706' : '#dc2626';
+          return `<tr>
+            <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px;font-weight:600">${m}</td>
+            <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px;text-align:right">${x.envios.toLocaleString('es-AR')}</td>
+            <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px;text-align:right;font-weight:600;color:${c}">${x.pct_a_tiempo == null ? '—' : x.pct_a_tiempo + '%'}</td>
+            <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px;text-align:right">${m === 'FULL' ? '<span style="color:var(--muted)">lo hace ML</span>' : hs(x.despacho_horas_mediana)}</td>
+            <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px;text-align:right">${x.entrega_dias_prom == null ? '—' : x.entrega_dias_prom + ' d'}</td>
+            <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px;text-align:right">${x.no_entregados + x.devueltos}</td>
+          </tr>`;
+        }).join('')}</tbody>
+      </table></div>
+    </div>`;
+
+    const probl = per.problemas || [];
+    const tablaProbl = `<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden">
+      <div style="padding:12px 16px;border-bottom:1px solid var(--border)">
+        <div style="font-size:13px;font-weight:600;font-family:var(--font-b)">Publicaciones con más problemas de envío</div>
+        <div style="font-size:11px;color:var(--muted);margin-top:2px">Con 3 envíos o más en el mes. Sumá entregas tarde, no entregados y devueltos.</div>
+      </div>
+      ${probl.length === 0
+        ? '<div style="padding:24px;text-align:center;color:var(--muted);font-size:13px">Ninguna publicación con problemas repetidos este mes.</div>'
+        : `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse">
+            <thead><tr style="background:var(--surface2)">
+              <th style="padding:8px 12px;text-align:left;font-size:11px;font-weight:600;color:var(--muted)">Publicación</th>
+              <th style="padding:8px 12px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Envíos</th>
+              <th style="padding:8px 12px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Tarde</th>
+              <th style="padding:8px 12px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">No entreg.</th>
+              <th style="padding:8px 12px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Devueltos</th>
+              <th style="padding:8px 12px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">% con problema</th>
+              <th style="padding:8px 12px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Despacho</th>
+            </tr></thead>
+            <tbody>${probl.map(p => `<tr>
+              <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px;max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+                <a href="https://articulo.mercadolibre.com.ar/${p.item_id}" target="_blank" style="color:var(--accent);text-decoration:none">${p.title || p.item_id}</a>
+              </td>
+              <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px;text-align:right">${p.envios}</td>
+              <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px;text-align:right">${p.tarde || '—'}</td>
+              <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px;text-align:right">${p.no_entregados || '—'}</td>
+              <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px;text-align:right">${p.devueltos || '—'}</td>
+              <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px;text-align:right;font-weight:600;color:${p.pct_problemas >= 30 ? '#dc2626' : p.pct_problemas >= 15 ? '#d97706' : 'var(--text)'}">${p.pct_problemas}%</td>
+              <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px;text-align:right">${hs(p.despacho_horas_mediana)}</td>
+            </tr>`).join('')}</tbody>
+          </table></div>`}
+    </div>`;
+
+    const nota = `<div style="font-size:11px;color:var(--muted);margin-top:14px;line-height:1.5">
+      Se analizaron ${per.envios_leidos.toLocaleString('es-AR')} envíos de ${per.envios_unicos.toLocaleString('es-AR')}${per.ventas_sin_envio ? ` · ${per.ventas_sin_envio} ventas sin envío asociado` : ''}.
+      "A tiempo" compara el día de entrega contra la fecha que ML le prometió al comprador; las entregas sin promesa declarada (${t.sin_promesa}) quedan afuera del porcentaje.
+    </div>`;
+
+    bloque2 = `<div>
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+        <span style="font-size:16px">📦</span>
+        <span style="font-size:14px;font-weight:600;font-family:var(--font-b)">Entregas de ${mesLabel(data.mes)}</span>
+      </div>
+      ${kpis}${tablaModos}${tablaProbl}${nota}
+    </div>`;
+  }
+
+  el.innerHTML = selector + bloque1 + bloque3 + bloque2;
+}
 let _logisticaActiveTab = 'general';
 let _fullStockData = null;
 let _fsSort = { col: null, dir: 1 };
@@ -14169,7 +14415,7 @@ let _fsSearch = '';
 
 function switchLogisticaTab(tab) {
   _logisticaActiveTab = tab;
-  const tabs = { general: 'logisticaContent', fullstock: 'fullStockContent' };
+  const tabs = { general: 'logisticaContent', fullstock: 'fullStockContent', desempenio: 'desempenioContent' };
   Object.keys(tabs).forEach(t => {
     document.getElementById(tabs[t]).style.display = t === tab ? '' : 'none';
     const btn = document.getElementById(`tab-logistica-${t}`);
@@ -14179,9 +14425,16 @@ function switchLogisticaTab(tab) {
     }
   });
   if (tab === 'fullstock' && !_fullStockData) loadFullStock();
+  if (tab === 'desempenio' && !_desempData) loadDesempenioEnvios();
 }
 
 function refreshLogisticaTab() {
+  if (_logisticaActiveTab === 'desempenio') {
+    // Recalcula el mes contra ML en vez de servir el cache de 12h.
+    _desempData = null;
+    loadDesempenioEnvios({ calcular: true });
+    return;
+  }
   if (_logisticaActiveTab === 'fullstock') {
     _fullStockData = null;
     _fsSort = { col: null, dir: 1 };
