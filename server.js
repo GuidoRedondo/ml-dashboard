@@ -12657,26 +12657,38 @@ app.get('/api/promociones/rendimiento', requireAuth, async (req, res) => {
       return cand.length === 1 ? cand[0] : null;
     };
 
+    // Una campaña puede aportar DOS detalles a la misma orden: el descuento de precio
+    // que baja la publicación y el cupón que ML pone encima (las SMART hacen las dos
+    // cosas). Van al mismo bucket — es la misma campaña — pero la facturación se
+    // acumula por orden+ítem, no por detalle, para no contar la venta dos veces.
     const camp = new Map();   // key -> agregado
     const bucket = (key, nombre, categoria, tipo, campanaId) => {
       if (!camp.has(key)) camp.set(key, {
         key, id: campanaId || null, nombre, categoria, tipo: tipo || null,
-        ordenes: new Set(), unidades: 0, facturacion: 0, desc_total: 0, desc_ml: 0, desc_seller: 0,
-        items: new Map(),
+        ordenes: new Set(), desc_total: 0, desc_ml: 0, desc_seller: 0,
+        ventas: new Map(),   // "ordenId|itemId" -> { item_id, title, unidades, facturacion }
+        items: new Map(),    // itemId -> descuento acumulado
       });
       return camp.get(key);
     };
 
     let factTotal = 0, unidadesTotal = 0;
     const ordenesConDesc = new Set();
+    let factConDesc = 0;   // facturación de las órdenes distintas que tuvieron algún descuento
 
     for (const o of orders) {
       const oi = o.order_items || [];
-      oi.forEach(it => { factTotal += (parseFloat(it.unit_price) || 0) * (it.quantity || 0); unidadesTotal += (it.quantity || 0); });
+      let factOrden = 0;
+      oi.forEach(it => {
+        const f = (parseFloat(it.unit_price) || 0) * (it.quantity || 0);
+        factOrden += f; unidadesTotal += (it.quantity || 0);
+      });
+      factTotal += factOrden;
 
       const dets = desglosePorOrden.get(o.id);
       if (!dets) continue;
       ordenesConDesc.add(o.id);
+      factConDesc += factOrden;
 
       for (const d of dets) {
         const sup = d.supplier || {};
@@ -12698,63 +12710,88 @@ app.get('/api/promociones/rendimiento', requireAuth, async (req, res) => {
         const dSel  = lineas.reduce((s,l) => s + l.desc_seller, 0);
         const fact  = lineas.reduce((s,l) => s + l.facturacion, 0);
 
-        let key, nombre, categoria, tipo = null, campanaId = null;
-        if (d.type === 'discount' || sup.offer_id) {
-          const promo = sup.offer_id ? porRefId.get(sup.offer_id) : null;
-          if (promo) {
-            campanaId = promo.id || null;
-            nombre    = promo.name || promo.type || 'Campaña de descuento';
-            tipo      = promo.type || null;
-            key       = 'desc:' + (promo.id || promo.type || nombre);
-          } else {
-            nombre = 'Descuento de precio (sin campaña)';
-            key    = 'desc:propio';
-          }
-          categoria = 'descuento_precio';
+        // La campaña manda sobre el tipo de detalle: si la SMART "Potencia tus ventas"
+        // bajó el precio Y encima puso un cupón, es UNA campaña con dos efectos, no dos.
+        let key, nombre, tipo = null, campanaId = null;
+        const promo = sup.offer_id ? porRefId.get(sup.offer_id) : null;
+        if (promo && promo.id) {
+          campanaId = promo.id;
+          nombre    = promo.name || promo.type || promo.id;
+          tipo      = promo.type || null;
         } else if (sup.meli_campaign) {
           campanaId = sup.meli_campaign;
           const cat = porIdCampana.get(sup.meli_campaign);
-          nombre    = cat?.name || sup.meli_campaign;
+          nombre    = cat?.name || `Campaña de ML (${sup.meli_campaign})`;
           tipo      = cat?.type || null;
-          categoria = dSel > 0 ? 'cupon_cofinanciado' : 'cupon_ml';
-          key       = 'camp:' + sup.meli_campaign;
+        }
+
+        if (campanaId) {
+          key = 'camp:' + campanaId;
+        } else if (d.type === 'discount' || sup.offer_id) {
+          nombre = 'Descuento de precio (sin campaña)';
+          tipo   = 'PRICE_DISCOUNT';
+          key    = 'desc:propio';
         } else if (sup.campaign_id) {
-          categoria = dSel > 0 ? 'cupon_cofinanciado' : 'cupon_ml';
-          nombre    = dSel > 0 ? 'Cupón cofinanciado con ML' : 'Cupón de ML';
-          key       = 'coup:' + categoria;
+          nombre = dSel > 0 ? 'Cupón cofinanciado con ML' : 'Cupón de ML';
+          key    = 'coup:' + (dSel > 0 ? 'cofi' : 'ml');
         } else {
           const inf = inferirCuponPropio(dTot, fact);
           campanaId = inf?.id || null;
           nombre    = inf?.name || 'Cupón propio (sin identificar)';
           tipo      = inf?.sub_type || 'SELLER_COUPON_CAMPAIGN';
-          categoria = 'cupon_propio';
           key       = 'propio:' + (inf?.id || 'sin_id');
         }
 
-        const b = bucket(key, nombre, categoria, tipo, campanaId);
+        const b = bucket(key, nombre, null, tipo, campanaId);
         b.ordenes.add(o.id);
         b.desc_total += dTot; b.desc_seller += dSel; b.desc_ml += (dTot - dSel);
-        b.facturacion += fact;
         lineas.forEach(l => {
-          b.unidades += l.unidades;
-          const prev = b.items.get(l.item_id) || { item_id: l.item_id, title: l.title, unidades: 0, facturacion: 0, desc_total: 0, desc_seller: 0 };
-          prev.unidades += l.unidades; prev.facturacion += l.facturacion;
+          // La venta se cuenta una vez por orden+ítem aunque la campaña aporte
+          // dos detalles sobre la misma línea; el descuento sí se suma siempre.
+          const vk = `${o.id}|${l.item_id}`;
+          if (!b.ventas.has(vk)) b.ventas.set(vk, { item_id: l.item_id, title: l.title, unidades: l.unidades, facturacion: l.facturacion });
+          const prev = b.items.get(l.item_id) || { item_id: l.item_id, title: l.title, desc_total: 0, desc_seller: 0 };
           prev.desc_total += l.desc_total; prev.desc_seller += l.desc_seller;
           b.items.set(l.item_id, prev);
         });
       }
     }
 
-    const campanas = [...camp.values()].map(b => ({
-      key: b.key, id: b.id, nombre: b.nombre, categoria: b.categoria, tipo: b.tipo,
-      ordenes: b.ordenes.size, unidades: b.unidades,
-      facturacion: Math.round(b.facturacion),
-      desc_total: Math.round(b.desc_total), desc_ml: Math.round(b.desc_ml), desc_seller: Math.round(b.desc_seller),
-      ticket_prom: b.ordenes.size ? Math.round(b.facturacion / b.ordenes.size) : 0,
-      desc_pct: b.facturacion > 0 ? +(b.desc_total / b.facturacion * 100).toFixed(1) : 0,
-      items: [...b.items.values()].sort((a,c) => c.facturacion - a.facturacion)
-              .map(i => ({ ...i, facturacion: Math.round(i.facturacion), desc_total: Math.round(i.desc_total), desc_seller: Math.round(i.desc_seller) })),
-    })).sort((a,b) => b.facturacion - a.facturacion);
+    // La categoría sale de quién terminó pagando, no del tipo de detalle: una campaña
+    // que a vos te sale $0 es otra cosa que una que te la bancás entera.
+    const categoriaDe = b => {
+      const esDescuentoPrecio = b.tipo === 'PRICE_DISCOUNT';
+      if (b.desc_seller === 0)             return 'cupon_ml';
+      if (b.desc_ml === 0)                 return esDescuentoPrecio ? 'descuento_precio' : 'cupon_propio';
+      return 'cupon_cofinanciado';
+    };
+
+    const campanas = [...camp.values()].map(b => {
+      const ventas = [...b.ventas.values()];
+      const fact   = ventas.reduce((s,v) => s + v.facturacion, 0);
+      const unid   = ventas.reduce((s,v) => s + v.unidades, 0);
+      // Facturación y unidades por ítem, ya deduplicadas por orden.
+      const porItem = new Map();
+      ventas.forEach(v => {
+        const p = porItem.get(v.item_id) || { unidades: 0, facturacion: 0 };
+        p.unidades += v.unidades; p.facturacion += v.facturacion;
+        porItem.set(v.item_id, p);
+      });
+      return {
+        key: b.key, id: b.id, nombre: b.nombre, categoria: categoriaDe(b), tipo: b.tipo,
+        ordenes: b.ordenes.size, unidades: unid,
+        facturacion: Math.round(fact),
+        desc_total: Math.round(b.desc_total), desc_ml: Math.round(b.desc_ml), desc_seller: Math.round(b.desc_seller),
+        ticket_prom: b.ordenes.size ? Math.round(fact / b.ordenes.size) : 0,
+        desc_pct: fact > 0 ? +(b.desc_total / fact * 100).toFixed(1) : 0,
+        items: [...b.items.values()].map(i => ({
+          item_id: i.item_id, title: i.title,
+          unidades: porItem.get(i.item_id)?.unidades || 0,
+          facturacion: Math.round(porItem.get(i.item_id)?.facturacion || 0),
+          desc_total: Math.round(i.desc_total), desc_seller: Math.round(i.desc_seller),
+        })).sort((a,c) => c.facturacion - a.facturacion),
+      };
+    }).sort((a,b) => b.facturacion - a.facturacion);
 
     // Los cupones del catálogo que NO aparecen en ninguna orden son la otra mitad del
     // dato: campañas prendidas que no vendieron nada.
@@ -12778,7 +12815,9 @@ app.get('/api/promociones/rendimiento', requireAuth, async (req, res) => {
       totales: {
         facturacion: Math.round(factTotal),
         unidades: unidadesTotal,
-        facturacion_con_desc: campanas.reduce((s,c) => s + c.facturacion, 0),
+        // Órdenes distintas con algún descuento. NO es la suma de las campañas: una
+        // misma orden puede entrar en dos campañas y sumarlas contaría la venta doble.
+        facturacion_con_desc: Math.round(factConDesc),
         desc_total:  campanas.reduce((s,c) => s + c.desc_total, 0),
         desc_ml:     campanas.reduce((s,c) => s + c.desc_ml, 0),
         desc_seller: campanas.reduce((s,c) => s + c.desc_seller, 0),

@@ -19852,6 +19852,8 @@ function renderPromoRendimiento(d) {
     <div style="margin-top:14px;font-size:11px;color:var(--muted);line-height:1.7">
       Fuente: el desglose de descuentos de cada orden paga del mes (${d.ordenes_analizadas} órdenes analizadas).
       <strong>"Pagaste vos"</strong> es la parte del descuento que financia el vendedor — el resto lo pone ML.
+      Una misma orden puede entrar en dos campañas (un descuento de precio y un cupón encima), así que
+      <strong>la columna "Se vendió" no suma al total</strong>: cada fila es cuánto se vendió con esa campaña.
       Los cupones propios no traen identificador en la orden: se reconocen por el monto contra las reglas de tus campañas,
       y los que no se pueden atribuir con certeza caen en "Cupón propio (sin identificar)".
     </div>`;
