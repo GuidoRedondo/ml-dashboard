@@ -12732,7 +12732,10 @@ app.get('/api/promociones/rendimiento', requireAuth, async (req, res) => {
           tipo   = 'PRICE_DISCOUNT';
           key    = 'desc:propio';
         } else if (sup.campaign_id) {
-          nombre = dSel > 0 ? 'Cupón cofinanciado con ML' : 'Cupón de ML';
+          // Cupón de una campaña que el catálogo no lista (terminada, o de ML sin
+          // nombre público). El nombre definitivo se pone al final, cuando ya se sabe
+          // quién terminó pagando: acá todavía es un detalle suelto.
+          nombre = null;
           key    = 'coup:' + (dSel > 0 ? 'cofi' : 'ml');
         } else {
           const inf = inferirCuponPropio(dTot, fact);
@@ -12777,8 +12780,15 @@ app.get('/api/promociones/rendimiento', requireAuth, async (req, res) => {
         p.unidades += v.unidades; p.facturacion += v.facturacion;
         porItem.set(v.item_id, p);
       });
+      const categoria = categoriaDe(b);
+      const NOMBRE_GENERICO = {
+        cupon_ml:           'Cupón de ML (sin campaña identificada)',
+        cupon_cofinanciado: 'Cupón cofinanciado (sin campaña identificada)',
+        cupon_propio:       'Cupón del vendedor (sin campaña identificada)',
+        descuento_precio:   'Descuento de precio (sin campaña)',
+      };
       return {
-        key: b.key, id: b.id, nombre: b.nombre, categoria: categoriaDe(b), tipo: b.tipo,
+        key: b.key, id: b.id, nombre: b.nombre || NOMBRE_GENERICO[categoria] || 'Sin identificar', categoria, tipo: b.tipo,
         ordenes: b.ordenes.size, unidades: unid,
         facturacion: Math.round(fact),
         desc_total: Math.round(b.desc_total), desc_ml: Math.round(b.desc_ml), desc_seller: Math.round(b.desc_seller),
