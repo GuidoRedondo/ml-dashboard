@@ -9810,6 +9810,13 @@ function modoEnvio(lt) {
 // Un envío entregado llega "a tiempo" si el DÍA argentino de la entrega no pasa el
 // día comprometido. Comparar instantes daría siempre tarde: el límite que devuelve
 // ML es medianoche de ese día, y la entrega real es a las 15hs de ese mismo día.
+//
+// Esto mide la ENTREGA, no el despacho, y por eso no tiene por qué parecerse a la
+// métrica de demoras de seller_reputation (que mira sólo la salida del paquete).
+// Medido en REDFISHOK julio 2026: 0,7% de demoras al despachar contra 25% de
+// entregas fuera de fecha — esa diferencia la pone el correo, no el vendedor.
+// Tampoco sirve /shipments/{id}/sla acá: devuelve on_time en envíos entregados 6
+// días tarde. El sla sólo vale para los envíos que están en curso.
 function llegoATiempo(sh) {
   const entregado = sh.status_history && sh.status_history.date_delivered;
   const opt = sh.shipping_option || {};
@@ -9900,7 +9907,10 @@ async function calcularDesempenioEnvios(uid, headers, desde, hasta) {
     // FLEX y Correo — por eso se guarda por modo y no en un promedio único.
     const desp = horasEntre(h.date_handling, h.date_shipped);
     const despValido = desp != null && desp >= 0 && desp < 24 * 30;
-    if (despValido) { tot._despacho.push(desp); m._despacho.push(desp); }
+    if (despValido) {
+      m._despacho.push(desp);
+      if (modo !== 'FULL') tot._despacho.push(desp);   // el total mide al vendedor
+    }
 
     // Ranking por publicación.
     (sh.shipping_items || []).forEach(it => {
