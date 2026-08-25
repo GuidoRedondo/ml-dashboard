@@ -10112,25 +10112,27 @@ app.get('/api/logistica/desempenio', requireAuth, async (req, res) => {
 
 // Todos los claims de la cuenta, sin filtrar. Se pagina una sola vez y después se
 // filtra en memoria por los distintos rangos que hagan falta (el mes y los 60 días).
-// OJO con la paginación: repite filas entre páginas y pierde otras, igual que la de
-// PADS. Medido en REDFISHOK: pidiendo los 1962 reclamos cerrados llegan 1962 filas
-// pero sólo 1935 ids distintos, o sea 27 repetidos y 27 que nunca aparecen. Sin
-// deduplicar, el conteo de un mes salía ~15% inflado (90 casos donde hay 76). Se
-// dedupe por id y se devuelve cuántos se perdieron, para poder decir en pantalla
-// que el número es aproximado en lugar de fingir precisión.
-async function fetchClaimsTodos(headers, maxPaginas = 80) {
+// OJO con la paginación: repite filas entre páginas y se saltea otras, igual que la
+// de PADS, y NO se saltea siempre las mismas. Medido en REDFISHOK sobre 1971
+// reclamos: una pasada trae entre 1932 y 1966 ids distintos, y el conteo de julio
+// baila entre 65 y 83 según la corrida. Deduplicar no alcanza: hay que recorrer dos
+// veces y unir. Con dos pasadas el acumulado queda en 1971 y ya no crece (probado
+// hasta cuatro), así que dos es el punto donde se estabiliza sin pagar de más.
+async function fetchClaimsTodos(headers, maxPaginas = 80, pasadas = 2) {
   const porId = new Map();
-  let truncado = false, filas = 0, totalDeclarado = 0;
-  for (const estado of ['opened', 'closed']) {
-    for (let pag = 0; pag < maxPaginas; pag++) {
-      const url = `${ML_API}/post-purchase/v1/claims/search?status=${estado}&limit=50&offset=${pag * 50}`;
-      const r = await fetch(url, { headers }).then(r => r.json()).catch(() => null);
-      const data = (r && r.data) || [];
-      data.forEach(c => { filas++; if (c && c.id != null) porId.set(c.id, c); });
-      const total = (r && r.paging && r.paging.total) || 0;
-      if (pag === 0) totalDeclarado += total;
-      if ((pag + 1) * 50 >= total) break;
-      if (pag === maxPaginas - 1) truncado = true;
+  let truncado = false, totalDeclarado = 0;
+  for (let pasada = 0; pasada < pasadas; pasada++) {
+    for (const estado of ['opened', 'closed']) {
+      for (let pag = 0; pag < maxPaginas; pag++) {
+        const url = `${ML_API}/post-purchase/v1/claims/search?status=${estado}&limit=50&offset=${pag * 50}`;
+        const r = await fetch(url, { headers }).then(r => r.json()).catch(() => null);
+        const data = (r && r.data) || [];
+        data.forEach(c => { if (c && c.id != null) porId.set(c.id, c); });
+        const total = (r && r.paging && r.paging.total) || 0;
+        if (pasada === 0 && pag === 0) totalDeclarado += total;
+        if ((pag + 1) * 50 >= total) break;
+        if (pag === maxPaginas - 1) truncado = true;
+      }
     }
   }
   const claims = [...porId.values()];
@@ -10217,7 +10219,7 @@ async function calcularReputacionMes(uid, headers, desde, hasta, ventas60) {
   };
 }
 
-const REPUTACION_CALC_VERSION = 2;
+const REPUTACION_CALC_VERSION = 3;
 
 // GET /api/reputacion?client_id=&mes=YYYY-MM[&force_refresh=1]
 app.get('/api/reputacion', requireAuth, async (req, res) => {
