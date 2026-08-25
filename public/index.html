@@ -14167,12 +14167,15 @@ function renderLogistica(data) {
 // ── STOCK FULL ────────────────────────────────────────────────────────────────
 
 // ── LOGÍSTICA > DESEMPEÑO DE ENVÍOS ──────────────────────────────────────────
-// El panel se arma en dos tiempos: la reputación y las alertas de hoy son baratas
-// y entran solas al abrir; el análisis del mes pide un request por envío a ML
-// (1-2 min en cuentas grandes), así que sólo se pinta si ya está cacheado y si no
-// espera a que el usuario apriete el botón.
+// El backend devuelve el detalle de cada envío del mes; todos los agregados que se
+// ven (KPIs, corte por modo, ranking) se arman acá. Por eso filtrar por forma de
+// entrega o por tipo de problema no vuelve a pegarle a ML: es recalcular la lista.
 let _desempData = null;
 let _desempMes = null;
+let _desempModo = 'todos';       // FULL | FLEX | Correo | Otro
+let _desempFoco = null;          // tarde | despacho | no_entregados | cancelados | en_curso
+let _desempTope = 50;            // filas visibles en la tabla de detalle
+let _desempReq = 0;              // token anti-carrera: sólo pinta la respuesta más nueva
 
 // Etiqueta de un 'YYYY-MM'. Ancla el día 15 con dART para que la zona no corra el mes.
 function mesLabel(mes) {
@@ -14189,35 +14192,103 @@ async function loadDesempenioEnvios(opts = {}) {
   }
   const mes = _desempMes || mesART(0).val;
   _desempMes = mes;
+  const req = ++_desempReq;
 
-  const calculando = !!opts.calcular;
-  el.innerHTML = `<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">${
-    calculando
-      ? '⏳ Leyendo los envíos de ' + mesLabel(mes) + ' uno por uno en ML…<br><span style="font-size:12px">En cuentas grandes tarda 1-2 minutos. Después queda cacheado 12 horas.</span>'
-      : '⏳ Consultando desempeño de envíos…'
-  }</div>`;
+  el.innerHTML = `<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">
+    ⏳ Analizando los envíos de ${mesLabel(mes)}…<br>
+    <span style="font-size:12px">ML obliga a leerlos de a uno, así que la primera vez tarda. Después queda guardado 12 horas.</span>
+  </div>`;
 
   try {
-    const qs = [`client_id=${client.id}`, `mes=${mes}`];
-    if (calculando) qs.push('force_refresh=1'); else qs.push('solo_cache=1');
-    const data = await apiCall('GET', `/api/logistica/desempenio?${qs.join('&')}`);
+    // Sin force_refresh el server sirve el cache de 12h si lo tiene, y si no calcula.
+    // No se pide solo_cache: elegir un mes tiene que traer el mes, no un botón más.
+    const qs = `client_id=${client.id}&mes=${mes}${opts.calcular ? '&force_refresh=1' : ''}`;
+    const data = await apiCall('GET', `/api/logistica/desempenio?${qs}`);
+    if (req !== _desempReq) return;                    // llegó vieja: la pisa otra más nueva
     if (!data || data.error) {
       el.innerHTML = `<div style="color:var(--muted);padding:40px;text-align:center">${(data && data.error) || 'Error al cargar'}</div>`;
       return;
     }
     _desempData = data;
-    renderDesempenio(data);
+    _desempTope = 50;
+    renderDesempenio();
   } catch (e) {
+    if (req !== _desempReq) return;
     el.innerHTML = `<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Error: ${e.message}</div>`;
   }
 }
 
 function cambiarMesDesempenio(mes) {
   _desempMes = mes;
+  _desempFoco = null;
   loadDesempenioEnvios();
 }
 
-function renderDesempenio(data) {
+function filtrarModoDesempenio(modo) {
+  _desempModo = modo;
+  _desempTope = 50;
+  renderDesempenio();
+}
+
+// Las cards son filtros: volver a tocar la que ya está activa la apaga.
+function focoDesempenio(foco) {
+  _desempFoco = (_desempFoco === foco) ? null : foco;
+  _desempTope = 50;
+  renderDesempenio();
+}
+
+function verMasDesempenio() {
+  _desempTope += 100;
+  renderDesempenio();
+}
+
+// ── Agregados sobre la lista de envíos ya filtrada ──────────────────────────
+function resumirEnvios(lista) {
+  const r = {
+    envios: lista.length, entregados: 0, en_curso: 0, no_entregados: 0, devueltos: 0,
+    cancelados: 0, a_tiempo: 0, tarde: 0, sin_promesa: 0, _desp: [], _entr: []
+  };
+  lista.forEach(e => {
+    if (e.estado === 'entregado')         r.entregados++;
+    else if (e.estado === 'no_entregado') r.no_entregados++;
+    else if (e.estado === 'devuelto')     r.devueltos++;
+    else if (e.estado === 'cancelado')    r.cancelados++;
+    else                                  r.en_curso++;
+    if (e.estado === 'entregado') {
+      if (e.puntual === true) r.a_tiempo++;
+      else if (e.puntual === false) r.tarde++;
+      else r.sin_promesa++;
+    }
+    // El despacho de FULL lo hace ML, no el vendedor: no entra en el promedio salvo
+    // que se esté mirando FULL puntualmente.
+    if (e.despacho_h != null && (_desempModo !== 'todos' || e.modo !== 'FULL')) r._desp.push(e.despacho_h);
+    if (e.entrega_d != null) r._entr.push(e.entrega_d);
+  });
+  const med = a => { if (!a.length) return null; const s=[...a].sort((x,y)=>x-y); const m=Math.floor(s.length/2); return s.length%2 ? s[m] : (s[m-1]+s[m])/2; };
+  const pro = a => a.length ? a.reduce((x,y)=>x+y,0)/a.length : null;
+  const juzgados = r.a_tiempo + r.tarde;
+  r.pct_a_tiempo = juzgados ? +(r.a_tiempo / juzgados * 100).toFixed(1) : null;
+  r.despacho_mediana = r._desp.length ? +med(r._desp).toFixed(1) : null;
+  r.entrega_prom = r._entr.length ? +pro(r._entr).toFixed(1) : null;
+  return r;
+}
+
+// Qué envíos muestra la tabla según la card encendida.
+function filtrarPorFoco(lista, foco) {
+  if (foco === 'tarde')          return lista.filter(e => e.puntual === false);
+  if (foco === 'no_entregados')  return lista.filter(e => e.estado === 'no_entregado' || e.estado === 'devuelto');
+  if (foco === 'cancelados')     return lista.filter(e => e.estado === 'cancelado');
+  if (foco === 'en_curso')       return lista.filter(e => e.estado === 'en_curso');
+  if (foco === 'despacho') {
+    // Los que más tardaron en salir, que es lo que mira ML. FULL no cuenta: despacha ML.
+    return lista.filter(e => e.despacho_h != null && e.modo !== 'FULL')
+                .sort((a, b) => b.despacho_h - a.despacho_h);
+  }
+  return lista;
+}
+
+function renderDesempenio() {
+  const data = _desempData;
   const el = document.getElementById('desempenioContent');
   const rep = data.reputacion || {};
   const per = data.periodo;
@@ -14226,14 +14297,14 @@ function renderDesempenio(data) {
   const selector = `<div style="display:flex;align-items:center;gap:10px;margin-bottom:18px;flex-wrap:wrap">
     <span style="font-size:12px;color:var(--muted)">Mes analizado:</span>
     <select onchange="cambiarMesDesempenio(this.value)" style="padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--text);font-size:13px;font-family:inherit">
-      ${Array.from({length:6},(_,i)=>mesART(i)).map(x => `<option value="${x.val}" ${x.val === data.mes ? "selected" : ""}>${x.label}</option>`).join("")}
+      ${Array.from({length:6},(_,i)=>mesART(i)).map(x => `<option value="${x.val}" ${x.val === data.mes ? 'selected' : ''}>${x.label}</option>`).join('')}
     </select>
-    ${per ? `<button onclick="loadDesempenioEnvios({calcular:true})" style="padding:6px 12px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--muted);font-size:12px;cursor:pointer;font-family:inherit">🔄 Recalcular</button>` : ''}
+    <button onclick="loadDesempenioEnvios({calcular:true})" style="padding:6px 12px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--muted);font-size:12px;cursor:pointer;font-family:inherit">🔄 Recalcular</button>
     ${data.cached && data.fetched_at ? `<span style="font-size:11px;color:var(--muted)">datos al ${new Date(data.fetched_at).toLocaleString('es-AR', { timeZone: ART_TZ, day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}</span>` : ''}
   </div>`;
 
   // ── Bloque 1: cómo te mide ML ──────────────────────────────────────────────
-  const metrica = (label, m, ayuda) => {
+  const metrica = (label, m, ayuda, extra) => {
     const pct = m.rate != null ? m.rate * 100 : null;
     const lim = m.limite * 100;
     const estado = pct == null ? 'sin' : pct <= lim * 0.5 ? 'bien' : pct <= lim ? 'ojo' : 'mal';
@@ -14245,12 +14316,21 @@ function renderDesempenio(data) {
         <div style="font-size:26px;font-weight:700;font-family:var(--font-b);color:${color}">${pct == null ? '—' : pct.toFixed(2) + '%'}</div>
         <div style="font-size:12px;color:var(--muted)">${m.rate_value != null ? m.rate_value + ' casos' : ''}</div>
       </div>
-      <div style="display:flex;align-items:center;gap:6px;margin-top:8px">
-        <span style="background:${fondo};color:${color};padding:2px 8px;border-radius:20px;font-size:11px;font-weight:600">límite ML ${lim}%</span>
-      </div>
+      <div style="margin-top:8px"><span style="background:${fondo};color:${color};padding:2px 8px;border-radius:20px;font-size:11px;font-weight:600">límite ML ${lim}%</span></div>
       <div style="font-size:11px;color:var(--muted);margin-top:8px;line-height:1.4">${ayuda}</div>
+      ${extra || ''}
     </div>`;
   };
+
+  const abiertos = data.reclamos_abiertos || [];
+  const nReclamosMes = per && per.reclamos ? per.reclamos.total : null;
+  const extraReclamos = `<div style="font-size:11px;margin-top:8px;line-height:1.6">
+    ${abiertos.length ? `<div style="color:#dc2626;font-weight:600">${abiertos.length} sin resolver ahora</div>` : '<div style="color:#16a34a;font-weight:600">Ninguno abierto ahora</div>'}
+    ${nReclamosMes != null ? `<div style="color:var(--muted)">${nReclamosMes} en ${mesLabel(data.mes)} · detalle abajo</div>` : ''}
+  </div>`;
+  const nCanceladas = per && per.canceladas ? per.canceladas.length : null;
+  const extraCancel = nCanceladas != null
+    ? `<div style="font-size:11px;margin-top:8px;color:var(--muted)">${nCanceladas} ventas caídas en ${mesLabel(data.mes)} · detalle abajo</div>` : '';
 
   const bloque1 = `<div style="margin-bottom:26px">
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px">
@@ -14261,12 +14341,41 @@ function renderDesempenio(data) {
     <div style="font-size:12px;color:var(--muted);margin-bottom:12px">Últimos ${rep.periodo === '60 days' ? '60 días' : rep.periodo} · ${(rep.ventas || 0).toLocaleString('es-AR')} ventas concretadas. Son las métricas oficiales de la cuenta: si se pasan del límite, ML recorta exposición.</div>
     <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px">
       ${metrica('Demoras al despachar', rep.demoras || {}, 'Ventas que salieron más tarde de lo comprometido. Es la única de las tres que se corrige puertas adentro.')}
-      ${metrica('Reclamos', rep.reclamos || {}, 'Compras que terminaron en reclamo. Mezcla producto, publicación y envío.')}
-      ${metrica('Cancelaciones', rep.cancelaciones || {}, 'Ventas canceladas por el vendedor, casi siempre por falta de stock real.')}
+      ${metrica('Reclamos', rep.reclamos || {}, 'Compras que terminaron en reclamo. Mezcla producto, publicación y envío.', extraReclamos)}
+      ${metrica('Cancelaciones', rep.cancelaciones || {}, 'Ventas canceladas por el vendedor, casi siempre por falta de stock real.', extraCancel)}
     </div>
   </div>`;
 
-  // ── Bloque 3: alertas de hoy ───────────────────────────────────────────────
+  // ── Bloque 2: reclamos abiertos hoy ────────────────────────────────────────
+  const bloqueReclamosAbiertos = abiertos.length ? `<div style="margin-bottom:26px">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px">
+      <span style="font-size:16px">⚖️</span>
+      <span style="font-size:14px;font-weight:600;font-family:var(--font-b)">Reclamos sin resolver</span>
+    </div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:12px">Los que están abiertos ahora mismo. Cuando ML marca una acción con fecha, no contestar a tiempo se resuelve en contra.</div>
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden"><div style="overflow-x:auto">
+      <table style="width:100%;border-collapse:collapse">
+        <thead><tr style="background:var(--surface2)">
+          <th style="padding:8px 12px;text-align:left;font-size:11px;font-weight:600;color:var(--muted)">Motivo</th>
+          <th style="padding:8px 12px;text-align:center;font-size:11px;font-weight:600;color:var(--muted)">Tipo</th>
+          <th style="padding:8px 12px;text-align:center;font-size:11px;font-weight:600;color:var(--muted)">Etapa</th>
+          <th style="padding:8px 12px;text-align:center;font-size:11px;font-weight:600;color:var(--muted)">Abierto</th>
+          <th style="padding:8px 12px;text-align:left;font-size:11px;font-weight:600;color:var(--muted)">Acción pendiente</th>
+        </tr></thead>
+        <tbody>${abiertos.map(r => `<tr>
+          <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px">${r.motivo || r.reason_id || '—'}</td>
+          <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px;text-align:center">${r.tipo === 'returns' ? 'Devolución' : 'Mediación'}</td>
+          <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px;text-align:center">${r.etapa === 'dispute' ? '<span style="color:#dc2626;font-weight:600">disputa</span>' : 'reclamo'}</td>
+          <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px;text-align:center">${r.fecha ? dART(r.fecha).toLocaleDateString('es-AR',{timeZone:ART_TZ,day:'2-digit',month:'2-digit'}) : '—'}</td>
+          <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px">${r.accion
+            ? `<span style="color:#dc2626;font-weight:600">${r.accion === 'send_message_to_complainant' ? 'Responder al comprador' : r.accion}</span>${r.vence ? ` · vence ${new Date(r.vence).toLocaleString('es-AR',{timeZone:ART_TZ,day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})}` : ''}`
+            : '<span style="color:var(--muted)">esperando a ML o al comprador</span>'}</td>
+        </tr>`).join('')}</tbody>
+      </table>
+    </div></div>
+  </div>` : '';
+
+  // ── Bloque 3: envíos en curso demorados ────────────────────────────────────
   const alertas = data.alertas || [];
   const bloque3 = `<div style="margin-bottom:26px">
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px">
@@ -14276,7 +14385,7 @@ function renderDesempenio(data) {
     <div style="font-size:12px;color:var(--muted);margin-bottom:12px">Revisados ${data.en_curso_revisados || 0} envíos pendientes de los últimos 15 días. Los de FULL no entran porque los despacha ML. Un envío puede estar listo y esperando que lo retire el correo: igual conviene empujarlo, porque la demora la cuenta ML.</div>
     ${alertas.length === 0
       ? `<div style="background:#dcfce7;border:1px solid #86efac;border-radius:12px;padding:14px 16px;font-size:13px;color:#166534">Ningún envío pendiente pasado de fecha. Al día.</div>`
-      : `<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden">
+      : `<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden"><div style="overflow-x:auto">
           <table style="width:100%;border-collapse:collapse">
             <thead><tr style="background:var(--surface2)">
               <th style="padding:8px 10px;text-align:left;font-size:11px;font-weight:600;color:var(--muted)">Publicación</th>
@@ -14291,122 +14400,242 @@ function renderDesempenio(data) {
               </td>
               <td style="padding:8px 10px;border-top:1px solid var(--border);font-size:12px;text-align:center">${a.modo}</td>
               <td style="padding:8px 10px;border-top:1px solid var(--border);font-size:12px;text-align:center">${a.substatus || a.status}</td>
-              <td style="padding:8px 10px;border-top:1px solid var(--border);font-size:12px;text-align:center">${dART(a.expected_date).toLocaleString('es-AR', { timeZone: ART_TZ, day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}</td>
+              <td style="padding:8px 10px;border-top:1px solid var(--border);font-size:12px;text-align:center">${new Date(a.expected_date).toLocaleString('es-AR', { timeZone: ART_TZ, day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}</td>
               <td style="padding:8px 10px;border-top:1px solid var(--border);font-size:12px;text-align:right;font-weight:600;color:${a.horas_vencido > 24 ? '#dc2626' : '#d97706'}">${a.horas_vencido > 0 ? (a.horas_vencido >= 24 ? (a.horas_vencido / 24).toFixed(1) + ' días' : a.horas_vencido.toFixed(0) + ' hs') : (a.sla_status || 'demorado')}</td>
             </tr>`).join('')}</tbody>
           </table>
-        </div>`}
+        </div></div>`}
   </div>`;
 
-  // ── Bloque 2: el mes ───────────────────────────────────────────────────────
-  let bloque2;
-  if (!per) {
-    bloque2 = `<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:28px;text-align:center">
-      <div style="font-size:14px;font-weight:600;font-family:var(--font-b);margin-bottom:6px">Entregas de ${mesLabel(data.mes)}</div>
-      <div style="font-size:12px;color:var(--muted);max-width:520px;margin:0 auto 16px;line-height:1.5">
-        ML no permite pedir los envíos en lote: hay que leerlos de a uno. Por eso el análisis del mes se calcula a pedido y queda guardado 12 horas.
-      </div>
-      <button onclick="loadDesempenioEnvios({calcular:true})" style="padding:9px 20px;border:none;border-radius:8px;background:var(--accent);color:#fff;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit">Analizar ${mesLabel(data.mes)}</button>
-    </div>`;
-  } else {
-    const t = per.total || {};
-    const kpi = (label, valor, sub, color) => `<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:14px 16px">
+  if (!per) { el.innerHTML = selector + bloque1 + bloqueReclamosAbiertos + bloque3; return; }
+
+  // ── Bloque 4: el mes, con filtros ──────────────────────────────────────────
+  const todos = per.envios || [];
+  const lista = _desempModo === 'todos' ? todos : todos.filter(e => e.modo === _desempModo);
+  const r = resumirEnvios(lista);
+  const titulo = t => per.items && per.items[t] ? per.items[t] : (t || '—');
+  const hs = h => h == null ? '—' : h >= 24 ? (h / 24).toFixed(1) + ' días' : h.toFixed(1) + ' hs';
+
+  // Chips de forma de entrega.
+  const modosPresentes = ['FULL', 'FLEX', 'Correo', 'Otro'].filter(m => todos.some(e => e.modo === m));
+  const chip = (val, label, n) => {
+    const on = _desempModo === val;
+    return `<button onclick="filtrarModoDesempenio('${val}')" style="padding:6px 14px;border:1px solid ${on ? 'var(--accent)' : 'var(--border)'};border-radius:20px;background:${on ? 'var(--accent)' : 'var(--surface)'};color:${on ? '#fff' : 'var(--text)'};font-size:12px;font-weight:${on ? '600' : '500'};cursor:pointer;font-family:inherit">${label} <span style="opacity:.7">${n}</span></button>`;
+  };
+  const chips = `<div style="display:flex;gap:8px;align-items:center;margin-bottom:16px;flex-wrap:wrap">
+    <span style="font-size:12px;color:var(--muted);margin-right:2px">Forma de entrega:</span>
+    ${chip('todos', 'Todas', todos.length)}
+    ${modosPresentes.map(m => chip(m, m, todos.filter(e => e.modo === m).length)).join('')}
+  </div>`;
+
+  // KPIs clickeables: cada uno enciende el detalle de esos envíos.
+  const card = (foco, label, valor, sub, color) => {
+    const on = _desempFoco === foco;
+    const clickable = !!foco;
+    return `<div ${clickable ? `onclick="focoDesempenio('${foco}')"` : ''} style="background:${on ? 'var(--surface2)' : 'var(--surface)'};border:1px solid ${on ? 'var(--accent)' : 'var(--border)'};border-radius:12px;padding:14px 16px;${clickable ? 'cursor:pointer;' : ''}position:relative">
       <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em">${label}</div>
       <div style="font-size:23px;font-weight:700;font-family:var(--font-b);margin-top:4px;color:${color || 'var(--text)'}">${valor}</div>
       <div style="font-size:11px;color:var(--muted);margin-top:3px">${sub || ''}</div>
+      ${clickable ? `<div style="position:absolute;top:12px;right:12px;font-size:10px;color:${on ? 'var(--accent)' : 'var(--muted)'};opacity:${on ? 1 : .5}">${on ? '✕ quitar' : 'ver'}</div>` : ''}
     </div>`;
+  };
+  const colorPct = r.pct_a_tiempo == null ? 'var(--text)' : r.pct_a_tiempo >= 95 ? '#16a34a' : r.pct_a_tiempo >= 90 ? '#d97706' : '#dc2626';
+  const kpis = `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:12px;margin-bottom:16px">
+    ${card(null, 'Envíos', r.envios.toLocaleString('es-AR'), _desempModo === 'todos' ? `${per.ventas.toLocaleString('es-AR')} ventas` : `de ${todos.length.toLocaleString('es-AR')} del mes`)}
+    ${card('tarde', 'Llegaron a tiempo', r.pct_a_tiempo == null ? '—' : r.pct_a_tiempo + '%', `${r.tarde} llegaron tarde`, colorPct)}
+    ${card('despacho', 'Demora en despachar', hs(r.despacho_mediana), _desempModo === 'todos' ? 'mediana, sin contar FULL' : 'mediana', null)}
+    ${card(null, 'Tiempo hasta entrega', r.entrega_prom == null ? '—' : r.entrega_prom + ' días', 'promedio, punta a punta')}
+    ${card('no_entregados', 'No entregados', r.no_entregados + r.devueltos, `${r.devueltos} volvieron al depósito`, (r.no_entregados + r.devueltos) > 0 ? '#dc2626' : 'var(--text)')}
+    ${card('cancelados', 'Envíos cancelados', r.cancelados, 'nunca salieron')}
+  </div>`;
 
-    const pct = t.pct_a_tiempo;
-    const colorPct = pct == null ? 'var(--text)' : pct >= 95 ? '#16a34a' : pct >= 90 ? '#d97706' : '#dc2626';
-    const hs = h => h == null ? '—' : h >= 24 ? (h / 24).toFixed(1) + ' días' : h.toFixed(1) + ' hs';
+  // Corte por modo (siempre sobre el total, es la comparación entre canales).
+  const filaModo = m => {
+    const x = resumirEnvios(todos.filter(e => e.modo === m));
+    const c = x.pct_a_tiempo == null ? 'var(--muted)' : x.pct_a_tiempo >= 95 ? '#16a34a' : x.pct_a_tiempo >= 90 ? '#d97706' : '#dc2626';
+    const despacho = m === 'FULL'
+      ? '<span style="color:var(--muted)">lo hace ML</span>'
+      : (x._desp.length ? hs(+([...x._desp].sort((a,b)=>a-b)[Math.floor(x._desp.length/2)]).toFixed(1)) : '—');
+    return `<tr style="cursor:pointer" onclick="filtrarModoDesempenio('${m}')">
+      <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px;font-weight:600">${m}</td>
+      <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px;text-align:right">${x.envios.toLocaleString('es-AR')}</td>
+      <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px;text-align:right;font-weight:600;color:${c}">${x.pct_a_tiempo == null ? '—' : x.pct_a_tiempo + '%'}</td>
+      <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px;text-align:right">${despacho}</td>
+      <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px;text-align:right">${x.entrega_prom == null ? '—' : x.entrega_prom + ' d'}</td>
+      <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px;text-align:right">${x.no_entregados + x.devueltos}</td>
+    </tr>`;
+  };
+  const tablaModos = `<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden;margin-bottom:22px">
+    <div style="padding:12px 16px;border-bottom:1px solid var(--border);font-size:13px;font-weight:600;font-family:var(--font-b)">Por forma de entrega <span style="font-weight:400;font-size:11px;color:var(--muted)">— tocá una fila para filtrar todo el bloque</span></div>
+    <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse">
+      <thead><tr style="background:var(--surface2)">
+        <th style="padding:8px 12px;text-align:left;font-size:11px;font-weight:600;color:var(--muted)">Modo</th>
+        <th style="padding:8px 12px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Envíos</th>
+        <th style="padding:8px 12px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">A tiempo</th>
+        <th style="padding:8px 12px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Despacho</th>
+        <th style="padding:8px 12px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Entrega</th>
+        <th style="padding:8px 12px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">No entregados</th>
+      </tr></thead>
+      <tbody>${modosPresentes.map(filaModo).join('')}</tbody>
+    </table></div>
+  </div>`;
 
-    const kpis = `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:12px;margin-bottom:18px">
-      ${kpi('Envíos del mes', (t.envios || 0).toLocaleString('es-AR'), `${per.ventas.toLocaleString('es-AR')} ventas`)}
-      ${kpi('Llegaron a tiempo', pct == null ? '—' : pct + '%', `${t.a_tiempo} de ${t.a_tiempo + t.tarde} entregas juzgadas`, colorPct)}
-      ${kpi('Demora en despachar', hs(t.despacho_horas_mediana), 'mediana, sin contar FULL')}
-      ${kpi('Tiempo hasta entrega', t.entrega_dias_prom == null ? '—' : t.entrega_dias_prom + ' días', 'promedio, punta a punta')}
-      ${kpi('No entregados', (t.no_entregados || 0) + (t.devueltos || 0), `${t.devueltos} devueltos al depósito`, (t.no_entregados + t.devueltos) > 0 ? '#dc2626' : 'var(--text)')}
-      ${kpi('Cancelados', t.cancelados || 0, 'envíos que nunca salieron')}
-    </div>`;
-
-    // Corte por modo: acá se ve si el problema es Flex, el correo o el FULL.
-    const modos = per.por_modo || {};
-    const ordenModos = ['FULL', 'FLEX', 'Correo', 'Otro'].filter(m => modos[m]);
-    const tablaModos = `<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden;margin-bottom:22px">
-      <div style="padding:12px 16px;border-bottom:1px solid var(--border);font-size:13px;font-weight:600;font-family:var(--font-b)">Por tipo de envío</div>
-      <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse">
+  // Detalle: si hay una card encendida muestra esos envíos; si no, el ranking por publicación.
+  let detalle;
+  if (_desempFoco) {
+    const sel = filtrarPorFoco(lista, _desempFoco);
+    const nombreFoco = { tarde: 'Envíos que llegaron tarde', despacho: 'Envíos que más tardaron en salir', no_entregados: 'No entregados y devueltos', cancelados: 'Envíos cancelados', en_curso: 'Envíos todavía en curso' }[_desempFoco];
+    const filas = sel.slice(0, _desempTope).map(e => `<tr>
+      <td style="padding:8px 12px;border-top:1px solid var(--border);font-size:12px;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+        ${e.item ? `<a href="https://articulo.mercadolibre.com.ar/${e.item}" target="_blank" style="color:var(--accent);text-decoration:none">${titulo(e.item)}</a>` : '—'}
+      </td>
+      <td style="padding:8px 12px;border-top:1px solid var(--border);font-size:12px;text-align:center">${e.modo}</td>
+      <td style="padding:8px 12px;border-top:1px solid var(--border);font-size:12px;text-align:center">${e.fecha ? dART(e.fecha).toLocaleDateString('es-AR',{timeZone:ART_TZ,day:'2-digit',month:'2-digit'}) : '—'}</td>
+      <td style="padding:8px 12px;border-top:1px solid var(--border);font-size:12px;text-align:center">${e.limite ? dART(e.limite).toLocaleDateString('es-AR',{timeZone:ART_TZ,day:'2-digit',month:'2-digit'}) : '—'}</td>
+      <td style="padding:8px 12px;border-top:1px solid var(--border);font-size:12px;text-align:center">${e.entregado ? dART(e.entregado).toLocaleDateString('es-AR',{timeZone:ART_TZ,day:'2-digit',month:'2-digit'}) : `<span style="color:var(--muted)">${e.substatus || e.estado.replace('_',' ')}</span>`}</td>
+      <td style="padding:8px 12px;border-top:1px solid var(--border);font-size:12px;text-align:right;${e.despacho_h > 24 ? 'color:#dc2626;font-weight:600' : ''}">${hs(e.despacho_h)}</td>
+    </tr>`).join('');
+    detalle = `<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden">
+      <div style="padding:12px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <span style="font-size:13px;font-weight:600;font-family:var(--font-b)">${nombreFoco}</span>
+        <span style="font-size:12px;color:var(--muted)">${sel.length.toLocaleString('es-AR')} envíos${_desempModo !== 'todos' ? ' · ' + _desempModo : ''}</span>
+        <button onclick="focoDesempenio('${_desempFoco}')" style="margin-left:auto;padding:4px 10px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--muted);font-size:11px;cursor:pointer;font-family:inherit">✕ Quitar filtro</button>
+      </div>
+      ${sel.length === 0 ? '<div style="padding:24px;text-align:center;color:var(--muted);font-size:13px">Ningún envío en esta condición. Buena noticia.</div>' : `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse">
         <thead><tr style="background:var(--surface2)">
-          <th style="padding:8px 12px;text-align:left;font-size:11px;font-weight:600;color:var(--muted)">Modo</th>
-          <th style="padding:8px 12px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Envíos</th>
-          <th style="padding:8px 12px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">A tiempo</th>
+          <th style="padding:8px 12px;text-align:left;font-size:11px;font-weight:600;color:var(--muted)">Publicación</th>
+          <th style="padding:8px 12px;text-align:center;font-size:11px;font-weight:600;color:var(--muted)">Modo</th>
+          <th style="padding:8px 12px;text-align:center;font-size:11px;font-weight:600;color:var(--muted)">Venta</th>
+          <th style="padding:8px 12px;text-align:center;font-size:11px;font-weight:600;color:var(--muted)">Prometido</th>
+          <th style="padding:8px 12px;text-align:center;font-size:11px;font-weight:600;color:var(--muted)">Entregado</th>
           <th style="padding:8px 12px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Despacho</th>
-          <th style="padding:8px 12px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Entrega</th>
-          <th style="padding:8px 12px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">No entregados</th>
-        </tr></thead>
-        <tbody>${ordenModos.map(m => {
-          const x = modos[m];
-          const c = x.pct_a_tiempo == null ? 'var(--muted)' : x.pct_a_tiempo >= 95 ? '#16a34a' : x.pct_a_tiempo >= 90 ? '#d97706' : '#dc2626';
-          return `<tr>
-            <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px;font-weight:600">${m}</td>
-            <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px;text-align:right">${x.envios.toLocaleString('es-AR')}</td>
-            <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px;text-align:right;font-weight:600;color:${c}">${x.pct_a_tiempo == null ? '—' : x.pct_a_tiempo + '%'}</td>
-            <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px;text-align:right">${m === 'FULL' ? '<span style="color:var(--muted)">lo hace ML</span>' : hs(x.despacho_horas_mediana)}</td>
-            <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px;text-align:right">${x.entrega_dias_prom == null ? '—' : x.entrega_dias_prom + ' d'}</td>
-            <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px;text-align:right">${x.no_entregados + x.devueltos}</td>
-          </tr>`;
-        }).join('')}</tbody>
-      </table></div>
+        </tr></thead><tbody>${filas}</tbody></table></div>
+        ${sel.length > _desempTope ? `<div style="padding:12px;text-align:center"><button onclick="verMasDesempenio()" style="padding:6px 16px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--text);font-size:12px;cursor:pointer;font-family:inherit">Ver 100 más (quedan ${(sel.length - _desempTope).toLocaleString('es-AR')})</button></div>` : ''}`}
     </div>`;
-
-    const probl = per.problemas || [];
-    const tablaProbl = `<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden">
+  } else {
+    // Ranking por publicación sobre lo que esté filtrado.
+    const porItem = {};
+    lista.forEach(e => {
+      if (!e.item) return;
+      if (!porItem[e.item]) porItem[e.item] = { item: e.item, envios: 0, tarde: 0, no_ent: 0, dev: 0, desp: [] };
+      const p = porItem[e.item];
+      p.envios++;
+      if (e.puntual === false) p.tarde++;
+      if (e.estado === 'no_entregado') p.no_ent++;
+      if (e.estado === 'devuelto') p.dev++;
+      if (e.despacho_h != null) p.desp.push(e.despacho_h);
+    });
+    const rank = Object.values(porItem)
+      .map(p => ({ ...p, problemas: p.tarde + p.no_ent + p.dev, pct: +(((p.tarde + p.no_ent + p.dev) / p.envios) * 100).toFixed(1),
+                   despMed: p.desp.length ? [...p.desp].sort((a,b)=>a-b)[Math.floor(p.desp.length/2)] : null }))
+      .filter(p => p.problemas > 0 && p.envios >= 3)
+      .sort((a, b) => b.problemas - a.problemas || b.pct - a.pct)
+      .slice(0, 25);
+    detalle = `<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden">
       <div style="padding:12px 16px;border-bottom:1px solid var(--border)">
         <div style="font-size:13px;font-weight:600;font-family:var(--font-b)">Publicaciones con más problemas de envío</div>
-        <div style="font-size:11px;color:var(--muted);margin-top:2px">Con 3 envíos o más en el mes. Sumá entregas tarde, no entregados y devueltos.</div>
+        <div style="font-size:11px;color:var(--muted);margin-top:2px">Con 3 envíos o más${_desempModo !== 'todos' ? ' en ' + _desempModo : ''}. Suma entregas tarde, no entregados y devueltos. Tocá una card de arriba para ver los envíos uno por uno.</div>
       </div>
-      ${probl.length === 0
-        ? '<div style="padding:24px;text-align:center;color:var(--muted);font-size:13px">Ninguna publicación con problemas repetidos este mes.</div>'
-        : `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse">
-            <thead><tr style="background:var(--surface2)">
-              <th style="padding:8px 12px;text-align:left;font-size:11px;font-weight:600;color:var(--muted)">Publicación</th>
-              <th style="padding:8px 12px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Envíos</th>
-              <th style="padding:8px 12px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Tarde</th>
-              <th style="padding:8px 12px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">No entreg.</th>
-              <th style="padding:8px 12px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Devueltos</th>
-              <th style="padding:8px 12px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">% con problema</th>
-              <th style="padding:8px 12px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Despacho</th>
-            </tr></thead>
-            <tbody>${probl.map(p => `<tr>
-              <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px;max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
-                <a href="https://articulo.mercadolibre.com.ar/${p.item_id}" target="_blank" style="color:var(--accent);text-decoration:none">${p.title || p.item_id}</a>
-              </td>
-              <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px;text-align:right">${p.envios}</td>
-              <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px;text-align:right">${p.tarde || '—'}</td>
-              <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px;text-align:right">${p.no_entregados || '—'}</td>
-              <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px;text-align:right">${p.devueltos || '—'}</td>
-              <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px;text-align:right;font-weight:600;color:${p.pct_problemas >= 30 ? '#dc2626' : p.pct_problemas >= 15 ? '#d97706' : 'var(--text)'}">${p.pct_problemas}%</td>
-              <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px;text-align:right">${hs(p.despacho_horas_mediana)}</td>
-            </tr>`).join('')}</tbody>
-          </table></div>`}
-    </div>`;
-
-    const nota = `<div style="font-size:11px;color:var(--muted);margin-top:14px;line-height:1.5">
-      Se analizaron ${per.envios_leidos.toLocaleString('es-AR')} envíos de ${per.envios_unicos.toLocaleString('es-AR')}${per.ventas_sin_envio ? ` · ${per.ventas_sin_envio} ventas sin envío asociado` : ''}.
-      "A tiempo" compara el día de <b>entrega</b> contra la fecha que ML le prometió al comprador, así que no es lo mismo que las demoras del bloque de arriba: esas miden sólo que el paquete salga a horario, y lo que pasa después depende del correo.
-      Las entregas sin fecha prometida (${t.sin_promesa}) quedan afuera del porcentaje.
-    </div>`;
-
-    bloque2 = `<div>
-      <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
-        <span style="font-size:16px">📦</span>
-        <span style="font-size:14px;font-weight:600;font-family:var(--font-b)">Entregas de ${mesLabel(data.mes)}</span>
-      </div>
-      ${kpis}${tablaModos}${tablaProbl}${nota}
+      ${rank.length === 0 ? '<div style="padding:24px;text-align:center;color:var(--muted);font-size:13px">Ninguna publicación con problemas repetidos.</div>' : `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse">
+        <thead><tr style="background:var(--surface2)">
+          <th style="padding:8px 12px;text-align:left;font-size:11px;font-weight:600;color:var(--muted)">Publicación</th>
+          <th style="padding:8px 12px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Envíos</th>
+          <th style="padding:8px 12px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Tarde</th>
+          <th style="padding:8px 12px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">No entreg.</th>
+          <th style="padding:8px 12px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Devueltos</th>
+          <th style="padding:8px 12px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">% con problema</th>
+          <th style="padding:8px 12px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Despacho</th>
+        </tr></thead>
+        <tbody>${rank.map(p => `<tr>
+          <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px;max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+            <a href="https://articulo.mercadolibre.com.ar/${p.item}" target="_blank" style="color:var(--accent);text-decoration:none">${titulo(p.item)}</a>
+          </td>
+          <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px;text-align:right">${p.envios}</td>
+          <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px;text-align:right">${p.tarde || '—'}</td>
+          <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px;text-align:right">${p.no_ent || '—'}</td>
+          <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px;text-align:right">${p.dev || '—'}</td>
+          <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px;text-align:right;font-weight:600;color:${p.pct >= 30 ? '#dc2626' : p.pct >= 15 ? '#d97706' : 'var(--text)'}">${p.pct}%</td>
+          <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px;text-align:right">${hs(p.despMed)}</td>
+        </tr>`).join('')}</tbody>
+      </table></div>`}
     </div>`;
   }
 
-  el.innerHTML = selector + bloque1 + bloque3 + bloque2;
+  const nota = `<div style="font-size:11px;color:var(--muted);margin-top:14px;line-height:1.5">
+    Se analizaron ${per.envios_leidos.toLocaleString('es-AR')} envíos de ${per.envios_unicos.toLocaleString('es-AR')}${per.ventas_sin_envio ? ` · ${per.ventas_sin_envio} ventas sin envío asociado` : ''}.
+    "A tiempo" compara el día de <b>entrega</b> contra la fecha que ML le prometió al comprador, así que no es lo mismo que las demoras del bloque de arriba: esas miden sólo que el paquete salga a horario, y lo que pasa después depende del correo.
+    Las entregas sin fecha prometida (${r.sin_promesa}) quedan afuera del porcentaje.
+  </div>`;
+
+  const bloque4 = `<div style="margin-bottom:26px">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+      <span style="font-size:16px">📦</span>
+      <span style="font-size:14px;font-weight:600;font-family:var(--font-b)">Entregas de ${mesLabel(data.mes)}</span>
+    </div>
+    ${chips}${kpis}${tablaModos}${detalle}${nota}
+  </div>`;
+
+  // ── Bloque 5: reclamos y ventas caídas del mes ─────────────────────────────
+  const agrupar = (arr, key, extra) => {
+    const m = {};
+    arr.forEach(x => {
+      const k = x[key] || 'Sin dato';
+      if (!m[k]) m[k] = { k, n: 0, monto: 0 };
+      m[k].n++;
+      if (extra) m[k].monto += x[extra] || 0;
+    });
+    return Object.values(m).sort((a, b) => b.n - a.n);
+  };
+
+  const rec = per.reclamos || { total: 0, detalle: [] };
+  const recPorMotivo = agrupar(rec.detalle || [], 'motivo');
+  const bloqueRec = `<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden">
+    <div style="padding:12px 16px;border-bottom:1px solid var(--border)">
+      <div style="font-size:13px;font-weight:600;font-family:var(--font-b)">Reclamos de ${mesLabel(data.mes)} · ${rec.total}</div>
+      <div style="font-size:11px;color:var(--muted);margin-top:2px">Por qué reclamaron los compradores${rec.truncado ? ' · lista recortada por volumen de historial' : ''}.</div>
+    </div>
+    ${recPorMotivo.length === 0 ? '<div style="padding:22px;text-align:center;color:var(--muted);font-size:13px">Sin reclamos en el mes.</div>' : `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse">
+      <thead><tr style="background:var(--surface2)">
+        <th style="padding:8px 12px;text-align:left;font-size:11px;font-weight:600;color:var(--muted)">Motivo</th>
+        <th style="padding:8px 12px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Casos</th>
+        <th style="padding:8px 12px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">% del total</th>
+      </tr></thead>
+      <tbody>${recPorMotivo.map(m => `<tr>
+        <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px">${m.k}</td>
+        <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px;text-align:right;font-weight:600">${m.n}</td>
+        <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px;text-align:right;color:var(--muted)">${(m.n / rec.total * 100).toFixed(0)}%</td>
+      </tr>`).join('')}</tbody>
+    </table></div>`}
+  </div>`;
+
+  const can = per.canceladas || [];
+  const canMonto = can.reduce((s, x) => s + x.monto, 0);
+  const grupoNombre = { buyer: 'El comprador se arrepintió', seller: 'La canceló el vendedor', mediations: 'Cayó en mediación', meli: 'La canceló Mercado Libre', sin_dato: 'Sin motivo declarado' };
+  const canPorGrupo = agrupar(can, 'grupo', 'monto');
+  const bloqueCan = `<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden">
+    <div style="padding:12px 16px;border-bottom:1px solid var(--border)">
+      <div style="font-size:13px;font-weight:600;font-family:var(--font-b)">Ventas que no se concretaron · ${can.length}</div>
+      <div style="font-size:11px;color:var(--muted);margin-top:2px">$${Math.round(canMonto).toLocaleString('es-AR')} que se cayeron en ${mesLabel(data.mes)}. Sólo las que canceló el vendedor le pegan a la métrica de arriba.</div>
+    </div>
+    ${can.length === 0 ? '<div style="padding:22px;text-align:center;color:var(--muted);font-size:13px">Ninguna venta caída en el mes.</div>' : `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse">
+      <thead><tr style="background:var(--surface2)">
+        <th style="padding:8px 12px;text-align:left;font-size:11px;font-weight:600;color:var(--muted)">Quién la cortó</th>
+        <th style="padding:8px 12px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Ventas</th>
+        <th style="padding:8px 12px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Plata</th>
+      </tr></thead>
+      <tbody>${canPorGrupo.map(g => `<tr>
+        <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px">${grupoNombre[g.k] || g.k}</td>
+        <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px;text-align:right;font-weight:600">${g.n}</td>
+        <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px;text-align:right">$${Math.round(g.monto).toLocaleString('es-AR')}</td>
+      </tr>`).join('')}</tbody>
+    </table></div>`}
+  </div>`;
+
+  const bloque5 = `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px">${bloqueRec}${bloqueCan}</div>`;
+
+  el.innerHTML = selector + bloque1 + bloqueReclamosAbiertos + bloque3 + bloque4 + bloque5;
 }
+
 let _logisticaActiveTab = 'general';
 let _fullStockData = null;
 let _fsSort = { col: null, dir: 1 };
