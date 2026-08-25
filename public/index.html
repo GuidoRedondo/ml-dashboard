@@ -14261,11 +14261,11 @@ function renderReputacion() {
       <span style="font-size:14px;font-weight:600;font-family:var(--font-b)">Cómo te mide Mercado Libre</span>
       ${m.power_seller_status ? `<span style="padding:2px 10px;border-radius:20px;font-size:11px;font-weight:600;background:var(--surface2);color:var(--text)">${m.power_seller_status}</span>` : ''}
     </div>
-    <div style="font-size:12px;color:var(--muted);margin-bottom:12px">Últimos ${m.periodo === '60 days' ? '60 días' : m.periodo} · ${(m.ventas || 0).toLocaleString('es-AR')} ventas concretadas. Las tres primeras las publica ML y son las que definen el color de la cuenta; la de mediaciones la calculamos nosotros sobre el mismo período porque ML no la expone.</div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:12px">Últimos ${m.periodo === '60 days' ? '60 días' : m.periodo} · ${(m.ventas || 0).toLocaleString('es-AR')} ventas concretadas. Reclamos, cancelaciones y envíos demorados los publica ML y son los que definen el color de la cuenta. Mediaciones no existe como métrica oficial: la contamos nosotros sobre el mismo período, así que se mira sola, no contra las otras tres.</div>
     <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(215px,1fr));gap:12px">
       ${card('Reclamos', m.reclamos, 'Compras que terminaron en reclamo. Mezcla producto, publicación y envío.')}
       ${card('Cancelaciones', m.cancelaciones, 'Ventas canceladas por el vendedor, casi siempre por falta de stock real.')}
-      ${card('Mediaciones', m.mediaciones, 'Reclamos donde ML tuvo que meterse a resolver. Son los más caros: casi siempre terminan en reintegro.')}
+      ${card('Mediaciones', m.mediaciones, `Reclamos donde el comprador pidió que ML intervenga${m.mediaciones && m.mediaciones.disputas ? `, <b>${m.mediaciones.disputas} escalaron a disputa</b>` : ''}. Cuenta todas, ganadas y perdidas — por eso da bastante más alto que el % de reclamos: ML toma sólo una parte y no publica con qué criterio.`)}
       ${card('Envíos demorados', m.demoras, 'Ventas que salieron más tarde de lo comprometido. Es la única que se corrige puertas adentro.')}
     </div>
   </div>`;
@@ -14331,7 +14331,7 @@ function renderReputacion() {
   const bloqueCasos = `<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden">
     <div style="padding:12px 16px;border-bottom:1px solid var(--border)">
       <div style="font-size:13px;font-weight:600;font-family:var(--font-b)">Casos post-venta de ${mesLabel(data.mes)} · ${casos.length}</div>
-      <div style="font-size:11px;color:var(--muted);margin-top:2px">Reclamos, devoluciones y cancelaciones pedidas por el comprador${det.casos_truncados ? ' · lista recortada por volumen de historial' : ''}. No compares el total contra el % de reclamos de arriba: ML cuenta sólo una parte de estos casos y no publica el criterio.</div>
+      <div style="font-size:11px;color:var(--muted);margin-top:2px">Reclamos, devoluciones y cancelaciones pedidas por el comprador${det.casos_truncados ? ' · lista recortada por volumen de historial' : ''}. No compares el total contra el % de reclamos de arriba: ML cuenta sólo una parte de estos casos y no publica el criterio.${det.casos_perdidos ? ` La paginación de ML se saltea filas, así que puede faltar alguno (${det.casos_perdidos} en todo el historial).` : ''}</div>
     </div>
     ${casos.length === 0 ? '<div style="padding:22px;text-align:center;color:var(--muted);font-size:13px">Sin casos post-venta en el mes.</div>' : `
       <div>${porTipo.map(t => `<div style="padding:10px 16px;border-bottom:1px solid var(--border)">

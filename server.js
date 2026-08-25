@@ -10112,21 +10112,29 @@ app.get('/api/logistica/desempenio', requireAuth, async (req, res) => {
 
 // Todos los claims de la cuenta, sin filtrar. Se pagina una sola vez y después se
 // filtra en memoria por los distintos rangos que hagan falta (el mes y los 60 días).
+// OJO con la paginación: repite filas entre páginas y pierde otras, igual que la de
+// PADS. Medido en REDFISHOK: pidiendo los 1962 reclamos cerrados llegan 1962 filas
+// pero sólo 1935 ids distintos, o sea 27 repetidos y 27 que nunca aparecen. Sin
+// deduplicar, el conteo de un mes salía ~15% inflado (90 casos donde hay 76). Se
+// dedupe por id y se devuelve cuántos se perdieron, para poder decir en pantalla
+// que el número es aproximado en lugar de fingir precisión.
 async function fetchClaimsTodos(headers, maxPaginas = 80) {
-  const out = [];
-  let truncado = false;
+  const porId = new Map();
+  let truncado = false, filas = 0, totalDeclarado = 0;
   for (const estado of ['opened', 'closed']) {
     for (let pag = 0; pag < maxPaginas; pag++) {
       const url = `${ML_API}/post-purchase/v1/claims/search?status=${estado}&limit=50&offset=${pag * 50}`;
       const r = await fetch(url, { headers }).then(r => r.json()).catch(() => null);
       const data = (r && r.data) || [];
-      out.push(...data);
+      data.forEach(c => { filas++; if (c && c.id != null) porId.set(c.id, c); });
       const total = (r && r.paging && r.paging.total) || 0;
+      if (pag === 0) totalDeclarado += total;
       if ((pag + 1) * 50 >= total) break;
       if (pag === maxPaginas - 1) truncado = true;
     }
   }
-  return { claims: out, truncado };
+  const claims = [...porId.values()];
+  return { claims, truncado, perdidos: Math.max(0, totalDeclarado - claims.length) };
 }
 
 // Ventas caídas del mes. Se piden sólo las canceladas en vez de traer todas las
@@ -10150,7 +10158,7 @@ async function calcularReputacionMes(uid, headers, desde, hasta, ventas60) {
   const hoy = ymd();
   const hace60 = ymdShift(hoy, -60);
 
-  const [{ claims, truncado }, canceladasRaw] = await Promise.all([
+  const [{ claims, truncado, perdidos }, canceladasRaw] = await Promise.all([
     fetchClaimsTodos(headers),
     fetchCanceladasMes(uid, headers, desde, hasta)
   ]);
@@ -10175,7 +10183,9 @@ async function calcularReputacionMes(uid, headers, desde, hasta, ventas60) {
 
   // Mediaciones de los últimos 60 días: mismo período que usa ML para sus métricas,
   // así la tasa es comparable con las otras tres cards.
-  const med60 = claims.filter(c => c.type === 'mediations' && enRango(ymd(c.date_created), hace60, hoy)).length;
+  const med60arr = claims.filter(c => c.type === 'mediations' && enRango(ymd(c.date_created), hace60, hoy));
+  const med60 = med60arr.length;
+  const disputa60 = med60arr.filter(c => c.stage === 'dispute').length;
 
   // Ventas caídas, con el producto para poder trabajarlas una por una.
   const canceladas = canceladasRaw.map(o => {
@@ -10198,15 +10208,16 @@ async function calcularReputacionMes(uid, headers, desde, hasta, ventas60) {
   return {
     calc_version: REPUTACION_CALC_VERSION,
     desde, hasta,
-    casos, casos_truncados: truncado,
+    casos, casos_truncados: truncado, casos_perdidos: perdidos,
     mediaciones_60d: med60,
+    mediaciones_disputa_60d: disputa60,
     mediaciones_rate: ventas60 ? +(med60 / ventas60).toFixed(4) : null,
     canceladas,
     items
   };
 }
 
-const REPUTACION_CALC_VERSION = 1;
+const REPUTACION_CALC_VERSION = 2;
 
 // GET /api/reputacion?client_id=&mes=YYYY-MM[&force_refresh=1]
 app.get('/api/reputacion', requireAuth, async (req, res) => {
@@ -10273,7 +10284,7 @@ app.get('/api/reputacion', requireAuth, async (req, res) => {
       reclamos:      { rate: val(met.claims, 'rate'),                casos: val(met.claims, 'value'),                limite: 0.03, fuente: 'ML' },
       cancelaciones: { rate: val(met.cancellations, 'rate'),         casos: val(met.cancellations, 'value'),         limite: 0.02, fuente: 'ML' },
       demoras:       { rate: val(met.delayed_handling_time, 'rate'), casos: val(met.delayed_handling_time, 'value'), limite: 0.15, fuente: 'ML' },
-      mediaciones:   { rate: detalle.mediaciones_rate,               casos: detalle.mediaciones_60d,                 limite: null, fuente: 'calculada' }
+      mediaciones:   { rate: detalle.mediaciones_rate,               casos: detalle.mediaciones_60d,                 limite: null, fuente: 'calculada', disputas: detalle.mediaciones_disputa_60d }
     };
 
     res.json({ mes, metricas, abiertos, detalle, cached, fetched_at: fetchedAt });
