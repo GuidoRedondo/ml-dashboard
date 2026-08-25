@@ -14364,25 +14364,43 @@ function renderReputacion() {
 
   let tablaCan;
   if (_repVista === 'producto') {
-    const porProducto = agrupar(can.filter(x => x.item), 'item', 'monto').slice(0, 40);
+    // El % sobre las ventas del propio producto es lo que dice si hay que hacer algo:
+    // 3 caidas sobre 5 ventas es un problema, 3 sobre 200 es ruido.
+    const ventasItem = det.ventas_item || {};
+    const porProducto = agrupar(can.filter(x => x.item), 'item', 'monto')
+      .map(p => {
+        const tot = ventasItem[p.k];
+        return { ...p, ventasTotal: tot ? tot.ventas : null, tasa: tot && tot.ventas ? (p.n / tot.ventas * 100) : null };
+      })
+      .slice(0, 40);
     tablaCan = porProducto.length === 0
       ? '<div style="padding:22px;text-align:center;color:var(--muted);font-size:13px">Ninguna venta caída con producto identificado.</div>'
       : `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse">
           <thead><tr style="background:var(--surface2)">
             <th style="padding:8px 12px;text-align:left;font-size:11px;font-weight:600;color:var(--muted)">Producto</th>
-            <th style="padding:8px 12px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Ventas caídas</th>
-            <th style="padding:8px 12px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Unidades</th>
+            <th style="padding:8px 12px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Caídas</th>
+            <th style="padding:8px 12px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Ventas del mes</th>
+            <th style="padding:8px 12px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">% que se cayó</th>
             <th style="padding:8px 12px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Plata</th>
           </tr></thead>
-          <tbody>${porProducto.map(p => `<tr>
-            <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px;max-width:380px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+          <tbody>${porProducto.map(p => {
+            // Rojo sólo si además de proporción hay volumen: con 1 venta y 1 caída el
+            // 100% no significa nada.
+            const grave = p.tasa != null && p.tasa >= 20 && p.ventasTotal >= 5;
+            const medio = p.tasa != null && p.tasa >= 10 && p.ventasTotal >= 5;
+            return `<tr>
+            <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px;max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
               <a href="https://articulo.mercadolibre.com.ar/${p.k}" target="_blank" style="color:var(--accent);text-decoration:none">${titulo(p.k)}</a>
             </td>
             <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px;text-align:right;font-weight:600">${p.n}</td>
-            <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px;text-align:right">${p.unidades}</td>
-            <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px;text-align:right;font-weight:600;color:${p.monto >= montoTotal * 0.1 ? '#dc2626' : 'var(--text)'}">$${Math.round(p.monto).toLocaleString('es-AR')}</td>
-          </tr>`).join('')}</tbody>
-        </table></div>`;
+            <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px;text-align:right;color:var(--muted)">${p.ventasTotal != null ? p.ventasTotal : '—'}</td>
+            <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px;text-align:right;font-weight:600;color:${grave ? '#dc2626' : medio ? '#d97706' : 'var(--text)'}">${p.tasa != null ? p.tasa.toFixed(1) + '%' : '—'}</td>
+            <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px;text-align:right">$${Math.round(p.monto).toLocaleString('es-AR')}</td>
+          </tr>`; }).join('')}</tbody>
+        </table></div>
+        <div style="padding:10px 16px;font-size:11px;color:var(--muted);line-height:1.5;border-top:1px solid var(--border)">
+          Ventas del mes es todo lo que generó la publicación, caídas incluidas. El % se pinta en color sólo cuando hay al menos 5 ventas: con 1 venta y 1 caída, el 100% no dice nada.
+        </div>`;
   } else {
     const porGrupo = agrupar(can, 'grupo', 'monto');
     tablaCan = `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse">
@@ -14407,7 +14425,7 @@ function renderReputacion() {
         <div style="font-size:13px;font-weight:600;font-family:var(--font-b)">Ventas que no se concretaron · ${can.length}</div>
         <div style="display:flex;gap:6px;margin-left:auto">${tabBtn('motivo','Por motivo')}${tabBtn('producto','Por producto')}</div>
       </div>
-      <div style="font-size:11px;color:var(--muted);margin-top:4px">$${Math.round(montoTotal).toLocaleString('es-AR')} que se cayeron en ${mesLabel(data.mes)}. Es facturación bruta perdida, no margen. Sólo las que canceló el vendedor le pegan a la métrica de cancelaciones.</div>
+      <div style="font-size:11px;color:var(--muted);margin-top:4px">$${Math.round(montoTotal).toLocaleString('es-AR')} que se cayeron en ${mesLabel(data.mes)}${det.ventas_mes ? ` · ${can.length} de ${det.ventas_mes.toLocaleString('es-AR')} ventas del mes (${(can.length / det.ventas_mes * 100).toFixed(1)}%)` : ''}. Es facturación bruta perdida, no margen. Sólo las que canceló el vendedor le pegan a la métrica de cancelaciones.</div>
     </div>
     ${can.length === 0 ? '<div style="padding:22px;text-align:center;color:var(--muted);font-size:13px">Ninguna venta caída en el mes.</div>' : tablaCan}
   </div>`;

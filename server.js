@@ -10161,29 +10161,38 @@ async function fetchClaimsTodos(headers, maxPaginas = 80, pasadas = 2) {
 
 // Ventas caídas del mes. Se piden sólo las canceladas en vez de traer todas las
 // órdenes: son pocas y el endpoint acepta el filtro por estado.
-async function fetchCanceladasMes(uid, headers, desde, hasta) {
-  const base = `${ML_API}/orders/search?seller=${uid}&order.status=cancelled&sort=date_desc&limit=50`
-             + `&order.date_created.from=${encodeURIComponent(mlFrom(desde))}`
-             + `&order.date_created.to=${encodeURIComponent(mlTo(hasta))}`;
-  const first = await fetch(base, { headers }).then(r => r.json()).catch(() => ({}));
-  let all = first.results || [];
-  const total = (first.paging && first.paging.total) || 0;
-  for (let off = 50; off < Math.min(total, 2000); off += 50) {
-    const p = await fetch(`${base}&offset=${off}`, { headers }).then(r => r.json()).catch(() => ({}));
-    if (p.results) all = all.concat(p.results);
-  }
-  const vistas = new Set();
-  return all.filter(o => { if (vistas.has(o.id)) return false; vistas.add(o.id); return true; });
+// Todas las órdenes del mes: de acá salen las ventas caídas y, sobre todo, el
+// denominador. Sin cuántas ventas generó cada publicación, "3 ventas caídas" no se
+// puede leer: es distinto en un producto que vendió 5 que en uno que vendió 200.
+async function fetchOrdenesMes(uid, headers, desde, hasta) {
+  const { orders } = await fetchOrdersForPyL(uid, headers, mlFrom(desde), mlTo(hasta));
+  const canceladas = orders.filter(o => o.status === 'cancelled');
+
+  // Ventas totales por publicación, canceladas incluidas: el total es todo lo que la
+  // publicación generó, no sólo lo que sobrevivió.
+  const porItem = {};
+  orders.forEach(o => {
+    (o.order_items || []).forEach(oi => {
+      const id = oi.item && oi.item.id;
+      if (!id) return;
+      if (!porItem[id]) porItem[id] = { ventas: 0, unidades: 0, monto: 0 };
+      porItem[id].ventas++;
+      porItem[id].unidades += oi.quantity || 0;
+      porItem[id].monto += (parseFloat(oi.unit_price) || 0) * (oi.quantity || 0);
+    });
+  });
+  return { canceladas, porItem, totalOrdenes: orders.length };
 }
 
 async function calcularReputacionMes(uid, headers, desde, hasta, ventas60) {
   const hoy = ymd();
   const hace60 = ymdShift(hoy, -60);
 
-  const [{ claims, truncado, perdidos, incompleto, fallidas }, canceladasRaw] = await Promise.all([
+  const [{ claims, truncado, perdidos, incompleto, fallidas }, ordenesMes] = await Promise.all([
     fetchClaimsTodos(headers),
-    fetchCanceladasMes(uid, headers, desde, hasta)
+    fetchOrdenesMes(uid, headers, desde, hasta)
   ]);
+  const canceladasRaw = ordenesMes.canceladas;
 
   const items = {};
   const enRango = (f, a, b) => f && f >= a && f <= b;
@@ -10227,9 +10236,20 @@ async function calcularReputacionMes(uid, headers, desde, hasta, ventas60) {
     };
   });
 
+  // Sólo se manda el denominador de los productos que tuvieron alguna caída: el resto
+  // no se muestra y engordaría el payload al pedo.
+  const ventas_item = {};
+  canceladas.forEach(c => {
+    if (c.item && !ventas_item[c.item] && ordenesMes.porItem[c.item]) {
+      ventas_item[c.item] = ordenesMes.porItem[c.item];
+    }
+  });
+
   return {
     calc_version: REPUTACION_CALC_VERSION,
     desde, hasta,
+    ventas_mes: ordenesMes.totalOrdenes,
+    ventas_item,
     casos, casos_truncados: truncado, casos_perdidos: perdidos,
     casos_incompletos: incompleto, paginas_fallidas: fallidas,
     mediaciones_60d: med60,
@@ -10240,7 +10260,7 @@ async function calcularReputacionMes(uid, headers, desde, hasta, ventas60) {
   };
 }
 
-const REPUTACION_CALC_VERSION = 3;
+const REPUTACION_CALC_VERSION = 4;
 
 // GET /api/reputacion?client_id=&mes=YYYY-MM[&force_refresh=1]
 app.get('/api/reputacion', requireAuth, async (req, res) => {
