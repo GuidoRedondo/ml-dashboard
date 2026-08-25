@@ -623,6 +623,16 @@ async function initDB() {
       PRIMARY KEY (client_id, mes)
     );
     CREATE INDEX IF NOT EXISTS idx_envios_desemp_fetched ON envios_desempenio_cache(fetched_at);
+    -- Detalle de reputación por mes (casos post-venta y ventas caídas). Igual que el
+    -- de envíos: pedirlo a ML cuesta paginar todo el historial de claims, así que 12h.
+    CREATE TABLE IF NOT EXISTS reputacion_cache (
+      client_id  INTEGER NOT NULL,
+      mes        TEXT NOT NULL,
+      data       JSONB NOT NULL,
+      fetched_at TIMESTAMPTZ DEFAULT NOW(),
+      PRIMARY KEY (client_id, mes)
+    );
+    CREATE INDEX IF NOT EXISTS idx_reputacion_fetched ON reputacion_cache(fetched_at);
     -- Precio REAL (con descuento de promoción/campaña) por publicación. El descuento no viene
     -- ni en el multiget /items?ids= ni en /items/{id}: sólo en /items/{id}/prices, que es una
     -- llamada por ítem. Con cuentas de 800+ publicaciones eso es carísimo, así que se cachea.
@@ -9853,7 +9863,7 @@ async function fetchShipments(ids, headers, concurrency = 10) {
 
 // Subir esta versión invalida el cache guardado: la estructura del payload cambió
 // y un cache viejo rompería el render en vez de mostrar datos de más.
-const DESEMPENIO_CALC_VERSION = 2;
+const DESEMPENIO_CALC_VERSION = 3;
 
 // Nombre en castellano de un motivo de reclamo (PDD9960 → "No llegó la factura").
 // ML lo devuelve por reason_id, uno por request, así que se cachea en memoria: son
@@ -9869,41 +9879,14 @@ async function nombreMotivoReclamo(reasonId, headers) {
   return _reasonCache[reasonId];
 }
 
-// Reclamos del período. /post-purchase/v1/claims/search IGNORA el filtro de fecha
-// (pedirle un rango devuelve igual el total histórico) y tampoco respeta sort, así
-// que la única forma es paginar todo y filtrar acá. Son ~40 requests para 2.000
-// reclamos: barato al lado de los envíos. El tope corta cuentas con historial enorme.
-async function fetchClaimsRango(headers, desde, hasta, maxPaginas = 80) {
-  const out = [];
-  let truncado = false;
-  for (const estado of ['opened', 'closed']) {
-    for (let pag = 0; pag < maxPaginas; pag++) {
-      const url = `${ML_API}/post-purchase/v1/claims/search?status=${estado}&limit=50&offset=${pag * 50}`;
-      const r = await fetch(url, { headers }).then(r => r.json()).catch(() => null);
-      const data = (r && r.data) || [];
-      data.forEach(cl => {
-        const f = cl.date_created ? ymd(cl.date_created) : null;
-        if (f && f >= desde && f <= hasta) out.push(cl);
-      });
-      const total = (r && r.paging && r.paging.total) || 0;
-      if ((pag + 1) * 50 >= total) break;
-      if (pag === maxPaginas - 1) truncado = true;
-    }
-  }
-  return { claims: out, truncado };
-}
-
 async function calcularDesempenioEnvios(uid, headers, desde, hasta) {
   const { orders } = await fetchOrdersForPyL(uid, headers, mlFrom(desde), mlTo(hasta));
 
   // Dedup de envíos (los carritos comparten shipping.id) y mapa envío → órdenes.
   const idsEnvio = [];
   const ordenesPorEnvio = {};
-  const itemPorOrden = {};
   let sinEnvio = 0;
   orders.forEach(o => {
-    const oi = (o.order_items || [])[0];
-    if (oi && oi.item) itemPorOrden[o.id] = { item_id: oi.item.id, title: oi.item.title || '' };
     const sid = o.shipping && o.shipping.id;
     if (!sid) { sinEnvio++; return; }        // venta sin envío (retiro en persona / digital)
     if (!ordenesPorEnvio[sid]) { ordenesPorEnvio[sid] = []; idsEnvio.push(sid); }
@@ -9955,53 +9938,6 @@ async function calcularDesempenioEnvios(uid, headers, desde, hasta) {
     };
   });
 
-  // ── Ventas que no se concretaron ─────────────────────────────────────────────
-  // cancel_detail dice quién la canceló y por qué: el comprador arrepentido, una
-  // mediación, o el vendedor sin stock. Cada grupo se corrige distinto.
-  const canceladas = orders
-    .filter(o => o.status === 'cancelled')
-    .map(o => {
-      const cd = o.cancel_detail || {};
-      const inf = itemPorOrden[o.id] || {};
-      if (inf.item_id && !items[inf.item_id]) items[inf.item_id] = inf.title || '';
-      return {
-        order_id: o.id,
-        fecha: ymd(o.date_created),
-        item: inf.item_id || null,
-        monto: parseFloat(o.total_amount) || 0,
-        grupo: cd.group || 'sin_dato',
-        code: cd.code || null,
-        motivo: cd.description || cd.code || 'Sin motivo declarado',
-        pedida_por: cd.requested_by || null
-      };
-    });
-
-  // ── Reclamos abiertos y cerrados del período ─────────────────────────────────
-  let reclamos = { total: 0, truncado: false, detalle: [] };
-  try {
-    const { claims, truncado } = await fetchClaimsRango(headers, desde, hasta);
-    const detalle = [];
-    for (const cl of claims) {
-      const inf = itemPorOrden[cl.resource_id] || {};
-      if (inf.item_id && !items[inf.item_id]) items[inf.item_id] = inf.title || '';
-      detalle.push({
-        id: cl.id,
-        order_id: cl.resource_id,
-        item: inf.item_id || null,
-        fecha: ymd(cl.date_created),
-        estado: cl.status,
-        tipo: cl.type,
-        etapa: cl.stage,
-        reason_id: cl.reason_id || null,
-        motivo: await nombreMotivoReclamo(cl.reason_id, headers)
-      });
-    }
-    reclamos = { total: detalle.length, truncado, detalle };
-  } catch (e) {
-    console.error('[DESEMPENIO reclamos]', e.message);
-    reclamos = { total: 0, truncado: false, detalle: [], error: e.message };
-  }
-
   return {
     calc_version: DESEMPENIO_CALC_VERSION,
     desde, hasta,
@@ -10010,9 +9946,7 @@ async function calcularDesempenioEnvios(uid, headers, desde, hasta) {
     envios_unicos: idsEnvio.length,
     envios_leidos: shipments.length,
     envios,
-    items,
-    canceladas,
-    reclamos
+    items
   };
 }
 
@@ -10118,15 +10052,8 @@ app.get('/api/logistica/desempenio', requireAuth, async (req, res) => {
     // Envíos demorados y reclamos abiertos se piden en paralelo: ninguno depende
     // del otro y juntos son ~30 requests.
     let alertas = { alertas: [], en_curso_revisados: 0 };
-    let abiertos = [];
-    const [rAlertas, rAbiertos] = await Promise.allSettled([
-      alertasEnviosEnCurso(uid, headers),
-      reclamosAbiertos(headers)
-    ]);
-    if (rAlertas.status === 'fulfilled') alertas = rAlertas.value;
-    else console.error('[DESEMPENIO alertas]', rAlertas.reason && rAlertas.reason.message);
-    if (rAbiertos.status === 'fulfilled') abiertos = rAbiertos.value;
-    else console.error('[DESEMPENIO reclamos abiertos]', rAbiertos.reason && rAbiertos.reason.message);
+    try { alertas = await alertasEnviosEnCurso(uid, headers); }
+    catch (e) { console.error('[DESEMPENIO alertas]', e.message); }
 
     // ── Bloque 2: el mes elegido (caro → cache 12h) ───────────────────────────
     const desde = `${mes}-01`;
@@ -10151,7 +10078,7 @@ app.get('/api/logistica/desempenio', requireAuth, async (req, res) => {
     }
 
     if (!periodo && soloCache) {
-      return res.json({ mes, reputacion, ...alertas, reclamos_abiertos: abiertos, periodo: null, pendiente: true, cached: false });
+      return res.json({ mes, reputacion, ...alertas, periodo: null, pendiente: true, cached: false });
     }
 
     if (!periodo) {
@@ -10165,9 +10092,193 @@ app.get('/api/logistica/desempenio', requireAuth, async (req, res) => {
       );
     }
 
-    res.json({ mes, reputacion, ...alertas, reclamos_abiertos: abiertos, periodo, pendiente: false, cached, fetched_at: fetchedAt });
+    res.json({ mes, reputacion, ...alertas, periodo, pendiente: false, cached, fetched_at: fetchedAt });
   } catch (e) {
     console.error('[DESEMPENIO]', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── REPUTACIÓN ────────────────────────────────────────────────────────────────
+// Las tres métricas con las que ML califica la cuenta salen gratis de
+// seller_reputation.metrics. La cuarta que se muestra —mediaciones— NO existe como
+// métrica oficial: se calcula acá contando los claims de tipo "mediations" de los
+// últimos 60 días sobre las ventas del mismo período, y va marcada como cálculo
+// propio para que nadie la lea como un número de ML.
+//
+// El detalle del mes (casos post-venta y ventas caídas) es lo caro: claims/search
+// ignora el filtro de fecha y el sort, así que hay que paginar el historial entero
+// y filtrar acá. Por eso se cachea 12h igual que el resto.
+
+// Todos los claims de la cuenta, sin filtrar. Se pagina una sola vez y después se
+// filtra en memoria por los distintos rangos que hagan falta (el mes y los 60 días).
+async function fetchClaimsTodos(headers, maxPaginas = 80) {
+  const out = [];
+  let truncado = false;
+  for (const estado of ['opened', 'closed']) {
+    for (let pag = 0; pag < maxPaginas; pag++) {
+      const url = `${ML_API}/post-purchase/v1/claims/search?status=${estado}&limit=50&offset=${pag * 50}`;
+      const r = await fetch(url, { headers }).then(r => r.json()).catch(() => null);
+      const data = (r && r.data) || [];
+      out.push(...data);
+      const total = (r && r.paging && r.paging.total) || 0;
+      if ((pag + 1) * 50 >= total) break;
+      if (pag === maxPaginas - 1) truncado = true;
+    }
+  }
+  return { claims: out, truncado };
+}
+
+// Ventas caídas del mes. Se piden sólo las canceladas en vez de traer todas las
+// órdenes: son pocas y el endpoint acepta el filtro por estado.
+async function fetchCanceladasMes(uid, headers, desde, hasta) {
+  const base = `${ML_API}/orders/search?seller=${uid}&order.status=cancelled&sort=date_desc&limit=50`
+             + `&order.date_created.from=${encodeURIComponent(mlFrom(desde))}`
+             + `&order.date_created.to=${encodeURIComponent(mlTo(hasta))}`;
+  const first = await fetch(base, { headers }).then(r => r.json()).catch(() => ({}));
+  let all = first.results || [];
+  const total = (first.paging && first.paging.total) || 0;
+  for (let off = 50; off < Math.min(total, 2000); off += 50) {
+    const p = await fetch(`${base}&offset=${off}`, { headers }).then(r => r.json()).catch(() => ({}));
+    if (p.results) all = all.concat(p.results);
+  }
+  const vistas = new Set();
+  return all.filter(o => { if (vistas.has(o.id)) return false; vistas.add(o.id); return true; });
+}
+
+async function calcularReputacionMes(uid, headers, desde, hasta, ventas60) {
+  const hoy = ymd();
+  const hace60 = ymdShift(hoy, -60);
+
+  const [{ claims, truncado }, canceladasRaw] = await Promise.all([
+    fetchClaimsTodos(headers),
+    fetchCanceladasMes(uid, headers, desde, hasta)
+  ]);
+
+  const items = {};
+  const enRango = (f, a, b) => f && f >= a && f <= b;
+
+  // Casos post-venta del mes, con el motivo traducido.
+  const delMes = claims.filter(c => enRango(ymd(c.date_created), desde, hasta));
+  const casos = [];
+  for (const cl of delMes) {
+    casos.push({
+      id: cl.id,
+      order_id: cl.resource_id,
+      fecha: ymd(cl.date_created),
+      estado: cl.status,
+      tipo: cl.type,
+      etapa: cl.stage,
+      motivo: await nombreMotivoReclamo(cl.reason_id, headers)
+    });
+  }
+
+  // Mediaciones de los últimos 60 días: mismo período que usa ML para sus métricas,
+  // así la tasa es comparable con las otras tres cards.
+  const med60 = claims.filter(c => c.type === 'mediations' && enRango(ymd(c.date_created), hace60, hoy)).length;
+
+  // Ventas caídas, con el producto para poder trabajarlas una por una.
+  const canceladas = canceladasRaw.map(o => {
+    const cd = o.cancel_detail || {};
+    const oi = (o.order_items || [])[0] || {};
+    const it = oi.item || {};
+    if (it.id && !items[it.id]) items[it.id] = it.title || '';
+    return {
+      order_id: o.id,
+      fecha: ymd(o.date_created),
+      item: it.id || null,
+      cantidad: oi.quantity || 1,
+      monto: parseFloat(o.total_amount) || 0,
+      grupo: cd.group || 'sin_dato',
+      motivo: cd.description || cd.code || 'Sin motivo declarado',
+      pedida_por: cd.requested_by || null
+    };
+  });
+
+  return {
+    calc_version: REPUTACION_CALC_VERSION,
+    desde, hasta,
+    casos, casos_truncados: truncado,
+    mediaciones_60d: med60,
+    mediaciones_rate: ventas60 ? +(med60 / ventas60).toFixed(4) : null,
+    canceladas,
+    items
+  };
+}
+
+const REPUTACION_CALC_VERSION = 1;
+
+// GET /api/reputacion?client_id=&mes=YYYY-MM[&force_refresh=1]
+app.get('/api/reputacion', requireAuth, async (req, res) => {
+  try {
+    const clientId = parseInt(req.query.client_id);
+    const mes = req.query.mes || ymd().slice(0, 7);
+    if (!clientId) return res.status(400).json({ error: 'client_id es requerido' });
+    if (!/^\d{4}-\d{2}$/.test(mes)) return res.status(400).json({ error: 'mes tiene que ser YYYY-MM' });
+
+    const token = await getClientToken(clientId);
+    if (!token) return res.status(403).json({ error: 'Cliente no conectado o token expirado' });
+    const headers = { 'Authorization': `Bearer ${token}` };
+
+    const me = await fetch(`${ML_API}/users/me`, { headers }).then(r => r.json()).catch(() => ({}));
+    if (!me.id) return res.status(403).json({ error: 'No pude leer la cuenta en ML (token inválido)' });
+    const uid = me.id;
+
+    const rep = me.seller_reputation || {};
+    const met = rep.metrics || {};
+    const val = (m, k) => (m && m[k] != null ? m[k] : null);
+    const ventas60 = val(met.sales, 'completed') || 0;
+
+    // Reclamos abiertos: siempre frescos, es lo único con vencimiento encima.
+    let abiertos = [];
+    try { abiertos = await reclamosAbiertos(headers); }
+    catch (e) { console.error('[REPUTACION abiertos]', e.message); }
+
+    const desde = `${mes}-01`;
+    const primeroSiguiente = ymdShift(desde, 32).slice(0, 7) + '-01';
+    const hastaMes = ymdShift(primeroSiguiente, -1);
+    const hoy = ymd();
+    const hasta = hastaMes > hoy ? hoy : hastaMes;
+
+    const force = req.query.force_refresh === '1';
+    let detalle = null, cached = false, fetchedAt = null;
+    if (!force) {
+      const c = await pool.query(
+        `SELECT data, fetched_at FROM reputacion_cache
+          WHERE client_id=$1 AND mes=$2 AND fetched_at > NOW() - INTERVAL '12 hours'`,
+        [clientId, mes]
+      );
+      if (c.rows[0] && c.rows[0].data && c.rows[0].data.calc_version === REPUTACION_CALC_VERSION) {
+        detalle = c.rows[0].data; cached = true; fetchedAt = c.rows[0].fetched_at;
+      }
+    }
+    if (!detalle) {
+      detalle = await calcularReputacionMes(uid, headers, desde, hasta, ventas60);
+      fetchedAt = new Date();
+      await pool.query(
+        `INSERT INTO reputacion_cache (client_id, mes, data, fetched_at)
+         VALUES ($1,$2,$3,NOW())
+         ON CONFLICT (client_id, mes) DO UPDATE SET data=$3, fetched_at=NOW()`,
+        [clientId, mes, JSON.stringify(detalle)]
+      );
+    }
+
+    // Las tres primeras son de ML; la de mediaciones la calculamos nosotros y va
+    // marcada, porque ML no publica esa tasa.
+    const metricas = {
+      nivel: rep.level_id || null,
+      power_seller_status: rep.power_seller_status || null,
+      periodo: val(met.sales, 'period') || '60 days',
+      ventas: ventas60,
+      reclamos:      { rate: val(met.claims, 'rate'),                casos: val(met.claims, 'value'),                limite: 0.03, fuente: 'ML' },
+      cancelaciones: { rate: val(met.cancellations, 'rate'),         casos: val(met.cancellations, 'value'),         limite: 0.02, fuente: 'ML' },
+      demoras:       { rate: val(met.delayed_handling_time, 'rate'), casos: val(met.delayed_handling_time, 'value'), limite: 0.15, fuente: 'ML' },
+      mediaciones:   { rate: detalle.mediaciones_rate,               casos: detalle.mediaciones_60d,                 limite: null, fuente: 'calculada' }
+    };
+
+    res.json({ mes, metricas, abiertos, detalle, cached, fetched_at: fetchedAt });
+  } catch (e) {
+    console.error('[REPUTACION]', e.message);
     res.status(500).json({ error: e.message });
   }
 });

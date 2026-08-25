@@ -763,6 +763,9 @@ tbody td {
       <div class="nav-item" data-page="fotos" onclick="showPage('fotos',this);loadFotos()">
         <span class="nav-icon">📷</span> Fotos
       </div>
+      <div class="nav-item" data-page="reputacion" onclick="showPage('reputacion',this);loadReputacion()">
+        <span class="nav-icon">⭐</span> Reputación
+      </div>
       <div class="nav-item" data-page="logistica" onclick="showPage('logistica',this);loadLogistica()">
         <span class="nav-icon">🚚</span> Logística
       </div>
@@ -815,9 +818,6 @@ tbody td {
       </div>
       <div class="nav-item" data-page="tokens" onclick="showPage('tokens',this);loadTokenStatus()">
         <span class="nav-icon">🔑</span> Tokens
-      </div>
-      <div class="nav-item" data-page="reputacion" onclick="showPage('reputacion',this)">
-        <span class="nav-icon">⭐</span> Reputación
       </div>
       <div class="nav-item" data-page="alertas" onclick="showPage('alertas',this);loadCentroInteligencia()">
         <span class="nav-icon">🔔</span> Centro de Inteligencia
@@ -1818,8 +1818,11 @@ tbody td {
 
     <!-- REPUTACION -->
     <div class="page" id="page-reputacion">
-      <h2 style="margin:0 0 20px;font-family:var(--font-b)">Reputación</h2>
-      <div id="reputacionContent"><div style="color:var(--muted)">Sincronizá para ver datos</div></div>
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap">
+        <h2 style="margin:0;font-family:var(--font-b);flex:1">⭐ Reputación</h2>
+        <button class="sync-btn" onclick="loadReputacion({calcular:true})">🔄 Actualizar</button>
+      </div>
+      <div id="reputacionContent"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Cargando...</div></div>
     </div>
 
     <!-- CENTRO DE INTELIGENCIA -->
@@ -11818,6 +11821,7 @@ const SECCIONES = [
   { id: 'diagnostico',  label: '🩺 Diagnóstico' },
   { id: 'fotos',        label: '📷 Fotos' },
   { id: 'logistica',    label: '🚚 Logística' },
+  { id: 'reputacion',   label: '⭐ Reputación' },
   { id: 'escalabilidad',label: '🚀 Escalabilidad' },
   { id: 'competencia',  label: '🏆 Competencia' },
   { id: 'reporte',      label: '📊 Reporte Financiero' },
@@ -11863,7 +11867,7 @@ function applyPermissions() {
       el.style.display = isGestion ? '' : 'none';
     }
   });
-  document.querySelectorAll('[data-page="usuarios"],[data-page="clientes"],[data-page="tokens"],[data-page="reputacion"],[data-page="panel-consultores"],[data-page="hotsale-report"]').forEach(el => {
+  document.querySelectorAll('[data-page="usuarios"],[data-page="clientes"],[data-page="tokens"],[data-page="panel-consultores"],[data-page="hotsale-report"]').forEach(el => {
     el.style.display = isGestion ? '' : 'none';
   });
 
@@ -14166,6 +14170,250 @@ function renderLogistica(data) {
 
 // ── STOCK FULL ────────────────────────────────────────────────────────────────
 
+// ── REPUTACIÓN ────────────────────────────────────────────────────────────────
+// Las cuatro métricas con las que se juega la exposición de la cuenta, y abajo el
+// detalle de qué hay atrás: qué reclamos están abiertos, qué pasó en el mes y qué
+// ventas se cayeron, con el producto y la plata de cada una.
+let _repData = null;
+let _repMes = null;
+let _repVista = 'motivo';   // cómo se abre el detalle de ventas caídas: motivo | producto
+let _repReq = 0;
+
+async function loadReputacion(opts = {}) {
+  const el = document.getElementById('reputacionContent');
+  const client = getActiveClient();
+  if (!client || !client.id) {
+    el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">Sin cuenta conectada — seleccioná una cuenta en el topbar</div>';
+    return;
+  }
+  const mes = _repMes || mesART(0).val;
+  _repMes = mes;
+  const req = ++_repReq;
+
+  el.innerHTML = `<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">
+    ⏳ Consultando reputación y casos de ${mesLabel(mes)}…<br>
+    <span style="font-size:12px">ML no deja filtrar los reclamos por fecha, así que hay que recorrer el historial. La primera vez tarda; después queda guardado 12 horas.</span>
+  </div>`;
+
+  try {
+    const qs = `client_id=${client.id}&mes=${mes}${opts.calcular ? '&force_refresh=1' : ''}`;
+    const data = await apiCall('GET', `/api/reputacion?${qs}`);
+    if (req !== _repReq) return;
+    if (!data || data.error) {
+      el.innerHTML = `<div style="color:var(--muted);padding:40px;text-align:center">${(data && data.error) || 'Error al cargar'}</div>`;
+      return;
+    }
+    _repData = data;
+    renderReputacion();
+  } catch (e) {
+    if (req !== _repReq) return;
+    el.innerHTML = `<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Error: ${e.message}</div>`;
+  }
+}
+
+function cambiarMesReputacion(mes) { _repMes = mes; loadReputacion(); }
+function vistaCanceladas(v) { _repVista = v; renderReputacion(); }
+
+function renderReputacion() {
+  const data = _repData;
+  const el = document.getElementById('reputacionContent');
+  const m = data.metricas || {};
+  const det = data.detalle || {};
+  const titulo = id => (det.items && det.items[id]) ? det.items[id] : (id || '—');
+
+  const selector = `<div style="display:flex;align-items:center;gap:10px;margin-bottom:18px;flex-wrap:wrap">
+    <span style="font-size:12px;color:var(--muted)">Mes analizado:</span>
+    <select onchange="cambiarMesReputacion(this.value)" style="padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--text);font-size:13px;font-family:inherit">
+      ${Array.from({length:6},(_,i)=>mesART(i)).map(x => `<option value="${x.val}" ${x.val === data.mes ? 'selected' : ''}>${x.label}</option>`).join('')}
+    </select>
+    <button onclick="loadReputacion({calcular:true})" style="padding:6px 12px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--muted);font-size:12px;cursor:pointer;font-family:inherit">🔄 Recalcular</button>
+    ${data.cached && data.fetched_at ? `<span style="font-size:11px;color:var(--muted)">datos al ${new Date(data.fetched_at).toLocaleString('es-AR', { timeZone: ART_TZ, day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}</span>` : ''}
+  </div>`;
+
+  // ── Las cuatro métricas ────────────────────────────────────────────────────
+  const card = (label, x, ayuda) => {
+    const pct = x && x.rate != null ? x.rate * 100 : null;
+    const lim = x && x.limite != null ? x.limite * 100 : null;
+    let estado = 'sin';
+    if (pct != null && lim != null) estado = pct <= lim * 0.5 ? 'bien' : pct <= lim ? 'ojo' : 'mal';
+    else if (pct != null) estado = 'neutro';
+    const color = { bien: '#16a34a', ojo: '#d97706', mal: '#dc2626', neutro: 'var(--text)', sin: 'var(--muted)' }[estado];
+    const fondo = { bien: '#dcfce7', ojo: '#fef3c7', mal: '#fee2e2', neutro: 'var(--surface2)', sin: 'var(--surface2)' }[estado];
+    return `<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px">
+      <div style="display:flex;align-items:center;gap:6px">
+        <span style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em">${label}</span>
+        ${x && x.fuente === 'calculada' ? '<span style="font-size:9px;background:var(--surface2);color:var(--muted);padding:1px 6px;border-radius:10px;letter-spacing:0">calculada</span>' : ''}
+      </div>
+      <div style="display:flex;align-items:baseline;gap:8px;margin-top:6px">
+        <div style="font-size:26px;font-weight:700;font-family:var(--font-b);color:${color}">${pct == null ? '—' : pct.toFixed(2) + '%'}</div>
+        <div style="font-size:12px;color:var(--muted)">${x && x.casos != null ? x.casos + ' casos' : ''}</div>
+      </div>
+      <div style="margin-top:8px">${lim != null
+        ? `<span style="background:${fondo};color:${color};padding:2px 8px;border-radius:20px;font-size:11px;font-weight:600">límite ML ${lim}%</span>`
+        : '<span style="background:var(--surface2);color:var(--muted);padding:2px 8px;border-radius:20px;font-size:11px">sin límite publicado</span>'}</div>
+      <div style="font-size:11px;color:var(--muted);margin-top:8px;line-height:1.4">${ayuda}</div>
+    </div>`;
+  };
+
+  const bloqueMetricas = `<div style="margin-bottom:26px">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px">
+      <span style="font-size:16px">🎯</span>
+      <span style="font-size:14px;font-weight:600;font-family:var(--font-b)">Cómo te mide Mercado Libre</span>
+      ${m.power_seller_status ? `<span style="padding:2px 10px;border-radius:20px;font-size:11px;font-weight:600;background:var(--surface2);color:var(--text)">${m.power_seller_status}</span>` : ''}
+    </div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:12px">Últimos ${m.periodo === '60 days' ? '60 días' : m.periodo} · ${(m.ventas || 0).toLocaleString('es-AR')} ventas concretadas. Las tres primeras las publica ML y son las que definen el color de la cuenta; la de mediaciones la calculamos nosotros sobre el mismo período porque ML no la expone.</div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(215px,1fr));gap:12px">
+      ${card('Reclamos', m.reclamos, 'Compras que terminaron en reclamo. Mezcla producto, publicación y envío.')}
+      ${card('Cancelaciones', m.cancelaciones, 'Ventas canceladas por el vendedor, casi siempre por falta de stock real.')}
+      ${card('Mediaciones', m.mediaciones, 'Reclamos donde ML tuvo que meterse a resolver. Son los más caros: casi siempre terminan en reintegro.')}
+      ${card('Envíos demorados', m.demoras, 'Ventas que salieron más tarde de lo comprometido. Es la única que se corrige puertas adentro.')}
+    </div>
+  </div>`;
+
+  // ── Reclamos abiertos ──────────────────────────────────────────────────────
+  const ab = data.abiertos || [];
+  const bloqueAbiertos = `<div style="margin-bottom:26px">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px">
+      <span style="font-size:16px">${ab.length ? '⚖️' : '✅'}</span>
+      <span style="font-size:14px;font-weight:600;font-family:var(--font-b)">Reclamos sin resolver</span>
+    </div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:12px">Los que están abiertos ahora mismo. Cuando ML marca una acción con fecha, no contestar a tiempo se resuelve en contra.</div>
+    ${ab.length === 0
+      ? '<div style="background:#dcfce7;border:1px solid #86efac;border-radius:12px;padding:14px 16px;font-size:13px;color:#166534">Ningún reclamo abierto. Al día.</div>'
+      : `<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden"><div style="overflow-x:auto">
+        <table style="width:100%;border-collapse:collapse">
+          <thead><tr style="background:var(--surface2)">
+            <th style="padding:8px 12px;text-align:left;font-size:11px;font-weight:600;color:var(--muted)">Motivo</th>
+            <th style="padding:8px 12px;text-align:center;font-size:11px;font-weight:600;color:var(--muted)">Tipo</th>
+            <th style="padding:8px 12px;text-align:center;font-size:11px;font-weight:600;color:var(--muted)">Etapa</th>
+            <th style="padding:8px 12px;text-align:center;font-size:11px;font-weight:600;color:var(--muted)">Abierto</th>
+            <th style="padding:8px 12px;text-align:left;font-size:11px;font-weight:600;color:var(--muted)">Acción pendiente</th>
+          </tr></thead>
+          <tbody>${ab.map(r => `<tr>
+            <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px">${r.motivo || '—'}</td>
+            <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px;text-align:center">${r.tipo === 'returns' ? 'Devolución' : 'Mediación'}</td>
+            <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px;text-align:center">${r.etapa === 'dispute' ? '<span style="color:#dc2626;font-weight:600">disputa</span>' : 'reclamo'}</td>
+            <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px;text-align:center">${r.fecha ? dART(r.fecha).toLocaleDateString('es-AR',{timeZone:ART_TZ,day:'2-digit',month:'2-digit'}) : '—'}</td>
+            <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px">${r.accion
+              ? `<span style="color:#dc2626;font-weight:600">${r.accion === 'send_message_to_complainant' ? 'Responder al comprador' : r.accion}</span>${r.vence ? ` · vence ${new Date(r.vence).toLocaleString('es-AR',{timeZone:ART_TZ,day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})}` : ''}`
+              : '<span style="color:var(--muted)">esperando a ML o al comprador</span>'}</td>
+          </tr>`).join('')}</tbody>
+        </table>
+      </div></div>`}
+  </div>`;
+
+  // ── Casos post-venta del mes ───────────────────────────────────────────────
+  const agrupar = (arr, key, montoKey) => {
+    const m2 = {};
+    arr.forEach(x => {
+      const k = x[key] || 'Sin dato';
+      if (!m2[k]) m2[k] = { k, n: 0, monto: 0, unidades: 0 };
+      m2[k].n++;
+      if (montoKey) m2[k].monto += x[montoKey] || 0;
+      m2[k].unidades += x.cantidad || 0;
+    });
+    return Object.values(m2).sort((a, b) => (montoKey ? b.monto - a.monto : b.n - a.n));
+  };
+
+  const casos = det.casos || [];
+  const tipoNombre = {
+    mediations: 'Mediaciones', returns: 'Devoluciones',
+    cancel_purchase: 'Pedidos de cancelación del comprador', cancel_sale: 'Cancelaciones de venta'
+  };
+  const tipoAyuda = {
+    mediations: 'El comprador abrió un reclamo y ML interviene. Es lo más caro para la reputación.',
+    returns: 'El producto vuelve. Suele ser expectativa vs realidad: fotos, ficha o medidas.',
+    cancel_purchase: 'Se arrepintió antes de recibir. Muchos casos acá suelen ser demora o precio dudado.',
+    cancel_sale: 'La venta se dio de baja del lado del vendedor.'
+  };
+  const porTipo = agrupar(casos, 'tipo');
+  const porMotivo = agrupar(casos, 'motivo').slice(0, 10);
+  const bloqueCasos = `<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden">
+    <div style="padding:12px 16px;border-bottom:1px solid var(--border)">
+      <div style="font-size:13px;font-weight:600;font-family:var(--font-b)">Casos post-venta de ${mesLabel(data.mes)} · ${casos.length}</div>
+      <div style="font-size:11px;color:var(--muted);margin-top:2px">Reclamos, devoluciones y cancelaciones pedidas por el comprador${det.casos_truncados ? ' · lista recortada por volumen de historial' : ''}. No compares el total contra el % de reclamos de arriba: ML cuenta sólo una parte de estos casos y no publica el criterio.</div>
+    </div>
+    ${casos.length === 0 ? '<div style="padding:22px;text-align:center;color:var(--muted);font-size:13px">Sin casos post-venta en el mes.</div>' : `
+      <div>${porTipo.map(t => `<div style="padding:10px 16px;border-bottom:1px solid var(--border)">
+        <div style="display:flex;align-items:baseline;gap:8px">
+          <span style="font-size:12px;font-weight:600">${tipoNombre[t.k] || t.k}</span>
+          <span style="font-size:16px;font-weight:700;font-family:var(--font-b);margin-left:auto">${t.n}</span>
+        </div>
+        <div style="font-size:11px;color:var(--muted);margin-top:2px;line-height:1.4">${tipoAyuda[t.k] || ''}</div>
+      </div>`).join('')}</div>
+      <div style="padding:10px 16px 6px;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em">Motivos más repetidos</div>
+      <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse">
+        <tbody>${porMotivo.map(x => `<tr>
+          <td style="padding:7px 16px;border-top:1px solid var(--border);font-size:12px">${x.k}</td>
+          <td style="padding:7px 16px;border-top:1px solid var(--border);font-size:12px;text-align:right;font-weight:600">${x.n}</td>
+        </tr>`).join('')}</tbody>
+      </table></div>`}
+  </div>`;
+
+  // ── Ventas que no se concretaron ───────────────────────────────────────────
+  const can = det.canceladas || [];
+  const montoTotal = can.reduce((s, x) => s + x.monto, 0);
+  const grupoNombre = {
+    buyer: 'El comprador se arrepintió', seller: 'La canceló el vendedor',
+    mediations: 'Cayó en mediación', meli: 'La canceló Mercado Libre',
+    shipment: 'Problema con el envío', internal: 'Cancelación interna de ML',
+    sin_dato: 'Sin motivo declarado'
+  };
+  const tabBtn = (v, label) => `<button onclick="vistaCanceladas('${v}')" style="padding:5px 12px;border:1px solid ${_repVista===v?'var(--accent)':'var(--border)'};border-radius:20px;background:${_repVista===v?'var(--accent)':'var(--surface)'};color:${_repVista===v?'#fff':'var(--text)'};font-size:12px;font-weight:${_repVista===v?'600':'500'};cursor:pointer;font-family:inherit">${label}</button>`;
+
+  let tablaCan;
+  if (_repVista === 'producto') {
+    const porProducto = agrupar(can.filter(x => x.item), 'item', 'monto').slice(0, 40);
+    tablaCan = porProducto.length === 0
+      ? '<div style="padding:22px;text-align:center;color:var(--muted);font-size:13px">Ninguna venta caída con producto identificado.</div>'
+      : `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse">
+          <thead><tr style="background:var(--surface2)">
+            <th style="padding:8px 12px;text-align:left;font-size:11px;font-weight:600;color:var(--muted)">Producto</th>
+            <th style="padding:8px 12px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Ventas caídas</th>
+            <th style="padding:8px 12px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Unidades</th>
+            <th style="padding:8px 12px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Plata</th>
+          </tr></thead>
+          <tbody>${porProducto.map(p => `<tr>
+            <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px;max-width:380px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+              <a href="https://articulo.mercadolibre.com.ar/${p.k}" target="_blank" style="color:var(--accent);text-decoration:none">${titulo(p.k)}</a>
+            </td>
+            <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px;text-align:right;font-weight:600">${p.n}</td>
+            <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px;text-align:right">${p.unidades}</td>
+            <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px;text-align:right;font-weight:600;color:${p.monto >= montoTotal * 0.1 ? '#dc2626' : 'var(--text)'}">$${Math.round(p.monto).toLocaleString('es-AR')}</td>
+          </tr>`).join('')}</tbody>
+        </table></div>`;
+  } else {
+    const porGrupo = agrupar(can, 'grupo', 'monto');
+    tablaCan = `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse">
+        <thead><tr style="background:var(--surface2)">
+          <th style="padding:8px 12px;text-align:left;font-size:11px;font-weight:600;color:var(--muted)">Quién la cortó</th>
+          <th style="padding:8px 12px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Ventas</th>
+          <th style="padding:8px 12px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Plata</th>
+          <th style="padding:8px 12px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">% de la plata</th>
+        </tr></thead>
+        <tbody>${porGrupo.map(g => `<tr>
+          <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px">${grupoNombre[g.k] || g.k}</td>
+          <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px;text-align:right;font-weight:600">${g.n}</td>
+          <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px;text-align:right">$${Math.round(g.monto).toLocaleString('es-AR')}</td>
+          <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px;text-align:right;color:var(--muted)">${montoTotal ? (g.monto / montoTotal * 100).toFixed(0) : 0}%</td>
+        </tr>`).join('')}</tbody>
+      </table></div>`;
+  }
+
+  const bloqueCanceladas = `<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden">
+    <div style="padding:12px 16px;border-bottom:1px solid var(--border)">
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <div style="font-size:13px;font-weight:600;font-family:var(--font-b)">Ventas que no se concretaron · ${can.length}</div>
+        <div style="display:flex;gap:6px;margin-left:auto">${tabBtn('motivo','Por motivo')}${tabBtn('producto','Por producto')}</div>
+      </div>
+      <div style="font-size:11px;color:var(--muted);margin-top:4px">$${Math.round(montoTotal).toLocaleString('es-AR')} que se cayeron en ${mesLabel(data.mes)}. Es facturación bruta perdida, no margen. Sólo las que canceló el vendedor le pegan a la métrica de cancelaciones.</div>
+    </div>
+    ${can.length === 0 ? '<div style="padding:22px;text-align:center;color:var(--muted);font-size:13px">Ninguna venta caída en el mes.</div>' : tablaCan}
+  </div>`;
+
+  el.innerHTML = selector + bloqueMetricas + bloqueAbiertos
+    + `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:16px">${bloqueCasos}${bloqueCanceladas}</div>`;
+}
 // ── LOGÍSTICA > DESEMPEÑO DE ENVÍOS ──────────────────────────────────────────
 // El backend devuelve el detalle de cada envío del mes; todos los agregados que se
 // ven (KPIs, corte por modo, ranking) se arman acá. Por eso filtrar por forma de
@@ -14303,78 +14551,6 @@ function renderDesempenio() {
     ${data.cached && data.fetched_at ? `<span style="font-size:11px;color:var(--muted)">datos al ${new Date(data.fetched_at).toLocaleString('es-AR', { timeZone: ART_TZ, day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}</span>` : ''}
   </div>`;
 
-  // ── Bloque 1: cómo te mide ML ──────────────────────────────────────────────
-  const metrica = (label, m, ayuda, extra) => {
-    const pct = m.rate != null ? m.rate * 100 : null;
-    const lim = m.limite * 100;
-    const estado = pct == null ? 'sin' : pct <= lim * 0.5 ? 'bien' : pct <= lim ? 'ojo' : 'mal';
-    const color = { bien: '#16a34a', ojo: '#d97706', mal: '#dc2626', sin: 'var(--muted)' }[estado];
-    const fondo = { bien: '#dcfce7', ojo: '#fef3c7', mal: '#fee2e2', sin: 'var(--surface2)' }[estado];
-    return `<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px">
-      <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em">${label}</div>
-      <div style="display:flex;align-items:baseline;gap:8px;margin-top:6px">
-        <div style="font-size:26px;font-weight:700;font-family:var(--font-b);color:${color}">${pct == null ? '—' : pct.toFixed(2) + '%'}</div>
-        <div style="font-size:12px;color:var(--muted)">${m.rate_value != null ? m.rate_value + ' casos' : ''}</div>
-      </div>
-      <div style="margin-top:8px"><span style="background:${fondo};color:${color};padding:2px 8px;border-radius:20px;font-size:11px;font-weight:600">límite ML ${lim}%</span></div>
-      <div style="font-size:11px;color:var(--muted);margin-top:8px;line-height:1.4">${ayuda}</div>
-      ${extra || ''}
-    </div>`;
-  };
-
-  const abiertos = data.reclamos_abiertos || [];
-  const nReclamosMes = per && per.reclamos ? per.reclamos.total : null;
-  const extraReclamos = `<div style="font-size:11px;margin-top:8px;line-height:1.6">
-    ${abiertos.length ? `<div style="color:#dc2626;font-weight:600">${abiertos.length} sin resolver ahora</div>` : '<div style="color:#16a34a;font-weight:600">Ninguno abierto ahora</div>'}
-    ${nReclamosMes != null ? `<div style="color:var(--muted)">${nReclamosMes} casos post-venta en ${mesLabel(data.mes)} · detalle abajo</div>` : ''}
-  </div>`;
-  const nCanceladas = per && per.canceladas ? per.canceladas.length : null;
-  const extraCancel = nCanceladas != null
-    ? `<div style="font-size:11px;margin-top:8px;color:var(--muted)">${nCanceladas} ventas caídas en ${mesLabel(data.mes)} · detalle abajo</div>` : '';
-
-  const bloque1 = `<div style="margin-bottom:26px">
-    <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px">
-      <span style="font-size:16px">🎯</span>
-      <span style="font-size:14px;font-weight:600;font-family:var(--font-b)">Cómo te mide Mercado Libre</span>
-      ${rep.power_seller_status ? `<span style="padding:2px 10px;border-radius:20px;font-size:11px;font-weight:600;background:var(--surface2);color:var(--text)">${rep.power_seller_status}</span>` : ''}
-    </div>
-    <div style="font-size:12px;color:var(--muted);margin-bottom:12px">Últimos ${rep.periodo === '60 days' ? '60 días' : rep.periodo} · ${(rep.ventas || 0).toLocaleString('es-AR')} ventas concretadas. Son las métricas oficiales de la cuenta: si se pasan del límite, ML recorta exposición.</div>
-    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px">
-      ${metrica('Demoras al despachar', rep.demoras || {}, 'Ventas que salieron más tarde de lo comprometido. Es la única de las tres que se corrige puertas adentro.')}
-      ${metrica('Reclamos', rep.reclamos || {}, 'Compras que terminaron en reclamo. Mezcla producto, publicación y envío.', extraReclamos)}
-      ${metrica('Cancelaciones', rep.cancelaciones || {}, 'Ventas canceladas por el vendedor, casi siempre por falta de stock real.', extraCancel)}
-    </div>
-  </div>`;
-
-  // ── Bloque 2: reclamos abiertos hoy ────────────────────────────────────────
-  const bloqueReclamosAbiertos = abiertos.length ? `<div style="margin-bottom:26px">
-    <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px">
-      <span style="font-size:16px">⚖️</span>
-      <span style="font-size:14px;font-weight:600;font-family:var(--font-b)">Reclamos sin resolver</span>
-    </div>
-    <div style="font-size:12px;color:var(--muted);margin-bottom:12px">Los que están abiertos ahora mismo. Cuando ML marca una acción con fecha, no contestar a tiempo se resuelve en contra.</div>
-    <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden"><div style="overflow-x:auto">
-      <table style="width:100%;border-collapse:collapse">
-        <thead><tr style="background:var(--surface2)">
-          <th style="padding:8px 12px;text-align:left;font-size:11px;font-weight:600;color:var(--muted)">Motivo</th>
-          <th style="padding:8px 12px;text-align:center;font-size:11px;font-weight:600;color:var(--muted)">Tipo</th>
-          <th style="padding:8px 12px;text-align:center;font-size:11px;font-weight:600;color:var(--muted)">Etapa</th>
-          <th style="padding:8px 12px;text-align:center;font-size:11px;font-weight:600;color:var(--muted)">Abierto</th>
-          <th style="padding:8px 12px;text-align:left;font-size:11px;font-weight:600;color:var(--muted)">Acción pendiente</th>
-        </tr></thead>
-        <tbody>${abiertos.map(r => `<tr>
-          <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px">${r.motivo || r.reason_id || '—'}</td>
-          <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px;text-align:center">${r.tipo === 'returns' ? 'Devolución' : 'Mediación'}</td>
-          <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px;text-align:center">${r.etapa === 'dispute' ? '<span style="color:#dc2626;font-weight:600">disputa</span>' : 'reclamo'}</td>
-          <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px;text-align:center">${r.fecha ? dART(r.fecha).toLocaleDateString('es-AR',{timeZone:ART_TZ,day:'2-digit',month:'2-digit'}) : '—'}</td>
-          <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px">${r.accion
-            ? `<span style="color:#dc2626;font-weight:600">${r.accion === 'send_message_to_complainant' ? 'Responder al comprador' : r.accion}</span>${r.vence ? ` · vence ${new Date(r.vence).toLocaleString('es-AR',{timeZone:ART_TZ,day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})}` : ''}`
-            : '<span style="color:var(--muted)">esperando a ML o al comprador</span>'}</td>
-        </tr>`).join('')}</tbody>
-      </table>
-    </div></div>
-  </div>` : '';
-
   // ── Bloque 3: envíos en curso demorados ────────────────────────────────────
   const alertas = data.alertas || [];
   const bloque3 = `<div style="margin-bottom:26px">
@@ -14407,7 +14583,7 @@ function renderDesempenio() {
         </div></div>`}
   </div>`;
 
-  if (!per) { el.innerHTML = selector + bloque1 + bloqueReclamosAbiertos + bloque3; return; }
+  if (!per) { el.innerHTML = selector + bloque3; return; }
 
   // ── Bloque 4: el mes, con filtros ──────────────────────────────────────────
   const todos = per.envios || [];
@@ -14561,6 +14737,11 @@ function renderDesempenio() {
     </div>`;
   }
 
+  const pieReputacion = `<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:14px 16px;margin-top:4px;font-size:12px;color:var(--muted)">
+    Reclamos, mediaciones, cancelaciones y las ventas que no se concretaron ahora viven en
+    <a href="#" onclick="event.preventDefault();showPage('reputacion',document.querySelector('[data-page=&quot;reputacion&quot;]'));loadReputacion()" style="color:var(--accent);text-decoration:none;font-weight:600">⭐ Reputación</a>.
+  </div>`;
+
   const nota = `<div style="font-size:11px;color:var(--muted);margin-top:14px;line-height:1.5">
     Se analizaron ${per.envios_leidos.toLocaleString('es-AR')} envíos de ${per.envios_unicos.toLocaleString('es-AR')}${per.ventas_sin_envio ? ` · ${per.ventas_sin_envio} ventas sin envío asociado` : ''}.
     "A tiempo" compara el día de <b>entrega</b> contra la fecha que ML le prometió al comprador, así que no es lo mismo que las demoras del bloque de arriba: esas miden sólo que el paquete salga a horario, y lo que pasa después depende del correo.
@@ -14575,90 +14756,7 @@ function renderDesempenio() {
     ${chips}${kpis}${tablaModos}${detalle}${nota}
   </div>`;
 
-  // ── Bloque 5: reclamos y ventas caídas del mes ─────────────────────────────
-  const agrupar = (arr, key, extra) => {
-    const m = {};
-    arr.forEach(x => {
-      const k = x[key] || 'Sin dato';
-      if (!m[k]) m[k] = { k, n: 0, monto: 0 };
-      m[k].n++;
-      if (extra) m[k].monto += x[extra] || 0;
-    });
-    return Object.values(m).sort((a, b) => b.n - a.n);
-  };
-
-  // Todo lo que ML mete bajo "claims" no es lo mismo: una mediación pesa distinto que
-  // un comprador que se arrepintió antes de recibir. Se muestran separados porque la
-  // métrica de reputación de arriba cuenta sólo una parte, con un criterio que ML no
-  // publica — sumar los cuatro tipos y compararlo contra ese % da cualquier cosa.
-  const rec = per.reclamos || { total: 0, detalle: [] };
-  const tipoNombre = {
-    mediations: 'Mediaciones', returns: 'Devoluciones',
-    cancel_purchase: 'Pedidos de cancelación del comprador', cancel_sale: 'Cancelaciones de venta'
-  };
-  const tipoAyuda = {
-    mediations: 'El comprador abrió un reclamo y ML interviene. Es lo más caro para la reputación.',
-    returns: 'El producto vuelve. Suele ser expectativa vs realidad: fotos, ficha o medidas.',
-    cancel_purchase: 'Se arrepintió antes de recibir. Muchos casos acá suelen ser demora o precio dudado.',
-    cancel_sale: 'La venta se dio de baja del lado del vendedor.'
-  };
-  const recPorTipo = agrupar(rec.detalle || [], 'tipo');
-  const recPorMotivo = agrupar(rec.detalle || [], 'motivo').slice(0, 10);
-  const bloqueRec = `<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden">
-    <div style="padding:12px 16px;border-bottom:1px solid var(--border)">
-      <div style="font-size:13px;font-weight:600;font-family:var(--font-b)">Casos post-venta de ${mesLabel(data.mes)} · ${rec.total}</div>
-      <div style="font-size:11px;color:var(--muted);margin-top:2px">Reclamos, devoluciones y cancelaciones pedidas por el comprador${rec.truncado ? ' · lista recortada por volumen de historial' : ''}. No compares el total contra el % de reclamos de arriba: ML cuenta sólo una parte de estos casos y no publica el criterio.</div>
-    </div>
-    ${rec.total === 0 ? '<div style="padding:22px;text-align:center;color:var(--muted);font-size:13px">Sin casos post-venta en el mes.</div>' : `
-      <div style="padding:4px 0">
-        ${recPorTipo.map(t => `<div style="padding:10px 16px;border-bottom:1px solid var(--border)">
-          <div style="display:flex;align-items:baseline;gap:8px">
-            <span style="font-size:12px;font-weight:600">${tipoNombre[t.k] || t.k}</span>
-            <span style="font-size:16px;font-weight:700;font-family:var(--font-b);margin-left:auto">${t.n}</span>
-          </div>
-          <div style="font-size:11px;color:var(--muted);margin-top:2px;line-height:1.4">${tipoAyuda[t.k] || ''}</div>
-        </div>`).join('')}
-      </div>
-      <div style="padding:10px 16px 6px;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em">Motivos más repetidos</div>
-      <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse">
-        <tbody>${recPorMotivo.map(m => `<tr>
-          <td style="padding:7px 16px;border-top:1px solid var(--border);font-size:12px">${m.k}</td>
-          <td style="padding:7px 16px;border-top:1px solid var(--border);font-size:12px;text-align:right;font-weight:600">${m.n}</td>
-        </tr>`).join('')}</tbody>
-      </table></div>`}
-  </div>`;
-
-  const can = per.canceladas || [];
-  const canMonto = can.reduce((s, x) => s + x.monto, 0);
-  const grupoNombre = {
-    buyer: 'El comprador se arrepintió', seller: 'La canceló el vendedor',
-    mediations: 'Cayó en mediación', meli: 'La canceló Mercado Libre',
-    shipment: 'Problema con el envío', internal: 'Cancelación interna de ML',
-    sin_dato: 'Sin motivo declarado'
-  };
-  const canPorGrupo = agrupar(can, 'grupo', 'monto');
-  const bloqueCan = `<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden">
-    <div style="padding:12px 16px;border-bottom:1px solid var(--border)">
-      <div style="font-size:13px;font-weight:600;font-family:var(--font-b)">Ventas que no se concretaron · ${can.length}</div>
-      <div style="font-size:11px;color:var(--muted);margin-top:2px">$${Math.round(canMonto).toLocaleString('es-AR')} que se cayeron en ${mesLabel(data.mes)}. Sólo las que canceló el vendedor le pegan a la métrica de arriba.</div>
-    </div>
-    ${can.length === 0 ? '<div style="padding:22px;text-align:center;color:var(--muted);font-size:13px">Ninguna venta caída en el mes.</div>' : `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse">
-      <thead><tr style="background:var(--surface2)">
-        <th style="padding:8px 12px;text-align:left;font-size:11px;font-weight:600;color:var(--muted)">Quién la cortó</th>
-        <th style="padding:8px 12px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Ventas</th>
-        <th style="padding:8px 12px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Plata</th>
-      </tr></thead>
-      <tbody>${canPorGrupo.map(g => `<tr>
-        <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px">${grupoNombre[g.k] || g.k}</td>
-        <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px;text-align:right;font-weight:600">${g.n}</td>
-        <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px;text-align:right">$${Math.round(g.monto).toLocaleString('es-AR')}</td>
-      </tr>`).join('')}</tbody>
-    </table></div>`}
-  </div>`;
-
-  const bloque5 = `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px">${bloqueRec}${bloqueCan}</div>`;
-
-  el.innerHTML = selector + bloque1 + bloqueReclamosAbiertos + bloque3 + bloque4 + bloque5;
+  el.innerHTML = selector + bloque3 + bloque4 + pieReputacion;
 }
 
 let _logisticaActiveTab = 'general';
