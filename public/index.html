@@ -19703,12 +19703,9 @@ const PROMO_REND_CATS = {
 function poblarMesesRendimiento() {
   const sel = document.getElementById('promoRendMes');
   if (!sel || sel.options.length) return;
-  const hoy = new Date();
   for (let i = 0; i < 12; i++) {
-    const d = new Date(hoy.getFullYear(), hoy.getMonth() - i, 1);
-    const v = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
-    sel.insertAdjacentHTML('beforeend',
-      `<option value="${v}">${d.toLocaleDateString('es-AR',{month:'long',year:'numeric',timeZone:ART_TZ})}</option>`);
+    const m = mesART(i);
+    sel.insertAdjacentHTML('beforeend', `<option value="${m.val}">${m.label}</option>`);
   }
 }
 
@@ -19810,7 +19807,7 @@ function renderPromoRendimiento(d) {
 
   body.innerHTML = `
     <div style="display:flex;gap:12px;margin-bottom:20px;flex-wrap:wrap">
-      ${kpis.map(([l,v,c,sub]) => `<div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px 18px;flex:1;min-width:170px">
+      ${kpis.map(([l,v,c,sub]) => `<div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px 18px;flex:1 1 195px">
         <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em">${l}</div>
         <div style="font-size:22px;font-weight:700;font-family:var(--font-b);margin-top:4px;color:${c||'var(--text)'}">${v}</div>
         <div style="font-size:11px;color:var(--muted);margin-top:3px">${sub}</div>
