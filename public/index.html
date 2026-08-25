@@ -14326,7 +14326,7 @@ function renderDesempenio() {
   const nReclamosMes = per && per.reclamos ? per.reclamos.total : null;
   const extraReclamos = `<div style="font-size:11px;margin-top:8px;line-height:1.6">
     ${abiertos.length ? `<div style="color:#dc2626;font-weight:600">${abiertos.length} sin resolver ahora</div>` : '<div style="color:#16a34a;font-weight:600">Ninguno abierto ahora</div>'}
-    ${nReclamosMes != null ? `<div style="color:var(--muted)">${nReclamosMes} en ${mesLabel(data.mes)} · detalle abajo</div>` : ''}
+    ${nReclamosMes != null ? `<div style="color:var(--muted)">${nReclamosMes} casos post-venta en ${mesLabel(data.mes)} · detalle abajo</div>` : ''}
   </div>`;
   const nCanceladas = per && per.canceladas ? per.canceladas.length : null;
   const extraCancel = nCanceladas != null
@@ -14587,30 +14587,55 @@ function renderDesempenio() {
     return Object.values(m).sort((a, b) => b.n - a.n);
   };
 
+  // Todo lo que ML mete bajo "claims" no es lo mismo: una mediación pesa distinto que
+  // un comprador que se arrepintió antes de recibir. Se muestran separados porque la
+  // métrica de reputación de arriba cuenta sólo una parte, con un criterio que ML no
+  // publica — sumar los cuatro tipos y compararlo contra ese % da cualquier cosa.
   const rec = per.reclamos || { total: 0, detalle: [] };
-  const recPorMotivo = agrupar(rec.detalle || [], 'motivo');
+  const tipoNombre = {
+    mediations: 'Mediaciones', returns: 'Devoluciones',
+    cancel_purchase: 'Pedidos de cancelación del comprador', cancel_sale: 'Cancelaciones de venta'
+  };
+  const tipoAyuda = {
+    mediations: 'El comprador abrió un reclamo y ML interviene. Es lo más caro para la reputación.',
+    returns: 'El producto vuelve. Suele ser expectativa vs realidad: fotos, ficha o medidas.',
+    cancel_purchase: 'Se arrepintió antes de recibir. Muchos casos acá suelen ser demora o precio dudado.',
+    cancel_sale: 'La venta se dio de baja del lado del vendedor.'
+  };
+  const recPorTipo = agrupar(rec.detalle || [], 'tipo');
+  const recPorMotivo = agrupar(rec.detalle || [], 'motivo').slice(0, 10);
   const bloqueRec = `<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden">
     <div style="padding:12px 16px;border-bottom:1px solid var(--border)">
-      <div style="font-size:13px;font-weight:600;font-family:var(--font-b)">Reclamos de ${mesLabel(data.mes)} · ${rec.total}</div>
-      <div style="font-size:11px;color:var(--muted);margin-top:2px">Por qué reclamaron los compradores${rec.truncado ? ' · lista recortada por volumen de historial' : ''}.</div>
+      <div style="font-size:13px;font-weight:600;font-family:var(--font-b)">Casos post-venta de ${mesLabel(data.mes)} · ${rec.total}</div>
+      <div style="font-size:11px;color:var(--muted);margin-top:2px">Reclamos, devoluciones y cancelaciones pedidas por el comprador${rec.truncado ? ' · lista recortada por volumen de historial' : ''}. No compares el total contra el % de reclamos de arriba: ML cuenta sólo una parte de estos casos y no publica el criterio.</div>
     </div>
-    ${recPorMotivo.length === 0 ? '<div style="padding:22px;text-align:center;color:var(--muted);font-size:13px">Sin reclamos en el mes.</div>' : `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse">
-      <thead><tr style="background:var(--surface2)">
-        <th style="padding:8px 12px;text-align:left;font-size:11px;font-weight:600;color:var(--muted)">Motivo</th>
-        <th style="padding:8px 12px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Casos</th>
-        <th style="padding:8px 12px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">% del total</th>
-      </tr></thead>
-      <tbody>${recPorMotivo.map(m => `<tr>
-        <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px">${m.k}</td>
-        <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px;text-align:right;font-weight:600">${m.n}</td>
-        <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px;text-align:right;color:var(--muted)">${(m.n / rec.total * 100).toFixed(0)}%</td>
-      </tr>`).join('')}</tbody>
-    </table></div>`}
+    ${rec.total === 0 ? '<div style="padding:22px;text-align:center;color:var(--muted);font-size:13px">Sin casos post-venta en el mes.</div>' : `
+      <div style="padding:4px 0">
+        ${recPorTipo.map(t => `<div style="padding:10px 16px;border-bottom:1px solid var(--border)">
+          <div style="display:flex;align-items:baseline;gap:8px">
+            <span style="font-size:12px;font-weight:600">${tipoNombre[t.k] || t.k}</span>
+            <span style="font-size:16px;font-weight:700;font-family:var(--font-b);margin-left:auto">${t.n}</span>
+          </div>
+          <div style="font-size:11px;color:var(--muted);margin-top:2px;line-height:1.4">${tipoAyuda[t.k] || ''}</div>
+        </div>`).join('')}
+      </div>
+      <div style="padding:10px 16px 6px;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em">Motivos más repetidos</div>
+      <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse">
+        <tbody>${recPorMotivo.map(m => `<tr>
+          <td style="padding:7px 16px;border-top:1px solid var(--border);font-size:12px">${m.k}</td>
+          <td style="padding:7px 16px;border-top:1px solid var(--border);font-size:12px;text-align:right;font-weight:600">${m.n}</td>
+        </tr>`).join('')}</tbody>
+      </table></div>`}
   </div>`;
 
   const can = per.canceladas || [];
   const canMonto = can.reduce((s, x) => s + x.monto, 0);
-  const grupoNombre = { buyer: 'El comprador se arrepintió', seller: 'La canceló el vendedor', mediations: 'Cayó en mediación', meli: 'La canceló Mercado Libre', sin_dato: 'Sin motivo declarado' };
+  const grupoNombre = {
+    buyer: 'El comprador se arrepintió', seller: 'La canceló el vendedor',
+    mediations: 'Cayó en mediación', meli: 'La canceló Mercado Libre',
+    shipment: 'Problema con el envío', internal: 'Cancelación interna de ML',
+    sin_dato: 'Sin motivo declarado'
+  };
   const canPorGrupo = agrupar(can, 'grupo', 'monto');
   const bloqueCan = `<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden">
     <div style="padding:12px 16px;border-bottom:1px solid var(--border)">
