@@ -14333,6 +14333,7 @@ function renderReputacion() {
       <div style="font-size:13px;font-weight:600;font-family:var(--font-b)">Casos post-venta de ${mesLabel(data.mes)} · ${casos.length}</div>
       <div style="font-size:11px;color:var(--muted);margin-top:2px">Reclamos, devoluciones y cancelaciones pedidas por el comprador${det.casos_truncados ? ' · lista recortada por volumen de historial' : ''}. No compares el total contra el % de reclamos de arriba: ML cuenta sólo una parte de estos casos y no publica el criterio.${det.casos_perdidos ? ` La paginación de ML se saltea filas, así que puede faltar alguno (${det.casos_perdidos} en todo el historial).` : ''}</div>
     </div>
+    ${det.casos_incompletos ? `<div style="background:#fef3c7;border-bottom:1px solid var(--border);padding:10px 16px;font-size:11px;color:#92400e">ML rechazó ${det.paginas_fallidas} ${det.paginas_fallidas === 1 ? 'página' : 'páginas'} al traer los reclamos, así que este conteo quedó corto. Tocá Recalcular en un rato.</div>` : ''}
     ${casos.length === 0 ? '<div style="padding:22px;text-align:center;color:var(--muted);font-size:13px">Sin casos post-venta en el mes.</div>' : `
       <div>${porTipo.map(t => `<div style="padding:10px 16px;border-bottom:1px solid var(--border)">
         <div style="display:flex;align-items:baseline;gap:8px">

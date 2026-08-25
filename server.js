@@ -10120,15 +10120,30 @@ app.get('/api/logistica/desempenio', requireAuth, async (req, res) => {
 // hasta cuatro), así que dos es el punto donde se estabiliza sin pagar de más.
 async function fetchClaimsTodos(headers, maxPaginas = 80, pasadas = 2) {
   const porId = new Map();
-  let truncado = false, totalDeclarado = 0;
+  let truncado = false, totalDeclarado = 0, fallidas = 0;
+
+  // Una página que falla se lleva 50 reclamos sin hacer ruido: pedir tantas seguidas
+  // hace que ML empiece a cortar, y sin reintento el mes aparecía con la mitad de los
+  // casos y nadie se enteraba. Se reintenta con una espera creciente y, si igual falla,
+  // se cuenta para poder avisar que el número quedó incompleto.
+  const traerPagina = async (url) => {
+    for (let intento = 0; intento < 3; intento++) {
+      const r = await fetch(url, { headers }).then(r => r.json()).catch(() => null);
+      if (r && Array.isArray(r.data)) return r;
+      await new Promise(res => setTimeout(res, 400 * (intento + 1)));
+    }
+    fallidas++;
+    return null;
+  };
+
   for (let pasada = 0; pasada < pasadas; pasada++) {
     for (const estado of ['opened', 'closed']) {
       for (let pag = 0; pag < maxPaginas; pag++) {
         const url = `${ML_API}/post-purchase/v1/claims/search?status=${estado}&limit=50&offset=${pag * 50}`;
-        const r = await fetch(url, { headers }).then(r => r.json()).catch(() => null);
-        const data = (r && r.data) || [];
-        data.forEach(c => { if (c && c.id != null) porId.set(c.id, c); });
-        const total = (r && r.paging && r.paging.total) || 0;
+        const r = await traerPagina(url);
+        if (!r) continue;                       // se reintentó y no vino: seguimos con la próxima
+        r.data.forEach(c => { if (c && c.id != null) porId.set(c.id, c); });
+        const total = (r.paging && r.paging.total) || 0;
         if (pasada === 0 && pag === 0) totalDeclarado += total;
         if ((pag + 1) * 50 >= total) break;
         if (pag === maxPaginas - 1) truncado = true;
@@ -10136,7 +10151,12 @@ async function fetchClaimsTodos(headers, maxPaginas = 80, pasadas = 2) {
     }
   }
   const claims = [...porId.values()];
-  return { claims, truncado, perdidos: Math.max(0, totalDeclarado - claims.length) };
+  return {
+    claims, truncado, fallidas,
+    perdidos: Math.max(0, totalDeclarado - claims.length),
+    // Con páginas caídas el conteo del mes queda corto: no sirve para mostrarlo como dato firme.
+    incompleto: fallidas > 0
+  };
 }
 
 // Ventas caídas del mes. Se piden sólo las canceladas en vez de traer todas las
@@ -10160,7 +10180,7 @@ async function calcularReputacionMes(uid, headers, desde, hasta, ventas60) {
   const hoy = ymd();
   const hace60 = ymdShift(hoy, -60);
 
-  const [{ claims, truncado, perdidos }, canceladasRaw] = await Promise.all([
+  const [{ claims, truncado, perdidos, incompleto, fallidas }, canceladasRaw] = await Promise.all([
     fetchClaimsTodos(headers),
     fetchCanceladasMes(uid, headers, desde, hasta)
   ]);
@@ -10211,6 +10231,7 @@ async function calcularReputacionMes(uid, headers, desde, hasta, ventas60) {
     calc_version: REPUTACION_CALC_VERSION,
     desde, hasta,
     casos, casos_truncados: truncado, casos_perdidos: perdidos,
+    casos_incompletos: incompleto, paginas_fallidas: fallidas,
     mediaciones_60d: med60,
     mediaciones_disputa_60d: disputa60,
     mediaciones_rate: ventas60 ? +(med60 / ventas60).toFixed(4) : null,
@@ -10268,12 +10289,16 @@ app.get('/api/reputacion', requireAuth, async (req, res) => {
     if (!detalle) {
       detalle = await calcularReputacionMes(uid, headers, desde, hasta, ventas60);
       fetchedAt = new Date();
-      await pool.query(
-        `INSERT INTO reputacion_cache (client_id, mes, data, fetched_at)
-         VALUES ($1,$2,$3,NOW())
-         ON CONFLICT (client_id, mes) DO UPDATE SET data=$3, fetched_at=NOW()`,
-        [clientId, mes, JSON.stringify(detalle)]
-      );
+      if (detalle.casos_incompletos) {
+        console.warn(`[REPUTACION] ${detalle.paginas_fallidas} páginas de reclamos fallaron: no se cachea`);
+      } else {
+        await pool.query(
+          `INSERT INTO reputacion_cache (client_id, mes, data, fetched_at)
+           VALUES ($1,$2,$3,NOW())
+           ON CONFLICT (client_id, mes) DO UPDATE SET data=$3, fetched_at=NOW()`,
+          [clientId, mes, JSON.stringify(detalle)]
+        );
+      }
     }
 
     // Las tres primeras son de ML; la de mediaciones la calculamos nosotros y va
