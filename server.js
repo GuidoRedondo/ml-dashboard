@@ -12615,13 +12615,17 @@ app.get('/api/promociones/rendimiento', requireAuth, async (req, res) => {
       await Promise.all(chunk.map(async o => {
         try {
           const r = await fetch(`${ML_API}/orders/${o.id}/discounts`, { headers });
+          const d = await r.json().catch(() => null);
+          // 404 discount_not_found NO es un error: es cómo ML dice "esta orden se
+          // vendió a precio pleno". La mayoría de las órdenes de una cuenta sin
+          // promos caen acá, y contarlas como fallas asustaba de gusto.
+          if (r.status === 404 && d?.error === 'discount_not_found') return;
           if (!r.ok) { sinLeer++; return; }
-          const d = await r.json();
           if (d && Array.isArray(d.details) && d.details.length) desglosePorOrden.set(o.id, d.details);
         } catch(e) { sinLeer++; }
       }));
     }
-    if (sinLeer) warnings.push(`${sinLeer} de ${orders.length} órdenes no devolvieron desglose (ML responde error en órdenes viejas o canceladas): no están contadas.`);
+    if (sinLeer) warnings.push(`${sinLeer} de ${orders.length} órdenes no se pudieron leer (ML devolvió error): no están contadas en el descuento.`);
 
     // 4. offer_id -> campaña. Sólo para los ítems que efectivamente tuvieron descuento
     //    de precio, y una sola vez por ítem.
