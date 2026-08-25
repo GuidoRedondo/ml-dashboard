@@ -5031,6 +5031,67 @@ app.get('/api/precios-promo', requireAuth, async (req, res) => {
   }
 });
 
+// ── Catálogo: en qué estado está una publicación respecto de la ficha de producto ──
+// Son dos datos distintos y el que manda es el segundo:
+//   catalog_product_id → ML reconoció de qué producto se trata. NO alcanza.
+//   catalog_listing    → la publicación compite DENTRO de la ficha de catálogo.
+// Sólo con catalog_listing=true el permalink cae en /p/{producto} y ML muestra el
+// selector "Mejor precio / En cuotas" con las otras publicaciones del mismo producto.
+// Si no compite, el link cae en /up/{user_product} y ese selector desaparece: el que
+// entra por un link compartido ve un precio suelto y no se entera de los demás.
+function catalogoEstado(detail) {
+  if (detail?.catalog_listing === true) return 'compite';
+  if (detail?.catalog_product_id) return 'vinculada';
+  return 'sin_ficha';
+}
+
+// Campaña de cuotas sin interés de la publicación (3x_campaign, 12x_campaign, ahora-12…).
+// Vive en sale_terms.INSTALLMENTS_CAMPAIGN. Es multivaluada — una publicación puede estar
+// en varias — y ML la marca read_only: se activa desde el panel, no se escribe por API.
+function campanaCuotas(detail) {
+  const st = (detail?.sale_terms || []).find(x => x.id === 'INSTALLMENTS_CAMPAIGN');
+  if (!st) return null;
+  const vals = (st.values || []).map(v => v.name).filter(Boolean);
+  return vals.length ? vals.join('+') : (st.value_name || null);
+}
+
+// ── Escaleras de precio ───────────────────────────────────────────────────────
+// El mismo producto publicado varias veces a distinto precio (mismo user_product_id):
+// la barata al contado, la cara con cuotas sin interés que se bancan con ese precio de
+// más. ML las agrupa en una ficha y deja elegir. Pero el armado sólo se muestra si las
+// publicaciones compiten en catálogo — las que no, quedan sueltas y esconden el resto
+// de los escalones. Devuelve sólo las escaleras que tienen al menos una afuera.
+function armarEscaleras(items) {
+  const grupos = {};
+  items.forEach(i => {
+    if (i.status !== 'active' || !i.user_product_id) return;
+    (grupos[i.user_product_id] = grupos[i.user_product_id] || []).push(i);
+  });
+  return Object.entries(grupos)
+    .filter(([, arr]) => arr.length > 1)
+    .map(([up, arr]) => {
+      const pubs = arr.slice().sort((a, b) => (a.price || 0) - (b.price || 0)).map(i => ({
+        id: i.id, title: i.title, price: i.price, listing_type_id: i.listing_type_id,
+        catalogo_estado: i.catalogo_estado, campana_cuotas: i.campana_cuotas,
+        units: i.units, revenue: i.revenue,
+      }));
+      const fuera = pubs.filter(p => p.catalogo_estado !== 'compite');
+      return {
+        user_product_id: up,
+        title: pubs[0].title,
+        publicaciones: pubs.length,
+        fuera_catalogo: fuera.length,
+        // Con TODAS afuera el producto no tiene ni una ficha que funcione: el comprador
+        // nunca ve la escalera completa, entre por donde entre. Ese es el caso grave.
+        rota_total: fuera.length === pubs.length,
+        escalones_cuotas: [...new Set(pubs.map(p => p.campana_cuotas).filter(Boolean))],
+        pubs,
+      };
+    })
+    .filter(e => e.fuera_catalogo > 0)
+    .sort((a, b) => (b.rota_total - a.rota_total) || (b.fuera_catalogo - a.fuera_catalogo));
+}
+
 app.get('/api/items-full', requireAuth, async (req, res) => {
   try {
     const clientId = parseInt(req.query.client_id);
@@ -5124,7 +5185,7 @@ app.get('/api/items-full', requireAuth, async (req, res) => {
     for (let i = 0; i < allIds.length; i += 20) {
       const batch = allIds.slice(i, i+20);
       try {
-        const data = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,title,price,status,sub_status,available_quantity,listing_type_id,category_id,shipping,pictures,condition,catalog_listing,video_id,health,seller_custom_field,attributes,variations,user_product_id,inventory_id,last_updated&include_attributes=all`, { headers }).then(r => r.json());
+        const data = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,title,price,status,sub_status,available_quantity,listing_type_id,category_id,shipping,pictures,condition,catalog_listing,catalog_product_id,sale_terms,video_id,health,seller_custom_field,attributes,variations,user_product_id,inventory_id,last_updated&include_attributes=all`, { headers }).then(r => r.json());
         (Array.isArray(data) ? data : []).forEach(r => {
           if (r.code === 200 && r.body) itemDetailsMap[r.body.id] = r.body;
         });
@@ -5233,6 +5294,10 @@ app.get('/api/items-full', requireAuth, async (req, res) => {
         category_id: detail.category_id || '',
         condition: detail.condition || '',
         catalog_listing: detail.catalog_listing || false,
+        catalog_product_id: detail.catalog_product_id || null,
+        user_product_id: detail.user_product_id || null,
+        catalogo_estado: catalogoEstado(detail),
+        campana_cuotas: campanaCuotas(detail),
         sku: manualSkuFull[item.id] || extractSku(detail) || '',
         photo_count: pics.length,
         photo_urls: pics.slice(0,3).map(p => p.url || p.secure_url || ''),
@@ -5271,6 +5336,10 @@ app.get('/api/items-full', requireAuth, async (req, res) => {
         category_id: detail.category_id || '',
         condition: detail.condition || '',
         catalog_listing: detail.catalog_listing || false,
+        catalog_product_id: detail.catalog_product_id || null,
+        user_product_id: detail.user_product_id || null,
+        catalogo_estado: catalogoEstado(detail),
+        campana_cuotas: campanaCuotas(detail),
         photo_count: pics.length,
         photo_urls: pics.slice(0,3).map(p => p.url || p.secure_url || ''),
         is_full: isFull,
@@ -5301,10 +5370,17 @@ app.get('/api/items-full', requireAuth, async (req, res) => {
       inactive:   items.filter(i => i.status === 'inactive' || i.status === 'paused').length,
       withSales:  items.filter(i => i.hasSales).length,
       withProblems: items.filter(i => i.hasProblems).length,
+      catalogoCompite:   items.filter(i => i.catalogo_estado === 'compite').length,
+      catalogoVinculada: items.filter(i => i.catalogo_estado === 'vinculada').length,
+      catalogoSinFicha:  items.filter(i => i.catalogo_estado === 'sin_ficha').length,
+      // Sólo activas: una pausada no compite ni pierde nada.
+      fueraCatalogo: items.filter(i => i.status === 'active' && i.catalogo_estado !== 'compite').length,
     };
 
+    const escaleras = armarEscaleras(items);
+
     res.json({
-      items, total_revenue: totalRevenue, days: effectiveDays, summary,
+      items, total_revenue: totalRevenue, days: effectiveDays, summary, escaleras,
       // Para que la UI pueda avisar que el desglose no cubre todo el catálogo
       stock_ubicacion: {
         en_full: stockLoc.en_full, consultadas: stockLoc.consultadas,
