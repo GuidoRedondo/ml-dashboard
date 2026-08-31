@@ -5365,6 +5365,9 @@ app.get('/api/items-full', requireAuth, async (req, res) => {
         user_product_id: detail.user_product_id || null,
         catalogo_estado: catalogoEstado(detail),
         campana_cuotas: campanaCuotas(detail),
+        // El SKU se armaba solo en la rama con ventas: las publicaciones sin ventas
+        // en el periodo salian con sku undefined y el export de CMV las mostraba vacias.
+        sku: manualSkuFull[id] || extractSku(detail) || '',
         photo_count: pics.length,
         photo_urls: pics.slice(0,3).map(p => p.url || p.secure_url || ''),
         is_full: isFull,
