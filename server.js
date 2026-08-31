@@ -4204,7 +4204,9 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
         const tanda = fechasDias.slice(b, b + 10);
         await Promise.all(tanda.map(async (f, k) => {
           const url = `${ML_API}/advertising/${siteIdDash}/advertisers/${advIdDash}/product_ads/campaigns/search`
-                    + `?limit=1&offset=0&date_from=${f}&date_to=${f}&metrics=cost&metrics_summary=true`;
+                    // limit=50: metrics_summary suma solo la pagina pedida, con limit=1 daba el gasto
+                    // de una unica campana. El residuo repartido de mas abajo lo venia tapando.
+                    + `?limit=50&offset=0&date_from=${f}&date_to=${f}&metrics=cost&metrics_summary=true`;
           try {
             const d = await fetch(url, { headers: h2 }).then(r => r.json());
             byDayAds[b + k] = parseFloat((d.metrics_summary || {}).cost) || 0;
@@ -4451,7 +4453,8 @@ app.get('/api/dashboard/evolucion-semanal', requireAuth, async (req, res) => {
 
         await Promise.all(buckets.map(async (b) => {
           const url = `${ML_API}/advertising/${siteId}/advertisers/${advId}/product_ads/campaigns/search`
-                    + `?limit=1&offset=0&date_from=${b.week_start}&date_to=${b.week_end}`
+                    // limit=50: con limit=1 metrics_summary devuelve solo la primera campana.
+                    + `?limit=50&offset=0&date_from=${b.week_start}&date_to=${b.week_end}`
                     + `&metrics=${metrics}&metrics_summary=true`;
           try {
             const txt = await fetch(url, { headers: h2 }).then(r => r.text());
@@ -16523,7 +16526,10 @@ async function snapshotPanelMetricas(clientId, desde, hasta) {
       const tanda = dias.slice(b, b + 8);
       await Promise.all(tanda.map(async d => {
         const url = `${ML_API}/advertising/${siteId}/advertisers/${advId}/product_ads/campaigns/search`
-                  + `?limit=1&offset=0&date_from=${d}&date_to=${d}&metrics=${metrics}&metrics_summary=true`;
+                  // limit=50 y no 1: metrics_summary agrega SOLO las campanas de la pagina pedida,
+                  // asi que con limit=1 devuelve el gasto de una sola campana (medido en AB Fitness:
+                  // $69.572 contra $356.748 reales de 7 campanas en el mismo dia).
+                  + `?limit=50&offset=0&date_from=${d}&date_to=${d}&metrics=${metrics}&metrics_summary=true`;
         try {
           const r = await fetch(url, { headers: h2 }).then(r => r.json());
           const m = r.metrics_summary || {};
