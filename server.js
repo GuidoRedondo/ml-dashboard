@@ -16448,7 +16448,9 @@ app.post('/api/plan/acciones/:clientId/:accionId/restore', requireAuth, requireC
 //   publicidad  = PADS campaigns/search día por día (PADS no tiene agregación diaria)
 //
 // El día se calcula en hora argentina: una venta de las 22:30 ART es de ese día.
-const PANEL_REPROCESO_DIAS = 3;   // días hacia atrás que se reprocesan cada noche (ML ajusta publi con retraso)
+const PANEL_REPROCESO_DIAS = 5;   // días hacia atrás que se reprocesan cada noche: ML acredita pagos y
+                                  // ajusta la publi con retraso. Medido en AB Fitness contra la serie diaria
+                                  // del Dashboard: el día que recién cerró queda ~2% corto y converge después.
 const PANEL_BACKFILL_DIAS  = 60;  // historia que se carga la primera vez que un cliente entra al panel
 
 function panelClientesQuery() {
@@ -16482,6 +16484,23 @@ async function getAdvertiserPads(headers, siteId) {
 // Las órdenes se piden UNA sola vez para todo el rango y se agrupan por día argentino;
 // las visitas también vienen desglosadas de una. Lo único que cuesta por día es publi.
 async function snapshotPanelMetricas(clientId, desde, hasta) {
+  // Rangos largos van de a bloques: fetchAllOrders corta en 15.000 órdenes y ordena por
+  // fecha descendente, así que en una cuenta grande un backfill de 60 días de una sola
+  // pasada dejaría los días más viejos en cero sin avisar.
+  const PANEL_BLOQUE_DIAS = 15;
+  const total = diasEntre(desde, hasta);
+  if (total.length > PANEL_BLOQUE_DIAS) {
+    let acum = { dias: 0, ordenes: 0, visitas_ok: true, publi: false };
+    for (let i = 0; i < total.length; i += PANEL_BLOQUE_DIAS) {
+      const bloque = total.slice(i, i + PANEL_BLOQUE_DIAS);
+      const r = await snapshotPanelMetricas(clientId, bloque[0], bloque[bloque.length - 1]);
+      acum.dias += r.dias; acum.ordenes += r.ordenes;
+      acum.visitas_ok = acum.visitas_ok && r.visitas_ok;
+      acum.publi = acum.publi || r.publi;
+    }
+    return acum;
+  }
+
   const token = await getClientToken(clientId);
   if (!token) throw new Error('cliente sin token');
   const headers = { Authorization: `Bearer ${token}` };
