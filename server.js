@@ -666,6 +666,28 @@ async function initDB() {
       PRIMARY KEY (client_id, mla_id)
     );
     CREATE INDEX IF NOT EXISTS idx_cv_estado_cambio ON ciclo_vida_estado(client_id, cambio_fecha);
+    -- Métricas diarias por cliente para la vista rápida del Panel de Clientes.
+    -- El panel pedía /api/dashboard + /api/ads en vivo por cada cliente: 80 llamadas
+    -- pesadas a ML para dibujar una tabla, ~1 minuto de espera. Con una fila por
+    -- cliente y por día, cualquier rango se arma sumando en SQL y entra instantáneo.
+    -- Las columnas quedan NULL cuando ML no respondió ese pedazo (visitas o publi),
+    -- para poder distinguir "ese día no hubo" de "ese día no lo pude leer".
+    CREATE TABLE IF NOT EXISTS panel_metricas_diarias (
+      client_id    INTEGER NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+      dia          DATE NOT NULL,
+      facturacion  NUMERIC(14,2) DEFAULT 0,
+      ordenes      INTEGER DEFAULT 0,
+      unidades     INTEGER DEFAULT 0,
+      visitas      INTEGER,
+      ads_spend    NUMERIC(14,2),
+      ads_sales    NUMERIC(14,2),
+      ads_clicks   INTEGER,
+      ads_prints   INTEGER,
+      parcial      BOOLEAN DEFAULT false,   -- true = día en curso traído a mano
+      actualizado  TIMESTAMPTZ DEFAULT NOW(),
+      PRIMARY KEY (client_id, dia)
+    );
+    CREATE INDEX IF NOT EXISTS idx_panel_metricas_dia ON panel_metricas_diarias(dia);
   `);
 
   // ── Migración: FKs hacia clients(id) que quedaron sin ON DELETE CASCADE ──
@@ -16406,6 +16428,333 @@ app.post('/api/plan/acciones/:clientId/:accionId/restore', requireAuth, requireC
   }
 });
 
+// ══════════════════════════════════════════════════════════════════════════════
+// PANEL DE CLIENTES — MÉTRICAS DIARIAS (vista rápida)
+// ══════════════════════════════════════════════════════════════════════════════
+// El tab Métricas del Panel de Clientes pedía /api/dashboard + /api/ads EN VIVO para
+// cada cliente: con 30 cuentas son 60 llamadas pesadas a ML (órdenes paginadas, envíos,
+// visitas) y el panel tardaba un minuto largo en dibujarse. Acá se invierte el orden:
+// un cron nocturno guarda UNA FILA POR CLIENTE Y POR DÍA, y el panel arma cualquier
+// rango sumando en SQL — respuesta instantánea y sin tocar ML.
+//
+// Criterio de los números (mismo que /api/dashboard, para que no haya dos verdades):
+//   facturación = suma de order.total_amount de las órdenes pagadas del día
+//   órdenes     = cantidad de órdenes pagadas
+//   unidades    = suma de quantity de los order_items
+//   visitas     = /users/{uid}/items_visits/time_window vía fetchUserVisits (byDay)
+//   publicidad  = PADS campaigns/search día por día (PADS no tiene agregación diaria)
+//
+// El día se calcula en hora argentina: una venta de las 22:30 ART es de ese día.
+const PANEL_REPROCESO_DIAS = 3;   // días hacia atrás que se reprocesan cada noche (ML ajusta publi con retraso)
+const PANEL_BACKFILL_DIAS  = 60;  // historia que se carga la primera vez que un cliente entra al panel
+
+function panelClientesQuery() {
+  return `SELECT id, name FROM clients
+           WHERE active = true AND access_token IS NOT NULL AND ml_user_id IS NOT NULL
+             AND (tipo_cuenta IS NULL OR tipo_cuenta = 'cliente')
+           ORDER BY name`;
+}
+
+// Lista de días (YYYY-MM-DD, ART) entre dos fechas inclusive.
+function diasEntre(desde, hasta) {
+  const out = [];
+  for (let d = desde; d <= hasta; d = ymdShift(d, 1)) out.push(d);
+  return out;
+}
+
+// Advertiser de PADS del cliente. Devuelve null si no tiene publicidad activa.
+async function getAdvertiserPads(headers, siteId) {
+  try {
+    const advData = await fetch(`${ML_API}/advertising/advertisers?product_id=PADS`, {
+      headers: { ...headers, 'Content-Type': 'application/json', 'Api-Version': '1' }
+    }).then(r => r.json());
+    const advertisers = advData.advertisers || [];
+    if (!advertisers.length) return null;
+    const adv = advertisers.find(a => a.site_id === siteId) || advertisers[0];
+    return adv.advertiser_id || null;
+  } catch (e) { return null; }
+}
+
+// Snapshot de [desde, hasta] para un cliente. Idempotente: pisa las filas del rango.
+// Las órdenes se piden UNA sola vez para todo el rango y se agrupan por día argentino;
+// las visitas también vienen desglosadas de una. Lo único que cuesta por día es publi.
+async function snapshotPanelMetricas(clientId, desde, hasta) {
+  const token = await getClientToken(clientId);
+  if (!token) throw new Error('cliente sin token');
+  const headers = { Authorization: `Bearer ${token}` };
+
+  const user = await fetch(`${ML_API}/users/me`, { headers }).then(r => r.json()).catch(() => ({}));
+  if (!user || user.error || !user.id) throw new Error('token inválido');
+  const uid    = user.id;
+  const siteId = user.site_id || 'MLA';
+
+  const dias   = diasEntre(desde, hasta);
+  const porDia = {};
+  dias.forEach(d => { porDia[d] = { facturacion: 0, ordenes: 0, unidades: 0,
+                                    visitas: null, ads_spend: null, ads_sales: null,
+                                    ads_clicks: null, ads_prints: null }; });
+
+  // ── Órdenes del rango completo, agrupadas por día ART ──────────────────────
+  const { orders, ok } = await fetchAllOrders(uid, headers, mlFrom(desde), mlTo(hasta));
+  // ok=false es "no pude leer", no "no vendió": abortar antes de escribir ceros encima
+  // de datos buenos (mismo criterio que la alerta de caída de ventas).
+  if (!ok) throw new Error('ML no devolvió las órdenes');
+  orders.forEach(o => {
+    const d = ymd(new Date(o.date_created));
+    const r = porDia[d];
+    if (!r) return;
+    r.ordenes     += 1;
+    r.facturacion += parseFloat(o.total_amount) || 0;
+    (o.order_items || []).forEach(oi => { r.unidades += oi.quantity || 0; });
+  });
+
+  // ── Visitas por día ────────────────────────────────────────────────────────
+  const uv = await fetchUserVisits(uid, desde, hasta, headers);
+  if (uv && uv.byDay && Object.keys(uv.byDay).length) {
+    dias.forEach(d => { porDia[d].visitas = uv.byDay[d] || 0; });
+  }
+
+  // ── Publicidad, un día por vez (PADS no agrega por día) ────────────────────
+  const advId = await getAdvertiserPads(headers, siteId);
+  if (advId) {
+    const h2      = { ...headers, 'api-version': '2' };
+    const metrics = 'cost,total_amount,clicks,prints';
+    for (let b = 0; b < dias.length; b += 8) {
+      const tanda = dias.slice(b, b + 8);
+      await Promise.all(tanda.map(async d => {
+        const url = `${ML_API}/advertising/${siteId}/advertisers/${advId}/product_ads/campaigns/search`
+                  + `?limit=1&offset=0&date_from=${d}&date_to=${d}&metrics=${metrics}&metrics_summary=true`;
+        try {
+          const r = await fetch(url, { headers: h2 }).then(r => r.json());
+          const m = r.metrics_summary || {};
+          porDia[d].ads_spend  = parseFloat(m.cost)         || 0;
+          porDia[d].ads_sales  = parseFloat(m.total_amount) || 0;
+          porDia[d].ads_clicks = parseInt(m.clicks)         || 0;
+          porDia[d].ads_prints = parseInt(m.prints)         || 0;
+        } catch (_) { /* día sin respuesta queda NULL: se reprocesa mañana */ }
+      }));
+    }
+  }
+
+  // ── Upsert ────────────────────────────────────────────────────────────────
+  // COALESCE(EXCLUDED.x, actual): un pedazo que ML no contestó no borra lo que ya había.
+  const hoy    = ymd();
+  const vals   = [];
+  const params = [];
+  dias.forEach((d, i) => {
+    const r = porDia[d];
+    const o = i * 11;
+    vals.push(`($${o+1},$${o+2},$${o+3},$${o+4},$${o+5},$${o+6},$${o+7},$${o+8},$${o+9},$${o+10},$${o+11})`);
+    params.push(clientId, d, r.facturacion, r.ordenes, r.unidades, r.visitas,
+                r.ads_spend, r.ads_sales, r.ads_clicks, r.ads_prints, d >= hoy);
+  });
+  await pool.query(`
+    INSERT INTO panel_metricas_diarias
+      (client_id, dia, facturacion, ordenes, unidades, visitas, ads_spend, ads_sales, ads_clicks, ads_prints, parcial)
+    VALUES ${vals.join(',')}
+    ON CONFLICT (client_id, dia) DO UPDATE SET
+      facturacion = EXCLUDED.facturacion,
+      ordenes     = EXCLUDED.ordenes,
+      unidades    = EXCLUDED.unidades,
+      visitas     = COALESCE(EXCLUDED.visitas,    panel_metricas_diarias.visitas),
+      ads_spend   = COALESCE(EXCLUDED.ads_spend,  panel_metricas_diarias.ads_spend),
+      ads_sales   = COALESCE(EXCLUDED.ads_sales,  panel_metricas_diarias.ads_sales),
+      ads_clicks  = COALESCE(EXCLUDED.ads_clicks, panel_metricas_diarias.ads_clicks),
+      ads_prints  = COALESCE(EXCLUDED.ads_prints, panel_metricas_diarias.ads_prints),
+      parcial     = EXCLUDED.parcial,
+      actualizado = NOW()
+  `, params);
+
+  return { dias: dias.length, ordenes: orders.length, visitas_ok: !!(uv && uv.byDay), publi: !!advId };
+}
+
+// Corrida diaria: cierra el día que terminó para todas las cuentas de clientes.
+// La primera vez que ve un cliente sin historia le carga PANEL_BACKFILL_DIAS días de una,
+// así el panel arranca con datos aunque nadie haya corrido nada a mano.
+async function runPanelMetricasDiario() {
+  const ayer = ymdShift(ymd(), -1);
+  const cl   = await pool.query(panelClientesQuery());
+  let ok = 0, fail = 0;
+  const errores = [];
+  for (const c of cl.rows) {
+    try {
+      const prev = await pool.query(
+        'SELECT MAX(dia)::text AS max FROM panel_metricas_diarias WHERE client_id=$1', [c.id]);
+      const ultimo = prev.rows[0] && prev.rows[0].max;
+      let desde;
+      if (!ultimo) {
+        desde = ymdShift(ayer, -(PANEL_BACKFILL_DIAS - 1));
+        console.log(`[PANEL-METRICAS] ${c.name}: sin historia, backfill de ${PANEL_BACKFILL_DIAS} días`);
+      } else {
+        // Arranca en el día siguiente al último guardado (tapa huecos si el server estuvo
+        // caído), pero nunca más tarde que la ventana de reproceso: ML ajusta la publi con
+        // retraso y las órdenes pueden acreditarse después.
+        const desdeReproceso = ymdShift(ayer, -(PANEL_REPROCESO_DIAS - 1));
+        const desdeHueco     = ymdShift(ultimo, 1);
+        desde = desdeHueco < desdeReproceso ? desdeHueco : desdeReproceso;
+        // Un hueco gigante (cuenta apagada meses) no se recupera entero de una sola corrida.
+        const tope = ymdShift(ayer, -(PANEL_BACKFILL_DIAS - 1));
+        if (desde < tope) desde = tope;
+      }
+      if (desde > ayer) { ok++; continue; }
+      await snapshotPanelMetricas(c.id, desde, ayer);
+      ok++;
+    } catch (e) {
+      fail++;
+      errores.push({ client_id: c.id, name: c.name, error: e.message });
+      console.warn(`[PANEL-METRICAS][cron] ${c.name}: ${e.message}`);
+    }
+    await new Promise(r => setTimeout(r, 1200));   // respiro entre clientes (rate limit ML)
+  }
+  console.log(`[PANEL-METRICAS][cron] cierre diario: ${ok} ok, ${fail} con error de ${cl.rows.length}`);
+  return { ok, fail, total: cl.rows.length, hasta: ayer, errores };
+}
+
+// Lectura del panel: suma el rango pedido y el período anterior, todo en una query.
+// No toca ML — por eso entra instantáneo.
+app.get('/api/panel/metricas', requireAuth, requireConsultor, async (req, res) => {
+  try {
+    const hoy  = ymd();
+    const ayer = ymdShift(hoy, -1);
+    let from = req.query.date_from || ymdShift(hoy, -29);
+    let to   = req.query.date_to   || hoy;
+    if (from > to) { const t = from; from = to; to = t; }
+
+    // La foto llega hasta el último día cerrado. Si el rango pedido incluye hoy, se corta
+    // y se avisa: el día en curso se trae aparte con /api/panel/metricas/hoy.
+    const incluiaHoy = to >= hoy;
+    const toEf = to > ayer ? ayer : to;
+    const nDias    = Math.max(1, Math.round((new Date(toEf + 'T12:00:00Z') - new Date(from + 'T12:00:00Z')) / 86400000) + 1);
+    const prevTo   = ymdShift(from, -1);
+    const prevFrom = ymdShift(prevTo, -(nDias - 1));
+
+    const q = await pool.query(`
+      SELECT c.id, c.name,
+        COALESCE(SUM(m.facturacion) FILTER (WHERE m.dia BETWEEN $1 AND $2), 0) AS facturacion,
+        COALESCE(SUM(m.ordenes)     FILTER (WHERE m.dia BETWEEN $1 AND $2), 0) AS ordenes,
+        COALESCE(SUM(m.unidades)    FILTER (WHERE m.dia BETWEEN $1 AND $2), 0) AS unidades,
+        COALESCE(SUM(m.visitas)     FILTER (WHERE m.dia BETWEEN $1 AND $2), 0) AS visitas,
+        COALESCE(SUM(m.ads_spend)   FILTER (WHERE m.dia BETWEEN $1 AND $2), 0) AS ads_spend,
+        COALESCE(SUM(m.ads_sales)   FILTER (WHERE m.dia BETWEEN $1 AND $2), 0) AS ads_sales,
+        COUNT(m.dia)                FILTER (WHERE m.dia BETWEEN $1 AND $2)     AS dias_con_datos,
+        COALESCE(SUM(m.facturacion) FILTER (WHERE m.dia BETWEEN $3 AND $4), 0) AS prev_facturacion,
+        COALESCE(SUM(m.ordenes)     FILTER (WHERE m.dia BETWEEN $3 AND $4), 0) AS prev_ordenes,
+        COALESCE(SUM(m.unidades)    FILTER (WHERE m.dia BETWEEN $3 AND $4), 0) AS prev_unidades,
+        COALESCE(SUM(m.visitas)     FILTER (WHERE m.dia BETWEEN $3 AND $4), 0) AS prev_visitas,
+        COALESCE(SUM(m.ads_spend)   FILTER (WHERE m.dia BETWEEN $3 AND $4), 0) AS prev_ads_spend,
+        COALESCE(SUM(m.ads_sales)   FILTER (WHERE m.dia BETWEEN $3 AND $4), 0) AS prev_ads_sales,
+        COUNT(m.dia)                FILTER (WHERE m.dia BETWEEN $3 AND $4)     AS prev_dias_con_datos,
+        MAX(m.dia) FILTER (WHERE m.parcial = false)::text AS ultimo_dia_cerrado,
+        MAX(m.actualizado) AS actualizado
+      FROM clients c
+      LEFT JOIN panel_metricas_diarias m ON m.client_id = c.id AND m.dia BETWEEN $3 AND $2
+      WHERE c.active = true AND c.ml_user_id IS NOT NULL
+        AND (c.tipo_cuenta IS NULL OR c.tipo_cuenta = 'cliente')
+      GROUP BY c.id, c.name
+      ORDER BY 3 DESC
+    `, [from, toEf, prevFrom, prevTo]);
+
+    const num = v => parseFloat(v) || 0;
+    const clientes = q.rows.map(r => ({
+      client_id: r.id, name: r.name,
+      dias_con_datos: parseInt(r.dias_con_datos) || 0,
+      facturacion: num(r.facturacion), ordenes: parseInt(r.ordenes) || 0,
+      unidades: parseInt(r.unidades) || 0, visitas: parseInt(r.visitas) || 0,
+      ads_spend: num(r.ads_spend), ads_sales: num(r.ads_sales),
+      prev: {
+        facturacion: num(r.prev_facturacion), ordenes: parseInt(r.prev_ordenes) || 0,
+        unidades: parseInt(r.prev_unidades) || 0, visitas: parseInt(r.prev_visitas) || 0,
+        ads_spend: num(r.prev_ads_spend), ads_sales: num(r.prev_ads_sales),
+        dias_con_datos: parseInt(r.prev_dias_con_datos) || 0,
+      },
+      ultimo_dia: r.ultimo_dia_cerrado || null,
+      actualizado: r.actualizado || null,
+    }));
+
+    const meta = await pool.query(
+      'SELECT MAX(dia)::text AS ultimo_dia, MAX(actualizado) AS actualizado FROM panel_metricas_diarias WHERE parcial = false');
+
+    res.json({
+      periodo: { from, to: toEf, dias: nDias, pedido_hasta: to, incluia_hoy: incluiaHoy },
+      prev_periodo: { from: prevFrom, to: prevTo },
+      hoy,
+      ultimo_dia_cerrado: meta.rows[0] ? meta.rows[0].ultimo_dia : null,
+      actualizado: meta.rows[0] ? meta.rows[0].actualizado : null,
+      clientes,
+    });
+  } catch (e) {
+    console.error('GET /api/panel/metricas:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Trae el día EN CURSO en vivo para todas las cuentas y lo guarda como parcial.
+// Es la única parte del panel que pega contra ML, y sólo cuando se aprieta el botón.
+app.get('/api/panel/metricas/hoy', requireAuth, requireConsultor, async (req, res) => {
+  try {
+    const hoy = ymd();
+    const cl  = await pool.query(panelClientesQuery());
+    const errores = [];
+    const tanda = 4;   // de a 4 cuentas para no golpear la API de ML de una
+    for (let i = 0; i < cl.rows.length; i += tanda) {
+      await Promise.all(cl.rows.slice(i, i + tanda).map(async c => {
+        try { await snapshotPanelMetricas(c.id, hoy, hoy); }
+        catch (e) { errores.push({ client_id: c.id, name: c.name, error: e.message }); }
+      }));
+    }
+    const q = await pool.query(`
+      SELECT client_id, facturacion, ordenes, unidades, visitas, ads_spend, ads_sales
+        FROM panel_metricas_diarias WHERE dia = $1`, [hoy]);
+    const num = v => parseFloat(v) || 0;
+    res.json({
+      dia: hoy,
+      clientes: q.rows.map(r => ({
+        client_id: r.client_id, facturacion: num(r.facturacion),
+        ordenes: parseInt(r.ordenes) || 0, unidades: parseInt(r.unidades) || 0,
+        visitas: parseInt(r.visitas) || 0, ads_spend: num(r.ads_spend), ads_sales: num(r.ads_sales),
+      })),
+      actualizado: new Date().toISOString(),
+      errores,
+    });
+  } catch (e) {
+    console.error('GET /api/panel/metricas/hoy:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Recarga manual de historia (admin). days=N hacia atrás desde ayer; client_id opcional.
+// Responde al toque y sigue laburando de fondo: con 30 cuentas y 60 días son varios minutos.
+app.post('/api/panel/metricas/backfill', requireAuth, requireAdmin, async (req, res) => {
+  const days     = Math.max(1, Math.min(365, parseInt(req.query.days) || PANEL_BACKFILL_DIAS));
+  const clientId = req.query.client_id ? parseInt(req.query.client_id) : null;
+  const ayer  = ymdShift(ymd(), -1);
+  const desde = ymdShift(ayer, -(days - 1));
+  const cl = clientId
+    ? await pool.query('SELECT id, name FROM clients WHERE id = $1', [clientId])
+    : await pool.query(panelClientesQuery());
+
+  res.json({ ok: true, corriendo: true, clientes: cl.rows.length, desde, hasta: ayer });
+
+  (async () => {
+    let ok = 0, fail = 0;
+    for (const c of cl.rows) {
+      try { await snapshotPanelMetricas(c.id, desde, ayer); ok++; }
+      catch (e) { fail++; console.warn(`[PANEL-METRICAS][backfill] ${c.name}: ${e.message}`); }
+      await new Promise(r => setTimeout(r, 1200));
+    }
+    console.log(`[PANEL-METRICAS][backfill] ${desde} → ${ayer}: ${ok} ok, ${fail} con error`);
+  })().catch(e => console.error('[PANEL-METRICAS][backfill]', e.message));
+});
+
+// Disparo externo del cierre diario (mismo patrón que los otros crons).
+app.all('/api/panel/metricas/cron', async (req, res) => {
+  const secret   = process.env.CRON_SECRET;
+  const provided = req.query.secret || req.headers['x-cron-secret'];
+  if (secret && provided !== secret) return res.status(403).json({ error: 'forbidden' });
+  try { res.json({ ok: true, ...(await runPanelMetricasDiario()) }); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 initDB().then(() => {
   app.listen(PORT, () => console.log(`Puerto ${PORT}`));
 
@@ -16445,6 +16794,14 @@ initDB().then(() => {
       runPubliAnalyzer({ tipo: 'cron' }).catch(e => console.error('[PUBLI][cron] Error:', e.message));
     }, { timezone: ART });
     console.log(`[CRON] Motor de publicidad programado: 07:30 ART (ventana ${PUBLI_WINDOW_DAYS}d)`);
+
+    // 00:00 ART — cierre del día para la vista rápida del Panel de Clientes. Corre apenas
+    // termina el día argentino y guarda una fila por cliente y por día, así el panel abre
+    // instantáneo en vez de pedirle a ML 60 llamadas en vivo cada vez que se entra.
+    nodeCron.schedule('0 0 * * *', () => {
+      runPanelMetricasDiario().catch(e => console.error('[PANEL-METRICAS][cron] Error:', e.message));
+    }, { timezone: ART });
+    console.log('[CRON] Métricas del Panel de Clientes programadas: 00:00 ART');
 
     // 23:45 ART — cierre del día en Seguimiento. Tarde a propósito: agarra el día casi completo.
     nodeCron.schedule('45 23 * * *', () => {

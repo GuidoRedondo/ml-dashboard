@@ -905,6 +905,7 @@ tbody td {
         </button>
       </div>
       <div id="panel-tab-metricas" style="display:none">
+        <div id="panelMetricasBar"></div>
         <div id="panelConsultoresContent"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Cargando...</div></div>
       </div>
       <div id="panel-tab-bitacora">
@@ -17088,17 +17089,148 @@ function renderCompetidorFicha(data, el) {
   </div>`;
 }
 // ── PANEL CLIENTES ────────────────────────────────────────────────────────────
+// El tab Métricas se dibuja con la FOTO que guarda el cron de las 00:00 ART
+// (/api/panel/metricas): no toca ML, entra instantáneo y llega hasta el cierre de ayer.
+// El día en curso se trae aparte, a pedido, con el botón "Traer hoy".
+let _panelCache   = null;   // última respuesta de /api/panel/metricas
+let _panelHoy     = null;   // día en curso traído a mano: { dia, at, porCliente:{id:métricas} }
+
 async function loadPanelConsultores() {
   // Arrancar siempre en Bitácora
   renderBitacoraShell();
+  await loadPanelMetricas();
+}
 
+// Foto guardada — instantánea. _panelHoy se descarta al cambiar de rango/recargar.
+async function loadPanelMetricas() {
+  const el = document.getElementById('panelConsultoresContent');
+  if (!el) return;
+  const role = getSessionRole();
+  if (role === 'cliente') { el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">Sin acceso</div>'; return; }
+
+  const range = getDateRange();
+  el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">⏳ Cargando...</div>';
+  try {
+    const data = await apiCall('GET', '/api/panel/metricas?date_from=' + range.date_from + '&date_to=' + range.date_to);
+    _panelCache = data;
+    _panelHoy   = null;
+    renderPanelDesdeCache();
+  } catch(e) {
+    const bar = document.getElementById('panelMetricasBar');
+    if (bar) bar.innerHTML = '';
+    el.innerHTML = `<div style="color:#ef4444;padding:40px;text-align:center">Error cargando métricas: ${e.message}</div>`;
+  }
+}
+
+// Trae el día en curso de todas las cuentas (esto sí pega contra ML) y lo suma a la foto.
+async function traerPanelHoy() {
+  if (!_panelCache) return;
+  const btn = document.getElementById('btnPanelHoy');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Trayendo hoy...'; }
+  try {
+    const data = await apiCall('GET', '/api/panel/metricas/hoy');
+    const porCliente = {};
+    (data.clientes || []).forEach(c => { porCliente[c.client_id] = c; });
+    _panelHoy = { dia: data.dia, at: new Date(), porCliente, errores: data.errores || [] };
+    renderPanelDesdeCache();
+    if (_panelHoy.errores.length) showToast(`⚠️ ${_panelHoy.errores.length} cuenta(s) sin datos de hoy`);
+  } catch(e) {
+    showToast('⚠️ No pude traer el día de hoy: ' + e.message);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '⚡ Traer hoy'; }
+  }
+}
+
+// Convierte la foto (+ el día de hoy si se trajo) al mismo shape que usa la tabla en vivo,
+// así hay una sola función de render y no dos verdades.
+function panelCacheToResults(data) {
+  const pct = (cur, prev) => prev > 0 ? (((cur - prev) / prev) * 100).toFixed(1) : null;
+  return (data.clientes || []).map(c => {
+    const cl  = (allClients || []).find(x => x.id === c.client_id) || { id: c.client_id, name: c.name };
+    const hoy = _panelHoy ? _panelHoy.porCliente[c.client_id] : null;
+    const fac = c.facturacion + (hoy ? hoy.facturacion : 0);
+    const ord = c.ordenes     + (hoy ? hoy.ordenes     : 0);
+    const uni = c.unidades    + (hoy ? hoy.unidades    : 0);
+    const vis = c.visitas     + (hoy ? hoy.visitas     : 0);
+    const ads = c.ads_spend   + (hoy ? hoy.ads_spend   : 0);
+    const adsSales = c.ads_sales + (hoy ? hoy.ads_sales : 0);
+    if (!c.dias_con_datos && !hoy) return { client: cl, data: null, adsData: null };
+
+    const p = c.prev;
+    const conv     = vis > 0 ? parseFloat((ord / vis * 100).toFixed(1)) : 0;
+    const prevConv = p.visitas > 0 ? parseFloat((p.ordenes / p.visitas * 100).toFixed(1)) : 0;
+    const ticket     = ord > 0 ? Math.round(fac / ord) : 0;
+    const prevTicket = p.ordenes > 0 ? Math.round(p.facturacion / p.ordenes) : 0;
+    return {
+      client: cl,
+      data: { stats: {
+        total_amount: fac, total_orders: ord, total_units: uni,
+        total_visits: vis, conversion_rate: conv, ads_spend: ads,
+        prev: { total_amount: p.facturacion, total_orders: p.ordenes, total_visits: p.visitas },
+        change: {
+          amount: pct(fac, p.facturacion), orders: pct(ord, p.ordenes),
+          units: pct(uni, p.unidades), visits: pct(vis, p.visitas),
+          ticket: pct(ticket, prevTicket), conversion: pct(conv, prevConv),
+        },
+      }},
+      adsData: { summary: { sales: adsSales } },
+    };
+  });
+}
+
+function renderPanelDesdeCache() {
+  const data = _panelCache;
+  if (!data) return;
+  const results = panelCacheToResults(data);
+  window._panelResults = results;
+  window._panelRange   = { date_from: data.periodo.from, date_to: _panelHoy ? _panelHoy.dia : data.periodo.to };
+  if (!window._panelSort) window._panelSort = { col: 'revenue', asc: false };
+  renderPanelMetricasBar(data);
+  renderPanelConsultores(results, window._panelRange);
+}
+
+function renderPanelMetricasBar(data) {
+  const bar = document.getElementById('panelMetricasBar');
+  if (!bar) return;
+  const fmtDia = d => d ? dART(d).toLocaleDateString('es-AR', { day: '2-digit', month: 'short', timeZone: ART_TZ }) : '—';
+  const act = data.actualizado
+    ? new Date(data.actualizado).toLocaleString('es-AR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', timeZone: ART_TZ })
+    : '—';
+
+  let estado = `📸 Foto al cierre del ${fmtDia(data.periodo.to)} · guardada el ${act}`;
+  if (_panelHoy) {
+    const hora = _panelHoy.at.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', timeZone: ART_TZ });
+    estado += ` · <span style="color:#00e676">incluye hoy hasta las ${hora}</span>`;
+  } else if (data.periodo.incluia_hoy) {
+    estado += ` · <span style="color:#ff9100">el día de hoy no está incluido</span>`;
+  }
+
+  bar.innerHTML = `
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:14px;padding:9px 12px;background:var(--surface2);border-radius:8px">
+      <div style="flex:1;font-size:12px;color:var(--muted)">${estado}</div>
+      ${data.periodo.incluia_hoy && !_panelHoy
+        ? `<button id="btnPanelHoy" onclick="traerPanelHoy()" style="font-size:12px;padding:5px 12px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);cursor:pointer;font-family:var(--font-b)">⚡ Traer hoy</button>`
+        : ''}
+      <button onclick="loadPanelMetricas()" style="font-size:12px;padding:5px 12px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);cursor:pointer;font-family:var(--font-b)">🔄 Recargar foto</button>
+      <button onclick="loadPanelConsultoresVivo()" style="font-size:12px;padding:5px 12px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--muted);cursor:pointer;font-family:var(--font-b)" title="Recalcula todo contra la API de ML — tarda un minuto largo">🐢 Recalcular en vivo</button>
+    </div>`;
+}
+
+// Modo lento original: recalcula todo contra ML, cliente por cliente. Queda como escape
+// para verificar la foto o mirar un rango que el cron todavía no cerró.
+async function loadPanelConsultoresVivo() {
   const el = document.getElementById('panelConsultoresContent');
   if (!el) return;
   const role = getSessionRole();
   if (role === 'cliente') { el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">Sin acceso</div>'; return; }
   const clients = allClients.filter(c => c.active && c.ml_user_id);
   if (!clients.length) { el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">Sin clientes conectados</div>'; return; }
-  el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">\u23f3 Cargando datos de ' + clients.length + ' clientes...</div>';
+  el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">\u23f3 Recalculando en vivo ' + clients.length + ' clientes contra la API de ML...</div>';
+  const barVivo = document.getElementById('panelMetricasBar');
+  if (barVivo) barVivo.innerHTML = `<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:14px;padding:9px 12px;background:var(--surface2);border-radius:8px">
+    <div style="flex:1;font-size:12px;color:var(--muted)">🐢 Datos en vivo de ML (no es la foto del cron) · incluye el día de hoy</div>
+    <button onclick="loadPanelMetricas()" style="font-size:12px;padding:5px 12px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);cursor:pointer;font-family:var(--font-b)">📸 Volver a la foto</button>
+  </div>`;
   const range = getDateRange();
   const params = 'date_from=' + range.date_from + '&date_to=' + range.date_to;
   const results = await Promise.all(clients.map(async c => {
@@ -17173,7 +17305,7 @@ function renderPanelConsultores(results, range) {
   const rows = sorted.map(r => {
     if (r.empty) return `<tr style="border-bottom:1px solid var(--border)">
       <td style="padding:10px 14px;font-size:13px;font-weight:600">${r.client.name}</td>
-      <td colspan="7" style="padding:10px 14px;font-size:12px;color:var(--muted)">Sin datos — sincronizá primero</td>
+      <td colspan="7" style="padding:10px 14px;font-size:12px;color:var(--muted)">Sin datos guardados para el período</td>
     </tr>`;
     return `<tr style="border-bottom:1px solid var(--border)" onmouseover="this.style.background='var(--surface2)'" onmouseout="this.style.background=''">
       <td style="padding:10px 14px">
@@ -17249,6 +17381,7 @@ function switchPanelTab(tab) {
       btn.style.borderBottom = t === tab ? '2px solid var(--accent)' : '2px solid transparent';
     }
   });
+  if (tab === 'metricas' && !_panelCache) loadPanelMetricas();
   if (tab === 'bitacora') renderBitacoraShell();
   if (tab === 'mis-tareas') loadMisTareas();
 }

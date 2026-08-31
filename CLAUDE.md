@@ -66,6 +66,7 @@ This is a **single-file Node.js/Express backend** (`server.js`) + **single-file 
 | `reporte_financiero` | Cached financial report JSONB blobs |
 | `full_stock_config` | Suggested stock quantities per item |
 | `bitacora` | CRM-style task/note log per client |
+| `panel_metricas_diarias` | One row per client per day (revenue, orders, units, visits, ad spend/sales) written by the 00:00 ART cron; backs the fast Panel de Clientes view |
 
 ### API surface (grouped)
 
@@ -79,6 +80,7 @@ This is a **single-file Node.js/Express backend** (`server.js`) + **single-file 
 - **Reporte financiero (P&L)**: `GET /api/reporte/items-vendidos`, `GET /api/reporte/items-activos`, `POST /api/reporte/costos`, `GET|POST /api/reporte/gastos`, `GET /api/reporte/pyl`, `GET /api/reporte/devoluciones-analisis`, `GET /api/reporte/meses-disponibles`, `GET /api/reporte/comparar`
 - **Logística / Full Stock**: `GET /api/logistica`, `GET /api/logistica/full-stock`, `PUT /api/logistica/full-stock-global`, `PUT /api/logistica/full-stock/:item_id`
 - **Competencia**: `GET /api/competencia`, `GET /api/competencia/item`, `GET /api/competencia/categorias`, `GET /api/competencia/diagnostico`
+- **Panel de Clientes (vista rápida)**: `GET /api/panel/metricas`, `GET /api/panel/metricas/hoy`, `POST /api/panel/metricas/backfill`, `GET|POST /api/panel/metricas/cron`
 - **Other**: `GET /api/promociones`, `GET /api/preguntas`, `GET /api/devoluciones`, `GET /api/bitacora`, `POST /api/bitacora`, `PUT|DELETE /api/bitacora/:id`, `GET /api/proxy-ml`, `GET /api/item-fees`
 - **Debug**: `GET /api/debug/shipping|item|billing|order|app-token`
 
