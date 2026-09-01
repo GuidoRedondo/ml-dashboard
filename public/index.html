@@ -8033,13 +8033,6 @@ function getComisionPct(mlaId, lt, categoryId) {
 
 // ── CLIFF FINDER / UMBRALES ──────────────────────────────────────────────────
 
-const CARGO_FIJO_ESCALAS_FE = [
-  { desde: 0,     hasta: 15999, cargo: 1255 },
-  { desde: 16000, hasta: 23999, cargo: 2500 },
-  { desde: 24000, hasta: 32999, cargo: 3030 },
-  { desde: 33000, hasta: Infinity, cargo: 0 },
-];
-
 let _combosData = null;
 
 async function loadCombos(forceRefresh) {
@@ -9137,11 +9130,33 @@ async function onSimMLAChange(id) {
   }
 }
 
+// ── TARIFAS ML — cargo fijo por venta ───────────────────────────────────────
+// Las escalas NO se escriben acá: se piden a /api/tarifas, que las sirve desde la
+// única tabla del repo (backend_impacto_costos.js). Antes había tres copias sueltas
+// en este archivo, con montos que ni siquiera coincidían entre sí, y cada cambio de
+// tarifario de ML dejaba el simulador calculando con números viejos sin avisar.
+// Este literal es sólo el respaldo del primer render, antes de que llegue la
+// respuesta: son los valores de la banda de 3 kg del esquema vigente (1/9/2026).
+let _tarifasEscalas = [
+  { desde: 0,     hasta: 14999, cargo: 1450 },
+  { desde: 15000, hasta: 23999, cargo: 2860 },
+  { desde: 24000, hasta: 32999, cargo: 3470 },
+  { desde: 33000, hasta: null,  cargo: 0 },
+];
+
+async function loadTarifas() {
+  try {
+    const d = await apiCall('/api/tarifas');
+    if (Array.isArray(d?.escalas) && d.escalas.length) _tarifasEscalas = d.escalas;
+  } catch (e) { /* sin respuesta queda el respaldo de arriba */ }
+}
+
+// El cargo fijo real depende también del peso del paquete; acá se usa la banda de
+// referencia porque el simulador razona sobre un precio suelto, sin publicación.
 function cargoFijoML(precio) {
-  if (precio < 16000) return 1255;
-  if (precio < 24000) return 2500;
-  if (precio <= 33000) return 3030;
-  return 0;
+  const p = parseFloat(precio) || 0;
+  const e = _tarifasEscalas.find(x => p >= x.desde && (x.hasta == null || p <= x.hasta));
+  return e ? e.cargo : 0;
 }
 
 function calcularPrecioConCargoFijo(costoTotal, margenObj, comisionPct, iibb, tacos) {
@@ -9160,12 +9175,9 @@ function calcularPrecioConCargoFijo(costoTotal, margenObj, comisionPct, iibb, ta
   return precio;
 }
 
-function getCargoFijo(precio) {
-  if (precio >= 33000) return 0;
-  if (precio < 16000)  return 1272;
-  if (precio < 24000)  return 2538;
-  return 3040;
-}
+// Alias histórico. Tenía su propia tabla, con montos distintos de cargoFijoML: dos
+// pantallas mostraban un cargo fijo diferente para el mismo precio.
+function getCargoFijo(precio) { return cargoFijoML(precio); }
 
 function setSimModo(modo) {
   window._simModo = modo;
@@ -12015,6 +12027,10 @@ function applyPermissions() {
 }
 
 function initApp() {
+  // Escalas de cargo fijo vigentes. Se piden una sola vez por sesión: son las mismas
+  // para todos los clientes y hasta que llegan se usa el respaldo de _tarifasEscalas.
+  loadTarifas();
+
   // Initialize date pickers with default range (30 days)
   const savedRange = localStorage.getItem('ml_rangeDays');
   const days = savedRange ? parseInt(savedRange) : 30;

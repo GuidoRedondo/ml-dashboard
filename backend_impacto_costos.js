@@ -123,6 +123,32 @@ function costoMlVariable(precio, peso, esquema = 'sep') {
   return cargoFijo(precio, peso, esquema) + costoEnvio(precio, peso, esquema);
 }
 
+// La misma tabla de cargo fijo, expresada como escalas planas {desde, hasta, cargo}.
+// Es la forma que consumen el cliff finder, el detector de combos y el front, que
+// razonan por "escalón de precio" y no por peso. Los CORTES son idénticos en todas
+// las bandas de peso — lo único que cambia entre bandas son los montos —, así que el
+// índice de escala de un precio no depende del peso y se puede cachear por índice.
+function escalasCargoFijo(peso, esquema = 'sep') {
+  const e = ESQUEMAS[esquema];
+  const fila = e.cf[_banda(peso)];
+  const out = [];
+  let desde = 0;
+  e.cfCortes.forEach((corte, i) => {
+    out.push({ desde, hasta: corte, cargo: fila[i] });
+    desde = corte + 1;
+  });
+  // Desde el umbral de envío gratis no hay cargo fijo: lo que se paga es el envío.
+  out.push({ desde: UMBRAL_ENVIO_GRATIS, hasta: Infinity, cargo: 0 });
+  return out;
+}
+
+// Peso de una publicación de ML, en kg. Devuelve null si no está declarado — el
+// llamador decide si cae al default o si el dato faltante importa.
+function pesoDeItemKg(body) {
+  const g = _attrG(body, 'SELLER_PACKAGE_WEIGHT') ?? _attrG(body, 'PACKAGE_WEIGHT');
+  return (g != null && g > 0) ? g / 1000 : null;
+}
+
 // ── Zonas muertas ──
 // Rango de precios inmediatamente arriba de un umbral donde el vendedor recibe
 // MENOS plata que quedándose justo debajo: el salto de costo supera lo que gana
@@ -673,10 +699,15 @@ module.exports = (app, { pool, requireAuth, getClientToken, ML_API }) => {
   });
 };
 
-// Se exportan para poder testear la matemática sin levantar el server.
+// Se exportan para poder testear la matemática sin levantar el server, y porque este
+// archivo es la ÚNICA fuente de verdad de las tarifas: el cliff finder, el detector de
+// combos, el motor de promociones y el front consumen estas tablas en vez de tener su
+// propia copia. Si ML actualiza el tarifario, se toca acá y nada más.
 module.exports.tarifas = {
   cargoFijo, costoEnvio, costoMlVariable, zonasMuertas, clasificarPrecio,
   puntoIndiferencia, precioParaMargen, analizarCliente, analizarItem,
   costoTransaccional, proyectarCuenta, validarPyl,
-  UMBRAL_ENVIO_GRATIS, ENV_CORTE_BANDA, PESO_DEFAULT,
+  escalasCargoFijo, pesoDeItemKg,
+  UMBRAL_ENVIO_GRATIS, ENV_CORTE_BANDA, PESO_DEFAULT, BANDAS_PESO,
+  VIGENCIA: '2026-09-01',
 };

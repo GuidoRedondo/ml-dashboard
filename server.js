@@ -102,15 +102,22 @@ function ivaContenido(montoBruto, alicuotaPct = 21) {
 }
 
 // ── CLIFF FINDER — escalas de cargo fijo ML ──────────────────────────────────
-// Verificado contra /sites/MLA/listing_prices el 11-ago-2026. Si ML actualiza los
-// cargos, estos tres valores son lo único que hay que tocar.
-const CARGO_FIJO_ESCALAS = [
-  { desde: 0,     hasta: 15999, cargo: 1250 },
-  { desde: 16000, hasta: 23999, cargo: 2505 },
-  { desde: 24000, hasta: 32999, cargo: 3005 },
-  { desde: 33000, hasta: Infinity, cargo: 0 },
-];
-const ENVIO_FULL_33K = 7430;
+// Las tarifas NO viven acá: salen de las tablas de backend_impacto_costos.js, que
+// están indexadas por banda de peso y son la única copia del tarifario en el repo.
+// Antes había tres copias sueltas (esta, cargoFijoMLServer y las del front) con los
+// cortes viejos: al entrar el esquema del 1/9/2026 el primer tramo pasó de terminar
+// en $15.999 a terminar en $14.999 y las copias seguían cobrando de menos sin avisar.
+// Verificado contra /sites/MLA/listing_prices el 1-sep-2026 en 3 bandas de peso.
+const TARIFAS_ML = require('./backend_impacto_costos').tarifas;
+
+// Escalas al peso de referencia. Los CORTES son los mismos en toda banda de peso, así
+// que este array es válido para ubicar el escalón de cualquier ítem; los MONTOS son
+// los de 3 kg y sólo se usan donde el peso real no está disponible.
+const CARGO_FIJO_ESCALAS = TARIFAS_ML.escalasCargoFijo(TARIFAS_ML.PESO_DEFAULT);
+
+// Envío que paga el vendedor arriba de los $33.000. Depende del peso y del tramo de
+// precio, así que es una función y no una constante.
+const envioVendedor = (precio, pesoKg) => TARIFAS_ML.costoEnvio(precio, pesoKg);
 // Sobre el diferencial de precio que se resigna al bajar de escala se recupera la
 // comisión y el IVA que ya no se pagan. La comisión real varía por categoría
 // (13%–16,5%): se usa el techo, así el detector peca de mostrar de más y no de menos.
@@ -126,24 +133,31 @@ function getEscalaIdx(precio) {
 // deja neto positivo. El pass 1 lo usa para pedir el detalle sólo de los ítems que
 // podrían llegar a calificar: sin esto, un catálogo de 4.500 publicaciones dispara
 // miles de llamadas individuales a ML y el rate limit se come los resultados.
-function ventanaRentable(idx, isFull) {
+// Tanto el cargo fijo como el envío se cobran por banda de peso, así que la ventana de
+// un producto pesado es mucho más ancha que la de uno liviano: sin pasarle el peso, el
+// filtro dejaba afuera candidatos reales.
+function ventanaRentable(idx, isFull, pesoKg) {
   if (idx <= 0) return null;
-  const escalaActual = CARGO_FIJO_ESCALAS[idx];
-  const escalaTarget = CARGO_FIJO_ESCALAS[idx - 1];
-  const envio  = (isFull && idx === CARGO_FIJO_ESCALAS.length - 1) ? ENVIO_FULL_33K : 0;
+  const escalas      = TARIFAS_ML.escalasCargoFijo(pesoKg);
+  const escalaActual = escalas[idx];
+  const escalaTarget = escalas[idx - 1];
+  const envio  = (isFull && idx === escalas.length - 1)
+    ? envioVendedor(escalaActual.desde, pesoKg) : 0;
   const ahorro = (escalaActual.cargo - escalaTarget.cargo) + envio;
   if (ahorro <= 0) return null;
   // neto = -d * (1 - recupero) + ahorro  →  positivo mientras d < ahorro / (1 - recupero)
   return { min: escalaActual.desde, max: escalaTarget.hasta + ahorro / (1 - CLIFF_RECUPERO_PCT) };
 }
 
-function calcCliffOportunidad(precio, isFull) {
+function calcCliffOportunidad(precio, isFull, pesoKg) {
   const idxActual = getEscalaIdx(precio);
   if (idxActual <= 0) return null;
-  const escalaActual = CARGO_FIJO_ESCALAS[idxActual];
-  const escalaTarget = CARGO_FIJO_ESCALAS[idxActual - 1];
+  const escalas = TARIFAS_ML.escalasCargoFijo(pesoKg);
+  const escalaActual = escalas[idxActual];
+  const escalaTarget = escalas[idxActual - 1];
   const precioSugerido = escalaTarget.hasta;
-  const envioActual   = (isFull && idxActual === CARGO_FIJO_ESCALAS.length - 1) ? ENVIO_FULL_33K : 0;
+  const envioActual   = (isFull && idxActual === escalas.length - 1)
+    ? envioVendedor(precio, pesoKg) : 0;
   const diffPrecio    = precio - precioSugerido;
   const netoXVenta    = -diffPrecio
     + diffPrecio * CLIFF_COMISION_PCT
@@ -1493,7 +1507,8 @@ async function fetchShippingCosts(orders, headers) {
 // ── ATRIBUCIÓN DEL ENVÍO POR PRODUCTO ────────────────────────────────────────
 // Umbral de envío gratis de MLA: por encima de este precio el envío pasa a ser costo del
 // vendedor; por debajo lo paga el comprador (y NO debe imputarse al producto).
-const UMBRAL_ENVIO_GRATIS = 33000;
+// Sale de la tabla de tarifas, que es donde vive el tarifario completo.
+const UMBRAL_ENVIO_GRATIS = TARIFAS_ML.UMBRAL_ENVIO_GRATIS;
 //
 // Reparte el costo de envío entre los ítems agrupando por ENVÍO, no por orden: en un
 // carrito ML crea una orden por ítem, todas con el mismo shipping.id, y cobra UN solo
@@ -9404,6 +9419,23 @@ require('./backend_ml_skus')(app, { pool, requireAuth, getClientToken });
 // (backend_impacto_costos.js). Monta GET /api/impacto-costos.
 require('./backend_impacto_costos')(app, { pool, requireAuth, getClientToken, ML_API });
 
+// GET /api/tarifas — escalas vigentes de cargo fijo, para que el front no tenga su
+// propia copia. Antes las tenía escritas a mano en tres lugares distintos (y encima
+// con montos que no coincidían entre sí), así que cada cambio de tarifario de ML
+// dejaba el simulador de precios calculando con números viejos sin que nada avisara.
+app.get('/api/tarifas', requireAuth, (req, res) => {
+  const pesoKg = parseFloat(req.query.peso_kg);
+  res.json({
+    vigencia: TARIFAS_ML.VIGENCIA,
+    peso_default_kg: TARIFAS_ML.PESO_DEFAULT,
+    umbral_envio_gratis: TARIFAS_ML.UMBRAL_ENVIO_GRATIS,
+    // Escalas a la banda pedida; sin peso, a la de referencia. Los cortes son iguales
+    // para toda banda, sólo cambian los montos.
+    escalas: TARIFAS_ML.escalasCargoFijo(pesoKg > 0 ? pesoKg : undefined)
+      .map(e => ({ desde: e.desde, hasta: e.hasta === Infinity ? null : e.hasta, cargo: e.cargo })),
+  });
+});
+
 app.get('/api/competencia/categorias', requireAuth, async (req, res) => {
   try {
     const { client_id } = req.query;
@@ -11870,12 +11902,12 @@ const PROMO_CAND_TTL   = 2 * 60 * 60 * 1000;
 const PROMO_MAX_FEES   = 1200;
 const PROMO_ESTADOS    = new Set(['started', 'pending']);
 
-// Cargo fijo por venta de ML — mismo escalón que usa el front (cargoFijoML)
-function cargoFijoMLServer(precio) {
-  if (precio < 16000) return 1255;
-  if (precio < 24000) return 2500;
-  if (precio <= 33000) return 3030;
-  return 0;
+// Cargo fijo por venta de ML. Sale de la tabla única de tarifas, indexada por peso:
+// `pesoGr` es el billable_weight del ítem en gramos (lo que ya guarda `meta`); sin él
+// cae a la banda de 3 kg, que es lo que hacía esta función cuando tenía los tres
+// escalones planos escritos a mano.
+function cargoFijoMLServer(precio, pesoGr) {
+  return TARIFAS_ML.cargoFijo(precio, pesoGr > 0 ? pesoGr / 1000 : undefined);
 }
 
 // Comisión y envío del vendedor AL PRECIO DE CAMPAÑA. No alcanza con escalar los del
@@ -11927,8 +11959,8 @@ async function feesAlPrecio(item, precio, headers, cache, contador) {
 
 // Margen de contribución por unidad al precio de campaña. Misma fórmula que
 // calcularMargenRealPorMla, sin publicidad (no se puede imputar a una venta que no pasó).
-function margenEnPromo({ precio, costo, alic, comPct, envio, esMonotrib, tasaIibb }) {
-  const com   = Math.round(precio * (comPct || 0) / 100) + cargoFijoMLServer(precio);
+function margenEnPromo({ precio, costo, alic, comPct, envio, esMonotrib, tasaIibb, pesoGr }) {
+  const com   = Math.round(precio * (comPct || 0) / 100) + cargoFijoMLServer(precio, pesoGr);
   const env   = envio || 0;
   const ivaV  = esMonotrib ? 0 : ivaContenido(precio, alic);
   const ivaC  = esMonotrib ? 0 : ivaContenido(costo, alic) + ivaContenido(com + env, IVA_SERVICIOS_PCT);
@@ -12055,7 +12087,10 @@ async function analizarCandidatosPromo(clientId) {
             listing_type_id: x.listing_type_id, category_id: x.category_id,
             logistic_type: x.shipping?.logistic_type || 'cross_docking',
             shipping_mode: x.shipping?.mode || 'me2',
-            peso: x.shipping?.dimensions?.weight || 500,
+            // En gramos. null cuando ML no lo declara: el cargo fijo cae a la banda de
+            // 3 kg (el default de la tabla) en vez de asumir 500 g, que es la banda mas
+            // barata y subestimaba el costo de todo producto sin peso cargado.
+            peso: x.shipping?.dimensions?.weight || null,
           };
         });
       } catch(e) {}
@@ -12094,7 +12129,7 @@ async function analizarCandidatosPromo(clientId) {
       if (f0.com_pct != null) {
         margenHoy = margenEnPromo({
           precio: m.precio_actual, costo: costo[mla], alic: alic[mla] ?? 21,
-          comPct: f0.com_pct, envio: f0.envio, esMonotrib, tasaIibb,
+          comPct: f0.com_pct, envio: f0.envio, esMonotrib, tasaIibb, pesoGr: m.peso,
         });
       }
     }
@@ -12121,7 +12156,7 @@ async function analizarCandidatosPromo(clientId) {
         if (f.com_pct != null) {
           Object.assign(base, { com_pct: f.com_pct }, margenEnPromo({
             precio, costo: costo[mla], alic: alic[mla] ?? 21,
-            comPct: f.com_pct, envio: f.envio, esMonotrib, tasaIibb,
+            comPct: f.com_pct, envio: f.envio, esMonotrib, tasaIibb, pesoGr: m.peso,
           }));
           if (margenHoy) {
             base.resigna_pesos = Math.round(margenHoy.margen_pesos - base.margen_pesos);
@@ -12283,7 +12318,7 @@ app.post('/api/promociones/preparar-excel', requireAuth, async (req, res) => {
                 listing_type_id: x.listing_type_id, category_id: x.category_id,
                 logistic_type: x.shipping?.logistic_type || 'cross_docking',
                 shipping_mode: x.shipping?.mode || 'me2',
-                peso: x.shipping?.dimensions?.weight || 500,
+                peso: x.shipping?.dimensions?.weight || null,   // gramos; null -> banda de 3 kg
               };
             });
           } catch (_) {}
@@ -12327,7 +12362,7 @@ app.post('/api/promociones/preparar-excel', requireAuth, async (req, res) => {
       if (enMano == null) {
         const fee = (feesPorItem[itemId] || {})[getEscalaIdx(precio)];
         if (!fee || fee.com_pct == null) return null;   // sin comisión conocida no se inventa
-        enMano = precio - (Math.round(precio * fee.com_pct / 100) + cargoFijoMLServer(precio)) - (fee.envio || 0);
+        enMano = precio - (Math.round(precio * fee.com_pct / 100) + cargoFijoMLServer(precio, meta[itemId]?.peso)) - (fee.envio || 0);
       }
       const a = alic[itemId] ?? 21;
       // El IVA crédito de los servicios de ML se toma sobre lo que ML efectivamente
@@ -15720,15 +15755,16 @@ app.delete('/api/informe-mensual/:id', requireAuth, requireAdmin, async (req, re
 //     Es la señal más fuerte, pero escasea — en REDFISHOK sólo el 7% de los carritos
 //     lleva más de un producto y la dupla más repetida apareció 3 veces en 3 meses.
 //   · misma categoría entre productos con rotación: cubre el resto del catálogo.
-function cargoFijoDe(precio) {
-  const idx = getEscalaIdx(precio);
-  return idx >= 0 ? CARGO_FIJO_ESCALAS[idx].cargo : 0;
-}
+const cargoFijoDe = (precio, pesoKg) => TARIFAS_ML.cargoFijo(precio, pesoKg);
 
 function evaluarCombo(a, b) {
   const precioCombo = a.precio + b.precio;
-  const cargoSeparado = cargoFijoDe(a.precio) + cargoFijoDe(b.precio);
-  const cargoCombo    = cargoFijoDe(precioCombo);
+  // El paquete del combo pesa lo que pesan los dos juntos. Si a alguno le falta el peso
+  // declarado, la tabla cae al default de 3 kg para ese producto.
+  const pesoA = a.peso_kg, pesoB = b.peso_kg;
+  const pesoCombo = (pesoA ?? TARIFAS_ML.PESO_DEFAULT) + (pesoB ?? TARIFAS_ML.PESO_DEFAULT);
+  const cargoSeparado = cargoFijoDe(a.precio, pesoA) + cargoFijoDe(b.precio, pesoB);
+  const cargoCombo    = cargoFijoDe(precioCombo, pesoCombo);
   const ahorroCargo   = cargoSeparado - cargoCombo;
 
   // Arriba de $33.000 el envío deja de estar bonificado y lo paga el vendedor. Si los dos
@@ -15738,10 +15774,13 @@ function evaluarCombo(a, b) {
   const comboArriba = precioCombo >= UMBRAL_ENVIO_GRATIS;
   let efectoEnvio = 0, avisoEnvio = null;
   if (comboArriba && !aArriba && !bArriba) {
-    efectoEnvio = -ENVIO_FULL_33K;
+    efectoEnvio = -envioVendedor(precioCombo, pesoCombo);
     avisoEnvio  = 'El combo cruza los $33.000: el envío pasa a pagarlo el vendedor';
   } else if (aArriba && bArriba) {
-    efectoEnvio = ENVIO_FULL_33K;
+    // Se ahorra un envío, pero el que queda es el del paquete combinado: más pesado y
+    // más caro que cualquiera de los dos por separado.
+    efectoEnvio = envioVendedor(a.precio, pesoA) + envioVendedor(b.precio, pesoB)
+                - envioVendedor(precioCombo, pesoCombo);
     avisoEnvio  = 'Los dos ya pagan envío por separado: el combo paga uno solo';
   }
 
@@ -15823,7 +15862,7 @@ app.get('/api/analisis/combos', requireAuth, async (req, res) => {
     for (let i = 0; i < universo.length; i += 20) {
       const batch = universo.slice(i, i + 20);
       const data = await fetch(
-        `${ML_API}/items?ids=${batch.join(',')}&attributes=id,title,price,available_quantity,category_id,shipping,permalink,thumbnail,status`,
+        `${ML_API}/items?ids=${batch.join(',')}&attributes=id,title,price,available_quantity,category_id,shipping,permalink,thumbnail,status,attributes&include_attributes=all`,
         { headers }
       ).then(r => r.json()).catch(() => []);
       (Array.isArray(data) ? data : []).forEach(r => {
@@ -15834,6 +15873,9 @@ app.get('/api/analisis/combos', requireAuth, async (req, res) => {
           stock: b.available_quantity || 0, categoria: b.category_id,
           permalink: b.permalink, thumbnail: (b.thumbnail || '').replace('http://', 'https://'),
           activo: b.status === 'active', units: unidades[b.id] || 0, costo_unit: null,
+          // El combo va en un solo paquete: su peso es la suma de los dos, y tanto el
+          // cargo fijo como el envío se cobran por banda de peso.
+          peso_kg: TARIFAS_ML.pesoDeItemKg(b),
         };
       });
     }
@@ -15950,9 +15992,9 @@ app.get('/api/analisis/umbrales', requireAuth, async (req, res) => {
     //    promociones, así que se acepta el ítem si CUALQUIER precio de ese rango cae
     //    en la ventana rentable de su escala.
     const CLIFF_PISO_DESCUENTO = 0.70;
-    const esCandidato = (precio, isFull) => {
+    const esCandidato = (precio, isFull, pesoKg) => {
       for (let idx = 1; idx < CARGO_FIJO_ESCALAS.length; idx++) {
-        const v = ventanaRentable(idx, isFull);
+        const v = ventanaRentable(idx, isFull, pesoKg);
         if (v && precio >= v.min && precio * CLIFF_PISO_DESCUENTO <= v.max) return true;
       }
       return false;
@@ -15966,7 +16008,7 @@ app.get('/api/analisis/umbrales', requireAuth, async (req, res) => {
     for (let g = 0; g < pass1Batches.length; g += PASS1_CONCURRENCY) {
       await Promise.all(pass1Batches.slice(g, g + PASS1_CONCURRENCY).map(async batch => {
         const data = await fetch(
-          `${ML_API}/items?ids=${batch.join(',')}&attributes=id,price,shipping,title,permalink,listing_type_id`,
+          `${ML_API}/items?ids=${batch.join(',')}&attributes=id,price,shipping,title,permalink,listing_type_id,attributes&include_attributes=all`,
           { headers }
         ).then(r => r.json()).catch(() => null);
         if (!Array.isArray(data)) { batchesFallidos++; return; }
@@ -15975,8 +16017,11 @@ app.get('/api/analisis/umbrales', requireAuth, async (req, res) => {
           const b = r.body;
           const precio = parseFloat(b.price) || 0;
           const isFull = b.shipping?.logistic_type === 'fulfillment';
-          if (esCandidato(precio, isFull)) {
-            candidatos.push({ id: b.id, precioLista: precio, isFull,
+          // El peso viene en este mismo batch: sin él la ventana se calcula sobre la
+          // banda de 3 kg y los productos pesados —los que más ahorran— no entran.
+          const pesoKg = TARIFAS_ML.pesoDeItemKg(b);
+          if (esCandidato(precio, isFull, pesoKg)) {
+            candidatos.push({ id: b.id, precioLista: precio, isFull, pesoKg,
               title: b.title, permalink: b.permalink, logistica: b.shipping?.logistic_type || 'unknown' });
           }
         });
@@ -16015,7 +16060,10 @@ app.get('/api/analisis/umbrales', requireAuth, async (req, res) => {
           const precioLista    = (origPrice && origPrice > precio) ? origPrice : basePrice;
           const tieneDescuento = precio < precioLista;
           const isFull  = b.shipping?.logistic_type === 'fulfillment';
-          const op = calcCliffOportunidad(precio, isFull);
+          // El cargo fijo y el envío se indexan por peso: con el default de 3 kg un
+          // producto pesado devolvía un ahorro bastante menor al real.
+          const pesoKg  = TARIFAS_ML.pesoDeItemKg(b) ?? c.pesoKg;
+          const op = calcCliffOportunidad(precio, isFull, pesoKg);
           if (!op) return;
           oportunidades.push({
             id:              b.id,
