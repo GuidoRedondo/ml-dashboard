@@ -89,6 +89,23 @@ const ENV_ACTUAL = [
   [95800, 102660], [104570, 112060],
 ];
 
+// OJO — el envío de tabla es PRECIO DE LISTA, no lo que ML termina cobrando.
+// Medido el 2/9/2026 contra 40 envíos reales (`/shipments/{id}/costs` → senders[0].cost)
+// de ventas del 1 y 2 de septiembre: sólo 8 coinciden exacto con esta tabla, y el resto
+// casi siempre paga MÁS. Dos causas identificadas:
+//
+//   · PESO VOLUMÉTRICO. ML factura por el mayor entre el peso declarado y el del bulto.
+//     GC Iluminación declara 2 kg, el paquete da 5,5 kg volumétricos y ML cobra $14.190
+//     (la banda de 10 kg) contra los $8.790 que dice la tabla. Casi ninguna publicación
+//     declara dimensiones, así que el desvío no se ve venir.
+//   · TARIFAS NEGOCIADAS. Aquamarket paga $6.291 donde la tabla dice $15.190.
+//
+// El P&L no usa esta tabla: toma el envío real de cada orden (repartirEnvioPorItem). Acá
+// se usa para PROYECTAR sobre publicaciones que todavía no vendieron — cliff finder,
+// combos, promos —, donde no hay otro dato. Tratar el resultado como orden de magnitud.
+//
+// La tabla del esquema anterior (ENV_ACTUAL) no explica NINGUNO de esos 40 envíos, así
+// que la que rige desde el 1/9/2026 es ésta.
 const ENV_SEP = [
   [6190, 6790], [6790, 7290], [7790, 8290], [7990, 8590], [8290, 8790],
   [8890, 9590], [9790, 10890], [10790, 11890], [11790, 13090],
