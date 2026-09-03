@@ -6020,9 +6020,10 @@ async function clearSkuManual() {
 function copyMLA(el, id) {
   navigator.clipboard.writeText(id).then(() => {
     const orig = el.textContent;
+    const origColor = el.style.color || '';
     el.textContent = '✓ copiado';
     el.style.color = '#00e676';
-    setTimeout(() => { el.textContent = orig; el.style.color = 'var(--muted)'; }, 1500);
+    setTimeout(() => { el.textContent = orig; el.style.color = origColor; }, 1500);
   }).catch(() => {
     // fallback
     const ta = document.createElement('textarea');
@@ -6964,9 +6965,9 @@ function renderPerfPublicaciones() {
     return `<tr style="border-bottom:1px solid var(--border);${idx%2===0?'background:rgba(255,255,255,.015)':''}">
       <td style="padding:7px 6px;text-align:center;cursor:pointer;font-size:16px;color:${starColor}" title="${seg ? 'Quitar seguimiento' : 'Seguir esta publicación'}" onclick="toggleSeguimiento('${p.id}','${p.title.replace(/'/g,"\\'")}',${clientId})">${star}</td>
       <td style="padding:7px 10px;font-size:11px;white-space:nowrap">
-        <a href="https://articulo.mercadolibre.com.ar/${p.id}" target="_blank" style="color:var(--accent);text-decoration:none;font-weight:600">${p.id}</a>
+        <span style="color:var(--accent);font-weight:600;cursor:pointer" title="Click para copiar" onclick="copyMLA(this,'${p.id}')">${p.id}</span>
       </td>
-      <td style="padding:7px 10px;font-size:12px;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${p.title}">${p.title}</td>
+      <td style="padding:7px 10px;font-size:12px;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${p.title}"><a href="https://articulo.mercadolibre.com.ar/${p.id.replace(/^MLA(\d)/, 'MLA-$1')}" target="_blank" rel="noopener" style="color:var(--text);text-decoration:none" title="Abrir en ML">${p.title}</a></td>
       <td style="padding:7px 10px;text-align:right;font-size:12px;font-weight:700;color:#00e676">${(p.units||0).toLocaleString('es-AR')}</td>
       <td style="padding:7px 10px;text-align:right;font-size:12px;font-weight:700;color:var(--accent)">${fmt(p.revenue||0)}</td>
       <td style="padding:7px 10px;text-align:right;font-size:12px;font-weight:700;color:${trendColor}">${trendStr}</td>
