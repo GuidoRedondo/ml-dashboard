@@ -269,7 +269,7 @@ const _m = n => '$' + Math.round(n).toLocaleString('es-AR');
 
 // Qué hacer con el precio de una publicación. null si no tiene el costo cargado:
 // sin CMV no hay margen que defender.
-function planPorItem(a, peso) {
+function planPorItem(a, peso, pisoMargen) {
   if (!a.tiene_costo || a.margen_actual == null) return null;
 
   const precio = a.precio, cmv = a.cmv_unit, com = a.comision_pct;
@@ -299,6 +299,29 @@ function planPorItem(a, peso) {
       margen: _margen(pBaja, cmv, com, peso, 'sep'),
       utilidad_unit: pBaja * (1 - com) - costoMlVariable(pBaja, peso, 'sep') - cmv,
     };
+  }
+
+  // Camino C — llevarlo al piso de margen del cliente.
+  //
+  // Los dos caminos de arriba defienden el margen que la publicación tenía ANTES del
+  // aumento, y eso alcanza mientras ese margen fuera sano. Cuando ya era de 0,3% —el
+  // caso de casi todas las que caen a pérdida— restaurarlo no arregla nada: el 1/9 no
+  // las rompió, las delató. Esta opción dice a cuánto hay que ponerlas para que dejen
+  // plata de verdad, medida contra el piso configurado en clients.piso_cm_promo_pct.
+  //
+  // Se calcula solo cuando el margen de hoy está por debajo del piso; si ya lo supera,
+  // el camino A es el mismo número y repetirlo confunde.
+  let opcionPiso = null;
+  if (pisoMargen != null && mObj < pisoMargen) {
+    const pPiso = precioParaMargen(cmv, com, pisoMargen, peso, 'sep');
+    if (pPiso && pPiso > precio) {
+      opcionPiso = {
+        precio: _roundPy(pPiso),
+        delta: _roundPy(pPiso - precio),
+        delta_pct: pPiso / precio - 1,
+        margen: _margen(pPiso, cmv, com, peso, 'sep'),
+      };
+    }
   }
 
   const utilActual = precio * (1 - com) - a.costo_sep - cmv;
@@ -331,7 +354,7 @@ function planPorItem(a, peso) {
   }
 
   return { margen_objetivo: mObj, subir: opcionSubir, bajar: opcionBajar,
-           recomendacion, motivo, utilidad_unit_actual: utilActual };
+           piso: opcionPiso, recomendacion, motivo, utilidad_unit_actual: utilActual };
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -453,7 +476,7 @@ function costoTransaccional(res) {
   return out;
 }
 
-function analizarCliente(items, pesos) {
+function analizarCliente(items, pesos, pisoMargen) {
   const P = pesos || {};
 
   // Fallback del cliente: mediana de las comisiones que caen en rango. Se calcula
@@ -468,7 +491,7 @@ function analizarCliente(items, pesos) {
   for (const it of items) {
     const peso = P[it.mla_id];
     const a = analizarItem(it, peso, fallbackCom);
-    if (a) { a.plan = planPorItem(a, peso); analizados.push(a); }
+    if (a) { a.plan = planPorItem(a, peso, pisoMargen); analizados.push(a); }
   }
 
   const facturacion = analizados.reduce((s, a) => s + a.revenue, 0);
@@ -669,12 +692,17 @@ module.exports = (app, { pool, requireAuth, getClientToken, ML_API }) => {
         ymdLocal(new Date(hoy.getTime() - 29 * 24 * 3600 * 1000));
 
       const cliRes = await pool.query(
-        'SELECT name, condicion_iva FROM clients WHERE id=$1', [client_id]);
+        'SELECT name, condicion_iva, piso_cm_promo_pct FROM clients WHERE id=$1', [client_id]);
       if (!cliRes.rows.length) return res.status(404).json({ error: 'Cliente no encontrado' });
       const cliente = cliRes.rows[0];
       // La skill asume Responsable Inscripto para todos. Acá sale del dato real: para
       // un monotributista no hay crédito fiscal y el golpe es 21% mayor.
       const esRi = (cliente.condicion_iva || '').toLowerCase() !== 'monotributista';
+
+      // Piso de margen del cliente, el mismo que gobierna las promos. Sin configurar
+      // se usa 10%, que es el default con el que se dieron de alta las cuentas.
+      const pisoPct = parseFloat(cliente.piso_cm_promo_pct);
+      const pisoMargen = (Number.isFinite(pisoPct) && pisoPct > 0 ? pisoPct : 10) / 100;
 
       // 1) Ventas del período
       const vend = await self(req,
@@ -694,7 +722,7 @@ module.exports = (app, { pool, requireAuth, getClientToken, ML_API }) => {
       }
 
       // 3) Análisis publicación por publicación
-      const r = analizarCliente(items, pesos);
+      const r = analizarCliente(items, pesos, pisoMargen);
 
       // 4) Rentabilidad de la cuenta — solo si el P&L pasa la validación
       const { pyl, ok: pylOk, msg: pylMsg } =
@@ -705,6 +733,7 @@ module.exports = (app, { pool, requireAuth, getClientToken, ML_API }) => {
       r.periodo = { desde: dateFrom, hasta: dateTo };
       r.cliente = cliente.name;
       r.es_ri = esRi;
+      r.piso_margen = pisoMargen;
       r.peso_default_kg = PESO_DEFAULT;
       r.vigencia = '2026-09-01';
 
