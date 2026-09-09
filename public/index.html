@@ -23367,16 +23367,24 @@ function renderImpactoCostos(r) {
 
   const bloqueNeg = tabla(
     `Pasan a perder plata el 1/9 (${r.caen_negativo.length})`,
-    'Hoy dejan margen positivo. Con las tarifas nuevas, no.',
-    r.caen_negativo.slice(0, 25).map(a => `<tr>
+    'Hoy dejan margen positivo. Con las tarifas nuevas, no. El precio sugerido devuelve ' +
+    'al margen de hoy — y ojo, cuando el margen de hoy ya era casi cero, volver ahí no alcanza.',
+    r.caen_negativo.slice(0, 25).map(a => {
+      const z = a.zona_muerta, p = a.plan || {};
+      const salida = z
+        ? `bajar a <b>${$(z.piso_sugerido)}</b> (margen ${pc(p.bajar ? p.bajar.margen : null)})`
+        : (p.subir ? `<b>${$(p.subir.precio)}</b> (+${pc(p.subir.delta_pct)})` : '—');
+      return `<tr>
       <td style="font-family:monospace;font-size:11px">${a.mla_id}</td>
       <td style="font-size:12px">${(a.title || '').slice(0, 58)}</td>
       <td style="text-align:right">${$(a.precio)}</td>
       <td style="text-align:right">${pc(a.margen_actual)}</td>
       <td style="text-align:right;color:${ROJO};font-weight:600">${pc(a.margen_sep)}</td>
+      <td style="font-size:11px">${salida}</td>
       <td style="text-align:right;color:${ROJO}">${$(a.delta_total)}</td>
-    </tr>`),
-    ['MLA', 'Publicación', 'Precio', 'Margen hoy', 'Margen 1/9', 'Sobrecosto/mes']);
+    </tr>`;
+    }),
+    ['MLA', 'Publicación', 'Precio', 'Margen hoy', 'Margen 1/9', 'Precio sugerido', 'Sobrecosto/mes']);
 
   const bloqueSubir = tabla(
     `Hay que subirles el precio (${r.a_subir.length})`,
