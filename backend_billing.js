@@ -425,7 +425,7 @@ module.exports = (app, { pool, requireAuth, requireConsultor, requireAdmin, getC
    * cargos siguen entrando después de que el período abre, así que el mes en curso
    * hay que refrescarlo todos los días.
    */
-  async function syncCliente(clientId, { periodos = null, meses = 2 } = {}) {
+  async function syncCliente(clientId, { periodos = null, meses = 2, forzar = false } = {}) {
     const token = await getClientToken(clientId);
     if (!token) throw new Error('cliente sin token de ML');
 
@@ -434,8 +434,28 @@ module.exports = (app, { pool, requireAuth, requireConsultor, requireAdmin, getC
       const disponibles = await fetchPeriodos(ML_API, token);
       keys = disponibles.slice(0, meses).map(p => p.key);
     }
+
+    // Un backfill largo son horas de cola y no sobrevive a un reinicio del server
+    // (un deploy de Railway alcanza). Para que relanzarlo retome donde quedó en vez
+    // de rebajar todo, se saltean los períodos ya completos. Los DOS más recientes
+    // se refrescan siempre: el actual está abierto y al anterior le siguen entrando
+    // cargos hasta que cierra.
+    let aBajar = keys;
+    if (!forzar && keys.length > 2) {
+      const hechos = await pool.query(
+        `SELECT periodo_key::text AS key FROM billing_sync
+          WHERE client_id=$1 AND completo=TRUE AND periodo_key = ANY($2::date[])`,
+        [clientId, keys]
+      );
+      const completos = new Set(hechos.rows.map(r => r.key));
+      const frescos = new Set(keys.slice(0, 2));
+      aBajar = keys.filter(k => frescos.has(k) || !completos.has(k));
+    }
+
     const out = [];
-    for (const k of keys) out.push(await syncPeriodo(pool, ML_API, token, clientId, k));
+    for (const k of aBajar) out.push(await syncPeriodo(pool, ML_API, token, clientId, k));
+    const salteados = keys.length - aBajar.length;
+    if (salteados) out.push({ salteados, motivo: 'ya estaban completos' });
     return out;
   }
 
