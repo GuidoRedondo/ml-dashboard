@@ -117,8 +117,46 @@ These are hard limits — do not attempt workarounds or assume they'll change:
 
 - **No refresh tokens** are issued. Tokens must be renewed manually via the OAuth flow.
 - **Category search** (`/sites/MLA/categories` search endpoint) returns `403 Forbidden`.
-- **Billing endpoints** for FULL/FLEX shipments are not available.
-- **Taxes cannot be separated from commissions** in API responses — the figures are always combined.
+
+### Billing API — the real invoiced charges (verified 10/9/2026)
+
+This supersedes the old notes that said billing was unavailable and that taxes could not be
+separated from commissions. **Both are false**: the billing detail is the actual invoice ML
+issues, line by line, and taxes come as their own lines.
+
+Two endpoints, both requiring the header **`api-version: 2`** (the proxy takes `?api_version=2`):
+
+| Endpoint | Returns |
+|---|---|
+| `/billing/integration/monthly/periods?group=ML&document_type=BILL` | The last ~13 billing periods, each with its `key` (`YYYY-MM-01`), date range, amount and `period_status` |
+| `/billing/integration/periods/key/{key}/group/ML/details?document_type=BILL&offset=&limit=` | Every charge line of that period |
+
+Each detail line carries `charge_info` (`transaction_detail`, `detail_sub_type`, `detail_amount`,
+`status`), `discount_info` (`charge_amount_without_discount`, `discount_amount`,
+`applied_percentage`), and — when the charge belongs to a sale — `sales_info` (order_id),
+`shipping_info` and `items_info` (`item_id`, `inventory_id`, `item_price`).
+
+**FULL operating costs** arrive as their own `detail_sub_type` codes:
+
+| Code | Concept | Attributable to an item? |
+|---|---|---|
+| `CFWA` | Cargo por servicio de almacenamiento Full | No — account-level |
+| `CFBA` | Cargo por stock antiguo en Full | **Yes** (`item_id` + `inventory_id`) |
+| `CFRS` | Cargo por retiro de stock Full | **Yes** (`item_id` + `inventory_id`) |
+| `CFCB` | Cargo por servicio de colecta Full | No — account-level |
+| `CPY` | Cargo por diferencias en medidas y peso del paquete | Yes |
+
+Other relevant codes: `CVFV` (cargo por vender = commission), `CVFF` (costo por unidad vendida =
+fixed fee), `CVFN` (costo por ofrecer cuotas), `CXD` / `CFF` (envíos), `PADS` (publicidad),
+`CDSD` (devolución), `CESM` (Mi Página), `CIVA` / `CIRE` / `IB**` (IVA and per-province IIBB
+withholdings, each on its own line). `B****` codes are the matching bonuses/reversals.
+
+**Rate limit: 5 requests per minute — per app, not per client account.** Measured: six
+consecutive calls across six different clients, the sixth got `429`. Any backfill across the
+whole portfolio must be a slow serial job (~13s between pages), never a parallel fan-out.
+
+`total` is only populated on the first page; later pages return `total: 0`. Latch it once or the
+pagination loop stops early. Max page size confirmed at `limit=1000`.
 
 ### Known pending feature
 
