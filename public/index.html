@@ -15968,8 +15968,9 @@ async function ejecutarComparacion() {
                                    pylB.egresos_ml?.envio_total ?? pylB.egresos_ml?.envio_vendedor),
         publicidad:        diff_fn(pylA.egresos_ml?.publicidad,   pylB.egresos_ml?.publicidad),
         reembolsos:        diff_fn(pylA.egresos_ml?.reembolsos,   pylB.egresos_ml?.reembolsos),
+        costos_full:       diff_fn(pylA.egresos_ml?.costos_full,  pylB.egresos_ml?.costos_full),
         iva_neto:          diff_fn(pylA.iva?.neto,                pylB.iva?.neto),
-        iibb:              diff_fn(pylA.egresos_ml?.iibb_estimado, pylB.egresos_ml?.iibb_estimado),
+        iibb:              diff_fn(iibbPyl(pylA),                 iibbPyl(pylB)),
         total_egresos_ml:  diff_fn(pylA.egresos_ml?.total,        pylB.egresos_ml?.total),
         resultado_neto:    diff_fn(pylA.resultado_neto_ml,         pylB.resultado_neto_ml),
         cmv:               diff_fn(pylA.cmv?.total,               pylB.cmv?.total),
@@ -16105,7 +16106,12 @@ function renderComparacion(data, mes_a, mes_b) {
   const ivaNetoA = a?.egresos_ml?.iva_neto ?? a?.iva?.neto;
   const ivaNetoB = b?.egresos_ml?.iva_neto ?? b?.iva?.neto;
   const iibbTasa = (+a?.egresos_ml?.iibb_tasa_pct) || (+b?.egresos_ml?.iibb_tasa_pct) || 0;
-  const iibbLbl  = `IIBB estimado${iibbTasa ? ` (${iibbTasa}%)` : ''}`;
+  // Si cualquiera de los dos meses ya tiene las percepciones facturadas, la fila deja
+  // de llamarse "estimado": mezclar los dos criterios bajo la etiqueta vieja haría
+  // pensar que la variación entre meses es del negocio y no del cambio de fuente.
+  const iibbLbl  = (a?.egresos_ml?.iibb_fuente === 'facturado' || b?.egresos_ml?.iibb_fuente === 'facturado')
+    ? 'IIBB (percepciones facturadas)'
+    : `IIBB estimado${iibbTasa ? ` (${iibbTasa}%)` : ''}`;
   const hay = (x, y) => (parseFloat(x)||0) !== 0 || (parseFloat(y)||0) !== 0;
 
   // Margen de contribución % = Contribución Marginal / Facturación
@@ -16132,10 +16138,11 @@ function renderComparacion(data, mes_a, mes_b) {
             ${row('Comisión ML',              a?.egresos_ml?.comision,      b?.egresos_ml?.comision,      diff?.comision,   true, false, false, factA, factB)}
             ${row('Costo envío vendedor',     envioA,                       envioB,                       diff?.envio_total, true, false, false, factA, factB)}
             ${row('Publicidad (PADS)',        a?.egresos_ml?.publicidad,    b?.egresos_ml?.publicidad,    diff?.publicidad, true, false, false, factA, factB)}
+            ${hay(a?.egresos_ml?.costos_full, b?.egresos_ml?.costos_full) ? row('Costos FULL', a?.egresos_ml?.costos_full, b?.egresos_ml?.costos_full, diff?.costos_full, true, false, false, factA, factB) : ''}
             ${hay(a?.egresos_ml?.impuestos, b?.egresos_ml?.impuestos) ? row('Impuestos / retenciones', a?.egresos_ml?.impuestos, b?.egresos_ml?.impuestos, diff?.imp_operacion, true, false, false, factA, factB) : ''}
             ${hay(a?.egresos_ml?.reembolsos, b?.egresos_ml?.reembolsos) ? row('Reembolsos', a?.egresos_ml?.reembolsos, b?.egresos_ml?.reembolsos, diff?.reembolsos, true, false, false, factA, factB) : ''}
             ${hay(ivaNetoA, ivaNetoB) ? row('IVA neto a pagar', ivaNetoA, ivaNetoB, diff?.iva_neto, true, false, false, factA, factB) : ''}
-            ${hay(a?.egresos_ml?.iibb_estimado, b?.egresos_ml?.iibb_estimado) ? row(iibbLbl, a?.egresos_ml?.iibb_estimado, b?.egresos_ml?.iibb_estimado, diff?.iibb, true, false, false, factA, factB) : ''}
+            ${hay(iibbPyl(a), iibbPyl(b)) ? row(iibbLbl, iibbPyl(a), iibbPyl(b), diff?.iibb, true, false, false, factA, factB) : ''}
             ${row('TOTAL EGRESOS ML',         a?.egresos_ml?.total,         b?.egresos_ml?.total,         diff?.total_egresos_ml, false, true, false, factA, factB)}
             ${row('RESULTADO NETO ML',        a?.resultado_neto_ml,         b?.resultado_neto_ml,         diff?.resultado_neto, false, true, true, factA, factB)}
             ${rowPct('% Recibido',            a?.margenes?.pct_recibido,    b?.margenes?.pct_recibido,    diff?.pct_recibido)}
@@ -16220,7 +16227,12 @@ function descargarComparacionPDF(mes_a, mes_b) {
   const ivaNetoA = a?.egresos_ml?.iva_neto ?? a?.iva?.neto;
   const ivaNetoB = b?.egresos_ml?.iva_neto ?? b?.iva?.neto;
   const iibbTasa = (+a?.egresos_ml?.iibb_tasa_pct) || (+b?.egresos_ml?.iibb_tasa_pct) || 0;
-  const iibbLbl  = `IIBB estimado${iibbTasa ? ` (${iibbTasa}%)` : ''}`;
+  // Si cualquiera de los dos meses ya tiene las percepciones facturadas, la fila deja
+  // de llamarse "estimado": mezclar los dos criterios bajo la etiqueta vieja haría
+  // pensar que la variación entre meses es del negocio y no del cambio de fuente.
+  const iibbLbl  = (a?.egresos_ml?.iibb_fuente === 'facturado' || b?.egresos_ml?.iibb_fuente === 'facturado')
+    ? 'IIBB (percepciones facturadas)'
+    : `IIBB estimado${iibbTasa ? ` (${iibbTasa}%)` : ''}`;
   const hay = (x, y) => (parseFloat(x)||0) !== 0 || (parseFloat(y)||0) !== 0;
   const cmPctA = parseFloat(factA) ? (parseFloat(a?.utilidad_antes_gf)||0) / parseFloat(factA) * 100 : null;
   const cmPctB = parseFloat(factB) ? (parseFloat(b?.utilidad_antes_gf)||0) / parseFloat(factB) * 100 : null;
@@ -16248,10 +16260,11 @@ function descargarComparacionPDF(mes_a, mes_b) {
       ${R('Comisión ML', a?.egresos_ml?.comision, b?.egresos_ml?.comision, diff?.comision, {indent:true, pos:false, pctFact:true})}
       ${R('Costo envío vendedor', envioA, envioB, diff?.envio_total, {indent:true, pos:false, pctFact:true})}
       ${R('Publicidad (PADS)', a?.egresos_ml?.publicidad, b?.egresos_ml?.publicidad, diff?.publicidad, {indent:true, pos:false, pctFact:true})}
+      ${hay(a?.egresos_ml?.costos_full, b?.egresos_ml?.costos_full) ? R('Costos FULL', a?.egresos_ml?.costos_full, b?.egresos_ml?.costos_full, diff?.costos_full, {indent:true, pos:false, pctFact:true}) : ''}
       ${hay(a?.egresos_ml?.impuestos, b?.egresos_ml?.impuestos) ? R('Impuestos / retenciones', a?.egresos_ml?.impuestos, b?.egresos_ml?.impuestos, diff?.imp_operacion, {indent:true, pos:false, pctFact:true}) : ''}
       ${hay(a?.egresos_ml?.reembolsos, b?.egresos_ml?.reembolsos) ? R('Reembolsos', a?.egresos_ml?.reembolsos, b?.egresos_ml?.reembolsos, diff?.reembolsos, {indent:true, pos:false, pctFact:true}) : ''}
       ${hay(ivaNetoA, ivaNetoB) ? R('IVA neto a pagar', ivaNetoA, ivaNetoB, diff?.iva_neto, {indent:true, pos:false, pctFact:true}) : ''}
-      ${hay(a?.egresos_ml?.iibb_estimado, b?.egresos_ml?.iibb_estimado) ? R(iibbLbl, a?.egresos_ml?.iibb_estimado, b?.egresos_ml?.iibb_estimado, diff?.iibb, {indent:true, pos:false, pctFact:true}) : ''}
+      ${hay(iibbPyl(a), iibbPyl(b)) ? R(iibbLbl, iibbPyl(a), iibbPyl(b), diff?.iibb, {indent:true, pos:false, pctFact:true}) : ''}
       ${R('TOTAL EGRESOS ML', a?.egresos_ml?.total, b?.egresos_ml?.total, diff?.total_egresos_ml, {bold:true, pos:false, pctFact:true})}
       ${R('RESULTADO NETO ML', a?.resultado_neto_ml, b?.resultado_neto_ml, diff?.resultado_neto, {bold:true, pctFact:true})}
       ${RP('% Recibido', a?.margenes?.pct_recibido, b?.margenes?.pct_recibido, diff?.pct_recibido)}
@@ -16690,6 +16703,16 @@ async function generarPyL() {
   }
 }
 
+// IIBB del P&L: desde que se baja la factura real, el número que entra al total es
+// el facturado; la tasa manual quedó como respaldo para los períodos que todavía no
+// se sincronizaron. Los snapshots viejos sólo tienen iibb_estimado, de ahí el fallback.
+function iibbPyl(p)   { return p?.egresos_ml?.iibb ?? p?.egresos_ml?.iibb_estimado ?? 0; }
+function iibbLabel(p) {
+  return p?.egresos_ml?.iibb_fuente === 'facturado'
+    ? 'IIBB (percepciones facturadas)'
+    : `IIBB estimado (${(+p?.egresos_ml?.iibb_tasa_pct || 0)}%)`;
+}
+
 function renderPyL(pyl) {
   const el = document.getElementById('reportePylContent');
   const fmtM = v => v!=null ? '$'+Math.round(v).toLocaleString('es-AR') : '—';
@@ -16784,11 +16807,23 @@ function renderPyL(pyl) {
         ${pyl.egresos_ml.envio_total ? detalleRow('Envío vendedor (total)', pyl.egresos_ml.envio_total, pyl.ingresos.facturacion) : pyl.egresos_ml.envio_vendedor ? detalleRow('Envío vendedor', pyl.egresos_ml.envio_vendedor, pyl.ingresos.facturacion) : ''}
         ${pyl.egresos_ml.envios_flex_manual > 0 ? `<div style="padding:4px 12px 4px 28px;font-size:11px;color:var(--muted)">└ API ML: $${Math.round(pyl.egresos_ml.envio_vendedor).toLocaleString('es-AR')} &nbsp;+&nbsp; Manual Flex: $${Math.round(pyl.egresos_ml.envios_flex_manual).toLocaleString('es-AR')}</div>` : ''}
         ${pyl.egresos_ml.publicidad ? detalleRow('Publicidad (PADS)', pyl.egresos_ml.publicidad, pyl.ingresos.facturacion) : ''}
+        ${pyl.egresos_ml.costos_full > 0 ? detalleRow('Costos FULL', pyl.egresos_ml.costos_full, pyl.ingresos.facturacion) : ''}
+        ${(pyl.egresos_ml.costos_full_detalle || []).length ? `<div style="padding:4px 12px 6px 28px;font-size:11px;color:var(--muted);line-height:1.6">${
+          pyl.egresos_ml.costos_full_detalle.map(d => `└ ${d.concepto || d.codigo}: $${Math.round(d.monto).toLocaleString('es-AR')}`).join('<br>')
+        }</div>` : ''}
         ${pyl.egresos_ml.impuestos ? detalleRow('Impuestos / retenciones', pyl.egresos_ml.impuestos, pyl.ingresos.facturacion) : ''}
         ${pyl.egresos_ml.reembolsos ? detalleRow('Reembolsos', pyl.egresos_ml.reembolsos, pyl.ingresos.facturacion) : ''}
         ${pyl.egresos_ml.iva_neto ? detalleRow('IVA neto a pagar', pyl.egresos_ml.iva_neto, pyl.ingresos.facturacion) : ''}
-        ${pyl.egresos_ml.iibb_estimado > 0 ? detalleRow(`IIBB estimado (${(+pyl.egresos_ml.iibb_tasa_pct || 0)}%)`, pyl.egresos_ml.iibb_estimado, pyl.ingresos.facturacion) : ''}
+        ${pyl.egresos_ml.percepciones_iva > 0 ? `<div style="padding:4px 12px 6px 28px;font-size:11px;color:var(--muted)">└ ya descontadas percepciones de IVA por $${Math.round(pyl.egresos_ml.percepciones_iva).toLocaleString('es-AR')}${
+          pyl.egresos_ml.iva_saldo_favor > 0 ? ` · saldo a favor $${Math.round(pyl.egresos_ml.iva_saldo_favor).toLocaleString('es-AR')}` : ''
+        }</div>` : ''}
+        ${iibbPyl(pyl) > 0 ? detalleRow(iibbLabel(pyl), iibbPyl(pyl), pyl.ingresos.facturacion) : ''}
       </div>
+      ${pyl.facturacion_ml && !pyl.facturacion_ml.disponible ? `
+      <div style="background:var(--surface);border:1px dashed var(--border);border-radius:12px;padding:10px 14px;font-size:11px;color:var(--muted);line-height:1.5">
+        ⚠ Los costos de FULL y las percepciones reales todavía no están sincronizados para este período,
+        así que no entran a este P&amp;L y el IIBB sigue estimado por tasa.
+      </div>` : ''}
 
       <!-- Detalle CMV -->
       <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden">
@@ -16890,16 +16925,20 @@ async function exportarReporteExcel() {
       ['   └ Flex/Full (manual)', '', -pyl.egresos_ml.envios_flex_manual],
     ] : []),
     ['Publicidad (PADS)', -pyl.egresos_ml.publicidad],
+    ...(pyl.egresos_ml.costos_full > 0 ? [
+      ['Costos FULL', -pyl.egresos_ml.costos_full],
+      ...(pyl.egresos_ml.costos_full_detalle || []).map(d => [`   └ ${d.concepto || d.codigo}`, '', -d.monto]),
+    ] : []),
     ...(pyl.egresos_ml.impuestos ? [['Impuestos / retenciones', -pyl.egresos_ml.impuestos]] : []),
     ...(pyl.egresos_ml.reembolsos ? [['Reembolsos', -pyl.egresos_ml.reembolsos]] : []),
     ...(pyl.egresos_ml.iva_neto ? [
       ['IVA neto a pagar', -pyl.egresos_ml.iva_neto],
       ['   └ IVA ventas (débito fiscal)', '', -(pyl.iva?.ventas ?? 0)],
       ['   └ IVA compras acreditable', '', pyl.iva?.compras ?? 0],
+      ...(pyl.egresos_ml.percepciones_iva > 0
+        ? [['   └ Percepciones de IVA ya retenidas', '', pyl.egresos_ml.percepciones_iva]] : []),
     ] : []),
-    ...(pyl.egresos_ml.iibb_estimado > 0 ? [
-      [`IIBB estimado (${(+pyl.egresos_ml.iibb_tasa_pct || 0)}%)`, -pyl.egresos_ml.iibb_estimado]
-    ] : []),
+    ...(iibbPyl(pyl) > 0 ? [[iibbLabel(pyl), -iibbPyl(pyl)]] : []),
     ['TOTAL EGRESOS ML', -pyl.egresos_ml.total],
     [],
     ['RESULTADO NETO ML', pyl.resultado_neto_ml],

@@ -67,6 +67,8 @@ This is a **single-file Node.js/Express backend** (`server.js`) + **single-file 
 | `full_stock_config` | Suggested stock quantities per item |
 | `bitacora` | CRM-style task/note log per client |
 | `panel_metricas_diarias` | One row per client per day (revenue, orders, units, visits, ad spend/sales) written by the 00:00 ART cron; backs the fast Panel de Clientes view |
+| `billing_detalle` | ML's actual invoice, one row per charge line, keyed by `detail_id`. Written by the 02:00 ART cron in `backend_billing.js` |
+| `billing_sync` | Which (client, period) pairs have been downloaded and whether they came back complete — lets the P&L tell "pays no FULL" apart from "not synced yet" |
 
 ### API surface (grouped)
 
@@ -81,6 +83,7 @@ This is a **single-file Node.js/Express backend** (`server.js`) + **single-file 
 - **Logística / Full Stock**: `GET /api/logistica`, `GET /api/logistica/full-stock`, `PUT /api/logistica/full-stock-global`, `PUT /api/logistica/full-stock/:item_id`
 - **Competencia**: `GET /api/competencia`, `GET /api/competencia/item`, `GET /api/competencia/categorias`, `GET /api/competencia/diagnostico`
 - **Panel de Clientes (vista rápida)**: `GET /api/panel/metricas`, `GET /api/panel/metricas/hoy`, `POST /api/panel/metricas/backfill`, `GET|POST /api/panel/metricas/cron`
+- **Facturación real** (`backend_billing.js`): `GET /api/billing/resumen`, `GET /api/billing/estado`, `POST /api/billing/sync`, `POST /api/billing/backfill`, `GET|POST /api/billing/cron`
 - **Other**: `GET /api/promociones`, `GET /api/preguntas`, `GET /api/devoluciones`, `GET /api/bitacora`, `POST /api/bitacora`, `PUT|DELETE /api/bitacora/:id`, `GET /api/proxy-ml`, `GET /api/item-fees`
 - **Debug**: `GET /api/debug/shipping|item|billing|order|app-token`
 

@@ -7015,6 +7015,35 @@ app.get('/api/reporte/pyl', requireAuth, async (req, res) => {
     // Envío vendedor total = API + carga manual Flex
     const egreso_envio_total = egreso_envio_vendedor + envios_flex_manual;
 
+    // ── Facturación real de ML ────────────────────────────────────────────────
+    // Hay cargos que ML factura a la CUENTA y que ninguna orden reporta: los de
+    // FULL (almacenamiento, colecta, stock antiguo, retiro) y las percepciones
+    // impositivas. backend_billing los baja de la factura y los persiste; acá sólo
+    // se leen de la base.
+    //
+    // Si el período no está sincronizado, `disponible` viene en false y todo sigue
+    // estimándose como siempre. Nunca se asume cero: un cero inventado acá se lee
+    // como "este cliente no paga FULL" y nadie lo notaría.
+    let bill = null;
+    try {
+      bill = await billing.resumenParaPyL(pool, parseInt(client_id), date_from, date_to);
+    } catch (e) {
+      console.warn('[REPORTE PYL] facturación real no disponible:', e.message);
+    }
+    const billOk = !!(bill && bill.disponible);
+
+    const costos_full = billOk ? bill.costos_full.total : 0;
+
+    // IIBB: la estimación por tasa manual del cliente sigue siendo el default. Si
+    // están las percepciones facturadas, ese es el número real y manda.
+    const iibb_estimado  = facturacion * (tasaIibb / 100);
+    const iibb_facturado = billOk ? bill.percepciones_iibb.total : null;
+    const iibb           = iibb_facturado != null ? iibb_facturado : iibb_estimado;
+
+    // Percepciones de IVA: no son un costo, son plata que ML ya retuvo a cuenta del
+    // IVA. Van descontadas del IVA a pagar, no sumadas a los egresos.
+    const percepciones_iva = billOk ? bill.percepciones_iva.total : 0;
+
     // ── P&L ───────────────────────────────────────────────────────────────────
     const total_ingresos   = facturacion + ingreso_envio_comprador;
     // IVA neto a pagar: IVA ventas − IVA compras acreditable (CMV + comisión + envío vendedor).
@@ -7023,15 +7052,18 @@ app.get('/api/reporte/pyl', requireAuth, async (req, res) => {
     // ML que siempre tributan 21%. El remanente de facturación no atribuido a un producto
     // (envío comprador prorrateado, etc.) se grava a 21%.
     // Monotributista no liquida IVA: no discrimina IVA en ventas ni puede tomarlo como crédito.
+    // Los cargos de FULL son servicios de ML: tributan 21% y suman crédito fiscal
+    // igual que la comisión y el envío.
     const iva_ventas   = esMonotributista ? 0 : iva_debito_productos + ivaContenido(Math.max(0, facturacion - revenue_productos), IVA_SERVICIOS_PCT);
-    const iva_compras  = esMonotributista ? 0 : iva_credito_cmv + ivaContenido(egreso_comision + egreso_envio_total, IVA_SERVICIOS_PCT);
-    const iva_neto     = esMonotributista ? 0 : Math.max(0, iva_ventas - iva_compras);
+    const iva_compras  = esMonotributista ? 0 : iva_credito_cmv + ivaContenido(egreso_comision + egreso_envio_total + costos_full, IVA_SERVICIOS_PCT);
+    // Las percepciones sufridas se descuentan de lo que hay que depositar. Si superan
+    // el IVA del período no se pierden: quedan como saldo a favor para el mes que viene.
+    const iva_antes_perc = esMonotributista ? 0 : Math.max(0, iva_ventas - iva_compras);
+    const iva_neto       = esMonotributista ? 0 : Math.max(0, iva_antes_perc - percepciones_iva);
+    const iva_saldo_favor = esMonotributista ? 0 : Math.max(0, percepciones_iva - iva_antes_perc);
 
-    // IIBB estimado: facturación × tasa del cliente. Egreso impositivo provincial.
-    const iibb_estimado = facturacion * (tasaIibb / 100);
-
-    // IVA + IIBB forman parte de los egresos ML → afectan el Resultado Neto ML
-    const total_egresos_ml  = egreso_comision + egreso_imp_operacion + egreso_envio_total + egreso_publicidad + egreso_reembolsos + iva_neto + iibb_estimado;
+    // IVA + IIBB + costos de FULL forman parte de los egresos ML → afectan el Resultado Neto ML
+    const total_egresos_ml  = egreso_comision + egreso_imp_operacion + egreso_envio_total + egreso_publicidad + egreso_reembolsos + costos_full + iva_neto + iibb;
     const resultado_neto_ml = total_ingresos - total_egresos_ml;
     const utilidad_antes_gf = resultado_neto_ml - cmv_total;
     const utilidad_final    = utilidad_antes_gf - total_gastos_fijos - total_impuestos_manuales;
@@ -7054,13 +7086,44 @@ app.get('/api/reporte/pyl', requireAuth, async (req, res) => {
         envio_total: egreso_envio_total,
         publicidad: egreso_publicidad,
         reembolsos: egreso_reembolsos,
+        // Costos de operar en FULL — sólo salen de la factura. 0 cuando el período
+        // todavía no se sincronizó; mirar facturacion_ml.disponible para distinguir
+        // "no paga FULL" de "no lo sé".
+        costos_full,
+        costos_full_detalle: billOk ? bill.costos_full.detalle : [],
         iva_ventas,
         iva_compras,
+        iva_antes_percepciones: iva_antes_perc,
+        percepciones_iva,
+        iva_saldo_favor,
         iva_neto,
+        // `iibb` es el que entra al total: el facturado si está, el estimado si no.
+        iibb,
         iibb_estimado,
+        iibb_facturado,
+        iibb_fuente: iibb_facturado != null ? 'facturado' : 'estimado',
         iibb_tasa_pct: tasaIibb,
         total: total_egresos_ml
       },
+      // Control: lo que el P&L estima contra lo que ML facturó de verdad. No entra a
+      // ninguna cuenta — es para ver si la estimación se está yendo de tema.
+      facturacion_ml: bill ? {
+        disponible: bill.disponible,
+        periodos_esperados: bill.periodos_esperados,
+        periodos_sincronizados: bill.periodos_sincronizados,
+        costos_full: bill.costos_full,
+        percepciones_iva: bill.percepciones_iva,
+        percepciones_iibb: bill.percepciones_iibb,
+        otros: bill.otros,
+        comparacion: {
+          // sale_fee del P&L junta comisión + cargo fijo + costo de cuotas; para que
+          // la comparación signifique algo hay que sumar los tres códigos.
+          comision:   { pyl: egreso_comision,   facturado: (bill.ya_en_pyl.CVFV || 0) + (bill.ya_en_pyl.CVFF || 0) + (bill.ya_en_pyl.CVFN || 0) },
+          envios:     { pyl: egreso_envio_vendedor, facturado: (bill.ya_en_pyl.CXD || 0) + (bill.ya_en_pyl.CFF || 0) },
+          publicidad: { pyl: egreso_publicidad, facturado: bill.ya_en_pyl.PADS || 0 },
+          iibb:       { pyl: iibb_estimado,     facturado: iibb_facturado },
+        }
+      } : { disponible: false, motivo: 'sin datos de facturación sincronizados' },
       resultado_neto_ml,
       cmv: { total: cmv_total, estimado: cmv_estimado, cubierto: cmv_cubierto, total_items: items_detalle.length },
       utilidad_antes_gf,
@@ -9418,6 +9481,13 @@ require('./backend_ml_skus')(app, { pool, requireAuth, getClientToken });
 // Impacto del aumento de tarifas ML del 1/9/2026 — módulo aparte
 // (backend_impacto_costos.js). Monta GET /api/impacto-costos.
 require('./backend_impacto_costos')(app, { pool, requireAuth, getClientToken, ML_API });
+
+// Facturación real de ML — módulo aparte (backend_billing.js). Baja la factura
+// línea por línea y la persiste; el P&L la lee de la base más abajo. Crea sus
+// tablas y programa su propio cron a las 02:00 ART.
+const billing = require('./backend_billing')(app, {
+  pool, requireAuth, requireConsultor, requireAdmin, getClientToken, ML_API, nodeCron, ART
+});
 
 // GET /api/tarifas — escalas vigentes de cargo fijo, para que el front no tenga su
 // propia copia. Antes las tenía escritas a mano en tres lugares distintos (y encima
