@@ -16703,15 +16703,22 @@ async function generarPyL() {
   }
 }
 
-// IIBB del P&L: desde que se baja la factura real, el número que entra al total es
-// el facturado; la tasa manual quedó como respaldo para los períodos que todavía no
-// se sincronizaron. Los snapshots viejos sólo tienen iibb_estimado, de ahí el fallback.
-function iibbPyl(p)   { return p?.egresos_ml?.iibb ?? p?.egresos_ml?.iibb_estimado ?? 0; }
-function iibbLabel(p) {
-  return p?.egresos_ml?.iibb_fuente === 'facturado'
-    ? 'IIBB (percepciones facturadas)'
-    : `IIBB estimado (${(+p?.egresos_ml?.iibb_tasa_pct || 0)}%)`;
+// IIBB del P&L: el único número que entra al total es el facturado. La tasa manual
+// por cliente quedaba vieja y sobrestimaba, así que se dejó de calcular con ella.
+// Los snapshots viejos guardados antes del cambio sólo tienen iibb_estimado — ahí el
+// fallback es correcto porque ese P&L se calculó con esa tasa.
+function iibbPyl(p) {
+  const e = p?.egresos_ml || {};
+  return e.iibb ?? e.iibb_estimado ?? 0;
 }
+function iibbLabel(p) {
+  const f = p?.egresos_ml?.iibb_fuente;
+  if (f === 'facturado') return 'IIBB (percepciones facturadas)';
+  if (f === 'sin_datos') return 'IIBB — sin datos de factura';
+  return `IIBB estimado (${(+p?.egresos_ml?.iibb_tasa_pct || 0)}%)`;
+}
+/** true cuando el período no tiene el IIBB real y por lo tanto subestima egresos. */
+function iibbFalta(p) { return p?.egresos_ml?.iibb_fuente === 'sin_datos'; }
 
 function renderPyL(pyl) {
   const el = document.getElementById('reportePylContent');
@@ -16818,11 +16825,17 @@ function renderPyL(pyl) {
           pyl.egresos_ml.iva_saldo_favor > 0 ? ` · saldo a favor $${Math.round(pyl.egresos_ml.iva_saldo_favor).toLocaleString('es-AR')}` : ''
         }</div>` : ''}
         ${iibbPyl(pyl) > 0 ? detalleRow(iibbLabel(pyl), iibbPyl(pyl), pyl.ingresos.facturacion) : ''}
+        ${iibbFalta(pyl) ? `<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 16px;border-bottom:1px solid var(--border)">
+          <span style="font-size:12px;color:#b45309">IIBB — sin datos de factura</span>
+          <span style="font-size:12px;color:#b45309;font-weight:600">no computado</span>
+        </div>` : ''}
       </div>
       ${pyl.facturacion_ml && !pyl.facturacion_ml.disponible ? `
-      <div style="background:var(--surface);border:1px dashed var(--border);border-radius:12px;padding:10px 14px;font-size:11px;color:var(--muted);line-height:1.5">
-        ⚠ Los costos de FULL y las percepciones reales todavía no están sincronizados para este período,
-        así que no entran a este P&amp;L y el IIBB sigue estimado por tasa.
+      <div style="background:#fffbeb;border:1px dashed #f59e0b;border-radius:12px;padding:10px 14px;font-size:11px;color:#92400e;line-height:1.5">
+        ⚠ <b>Este período todavía no tiene la factura de ML sincronizada.</b>
+        No entran los costos de FULL ni las percepciones de IVA, y el IIBB va en cero
+        (antes se estimaba con una tasa manual que quedaba vieja).
+        <b>La utilidad de arriba está sobrestimada</b> hasta que se sincronice.
       </div>` : ''}
 
       <!-- Detalle CMV -->

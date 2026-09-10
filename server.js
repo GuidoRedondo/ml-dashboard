@@ -7034,17 +7034,19 @@ app.get('/api/reporte/pyl', requireAuth, async (req, res) => {
 
     const costos_full = billOk ? bill.costos_full.total : 0;
 
-    // IIBB: la estimación por tasa manual del cliente sigue siendo el default. Si
-    // están las percepciones facturadas, ese es el número real y manda.
+    // IIBB: sólo lo facturado. La tasa manual por cliente (`tasa_iibb_pct`) quedaba
+    // vieja y erraba feo — en la cuenta con la que se validó, 4% daba $2.072.075
+    // contra $1.131.485 realmente percibidos — así que dejó de entrar al cálculo.
+    // Se sigue exponiendo como referencia, pero no suma.
     //
     // Se exige que haya al menos UNA línea de percepción, no que el total dé algo:
-    // un total en 0 puede significar "no le percibieron nada" pero también que las
-    // líneas no se estén agrupando bien, y en ese caso reemplazar la estimación por
-    // cero borra millones de egresos sin que nadie lo note.
+    // un total en 0 puede ser real o puede ser que las líneas no se estén agrupando
+    // bien, y ahí un cero borra millones de egresos sin que nadie lo note.
     const iibb_estimado  = facturacion * (tasaIibb / 100);
     const iibb_facturado = (billOk && bill.percepciones_iibb.lineas > 0)
       ? bill.percepciones_iibb.total : null;
-    const iibb           = iibb_facturado != null ? iibb_facturado : iibb_estimado;
+    const iibb        = iibb_facturado != null ? iibb_facturado : 0;
+    const iibb_fuente = iibb_facturado != null ? 'facturado' : 'sin_datos';
 
     // Percepciones de IVA: no son un costo, son plata que ML ya retuvo a cuenta del
     // IVA. Van descontadas del IVA a pagar, no sumadas a los egresos.
@@ -7103,11 +7105,13 @@ app.get('/api/reporte/pyl', requireAuth, async (req, res) => {
         percepciones_iva,
         iva_saldo_favor,
         iva_neto,
-        // `iibb` es el que entra al total: el facturado si está, el estimado si no.
+        // `iibb` es el que entra al total, y sólo sale de la factura. Con
+        // iibb_fuente='sin_datos' va en 0 y el período está subestimando egresos:
+        // el front tiene que avisarlo, no mostrarlo como si no hubiera IIBB.
         iibb,
-        iibb_estimado,
+        iibb_estimado,      // referencia por tasa manual — NO entra a ninguna suma
         iibb_facturado,
-        iibb_fuente: iibb_facturado != null ? 'facturado' : 'estimado',
+        iibb_fuente,
         iibb_tasa_pct: tasaIibb,
         total: total_egresos_ml
       },
