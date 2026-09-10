@@ -7036,8 +7036,14 @@ app.get('/api/reporte/pyl', requireAuth, async (req, res) => {
 
     // IIBB: la estimación por tasa manual del cliente sigue siendo el default. Si
     // están las percepciones facturadas, ese es el número real y manda.
+    //
+    // Se exige que haya al menos UNA línea de percepción, no que el total dé algo:
+    // un total en 0 puede significar "no le percibieron nada" pero también que las
+    // líneas no se estén agrupando bien, y en ese caso reemplazar la estimación por
+    // cero borra millones de egresos sin que nadie lo note.
     const iibb_estimado  = facturacion * (tasaIibb / 100);
-    const iibb_facturado = billOk ? bill.percepciones_iibb.total : null;
+    const iibb_facturado = (billOk && bill.percepciones_iibb.lineas > 0)
+      ? bill.percepciones_iibb.total : null;
     const iibb           = iibb_facturado != null ? iibb_facturado : iibb_estimado;
 
     // Percepciones de IVA: no son un costo, son plata que ML ya retuvo a cuenta del

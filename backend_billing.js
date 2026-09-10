@@ -83,14 +83,26 @@ const OTROS = {
 const RE_PERCEPCION_IVA  = /percepci[óo]n.*(iva|valor agregado)/i;
 const RE_PERCEPCION_IIBB = /(iibb|ingresos brutos)/i;
 
+// Los nombres de grupo son la clave con la que resumenParaPyL arma su respuesta:
+// tienen que ser exactamente estos, o las líneas se agrupan en una clave que nadie
+// lee y desaparecen sin error. Declarados una sola vez para que no se puedan
+// desincronizar entre el clasificador y el agregador.
+const GRUPOS = {
+  FULL: 'costos_full',
+  PERC_IVA: 'percepciones_iva',
+  PERC_IIBB: 'percepciones_iibb',
+  YA_EN_PYL: 'ya_en_pyl',
+  OTROS: 'otros',
+};
+
 /** Clasifica una línea de la factura en el grupo que usa el P&L. */
 function clasificar(subType, concepto) {
-  if (COSTOS_FULL[subType]) return 'costos_full';
+  if (COSTOS_FULL[subType]) return GRUPOS.FULL;
   const txt = concepto || '';
-  if (RE_PERCEPCION_IIBB.test(txt)) return 'percepcion_iibb';
-  if (RE_PERCEPCION_IVA.test(txt))  return 'percepcion_iva';
-  if (YA_EN_PYL[subType]) return 'ya_en_pyl';
-  return 'otros';
+  if (RE_PERCEPCION_IIBB.test(txt)) return GRUPOS.PERC_IIBB;
+  if (RE_PERCEPCION_IVA.test(txt))  return GRUPOS.PERC_IVA;
+  if (YA_EN_PYL[subType]) return GRUPOS.YA_EN_PYL;
+  return GRUPOS.OTROS;
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -236,6 +248,16 @@ async function crearTablas(pool) {
       PRIMARY KEY (client_id, periodo_key)
     );
   `);
+
+  // Migración idempotente: la primera versión guardó los grupos de percepciones en
+  // singular, que no coincidía con la clave que lee el P&L — las percepciones se
+  // agregaban a una clave que nadie miraba y el IIBB facturado daba $0, pisando la
+  // estimación por tasa. Se corrige acá para no tener que rebajar la factura entera.
+  const fix = await pool.query(`
+    UPDATE billing_detalle SET grupo = 'percepciones_iva'  WHERE grupo = 'percepcion_iva';
+    UPDATE billing_detalle SET grupo = 'percepciones_iibb' WHERE grupo = 'percepcion_iibb';
+  `).catch(e => { console.error('[BILLING] migración de grupos:', e.message); return null; });
+  if (fix) console.log('[BILLING] grupos de percepciones normalizados');
 }
 
 /** Upsert por detail_id: el mismo período se puede resincronizar cuantas veces haga falta. */
@@ -334,24 +356,32 @@ async function resumenParaPyL(pool, clientId, from, to) {
     disponible,
     periodos_esperados: periodos,
     periodos_sincronizados: [...sincronizados],
-    costos_full: { total: 0, detalle: [] },
-    percepciones_iva: { total: 0, detalle: [] },
-    percepciones_iibb: { total: 0, detalle: [] },
-    ya_en_pyl: {},
-    otros: { total: 0, detalle: [] },
+    [GRUPOS.FULL]:      { total: 0, lineas: 0, detalle: [] },
+    [GRUPOS.PERC_IVA]:  { total: 0, lineas: 0, detalle: [] },
+    [GRUPOS.PERC_IIBB]: { total: 0, lineas: 0, detalle: [] },
+    [GRUPOS.YA_EN_PYL]: {},
+    [GRUPOS.OTROS]:     { total: 0, lineas: 0, detalle: [] },
   };
 
   for (const row of r.rows) {
     const neto = parseFloat(row.neto) || 0;
-    const linea = { codigo: row.detail_sub_type, concepto: row.concepto, monto: neto, n: parseInt(row.n) };
-    if (row.grupo === 'ya_en_pyl') {
-      out.ya_en_pyl[row.detail_sub_type] = (out.ya_en_pyl[row.detail_sub_type] || 0) + neto;
-    } else if (out[row.grupo]) {
-      out[row.grupo].total += neto;
-      out[row.grupo].detalle.push(linea);
+    const n = parseInt(row.n) || 0;
+    if (row.grupo === GRUPOS.YA_EN_PYL) {
+      out[GRUPOS.YA_EN_PYL][row.detail_sub_type] = (out[GRUPOS.YA_EN_PYL][row.detail_sub_type] || 0) + neto;
+      continue;
     }
+    // Un grupo que no está en `out` significa que el clasificador y este agregador
+    // se desincronizaron. Cae en `otros` en vez de desaparecer: la plata siempre
+    // tiene que estar en algún lado, aunque sea el cajón de sastre.
+    const destino = out[row.grupo] ? row.grupo : GRUPOS.OTROS;
+    if (destino !== row.grupo) {
+      console.warn(`[BILLING] grupo desconocido "${row.grupo}" (${row.detail_sub_type}) → va a ${GRUPOS.OTROS}`);
+    }
+    out[destino].total += neto;
+    out[destino].lineas += n;
+    out[destino].detalle.push({ codigo: row.detail_sub_type, concepto: row.concepto, monto: neto, n });
   }
-  for (const g of ['costos_full', 'percepciones_iva', 'percepciones_iibb', 'otros']) {
+  for (const g of [GRUPOS.FULL, GRUPOS.PERC_IVA, GRUPOS.PERC_IIBB, GRUPOS.OTROS]) {
     out[g].detalle.sort((a, b) => b.monto - a.monto);
   }
   return out;
