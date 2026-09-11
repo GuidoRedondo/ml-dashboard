@@ -357,6 +357,10 @@ async function loadData() {
     });
 
     _aggData = agg;
+    window._vxhAgg      = agg;
+    window._vxhChannels = CHANNELS;
+    window._vxhHours    = HOURS;
+    window._vxhNumDays  = _numDays;
 
     buildKpis();
     buildCards();
