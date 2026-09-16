@@ -488,6 +488,19 @@ async function initDB() {
       -- a esta alícuota; los servicios de ML (comisión, envío, publi) siguen a 21%.
       ALTER TABLE product_costs ADD COLUMN IF NOT EXISTS alicuota_iva NUMERIC(5,2) DEFAULT 21;
       UPDATE product_costs SET alicuota_iva = 21 WHERE alicuota_iva IS NULL;
+      -- ── PRECIOS: contribución marginal objetivo ───────────────────────
+      -- A qué CM apunta el cliente. La base define contra qué se mide ese porcentaje:
+      --   'precio' => CM$ / precio de venta (es como lo mide el resto del Dashboard)
+      --   'costo'  => CM$ / CMV, o sea markup: "quiero ganar 40% sobre lo que me cuesta"
+      -- Se guardan las dos porque el mismo 30% significa precios distintos según la base,
+      -- y cada vendedor razona en una sola de las dos.
+      ALTER TABLE clients ADD COLUMN IF NOT EXISTS cm_objetivo_pct NUMERIC(6,2) DEFAULT 30.00;
+      UPDATE clients SET cm_objetivo_pct = 30.00 WHERE cm_objetivo_pct IS NULL;
+      ALTER TABLE clients ADD COLUMN IF NOT EXISTS cm_objetivo_base VARCHAR(10) DEFAULT 'precio';
+      UPDATE clients SET cm_objetivo_base = 'precio' WHERE cm_objetivo_base IS NULL;
+      -- Override por publicación. NULL = usa el objetivo global del cliente; no se le pone
+      -- default para poder distinguir "no lo tocaron" de "lo pusieron igual al global".
+      ALTER TABLE product_costs ADD COLUMN IF NOT EXISTS cm_objetivo_pct NUMERIC(6,2);
       -- ── PASO 1: publi automática con aprobación + ejecución real ───────
       -- Gate por cliente: el motor solo procesa clientes con publi_activa=true.
       -- Default false => se activa de a uno, nadie entra sin prenderlo.
@@ -702,6 +715,14 @@ async function initDB() {
       PRIMARY KEY (client_id, dia)
     );
     CREATE INDEX IF NOT EXISTS idx_panel_metricas_dia ON panel_metricas_diarias(dia);
+    -- Base de la solapa Precios. Armarla pide comisión real y envío a ML publicación por
+    -- publicación (listing_prices), así que en cuentas de +1.000 pubs tarda minutos.
+    -- Se cachea 12h, mismo criterio que ciclo_vida_cache; ?force_refresh=true la saltea.
+    CREATE TABLE IF NOT EXISTS precios_cache (
+      client_id  INTEGER PRIMARY KEY REFERENCES clients(id) ON DELETE CASCADE,
+      data       JSONB NOT NULL,
+      fetched_at TIMESTAMPTZ DEFAULT NOW()
+    );
   `);
 
   // ── Migración: FKs hacia clients(id) que quedaron sin ON DELETE CASCADE ──
@@ -6511,115 +6532,303 @@ app.get('/api/performance/top-ganancia', requireAuth, async (req, res) => {
 });
 
 // POST /api/reporte/costos — guardar costos de productos
+// Todas las publicaciones activas de un cliente con SKU, precio, peso y costos guardados.
+// La usan el endpoint /api/reporte/items-activos y la solapa Precios (/api/precios); estaba
+// escrita adentro de la ruta y Precios la necesita sin pasar por HTTP.
+//
+// withFees → pide comisión (con cuotas según listing_type) y envío del vendedor por ítem a
+// listing_prices. Es opt-in porque agrega 1 llamada a ML por publicación.
+//
+// Lanza un Error con .status cuando el cliente no está en condiciones de responder, para que
+// cada llamador decida qué hacer con eso.
+async function traerItemsActivos(clientId, { withFees = false } = {}) {
+  const client_id = clientId;
+  const token = await getClientToken(parseInt(client_id));
+  if (!token) { const e = new Error('Sin token'); e.status = 403; throw e; }
+  const headers = { 'Authorization': `Bearer ${token}` };
+
+  const clientRes = await pool.query('SELECT ml_user_id FROM clients WHERE id=$1', [client_id]);
+  const uid = clientRes.rows[0]?.ml_user_id;
+  if (!uid) { const e = new Error('Cliente sin ML User ID'); e.status = 400; throw e; }
+
+  // Traer todos los ítems activos
+  // scan: la paginación por offset corta en 1000 y hay cuentas de +4.500 publicaciones
+  const allItemIds = await fetchAllActiveItemIds(uid, headers);
+
+  // Fetch detalles individuales en paralelo (igual que Umbrales — el batch no devuelve sale_price)
+  const itemsMap = {};
+  const manualSkuAct = await loadSkuManual(parseInt(client_id));
+  const PARALLEL = 20;
+  for (let i = 0; i < allItemIds.length; i += PARALLEL) {
+    const batch = allItemIds.slice(i, i + PARALLEL);
+    await Promise.all(batch.map(async itemId => {
+      try {
+        const [b, pricesResp] = await Promise.all([
+          fetch(`${ML_API}/items/${itemId}?include_attributes=all`, { headers }).then(r => r.json()),
+          fetch(`${ML_API}/items/${itemId}/prices`, { headers }).then(r => r.json()).catch(() => null),
+        ]);
+        if (b.error || !b.id) return;
+        const sku = manualSkuAct[b.id] || extractSku(b);
+        const basePrice  = parseFloat(b.price) || 0;
+        const origPrice  = b.original_price ? parseFloat(b.original_price) : null;
+        const saleRaw    = b.sale_price;
+        const salePrice  = saleRaw != null
+          ? (typeof saleRaw === 'object' ? parseFloat(saleRaw.amount || saleRaw.regular_amount || 0) : parseFloat(saleRaw))
+          : null;
+        const promoPrice = b.promotions?.[0]?.price ? parseFloat(b.promotions[0].price) : null;
+        const pricesPromo = pricesResp?.prices?.filter(p => p.type !== 'standard')
+          .map(p => parseFloat(p.amount)).filter(v => v > 0);
+        const minPricesPromo = pricesPromo?.length ? Math.min(...pricesPromo) : null;
+        const candidates = [basePrice, salePrice, promoPrice, minPricesPromo].filter(v => v && v > 0);
+        const price      = Math.min(...candidates);
+        const precioLista = origPrice && origPrice > price ? origPrice : (price < basePrice ? basePrice : null);
+
+        // Comisión + envío del vendedor desde listing_prices.
+        // OJO: comPct = percentage_fee (la comisión PORCENTUAL pura), NO
+        // sale_fee_amount. El sale_fee_amount incluye el cargo fijo por venta
+        // (fixed_fee) que ML le carga a los ítems baratos (≤ $33k), y ese cargo
+        // fijo ya se computa aparte en el front (cargoFijoML). Usar el total
+        // duplicaba el cargo fijo e inflaba la comisión: una Clásica de precio
+        // bajo se veía ~24% (14.35% real + fijo), "como si tuviera cuotas".
+        let comPct = null, envioUnit = null, comSource = null, envioSource = null;
+        if (withFees && b.listing_type_id && price > 0) {
+          try {
+            const lp = new URLSearchParams({
+              price:           Math.round(price),
+              currency_id:     'ARS',
+              listing_type_id: b.listing_type_id,
+              logistic_type:   b.shipping?.logistic_type || 'cross_docking',
+              shipping_modes:  b.shipping?.mode || 'me2',
+              billable_weight: b.shipping?.dimensions?.weight || 500,
+            });
+            if (b.category_id) lp.set('category_id', b.category_id);
+            const lpData = await fetch(`${ML_API}/sites/MLA/listing_prices?${lp}`, { headers }).then(r => r.json()).catch(() => null);
+            if (lpData && !lpData.error) {
+              const pctFee   = lpData.sale_fee_details?.percentage_fee;
+              const totalFee = lpData.sale_fee_amount;
+              if (pctFee != null) { comPct = parseFloat(parseFloat(pctFee).toFixed(2)); comSource = 'ML'; }
+              else if (totalFee != null) { comPct = parseFloat((totalFee / price * 100).toFixed(2)); comSource = 'ML'; }
+              const costs = lpData.shipping?.costs;
+              const sellerCost = Array.isArray(costs)
+                ? (costs.find(c => c.type === 'seller')?.amount ?? null)
+                : (lpData.shipping?.seller_cost ?? lpData.shipping?.cost ?? null);
+              // envío = costo del vendedor si aplica; 0 explícito si ML respondió pero el
+              // vendedor no paga envío en este ítem (no es "sin dato", es "no paga").
+              envioUnit = (sellerCost != null && parseFloat(sellerCost) > 0) ? Math.round(parseFloat(sellerCost)) : 0;
+              envioSource = 'ML';
+            }
+          } catch(e) {}
+        }
+
+        // Peso real del paquete, en kg. Sale de los atributos (que ya vienen pedidos con
+        // include_attributes=all); si la publicación no los declara, cae a las dimensiones
+        // de envío y recién después al peso de referencia. El cargo fijo y el envío de ML
+        // se indexan por peso, así que sin este dato los dos se calculan en la banda errada.
+        const pesoKg = TARIFAS_ML.pesoDeItemKg(b)
+          ?? (b.shipping?.dimensions?.weight > 0 ? b.shipping.dimensions.weight / 1000 : null);
+
+        itemsMap[b.id]   = { mla_id: b.id, title: b.title, sku, price, original_price: precioLista, stock: b.available_quantity, listing_type_id: b.listing_type_id, category_id: b.category_id, logistic_type: b.shipping?.logistic_type || 'cross_docking', shipping_mode: b.shipping?.mode || 'me2', shipping_weight: b.shipping?.dimensions?.weight || 500, peso_kg: pesoKg, peso_source: pesoKg == null ? 'default' : (TARIFAS_ML.pesoDeItemKg(b) != null ? 'ficha' : 'envio'), com_pct: comPct, envio_unit: envioUnit, com_source: comSource, envio_source: envioSource };
+      } catch(e) {}
+    }));
+  }
+
+  // Costos guardados
+  const costsRes = await pool.query('SELECT mla_id, costo_unit, alicuota_iva, notas, cm_objetivo_pct FROM product_costs WHERE client_id=$1', [client_id]);
+  const costsMap = {};
+  costsRes.rows.forEach(r => { costsMap[r.mla_id] = { costo_unit: parseFloat(r.costo_unit)||0, alicuota_iva: parseFloat(r.alicuota_iva) || 21, notas: r.notas, cm_objetivo_pct: r.cm_objetivo_pct == null ? null : parseFloat(r.cm_objetivo_pct) }; });
+
+  const items = Object.values(itemsMap).map(i => ({
+    ...i,
+    costo_unit: costsMap[i.mla_id]?.costo_unit ?? null,
+    alicuota_iva: costsMap[i.mla_id]?.alicuota_iva ?? 21,
+    notas: costsMap[i.mla_id]?.notas || '',
+    // null = esta publicación no tiene objetivo propio y sigue al global del cliente
+    cm_objetivo_pct: costsMap[i.mla_id]?.cm_objetivo_pct ?? null,
+    has_cost: costsMap[i.mla_id] != null,
+  })).sort((a, b) => (a.title || '').localeCompare(b.title || ''));
+
+  const completeness = items.length > 0
+    ? Math.round(items.filter(i => i.has_cost).length / items.length * 100) : 0;
+
+  return { items, completeness };
+}
+
 // GET /api/reporte/items-activos — todas las publicaciones activas con SKU y costos guardados
 app.get('/api/reporte/items-activos', requireAuth, async (req, res) => {
   try {
-    const { client_id } = req.query;
-    // fees=1 → calcula comisión (con cuotas según listing_type) y envío del vendedor
-    // por ítem vía listing_prices. Es opt-in porque agrega 1 llamada ML por ítem;
-    // solo la solapa Descuentos lo necesita.
-    const withFees = req.query.fees === '1';
-    const token = await getClientToken(parseInt(client_id));
-    if (!token) return res.status(403).json({ error: 'Sin token' });
-    const headers = { 'Authorization': `Bearer ${token}` };
-
-    const clientRes = await pool.query('SELECT ml_user_id FROM clients WHERE id=$1', [client_id]);
-    const uid = clientRes.rows[0]?.ml_user_id;
-    if (!uid) return res.status(400).json({ error: 'Cliente sin ML User ID' });
-
-    // Traer todos los ítems activos
-    // scan: la paginación por offset corta en 1000 y hay cuentas de +4.500 publicaciones
-    const allItemIds = await fetchAllActiveItemIds(uid, headers);
-
-    // Fetch detalles individuales en paralelo (igual que Umbrales — el batch no devuelve sale_price)
-    const itemsMap = {};
-    const manualSkuAct = await loadSkuManual(parseInt(client_id));
-    const PARALLEL = 20;
-    for (let i = 0; i < allItemIds.length; i += PARALLEL) {
-      const batch = allItemIds.slice(i, i + PARALLEL);
-      await Promise.all(batch.map(async itemId => {
-        try {
-          const [b, pricesResp] = await Promise.all([
-            fetch(`${ML_API}/items/${itemId}?include_attributes=all`, { headers }).then(r => r.json()),
-            fetch(`${ML_API}/items/${itemId}/prices`, { headers }).then(r => r.json()).catch(() => null),
-          ]);
-          if (b.error || !b.id) return;
-          const sku = manualSkuAct[b.id] || extractSku(b);
-          const basePrice  = parseFloat(b.price) || 0;
-          const origPrice  = b.original_price ? parseFloat(b.original_price) : null;
-          const saleRaw    = b.sale_price;
-          const salePrice  = saleRaw != null
-            ? (typeof saleRaw === 'object' ? parseFloat(saleRaw.amount || saleRaw.regular_amount || 0) : parseFloat(saleRaw))
-            : null;
-          const promoPrice = b.promotions?.[0]?.price ? parseFloat(b.promotions[0].price) : null;
-          const pricesPromo = pricesResp?.prices?.filter(p => p.type !== 'standard')
-            .map(p => parseFloat(p.amount)).filter(v => v > 0);
-          const minPricesPromo = pricesPromo?.length ? Math.min(...pricesPromo) : null;
-          const candidates = [basePrice, salePrice, promoPrice, minPricesPromo].filter(v => v && v > 0);
-          const price      = Math.min(...candidates);
-          const precioLista = origPrice && origPrice > price ? origPrice : (price < basePrice ? basePrice : null);
-
-          // Comisión + envío del vendedor desde listing_prices.
-          // OJO: comPct = percentage_fee (la comisión PORCENTUAL pura), NO
-          // sale_fee_amount. El sale_fee_amount incluye el cargo fijo por venta
-          // (fixed_fee) que ML le carga a los ítems baratos (≤ $33k), y ese cargo
-          // fijo ya se computa aparte en el front (cargoFijoML). Usar el total
-          // duplicaba el cargo fijo e inflaba la comisión: una Clásica de precio
-          // bajo se veía ~24% (14.35% real + fijo), "como si tuviera cuotas".
-          let comPct = null, envioUnit = null, comSource = null, envioSource = null;
-          if (withFees && b.listing_type_id && price > 0) {
-            try {
-              const lp = new URLSearchParams({
-                price:           Math.round(price),
-                currency_id:     'ARS',
-                listing_type_id: b.listing_type_id,
-                logistic_type:   b.shipping?.logistic_type || 'cross_docking',
-                shipping_modes:  b.shipping?.mode || 'me2',
-                billable_weight: b.shipping?.dimensions?.weight || 500,
-              });
-              if (b.category_id) lp.set('category_id', b.category_id);
-              const lpData = await fetch(`${ML_API}/sites/MLA/listing_prices?${lp}`, { headers }).then(r => r.json()).catch(() => null);
-              if (lpData && !lpData.error) {
-                const pctFee   = lpData.sale_fee_details?.percentage_fee;
-                const totalFee = lpData.sale_fee_amount;
-                if (pctFee != null) { comPct = parseFloat(parseFloat(pctFee).toFixed(2)); comSource = 'ML'; }
-                else if (totalFee != null) { comPct = parseFloat((totalFee / price * 100).toFixed(2)); comSource = 'ML'; }
-                const costs = lpData.shipping?.costs;
-                const sellerCost = Array.isArray(costs)
-                  ? (costs.find(c => c.type === 'seller')?.amount ?? null)
-                  : (lpData.shipping?.seller_cost ?? lpData.shipping?.cost ?? null);
-                // envío = costo del vendedor si aplica; 0 explícito si ML respondió pero el
-                // vendedor no paga envío en este ítem (no es "sin dato", es "no paga").
-                envioUnit = (sellerCost != null && parseFloat(sellerCost) > 0) ? Math.round(parseFloat(sellerCost)) : 0;
-                envioSource = 'ML';
-              }
-            } catch(e) {}
-          }
-
-          itemsMap[b.id]   = { mla_id: b.id, title: b.title, sku, price, original_price: precioLista, stock: b.available_quantity, listing_type_id: b.listing_type_id, category_id: b.category_id, logistic_type: b.shipping?.logistic_type || 'cross_docking', shipping_mode: b.shipping?.mode || 'me2', shipping_weight: b.shipping?.dimensions?.weight || 500, com_pct: comPct, envio_unit: envioUnit, com_source: comSource, envio_source: envioSource };
-        } catch(e) {}
-      }));
-    }
-
-    // Costos guardados
-    const costsRes = await pool.query('SELECT mla_id, costo_unit, alicuota_iva, notas FROM product_costs WHERE client_id=$1', [client_id]);
-    const costsMap = {};
-    costsRes.rows.forEach(r => { costsMap[r.mla_id] = { costo_unit: parseFloat(r.costo_unit)||0, alicuota_iva: parseFloat(r.alicuota_iva) || 21, notas: r.notas }; });
-
-    const items = Object.values(itemsMap).map(i => ({
-      ...i,
-      costo_unit: costsMap[i.mla_id]?.costo_unit ?? null,
-      alicuota_iva: costsMap[i.mla_id]?.alicuota_iva ?? 21,
-      notas: costsMap[i.mla_id]?.notas || '',
-      has_cost: costsMap[i.mla_id] != null,
-    })).sort((a, b) => (a.title || '').localeCompare(b.title || ''));
-
-    const completeness = items.length > 0
-      ? Math.round(items.filter(i => i.has_cost).length / items.length * 100) : 0;
-
-    res.json({ items, completeness });
+    res.json(await traerItemsActivos(req.query.client_id, { withFees: req.query.fees === '1' }));
   } catch(e) {
     console.error('[ITEMS ACTIVOS]', e.message);
+    res.status(e.status || 500).json({ error: e.message });
+  }
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// PRECIOS — a qué precio hay que vender para llegar a una contribución marginal
+// ════════════════════════════════════════════════════════════════════════════
+//
+// El Simulador ya respondía esta pregunta, pero de a UNA publicación por vez y
+// cargando los costos a mano. Para revisar un catálogo entero con el cliente en
+// la call eso no alcanza. Acá la misma cuenta se resuelve para todo el catálogo
+// de una, con los costos reales de cada publicación ya cargados.
+//
+// El backend sólo arma la BASE (publicación + precio + comisión real + envío +
+// peso + CMV + objetivo guardado). El precio sugerido lo despeja el frontend,
+// porque los supuestos (IIBB, TACOS, déb/créd, CM objetivo) se tocan en vivo y
+// cada cambio tiene que recalcular la tabla entera sin volver a pedirle nada a ML.
+//
+// Armar la base tarda minutos en cuentas grandes: una llamada a listing_prices
+// por publicación. Por eso se cachea 12h en precios_cache.
+
+const PRECIOS_TTL_MS = 12 * 60 * 60 * 1000;
+
+// TACOS real de los últimos `dias` días: inversión en publicidad sobre facturación
+// TOTAL de la cuenta (no sobre la facturación atribuida a ads, que sería ACOS).
+// Sale de panel_metricas_diarias, que ya la escribe el cron de las 00:00.
+// Devuelve null si no hay días con facturación cargada — que el default lo decida
+// el llamador, en vez de hacer pasar por "TACOS 0%" a una cuenta sin datos.
+async function tacosRealPct(clientId, dias = 30) {
+  const r = await pool.query(
+    `SELECT COALESCE(SUM(ads_spend),0)   AS spend,
+            COALESCE(SUM(facturacion),0) AS fact,
+            to_char(MIN(dia),'YYYY-MM-DD') AS desde,
+            to_char(MAX(dia),'YYYY-MM-DD') AS hasta
+       FROM panel_metricas_diarias
+      WHERE client_id = $1 AND dia >= CURRENT_DATE - $2::int AND dia < CURRENT_DATE`,
+    [clientId, dias]);
+  const row = r.rows[0] || {};
+  const fact = parseFloat(row.fact) || 0;
+  if (fact <= 0) return null;
+  return {
+    pct:   parseFloat((parseFloat(row.spend) / fact * 100).toFixed(2)),
+    desde: row.desde, hasta: row.hasta, dias,
+  };
+}
+
+app.get('/api/precios', requireAuth, async (req, res) => {
+  try {
+    const clientId = parseInt(req.query.client_id);
+    if (!clientId) return res.status(400).json({ error: 'Falta client_id' });
+    const force = req.query.force_refresh === 'true' || req.query.force_refresh === '1';
+
+    const cliRes = await pool.query(
+      `SELECT name, condicion_iva, tasa_iibb_pct, cm_objetivo_pct, cm_objetivo_base
+         FROM clients WHERE id=$1`, [clientId]);
+    if (!cliRes.rows.length) return res.status(404).json({ error: 'Cliente no encontrado' });
+    const cli = cliRes.rows[0];
+
+    // Los supuestos y los objetivos se leen SIEMPRE frescos de la base, aunque los ítems
+    // vengan del caché: cambiar el CM objetivo no puede obligar a esperar de nuevo los
+    // minutos que tarda ML en devolver la comisión de cada publicación.
+    const tacos = await tacosRealPct(clientId).catch(() => null);
+    const meta = {
+      cliente: cli.name,
+      condicion_iva: cli.condicion_iva || 'responsable_inscripto',
+      cm_objetivo_pct:  cli.cm_objetivo_pct  == null ? 30 : parseFloat(cli.cm_objetivo_pct),
+      cm_objetivo_base: cli.cm_objetivo_base || 'precio',
+      supuestos: {
+        iibb_pct:     cli.tasa_iibb_pct == null ? 4 : parseFloat(cli.tasa_iibb_pct),
+        // Sin historial de publicidad el default es 0. Es preferible mostrar una CM
+        // optimista y que el usuario cargue el TACOS a mano, a descontarle a una cuenta
+        // una publicidad que no hace.
+        tacos_pct:    tacos ? tacos.pct : 0,
+        deb_cred_pct: 1.2,
+        otros_unit:   0,
+      },
+      tacos_real: tacos,
+      vigencia_tarifas: TARIFAS_ML.VIGENCIA,
+    };
+
+    if (!force) {
+      const hit = await pool.query(
+        'SELECT data, fetched_at FROM precios_cache WHERE client_id=$1', [clientId]);
+      const row = hit.rows[0];
+      if (row && (Date.now() - new Date(row.fetched_at).getTime()) < PRECIOS_TTL_MS) {
+        // Los costos guardados SÍ se releen sobre el caché: el CMV y el objetivo por
+        // producto se cargan desde esta misma pantalla y tienen que verse al instante.
+        const costs = await pool.query(
+          'SELECT mla_id, costo_unit, alicuota_iva, cm_objetivo_pct FROM product_costs WHERE client_id=$1',
+          [clientId]);
+        const cmap = {};
+        costs.rows.forEach(c => { cmap[c.mla_id] = c; });
+        const items = (row.data.items || []).map(i => {
+          const c = cmap[i.mla_id];
+          return { ...i,
+            costo_unit:      c ? parseFloat(c.costo_unit) : null,
+            alicuota_iva:    c ? (parseFloat(c.alicuota_iva) || 21) : 21,
+            cm_objetivo_pct: c && c.cm_objetivo_pct != null ? parseFloat(c.cm_objetivo_pct) : null,
+            has_cost:        !!c,
+          };
+        });
+        return res.json({ ...meta, items,
+          completeness: items.length ? Math.round(items.filter(i => i.has_cost).length / items.length * 100) : 0,
+          fetched_at: row.fetched_at, desde_cache: true });
+      }
+    }
+
+    const base = await traerItemsActivos(clientId, { withFees: true });
+    await pool.query(
+      `INSERT INTO precios_cache (client_id, data, fetched_at) VALUES ($1,$2,NOW())
+         ON CONFLICT (client_id) DO UPDATE SET data=$2, fetched_at=NOW()`,
+      [clientId, JSON.stringify({ items: base.items })]);
+
+    res.json({ ...meta, items: base.items, completeness: base.completeness,
+               fetched_at: new Date().toISOString(), desde_cache: false });
+  } catch (e) {
+    console.error('[PRECIOS]', e.message);
+    res.status(e.status || 500).json({ error: e.message });
+  }
+});
+
+// PUT /api/precios/objetivo — CM objetivo global del cliente, y contra qué se mide
+app.put('/api/precios/objetivo', requireAuth, async (req, res) => {
+  try {
+    const { client_id, cm_objetivo_pct, cm_objetivo_base } = req.body || {};
+    if (!client_id) return res.status(400).json({ error: 'Falta client_id' });
+    const pct = parseFloat(cm_objetivo_pct);
+    if (!Number.isFinite(pct) || pct < 0 || pct >= 100) {
+      return res.status(400).json({ error: 'CM objetivo fuera de rango (0 a 99,99)' });
+    }
+    const base = cm_objetivo_base === 'costo' ? 'costo' : 'precio';
+    await pool.query(
+      'UPDATE clients SET cm_objetivo_pct=$1, cm_objetivo_base=$2, updated_at=NOW() WHERE id=$3',
+      [pct, base, client_id]);
+    res.json({ ok: true, cm_objetivo_pct: pct, cm_objetivo_base: base });
+  } catch (e) {
+    console.error('[PRECIOS OBJETIVO]', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// PUT /api/precios/objetivo-item — CM objetivo de UNA publicación.
+// cm_objetivo_pct null o vacío borra el override: la publicación vuelve a seguir al global.
+app.put('/api/precios/objetivo-item', requireAuth, async (req, res) => {
+  try {
+    const { client_id, mla_id, title, cm_objetivo_pct } = req.body || {};
+    if (!client_id || !mla_id) return res.status(400).json({ error: 'Falta client_id o mla_id' });
+
+    let pct = null;
+    if (cm_objetivo_pct !== null && cm_objetivo_pct !== '' && cm_objetivo_pct !== undefined) {
+      pct = parseFloat(cm_objetivo_pct);
+      if (!Number.isFinite(pct) || pct < 0 || pct >= 100) {
+        return res.status(400).json({ error: 'CM objetivo fuera de rango (0 a 99,99)' });
+      }
+    }
+
+    // El objetivo vive en product_costs, que es donde ya está el CMV. Puede todavía no
+    // haber fila (publicación sin costo cargado), así que se inserta con costo 0 — sin
+    // pisar el costo ni la alícuota cuando la fila ya existe.
+    await pool.query(
+      `INSERT INTO product_costs (client_id, mla_id, title, costo_unit, cm_objetivo_pct, updated_at)
+            VALUES ($1,$2,$3,0,$4,NOW())
+       ON CONFLICT (client_id, mla_id) DO UPDATE
+          SET cm_objetivo_pct = $4,
+              title           = COALESCE(product_costs.title, EXCLUDED.title),
+              updated_at      = NOW()`,
+      [client_id, mla_id, title || null, pct]);
+    res.json({ ok: true, cm_objetivo_pct: pct });
+  } catch (e) {
+    console.error('[PRECIOS OBJETIVO ITEM]', e.message);
     res.status(500).json({ error: e.message });
   }
 });
@@ -9505,15 +9714,40 @@ const billing = require('./backend_billing')(app, {
 // dejaba el simulador de precios calculando con números viejos sin que nada avisara.
 app.get('/api/tarifas', requireAuth, (req, res) => {
   const pesoKg = parseFloat(req.query.peso_kg);
-  res.json({
+  const limpiar = escalas => escalas.map(e =>
+    ({ desde: e.desde, hasta: e.hasta === Infinity ? null : e.hasta, cargo: e.cargo }));
+
+  const out = {
     vigencia: TARIFAS_ML.VIGENCIA,
     peso_default_kg: TARIFAS_ML.PESO_DEFAULT,
     umbral_envio_gratis: TARIFAS_ML.UMBRAL_ENVIO_GRATIS,
+    env_corte_banda: TARIFAS_ML.ENV_CORTE_BANDA,
     // Escalas a la banda pedida; sin peso, a la de referencia. Los cortes son iguales
     // para toda banda, sólo cambian los montos.
-    escalas: TARIFAS_ML.escalasCargoFijo(pesoKg > 0 ? pesoKg : undefined)
-      .map(e => ({ desde: e.desde, hasta: e.hasta === Infinity ? null : e.hasta, cargo: e.cargo })),
-  });
+    escalas: limpiar(TARIFAS_ML.escalasCargoFijo(pesoKg > 0 ? pesoKg : undefined)),
+  };
+
+  // ?bandas=1 → las 27 bandas de peso completas, con su cargo fijo y su envío. Lo pide la
+  // solapa Precios, que razona sobre TODO el catálogo a la vez: cada publicación tiene su
+  // peso y por lo tanto su propia tabla, y bajarlas de a una sería una request por ítem.
+  if (req.query.bandas === '1') {
+    out.bandas = TARIFAS_ML.BANDAS_PESO.map((hasta, i) => {
+      // Peso representativo de la banda: su propio techo cae siempre dentro de ella.
+      // La última no tiene techo, así que se la evalúa con un peso deliberadamente alto.
+      const peso = hasta === Infinity ? 500 : hasta;
+      return {
+        hasta_kg: hasta === Infinity ? null : hasta,
+        escalas: limpiar(TARIFAS_ML.escalasCargoFijo(peso)),
+        // Las dos bandas de precio del envío: por debajo y por encima de env_corte_banda.
+        envio: [
+          TARIFAS_ML.costoEnvio(TARIFAS_ML.UMBRAL_ENVIO_GRATIS, peso),
+          TARIFAS_ML.costoEnvio(TARIFAS_ML.ENV_CORTE_BANDA, peso),
+        ],
+      };
+    });
+  }
+
+  res.json(out);
 });
 
 app.get('/api/competencia/categorias', requireAuth, async (req, res) => {

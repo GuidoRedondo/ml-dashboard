@@ -1285,6 +1285,7 @@ tbody td {
         <div style="display:flex;gap:6px">
           <button id="rentTabAnalisis" onclick="switchRentTab('analisis')" class="sync-btn" style="background:var(--accent)">📊 Análisis</button>
           <button id="rentTabLoQuePaso" onclick="switchRentTab('loquepaso')" class="sync-btn" title="P&amp;L real por producto del período seleccionado: envío que pagaste, publicidad PADS, IVA e IIBB">📆 Lo que pasó</button>
+          <button id="rentTabPrecios" onclick="switchRentTab('precios')" class="sync-btn" title="A qué precio hay que vender cada publicación para llegar a la contribución marginal que buscás, con los costos reales de Mercado Libre">💲 Precios</button>
           <button id="rentTabSimulador" onclick="switchRentTab('simulador')" class="sync-btn">🧮 Simulador</button>
           <button id="rentTabDescuentos" onclick="switchRentTab('descuentos')" class="sync-btn">🏷️ Descuentos</button>
           <button id="rentTabFees" onclick="switchRentTab('fees')" class="sync-btn">🔍 Verificador</button>
@@ -1295,6 +1296,7 @@ tbody td {
       <div id="saludCmvPanel" style="display:none;margin-bottom:18px"></div>
       <div id="rentabilidadContent"><div style="color:var(--muted);font-size:13px;padding:20px;text-align:center">Sincronizá primero para ver los datos</div></div>
       <div id="loQuePasoContent" style="display:none"></div>
+      <div id="preciosContent" style="display:none"></div>
       <div id="simuladorContent" style="display:none"></div>
       <div id="descuentosContent" style="display:none"></div>
       <div id="feesContent" style="display:none"></div>
@@ -2782,6 +2784,7 @@ async function onAccountSelect(value) {
   _escData = null;
   _catVentasLoaded = false;
   window._abcFilter = 'todos';
+  resetPrecios();
   const syncBtn = document.getElementById('syncBtn');
   if (syncBtn) syncBtn.style.display = '';
   syncCondicionIvaSelectores();
@@ -2796,6 +2799,7 @@ async function selectClient(clientId, el) {
   _catVentasLoaded = false;
   window._abcFilter = 'todos';
   window._formasPagoData = null;
+  resetPrecios();
   document.querySelectorAll('#clientSelector .nav-item').forEach(n => n.classList.remove('active'));
   if (el) el.classList.add('active');
   syncCondicionIvaSelectores();
@@ -7269,6 +7273,7 @@ function perfFilterMode(idx) {
 function switchRentTab(tab) {
   document.getElementById('rentabilidadContent').style.display = tab === 'analisis'   ? '' : 'none';
   document.getElementById('loQuePasoContent').style.display    = tab === 'loquepaso'  ? '' : 'none';
+  document.getElementById('preciosContent').style.display      = tab === 'precios'    ? '' : 'none';
   document.getElementById('simuladorContent').style.display    = tab === 'simulador'  ? '' : 'none';
   document.getElementById('descuentosContent').style.display   = tab === 'descuentos' ? '' : 'none';
   document.getElementById('feesContent').style.display         = tab === 'fees'       ? '' : 'none';
@@ -7276,12 +7281,14 @@ function switchRentTab(tab) {
   document.getElementById('combosContent').style.display       = tab === 'combos'     ? '' : 'none';
   document.getElementById('rentTabAnalisis').style.background   = tab === 'analisis'   ? 'var(--accent)' : 'var(--surface2)';
   document.getElementById('rentTabLoQuePaso').style.background  = tab === 'loquepaso'  ? 'var(--accent)' : 'var(--surface2)';
+  document.getElementById('rentTabPrecios').style.background    = tab === 'precios'    ? 'var(--accent)' : 'var(--surface2)';
   document.getElementById('rentTabSimulador').style.background  = tab === 'simulador'  ? 'var(--accent)' : 'var(--surface2)';
   document.getElementById('rentTabDescuentos').style.background = tab === 'descuentos' ? 'var(--accent)' : 'var(--surface2)';
   document.getElementById('rentTabFees').style.background       = tab === 'fees'       ? 'var(--accent)' : 'var(--surface2)';
   document.getElementById('rentTabUmbrales').style.background   = tab === 'umbrales'   ? 'var(--accent)' : 'var(--surface2)';
   document.getElementById('rentTabCombos').style.background     = tab === 'combos'     ? 'var(--accent)' : 'var(--surface2)';
   if (tab === 'loquepaso')  loadLoQuePaso(false);
+  if (tab === 'precios')    loadPrecios();
   if (tab === 'simulador')  loadSimulador();
   if (tab === 'descuentos') loadDescuentos();
   if (tab === 'fees')       initVerificadorFees();
@@ -8769,6 +8776,882 @@ async function guardarCostoDsc(mlaId, value) {
   }
 }
 
+
+// ══════════════════════════════════════════════════════════════════════════════
+// PRECIOS — a qué precio vender para llegar a la contribución marginal objetivo
+// ══════════════════════════════════════════════════════════════════════════════
+//
+// El Simulador contesta esta misma pregunta pero de a una publicación por vez y con
+// los costos cargados a mano: en una call, con el cliente esperando, no alcanza.
+// Acá la cuenta se resuelve para el catálogo entero, con la comisión real de cada
+// publicación, su peso y su CMV ya cargados.
+//
+// La contribución marginal es la MISMA definición que usan el Simulador, Descuentos
+// y el P&L: precio − costos variables − CMV, sin los gastos fijos de estructura.
+// Costos variables = comisión + cargo fijo o envío de ML + IIBB + TACOS + déb/créd
+// + IVA neto + otros por unidad.
+
+const _PRC_TECHO = 50000000;   // techo de búsqueda del precio objetivo, en pesos
+const _PRC_IVA_ML = 0.21;      // los servicios de ML facturan siempre al 21%
+
+// ── Tarifas por banda de peso ────────────────────────────────────────────────
+// El cargo fijo y el envío de ML se indexan por peso: dos publicaciones al mismo
+// precio pagan distinto si pesan distinto. cargoFijoML() (el del Simulador) usa una
+// sola banda de referencia porque razona sobre un precio suelto; acá cada fila tiene
+// su peso, así que se bajan las 27 bandas de una y cada ítem consulta la suya.
+let _prcBandas      = null;
+let _prcUmbralEnvio = 33000;
+let _prcCorteEnvio  = 50000;
+let _prcPesoDefault = 3;
+
+async function _prcCargarTarifas() {
+  if (_prcBandas) return;
+  const d = await apiCall('GET', '/api/tarifas?bandas=1').catch(() => null);
+  if (!d || !Array.isArray(d.bandas) || !d.bandas.length) return;   // se sigue con el fallback
+  _prcBandas      = d.bandas;
+  _prcUmbralEnvio = d.umbral_envio_gratis || 33000;
+  _prcCorteEnvio  = d.env_corte_banda     || 50000;
+  _prcPesoDefault = d.peso_default_kg     || 3;
+}
+
+function _prcBanda(pesoKg) {
+  if (!_prcBandas) return null;
+  const p = (pesoKg > 0) ? pesoKg : _prcPesoDefault;
+  return _prcBandas.find(b => b.hasta_kg == null || p <= b.hasta_kg) || _prcBandas[_prcBandas.length - 1];
+}
+
+// Cargo fijo por unidad vendida a ese precio y ese peso. Sin las bandas cargadas cae
+// a cargoFijoML(), que es la banda de referencia: peor, pero nunca un 0 silencioso.
+function _prcCargoFijo(precio, pesoKg) {
+  const b = _prcBanda(pesoKg);
+  if (!b) return cargoFijoML(precio);
+  const e = b.escalas.find(x => precio >= x.desde && (x.hasta == null || precio <= x.hasta));
+  return e ? e.cargo : 0;
+}
+
+// Envío de tabla (precio de lista de ML). Sólo se usa cuando no hay el envío real que
+// devuelve listing_prices para esa publicación — típicamente porque hoy está por debajo
+// del umbral de envío gratis y el precio sugerido la cruza para arriba.
+function _prcEnvioTabla(precio, pesoKg) {
+  if (precio < _prcUmbralEnvio) return 0;
+  const b = _prcBanda(pesoKg);
+  if (!b || !Array.isArray(b.envio)) return 0;
+  return precio < _prcCorteEnvio ? b.envio[0] : b.envio[1];
+}
+
+function _prcEnvio(precio, it) {
+  if (precio < _prcUmbralEnvio) return 0;
+  // ML respondió "el vendedor no paga envío" para un precio que YA estaba por encima
+  // del umbral: ese 0 es un dato, no un "todavía no aplica". Se respeta a todo precio.
+  if (it.noPagaEnvio) return 0;
+  return it.envioML > 0 ? it.envioML : _prcEnvioTabla(precio, it.pesoKg);
+}
+
+// ── El cálculo ───────────────────────────────────────────────────────────────
+// ctx: { iibb, tacos, debCred, otros, esMono } — los porcentajes ya en fracción.
+function _prcCostos(precio, it, ctx) {
+  const com     = precio * it.comPct;
+  const cargo   = _prcCargoFijo(precio, it.pesoKg);
+  const envio   = _prcEnvio(precio, it);
+  const iibb    = precio * ctx.iibb;
+  const tacos   = precio * ctx.tacos;
+  const debCred = precio * ctx.debCred;
+
+  // El IVA del producto va a su alícuota (10,5 / 21 / 27); los servicios de ML siempre
+  // a 21%. Un monotributista no liquida IVA: no factura débito ni computa crédito.
+  const alic = it.alic;
+  const ivaVentas  = ctx.esMono ? 0 : precio / (1 + alic) * alic;
+  const ivaCompras = ctx.esMono ? 0
+    : (it.cmv / (1 + alic) * alic + (com + cargo + envio) / (1 + _PRC_IVA_ML) * _PRC_IVA_ML);
+  const ivaNeto = Math.max(0, ivaVentas - ivaCompras);
+
+  const total = com + cargo + envio + iibb + tacos + debCred + ivaNeto + ctx.otros;
+  return { com, cargo, envio, iibb, tacos, debCred, ivaVentas, ivaCompras, ivaNeto, otros: ctx.otros, total };
+}
+
+function _prcCM(precio, it, ctx) {
+  const c = _prcCostos(precio, it, ctx);
+  const cm = precio - c.total - it.cmv;
+  return { ...c,
+    precio, cm,
+    cmPct:    precio > 0  ? cm / precio * 100 : 0,
+    cmCosto:  it.cmv  > 0 ? cm / it.cmv  * 100 : null,
+  };
+}
+
+// CM en pesos que la publicación tiene que dejar a ese precio para cumplir el objetivo.
+// Con base 'precio' el objetivo crece con el precio; con base 'costo' (markup) es un
+// monto fijo, porque lo que se fija es cuánto ganar sobre lo que costó comprarlo.
+function _prcMetaCM(precio, it, objetivo) {
+  return objetivo.base === 'costo' ? it.cmv * objetivo.pct / 100
+                                   : precio * objetivo.pct / 100;
+}
+
+// Fronteras de precio donde cambia algún costo de ML: los cortes del cargo fijo, el
+// umbral de envío gratis y el corte de banda del envío. Entre dos fronteras el costo
+// de ML es constante y la CM crece de forma continua.
+function _prcFronteras(it) {
+  const b = _prcBanda(it.pesoKg);
+  const pts = new Set([0, _prcUmbralEnvio, _prcCorteEnvio]);
+  (b ? b.escalas : _tarifasEscalas).forEach(e => { if (e.desde > 0) pts.add(e.desde); });
+  const arr = [...pts].sort((x, y) => x - y);
+  return arr.map((lo, i) => [lo, i + 1 < arr.length ? arr[i + 1] - 1 : _PRC_TECHO]);
+}
+
+// Precio MÍNIMO al que la publicación alcanza el objetivo de CM.
+//
+// No se puede despejar con una fórmula sola: el cargo fijo de ML salta en $15.000,
+// $24.000 y $33.000 y el envío cambia de banda en $50.000, así que un precio despejado
+// con el costo de un tramo suele caer en otro donde ese costo ya no rige (el clásico
+// "me da $33.400" cuando arriba de $33.000 el costo es otro). Se resuelve tramo por
+// tramo, por bisección, y se devuelve el menor precio que cumple.
+//
+// Devuelve null si el objetivo es inalcanzable a cualquier precio — pasa cuando la CM
+// pedida más la comisión, IIBB, TACOS e IVA se comen el 100% del precio.
+function _prcPrecioObjetivo(it, ctx, objetivo) {
+  if (objetivo.base === 'costo' && !(it.cmv > 0)) return null;   // sin costo no hay markup
+  const f = p => _prcCM(p, it, ctx).cm - _prcMetaCM(p, it, objetivo);
+
+  for (const [lo, hi] of _prcFronteras(it)) {
+    const a = Math.max(lo, 1);
+    if (a > hi) continue;
+    if (f(hi) < 0) continue;              // ni en el techo del tramo llega
+    if (f(a) >= 0) return Math.ceil(a);   // el piso del tramo ya cumple: es el mínimo
+    let x0 = a, x1 = hi;
+    for (let i = 0; i < 40; i++) {
+      const mid = (x0 + x1) / 2;
+      if (f(mid) >= 0) x1 = mid; else x0 = mid;
+    }
+    return Math.ceil(x1);
+  }
+  return null;
+}
+
+// ── Estado de la solapa ──────────────────────────────────────────────────────
+window._prcData      = null;   // filas normalizadas
+window._prcMeta      = null;   // cliente, supuestos y objetivo global
+window._prcFilas     = null;   // filas ya calculadas (lo que se ve y lo que se exporta)
+window._prcOverrides = {};     // { mla: { comPct, envio } } — ajustes de la sesión, no se guardan
+window._prcExpandido = {};     // { mla: true }
+window._prcSort      = { col: 'gap', asc: false };
+window._prcSearch    = '';
+window._prcFiltro    = 'todas';
+window._prcLimite    = 200;    // filas dibujadas; el cálculo y el Excel van sobre todas
+let _prcRecalcTimer  = null;
+
+// Cambiar de cuenta invalida la tabla: el precio, la comisión y el CMV son por cliente.
+// Si la solapa está a la vista se recarga sola; si no, queda vacía y se arma al abrirla.
+function resetPrecios() {
+  window._prcData = null; window._prcFilas = null; window._prcMeta = null;
+  window._prcClientId = null; window._prcOverrides = {}; window._prcExpandido = {};
+  window._prcBase = null; window._prcSearch = ''; window._prcFiltro = 'todas';
+  window._prcLimite = 200;
+  const panel = document.getElementById('preciosContent');
+  if (panel && panel.style.display !== 'none') loadPrecios();
+}
+
+async function loadPrecios() {
+  const el = document.getElementById('preciosContent');
+  if (!el) return;
+  const client = getActiveClient();
+  if (!client) {
+    el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">Seleccioná una cuenta</div>';
+    window._prcData = null; window._prcFilas = null;
+    return;
+  }
+  // Ya está cargado para esta cuenta: no se vuelve a pedir al cambiar de solapa.
+  if (window._prcData && window._prcClientId === client.id) { renderPrecios(); return; }
+
+  el.innerHTML = `<div style="color:var(--muted);padding:40px;text-align:center">
+      <div style="font-size:30px;margin-bottom:10px">💲</div>
+      <div>Cargando publicaciones y costos reales de Mercado Libre…</div>
+      <div style="font-size:11px;margin-top:8px">La primera vez del día puede tardar varios minutos en cuentas grandes. Después abre al toque.</div>
+    </div>`;
+
+  await _prcCargarTarifas();
+  const d = await apiCall('GET', `/api/precios?client_id=${client.id}`).catch(() => null);
+  if (!d || d.error || !Array.isArray(d.items)) {
+    el.innerHTML = `<div style="color:var(--muted);padding:40px;text-align:center">
+      No se pudieron traer las publicaciones${d && d.error ? ' — ' + d.error : ''}.
+      <div style="margin-top:12px"><button class="sync-btn" onclick="recargarPrecios(true)">🔄 Reintentar</button></div></div>`;
+    return;
+  }
+
+  window._prcClientId = client.id;
+  window._prcMeta = d;
+  _prcInitSupuestos(d);
+  window._prcData = d.items.map(i => {
+    const precio      = parseFloat(i.price) || 0;
+    const precioLista = i.original_price ? parseFloat(i.original_price) : null;
+    const cmv         = parseFloat(i.costo_unit) || 0;
+    // Comisión: la real de ML si vino (percentage_fee, ya con cuotas si es Premium);
+    // si no, el 13% de referencia, marcado como estimado para que no pase por dato duro.
+    const comPct      = i.com_pct != null ? parseFloat(i.com_pct) : 13;
+    const envioML     = i.envio_unit != null ? parseFloat(i.envio_unit) : 0;
+    return {
+      id: i.mla_id, title: i.title || '', sku: i.sku || '',
+      precio, precioLista,
+      tieneDescuento: !!(precioLista && precio > 0 && precioLista > precio),
+      cmv, hasCMV: !!(i.has_cost && cmv > 0),
+      alic: (i.alicuota_iva != null ? parseFloat(i.alicuota_iva) : 21) / 100,
+      comPct: comPct / 100,
+      comSource: i.com_pct != null ? 'ML' : 'est.',
+      envioML,
+      envioSource: i.envio_source === 'ML' ? 'ML' : 'est.',
+      noPagaEnvio: i.envio_source === 'ML' && !(envioML > 0) && precio >= _prcUmbralEnvio,
+      pesoKg: i.peso_kg != null ? parseFloat(i.peso_kg) : null,
+      pesoSource: i.peso_source || 'default',
+      objetivoItem: i.cm_objetivo_pct != null ? parseFloat(i.cm_objetivo_pct) : null,
+      stock: i.stock ?? null,
+    };
+  });
+  renderPrecios();
+}
+
+async function recargarPrecios(force) {
+  window._prcData = null; window._prcFilas = null; window._prcClientId = null;
+  if (force) {
+    const client = getActiveClient();
+    const el = document.getElementById('preciosContent');
+    if (!client) return;
+    if (el) el.innerHTML = `<div style="color:var(--muted);padding:40px;text-align:center">
+        <div style="font-size:30px;margin-bottom:10px">🔄</div>
+        <div>Volviendo a pedirle a Mercado Libre la comisión y el envío de cada publicación…</div>
+        <div style="font-size:11px;margin-top:8px">En cuentas grandes tarda varios minutos.</div>
+      </div>`;
+    await _prcCargarTarifas();
+    const d = await apiCall('GET', `/api/precios?client_id=${client.id}&force_refresh=true`).catch(() => null);
+    if (d && !d.error) { window._prcClientId = null; }
+  }
+  loadPrecios();
+}
+
+// Supuestos que valen para todo el catálogo. Arrancan con los datos reales del cliente
+// (IIBB de su ficha, TACOS medido de los últimos 30 días) y se pueden pisar a mano.
+//
+// Viven en memoria, no en el DOM: repintar el panel para recalcular pisaría el número
+// recién tipeado con el default y le sacaría el foco al input en cada tecla.
+function _prcInitSupuestos(meta) {
+  const sup = (meta && meta.supuestos) || {};
+  window._prcSup = {
+    iibb:    sup.iibb_pct     ?? 4,
+    tacos:   sup.tacos_pct    ?? 0,
+    debCred: sup.deb_cred_pct ?? 1.2,
+    otros:   sup.otros_unit   ?? 0,
+  };
+  window._prcObjPct = meta && meta.cm_objetivo_pct != null ? meta.cm_objetivo_pct : 30;
+  window._prcBase   = (meta && meta.cm_objetivo_base) || 'precio';
+}
+
+function _prcCtx() {
+  const sup = window._prcSup || { iibb: 4, tacos: 0, debCred: 1.2, otros: 0 };
+  return {
+    iibb:    sup.iibb    / 100,
+    tacos:   sup.tacos   / 100,
+    debCred: sup.debCred / 100,
+    otros:   sup.otros,
+    esMono:  (window._prcMeta && window._prcMeta.condicion_iva) === 'monotributista',
+  };
+}
+
+function _prcObjetivo() {
+  return { pct: window._prcObjPct != null ? window._prcObjPct : 30,
+           base: window._prcBase || 'precio' };
+}
+
+function _prcSetSup(campo, valor) {
+  const v = parseFloat(valor);
+  if (!window._prcSup) _prcInitSupuestos(window._prcMeta);
+  window._prcSup[campo] = Number.isFinite(v) ? v : 0;
+  _prcRecalcDebounce();
+}
+
+function _prcSetObj(valor) {
+  const v = parseFloat(valor);
+  window._prcObjPct = Number.isFinite(v) ? v : 0;
+  _prcRecalcDebounce();
+}
+
+// Calcula TODAS las filas: CM actual, precio sugerido y diferencia. Se corre entero en
+// cada cambio de supuesto — son ~40 evaluaciones por tramo y por ítem, imperceptible
+// hasta varios miles de publicaciones — y el resultado alimenta tabla, resumen y Excel.
+function _prcCalcular() {
+  const ctx = _prcCtx();
+  const obj = _prcObjetivo();
+  window._prcFilas = (window._prcData || []).map(base => {
+    const ov = window._prcOverrides[base.id] || {};
+    const it = { ...base,
+      comPct:  ov.comPct  != null ? ov.comPct / 100 : base.comPct,
+      envioML: ov.envio   != null ? ov.envio        : base.envioML,
+    };
+    // Objetivo propio de la publicación si lo tiene; si no, el global del cliente.
+    const objItem = { base: obj.base, pct: base.objetivoItem != null ? base.objetivoItem : obj.pct };
+    const actual  = _prcCM(it.precio, it, ctx);
+    const sugerido = it.hasCMV ? _prcPrecioObjetivo(it, ctx, objItem) : null;
+    const enSugerido = sugerido ? _prcCM(sugerido, it, ctx) : null;
+    return { it, ctx, obj: objItem, actual, sugerido, enSugerido,
+             gap: (sugerido && it.precio > 0) ? sugerido - it.precio : null,
+             gapPct: (sugerido && it.precio > 0) ? (sugerido / it.precio - 1) * 100 : null };
+  });
+  return window._prcFilas;
+}
+
+function _prcFmt(n)  { return '$' + Math.round(n).toLocaleString('es-AR'); }
+function _prcPct(n)  { return (Math.round(n * 10) / 10).toFixed(1) + '%'; }
+
+// El valor de CM que se muestra depende del toggle: sobre precio (como el P&L) o
+// sobre costo (markup, como razona el que compra y remarca).
+function _prcCMValor(d, it) {
+  if ((window._prcBase || 'precio') === 'costo') return d.cmCosto;
+  return d.cmPct;
+}
+
+function renderPrecios() {
+  const el = document.getElementById('preciosContent');
+  if (!el) return;
+  const meta = window._prcMeta || {};
+  if (!window._prcData) { el.innerHTML = ''; return; }
+  if (!window._prcData.length) {
+    el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">No se encontraron publicaciones activas</div>';
+    return;
+  }
+  if (!window._prcBase) window._prcBase = meta.cm_objetivo_base || 'precio';
+
+  const filas = _prcCalcular();
+  const base  = window._prcBase;
+  const sufijo = base === 'costo' ? 's/costo' : 's/precio';
+  const supuestos = window._prcSup || { iibb: 4, tacos: 0, debCred: 1.2, otros: 0 };
+  const tacosReal = meta.tacos_real;
+  const fetched   = meta.fetched_at ? new Date(meta.fetched_at) : null;
+  const horas     = fetched ? Math.round((Date.now() - fetched.getTime()) / 3600000) : null;
+
+  const inputSup = (id, campo, label, val, suf, titulo) => `
+    <div title="${titulo || ''}">
+      <div style="font-size:10px;color:var(--muted);margin-bottom:3px">${label}</div>
+      <div style="display:flex;align-items:center;gap:3px">
+        <input id="${id}" type="number" value="${val}" step="any" min="0" oninput="_prcSetSup('${campo}', this.value)"
+          style="width:64px;padding:5px 7px;border-radius:7px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:12px;outline:none">
+        <span style="font-size:11px;color:var(--muted)">${suf}</span>
+      </div>
+    </div>`;
+
+  el.innerHTML = `
+    <div id="prcResumen" style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px">${_prcResumenHtml(filas)}</div>
+
+    <div class="kpi-card" style="padding:14px 16px;margin-bottom:14px">
+      <div style="display:flex;gap:18px;flex-wrap:wrap;align-items:flex-end">
+
+        <div>
+          <div style="font-size:10px;color:var(--muted);margin-bottom:3px">Contribución marginal objetivo</div>
+          <div style="display:flex;align-items:center;gap:6px">
+            <input id="prcObjGlobal" type="number" value="${window._prcObjPct ?? 30}" step="any" min="0" max="99"
+              oninput="_prcSetObj(this.value)"
+              style="width:78px;padding:7px 9px;border-radius:8px;border:1.5px solid var(--accent);background:var(--surface2);color:var(--text);font-size:16px;font-weight:700;text-align:right;outline:none;font-family:var(--font-b)">
+            <span style="font-size:13px;color:var(--muted)">%</span>
+            <div style="display:flex;background:var(--surface2);border-radius:8px;padding:2px;margin-left:4px">
+              <button onclick="setPrcBase('precio')" id="prcBasePrecio"
+                style="padding:5px 10px;border-radius:6px;border:none;cursor:pointer;font-size:11px;font-weight:700;background:${base==='precio'?'var(--accent)':'transparent'};color:${base==='precio'?'#000':'var(--muted)'}">s/ precio</button>
+              <button onclick="setPrcBase('costo')" id="prcBaseCosto"
+                style="padding:5px 10px;border-radius:6px;border:none;cursor:pointer;font-size:11px;font-weight:700;background:${base==='costo'?'var(--accent)':'transparent'};color:${base==='costo'?'#000':'var(--muted)'}">s/ costo</button>
+            </div>
+            <button class="sync-btn" onclick="guardarObjetivoGlobal()" style="margin-left:4px" title="Guarda el objetivo para esta cuenta">💾</button>
+          </div>
+          <div style="font-size:10px;color:var(--muted);margin-top:4px">
+            ${base === 'costo'
+              ? 'Markup: cuánto querés ganar sobre lo que te costó el producto.'
+              : 'Cuánto te queda de cada $100 vendidos, antes de los gastos fijos.'}
+          </div>
+        </div>
+
+        <div style="width:1px;align-self:stretch;background:var(--border)"></div>
+
+        <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end">
+          ${inputSup('prcIIBB', 'iibb', 'IIBB', supuestos.iibb, '%', 'Sale de la ficha del cliente (tasa de IIBB)')}
+          ${inputSup('prcTACOS', 'tacos', 'TACOS', supuestos.tacos, '%',
+            tacosReal ? `Medido: publicidad / facturación de los últimos ${tacosReal.dias} días (${tacosReal.desde} a ${tacosReal.hasta})`
+                      : 'Sin historial de publicidad para esta cuenta — cargalo a mano si hace pauta')}
+          ${inputSup('prcDebCred', 'debCred', 'Déb/Créd', supuestos.debCred, '%', 'Impuesto al cheque sobre el movimiento de fondos')}
+          ${inputSup('prcOtros', 'otros', 'Otros', supuestos.otros, '$', 'Costo extra por unidad: packaging, armado, lo que sea')}
+        </div>
+
+        <div style="flex:1"></div>
+
+        <div style="display:flex;gap:6px;align-items:center">
+          <input id="prcBuscar" type="text" placeholder="MLA, SKU o título…" value="${(window._prcSearch || '').replace(/"/g, '&quot;')}"
+            oninput="_prcBuscar(this.value)"
+            style="padding:7px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:12px;width:190px;outline:none">
+          <select onchange="_prcSetFiltro(this.value)"
+            style="padding:7px 9px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:12px">
+            <option value="todas"    ${window._prcFiltro==='todas'?'selected':''}>Todas</option>
+            <option value="subir"    ${window._prcFiltro==='subir'?'selected':''}>Hay que subir</option>
+            <option value="bajar"    ${window._prcFiltro==='bajar'?'selected':''}>Podés bajar</option>
+            <option value="negativa" ${window._prcFiltro==='negativa'?'selected':''}>CM negativa</option>
+            <option value="sincmv"   ${window._prcFiltro==='sincmv'?'selected':''}>Sin CMV</option>
+            <option value="propio"   ${window._prcFiltro==='propio'?'selected':''}>Con objetivo propio</option>
+          </select>
+          <button class="sync-btn" onclick="exportarPreciosExcel()" title="Baja la tabla tal como la estás viendo">📥 Excel</button>
+          <button class="sync-btn" onclick="recargarPrecios(true)" title="Vuelve a pedirle a ML la comisión y el envío de cada publicación">🔄</button>
+        </div>
+      </div>
+
+      <div style="font-size:10px;color:var(--muted);margin-top:10px;border-top:1px solid var(--border);padding-top:8px">
+        Costos variables = comisión + cargo fijo o envío de ML + IIBB + TACOS + déb/créd + IVA neto + otros.
+        <b>CM = precio − costos variables − CMV</b>, sin los gastos fijos de estructura.
+        · Tarifas de ML vigentes ${meta.vigencia_tarifas || '1/9/2026'}
+        ${meta.condicion_iva === 'monotributista' ? ' · Monotributista: IVA en 0' : ''}
+        ${horas != null ? ` · datos de ${horas < 1 ? 'recién' : 'hace ' + horas + 'h'}` : ''}
+        <span id="prcAvisoImposible"></span>
+      </div>
+    </div>
+
+    <div class="kpi-card" style="padding:0;overflow:hidden">
+      <div style="overflow-x:auto;max-height:70vh;overflow-y:auto" id="prcTablaWrap">${_prcTabla(filas, sufijo)}</div>
+    </div>`;
+
+  // El aviso de publicaciones inalcanzables se pinta despues del innerHTML, porque el
+  // repintado parcial lo actualiza por id y asi los dos caminos escriben en el mismo lugar.
+  const nImposible = filas.filter(f => f.it.hasCMV && f.sugerido == null).length;
+  const aviso = document.getElementById('prcAvisoImposible');
+  if (aviso && nImposible) {
+    aviso.innerHTML = ` &middot; <span style="color:#ff9100">${nImposible} publicaciones no llegan al objetivo a ningun precio</span>`;
+  }
+}
+
+// Las tarjetas de arriba dependen de los supuestos, así que se repintan en cada
+// recálculo — pero aparte de los controles, para no tocar el input que se está usando.
+function _prcResumenHtml(filas) {
+  const meta     = window._prcMeta || {};
+  const conCMV   = filas.filter(f => f.it.hasCMV);
+  const subir    = conCMV.filter(f => f.gap != null && f.gap >  0).length;
+  const bajar    = conCMV.filter(f => f.gap != null && f.gap <  0).length;
+  const sinCMV   = filas.filter(f => !f.it.hasCMV).length;
+  const bajoCero = conCMV.filter(f => f.actual.cm < 0).length;
+
+  const card = (label, valor, color, hint) => `
+    <div class="kpi-card" style="padding:14px 16px;flex:1;min-width:150px">
+      <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em">${label}</div>
+      <div style="font-size:24px;font-weight:800;font-family:var(--font-b);color:${color}">${valor}</div>
+      ${hint ? `<div style="font-size:10px;color:var(--muted);margin-top:2px">${hint}</div>` : ''}
+    </div>`;
+
+  return card('Publicaciones', filas.length.toLocaleString('es-AR'), 'var(--text)', `${meta.completeness ?? 0}% con CMV cargado`)
+       + card('Hay que subir', subir.toLocaleString('es-AR'), subir ? '#ff5252' : 'var(--muted)', 'están por debajo del objetivo')
+       + card('Podés bajar', bajar.toLocaleString('es-AR'), bajar ? '#00e676' : 'var(--muted)', 'ya superan el objetivo')
+       + card('CM negativa hoy', bajoCero.toLocaleString('es-AR'), bajoCero ? '#ff5252' : 'var(--muted)', 'pierden plata en cada venta')
+       + card('Sin CMV', sinCMV.toLocaleString('es-AR'), sinCMV ? '#ff9100' : 'var(--muted)', 'no se les puede calcular');
+}
+
+function _prcTh(col, label, align, titulo) {
+  const act = window._prcSort.col === col;
+  const arrow = act ? (window._prcSort.asc ? ' ↑' : ' ↓') : '';
+  return `<th onclick="sortPrecios('${col}')" title="${titulo || ''}"
+    style="padding:9px 8px;text-align:${align || 'right'};font-size:11px;font-weight:600;cursor:pointer;white-space:nowrap;position:sticky;top:0;background:var(--surface2);z-index:2;color:${act ? 'var(--accent)' : 'var(--muted)'}">${label}${arrow}</th>`;
+}
+
+function _prcFiltrar(filas) {
+  const q = (window._prcSearch || '').toLowerCase();
+  let out = filas.filter(f =>
+    !q || f.it.id.toLowerCase().includes(q)
+       || (f.it.sku || '').toLowerCase().includes(q)
+       || (f.it.title || '').toLowerCase().includes(q));
+  const modo = window._prcFiltro || 'todas';
+  if (modo === 'subir')    out = out.filter(f => f.gap != null && f.gap > 0);
+  if (modo === 'bajar')    out = out.filter(f => f.gap != null && f.gap < 0);
+  if (modo === 'negativa') out = out.filter(f => f.it.hasCMV && f.actual.cm < 0);
+  if (modo === 'sincmv')   out = out.filter(f => !f.it.hasCMV);
+  if (modo === 'propio')   out = out.filter(f => f.it.objetivoItem != null);
+
+  const { col, asc } = window._prcSort;
+  const val = f => {
+    if (col === 'mla')      return f.it.id;
+    if (col === 'title')    return (f.it.title || '').toLowerCase();
+    if (col === 'sku')      return (f.it.sku || '').toLowerCase();
+    if (col === 'cmv')      return f.it.cmv;
+    if (col === 'costos')   return f.actual.total;
+    if (col === 'precio')   return f.it.precio;
+    if (col === 'cm')       return _prcCMValor(f.actual, f.it) ?? -1e9;
+    if (col === 'objetivo') return f.obj.pct;
+    if (col === 'sugerido') return f.sugerido ?? -1;
+    return f.gap ?? -1e12;   // 'gap'
+  };
+  return out.sort((a, b) => {
+    const va = val(a), vb = val(b);
+    if (typeof va === 'string') return asc ? va.localeCompare(vb) : vb.localeCompare(va);
+    return asc ? va - vb : vb - va;
+  });
+}
+
+function _prcTabla(filas, sufijo) {
+  const vis = _prcFiltrar(filas);
+  const limite = window._prcLimite || 200;
+  const muestra = vis.slice(0, limite);
+
+  const head = `<thead><tr>
+    ${_prcTh('mla', 'MLA', 'left')}
+    ${_prcTh('title', 'Título', 'left')}
+    ${_prcTh('sku', 'SKU', 'left')}
+    ${_prcTh('cmv', 'CMV', 'right', 'Costo del producto. Editable: se guarda en el Reporte Financiero')}
+    ${_prcTh('costos', 'Costos var.', 'right', 'Comisión + cargo fijo/envío ML + IIBB + TACOS + déb/créd + IVA neto + otros. Click en la fila para abrir el detalle')}
+    ${_prcTh('precio', 'Precio actual', 'right')}
+    ${_prcTh('cm', 'CM actual', 'right', 'Contribución marginal al precio de hoy')}
+    ${_prcTh('objetivo', 'CM objetivo', 'right', 'Vacío = sigue el objetivo global de la cuenta. Cargá un número para que esta publicación tenga el suyo')}
+    ${_prcTh('sugerido', 'Precio objetivo', 'right', 'Precio mínimo al que se alcanza la CM objetivo, con los saltos de cargo fijo y envío de ML ya contemplados')}
+    ${_prcTh('gap', 'Diferencia', 'right')}
+  </tr></thead>`;
+
+  const rows = muestra.map((f, idx) => {
+    const it = f.it;
+    const bg = idx % 2 === 0 ? 'background:rgba(255,255,255,.015)' : '';
+    const cmVal = _prcCMValor(f.actual, it);
+    const objPct = f.obj.pct;
+    const cumple = cmVal != null && cmVal >= objPct;
+    const cmColor = !it.hasCMV ? 'var(--muted)' : f.actual.cm < 0 ? '#ff5252' : cumple ? '#00e676' : '#ff9100';
+
+    const precioHtml = it.tieneDescuento
+      ? `<span style="color:#ff9100;font-weight:700">${_prcFmt(it.precio)}</span>
+         <div style="font-size:10px;color:var(--muted);text-decoration:line-through">${_prcFmt(it.precioLista)}</div>`
+      : `<span style="font-weight:600">${_prcFmt(it.precio)}</span>`;
+
+    let sugHtml, gapHtml;
+    if (!it.hasCMV) {
+      sugHtml = '<span style="color:var(--muted);font-size:11px">sin CMV</span>';
+      gapHtml = '<span style="color:var(--muted)">—</span>';
+    } else if (f.sugerido == null) {
+      sugHtml = '<span style="color:#ff5252;font-size:11px" title="Con esta comisión, IIBB, TACOS e IVA la CM pedida no se alcanza a ningún precio">inalcanzable</span>';
+      gapHtml = '<span style="color:var(--muted)">—</span>';
+    } else {
+      const sube = f.gap > 0;
+      sugHtml = `<span style="font-weight:800;font-size:13px;color:${sube ? '#ff5252' : '#00e676'}">${_prcFmt(f.sugerido)}</span>`;
+      gapHtml = Math.abs(f.gap) < 1
+        ? '<span style="color:#00e676;font-size:11px">en objetivo</span>'
+        : `<span style="color:${sube ? '#ff5252' : '#00e676'};font-weight:700">${sube ? '+' : '−'}${_prcFmt(Math.abs(f.gap))}</span>
+           <div style="font-size:10px;color:var(--muted)">${sube ? '+' : ''}${_prcPct(f.gapPct)}</div>`;
+    }
+
+    const mlaLink = 'MLA-' + it.id.replace(/^MLA/i, '');
+    const abierto = !!window._prcExpandido[it.id];
+
+    let html = `<tr style="border-bottom:1px solid var(--border);${bg}">
+      <td style="padding:6px 8px;font-size:11px;white-space:nowrap">
+        <span onclick="navigator.clipboard.writeText('${it.id}');showToast('${it.id} copiado')"
+          style="color:var(--accent);font-weight:600;cursor:pointer" title="Click para copiar">${it.id}</span>
+      </td>
+      <td style="padding:6px 8px;font-size:12px;max-width:230px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${(it.title || '').replace(/"/g, "'")}">
+        <a href="https://articulo.mercadolibre.com.ar/${mlaLink}" target="_blank" style="color:var(--text);text-decoration:none">${it.title || '—'}</a>
+      </td>
+      <td style="padding:6px 8px;font-size:11px;color:var(--muted);max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${(it.sku || '').replace(/"/g, "'")}">${it.sku || '—'}</td>
+      <td style="padding:4px 6px;text-align:right;white-space:nowrap">
+        <span style="font-size:11px;color:var(--muted)">$</span>
+        <input type="number" value="${it.cmv || ''}" min="0" step="1" placeholder="0"
+          onchange="guardarCostoPrecios('${it.id}', this.value)"
+          style="width:80px;padding:4px 6px;border-radius:6px;border:1px solid ${it.hasCMV ? 'var(--border)' : '#ff9100'};background:var(--surface2);color:var(--text);font-size:12px;text-align:right;outline:none">
+      </td>
+      <td onclick="togglePrecioDetalle('${it.id}')" style="padding:6px 8px;text-align:right;cursor:pointer" title="Click para ver el desglose">
+        <span style="font-size:12px;font-weight:600">${_prcFmt(f.actual.total)}</span>
+        <div style="font-size:10px;color:var(--muted)">${it.precio > 0 ? _prcPct(f.actual.total / it.precio * 100) : '—'} ${abierto ? '▾' : '▸'}</div>
+      </td>
+      <td style="padding:6px 8px;text-align:right;font-size:12px">${precioHtml}</td>
+      <td style="padding:6px 8px;text-align:right">
+        <span style="font-size:13px;font-weight:800;color:${cmColor}">${cmVal == null ? '—' : _prcPct(cmVal)}</span>
+        <div style="font-size:10px;color:var(--muted)">${it.hasCMV ? _prcFmt(f.actual.cm) : 'falta costo'}</div>
+      </td>
+      <td style="padding:4px 6px;text-align:right;white-space:nowrap">
+        <input type="number" value="${it.objetivoItem != null ? it.objetivoItem : ''}" min="0" max="99" step="any"
+          placeholder="${_prcObjetivo().pct}"
+          onchange="guardarObjetivoItem('${it.id}', this.value)"
+          title="Vacío = sigue el objetivo global de la cuenta"
+          style="width:60px;padding:4px 6px;border-radius:6px;border:1px solid ${it.objetivoItem != null ? 'var(--accent)' : 'var(--border)'};background:var(--surface2);color:var(--text);font-size:12px;text-align:right;outline:none">
+        <span style="font-size:10px;color:var(--muted)">%</span>
+      </td>
+      <td style="padding:6px 8px;text-align:right">${sugHtml}</td>
+      <td style="padding:6px 8px;text-align:right;font-size:12px">${gapHtml}</td>
+    </tr>`;
+
+    if (abierto) html += _prcDetalle(f);
+    return html;
+  }).join('');
+
+  const pie = vis.length > muestra.length
+    ? `<div style="padding:12px;text-align:center;border-top:1px solid var(--border)">
+         <span style="font-size:12px;color:var(--muted)">Mostrando ${muestra.length.toLocaleString('es-AR')} de ${vis.length.toLocaleString('es-AR')} publicaciones</span>
+         <button class="sync-btn" style="margin-left:10px" onclick="verMasPrecios()">Ver 200 más</button>
+         <span style="font-size:11px;color:var(--muted);margin-left:8px">(el Excel baja las ${vis.length.toLocaleString('es-AR')})</span>
+       </div>`
+    : `<div style="padding:10px;text-align:center;font-size:11px;color:var(--muted);border-top:1px solid var(--border)">${vis.length.toLocaleString('es-AR')} publicaciones · CM ${sufijo}</div>`;
+
+  return `<table style="width:100%;border-collapse:collapse">${head}<tbody>${rows}</tbody></table>${pie}`;
+}
+
+// Desglose de una publicación: qué se lleva cada costo hoy y qué se llevaría al precio
+// objetivo. Es la fila que se abre al clickear "Costos var.".
+function _prcDetalle(f) {
+  const it = f.it, a = f.actual, s = f.enSugerido;
+  const ov = window._prcOverrides[it.id] || {};
+
+  const linea = (label, hoy, obj, nota) => `
+    <tr>
+      <td style="padding:3px 8px;font-size:11px;color:var(--muted)">${label}${nota ? ` <span style="font-size:9px;opacity:.7">${nota}</span>` : ''}</td>
+      <td style="padding:3px 8px;text-align:right;font-size:11px">${_prcFmt(hoy)}</td>
+      <td style="padding:3px 8px;text-align:right;font-size:11px;color:var(--muted)">${obj == null ? '—' : _prcFmt(obj)}</td>
+    </tr>`;
+
+  const pesoTxt = it.pesoKg > 0
+    ? `${it.pesoKg} kg (${it.pesoSource === 'ficha' ? 'declarado en la ficha' : 'dimensiones de envío'})`
+    : `sin declarar — se calcula con ${_prcPesoDefault} kg de referencia`;
+
+  return `<tr style="background:rgba(34,211,238,.05)">
+    <td colspan="10" style="padding:12px 16px">
+      <div style="display:flex;gap:24px;flex-wrap:wrap">
+
+        <div style="flex:1;min-width:320px">
+          <table style="width:100%;border-collapse:collapse">
+            <thead><tr>
+              <th style="padding:3px 8px;text-align:left;font-size:10px;color:var(--muted);text-transform:uppercase">Costo variable</th>
+              <th style="padding:3px 8px;text-align:right;font-size:10px;color:var(--muted);text-transform:uppercase">Hoy (${_prcFmt(it.precio)})</th>
+              <th style="padding:3px 8px;text-align:right;font-size:10px;color:var(--muted);text-transform:uppercase">${f.sugerido ? 'Objetivo (' + _prcFmt(f.sugerido) + ')' : 'Objetivo'}</th>
+            </tr></thead>
+            <tbody>
+              ${linea('Comisión ML', a.com, s && s.com, `${(it.comPct * 100).toFixed(2)}% · ${it.comSource}`)}
+              ${linea('Cargo fijo por venta', a.cargo, s && s.cargo, a.cargo > 0 ? 'publicación bajo $' + _prcUmbralEnvio.toLocaleString('es-AR') : 'no aplica arriba del umbral')}
+              ${linea('Envío', a.envio, s && s.envio, it.noPagaEnvio ? 'ML: no lo paga el vendedor' : it.envioSource)}
+              ${linea('IIBB', a.iibb, s && s.iibb)}
+              ${linea('TACOS (publicidad)', a.tacos, s && s.tacos)}
+              ${linea('Déb/Créd', a.debCred, s && s.debCred)}
+              ${linea('IVA neto', a.ivaNeto, s && s.ivaNeto, f.ctx.esMono ? 'monotributista' : `débito ${_prcFmt(a.ivaVentas)} − crédito ${_prcFmt(a.ivaCompras)}`)}
+              ${a.otros > 0 ? linea('Otros por unidad', a.otros, s && s.otros) : ''}
+              <tr style="border-top:1px solid var(--border)">
+                <td style="padding:4px 8px;font-size:11px;font-weight:800">Total costos variables</td>
+                <td style="padding:4px 8px;text-align:right;font-size:12px;font-weight:800">${_prcFmt(a.total)}</td>
+                <td style="padding:4px 8px;text-align:right;font-size:12px;font-weight:800;color:var(--muted)">${s ? _prcFmt(s.total) : '—'}</td>
+              </tr>
+              <tr>
+                <td style="padding:4px 8px;font-size:11px;color:var(--muted)">CMV</td>
+                <td style="padding:4px 8px;text-align:right;font-size:11px">${_prcFmt(it.cmv)}</td>
+                <td style="padding:4px 8px;text-align:right;font-size:11px;color:var(--muted)">${_prcFmt(it.cmv)}</td>
+              </tr>
+              <tr style="border-top:2px solid var(--border)">
+                <td style="padding:5px 8px;font-size:12px;font-weight:800;color:#22d3ee">Contribución marginal</td>
+                <td style="padding:5px 8px;text-align:right;font-size:13px;font-weight:800;color:${a.cm >= 0 ? '#22d3ee' : '#ff5252'}">
+                  ${_prcFmt(a.cm)} <span style="font-size:10px;color:var(--muted)">${a.cmPct.toFixed(1)}% s/precio${a.cmCosto != null ? ' · ' + a.cmCosto.toFixed(1) + '% s/costo' : ''}</span>
+                </td>
+                <td style="padding:5px 8px;text-align:right;font-size:13px;font-weight:800;color:var(--muted)">
+                  ${s ? _prcFmt(s.cm) + ` <span style="font-size:10px">${s.cmPct.toFixed(1)}%${s.cmCosto != null ? ' · ' + s.cmCosto.toFixed(1) + '% s/c' : ''}</span>` : '—'}
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div style="min-width:230px">
+          <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:8px">Ajustar esta publicación</div>
+          <div style="margin-bottom:10px">
+            <div style="font-size:11px;color:var(--muted);margin-bottom:3px">Comisión %</div>
+            <input type="number" value="${ov.comPct != null ? ov.comPct : (it.comPct * 100).toFixed(2)}" step="any" min="0"
+              onchange="ajustarPrecioItem('${it.id}','comPct',this.value)"
+              style="width:100%;padding:6px 8px;border-radius:7px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:12px;box-sizing:border-box;outline:none">
+          </div>
+          <div style="margin-bottom:10px">
+            <div style="font-size:11px;color:var(--muted);margin-bottom:3px">Envío que pagás $</div>
+            <input type="number" value="${ov.envio != null ? ov.envio : it.envioML}" step="any" min="0"
+              onchange="ajustarPrecioItem('${it.id}','envio',this.value)"
+              style="width:100%;padding:6px 8px;border-radius:7px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:12px;box-sizing:border-box;outline:none">
+          </div>
+          <div style="font-size:10px;color:var(--muted);line-height:1.5">
+            Peso: ${pesoTxt}<br>
+            Alícuota IVA del producto: ${(it.alic * 100).toFixed(1)}%<br>
+            ${it.stock != null ? 'Stock: ' + it.stock.toLocaleString('es-AR') + '<br>' : ''}
+            <span style="opacity:.75">Los ajustes de comisión y envío valen para esta sesión: no se guardan.</span>
+          </div>
+        </div>
+      </div>
+    </td>
+  </tr>`;
+}
+
+// ── Interacciones ────────────────────────────────────────────────────────────
+function _prcRerenderTabla() {
+  const wrap = document.getElementById('prcTablaWrap');
+  if (!wrap) { renderPrecios(); return; }
+  const base  = window._prcBase || 'precio';
+  const filas = _prcCalcular();
+  wrap.innerHTML = _prcTabla(filas, base === 'costo' ? 's/costo' : 's/precio');
+
+  const res = document.getElementById('prcResumen');
+  if (res) res.innerHTML = _prcResumenHtml(filas);
+
+  const aviso = document.getElementById('prcAvisoImposible');
+  if (aviso) {
+    const n = filas.filter(f => f.it.hasCMV && f.sugerido == null).length;
+    aviso.innerHTML = n
+      ? ` · <span style="color:#ff9100">${n} publicaciones no llegan al objetivo a ningún precio</span>`
+      : '';
+  }
+}
+
+// Cambiar un supuesto recalcula el catálogo entero. Se espera a que el usuario deje de
+// tipear para no recalcular una vez por tecla, y se repinta sólo lo que cambia: si se
+// rearmara el panel completo, el input que está usando perdería el foco.
+function _prcRecalcDebounce() {
+  clearTimeout(_prcRecalcTimer);
+  _prcRecalcTimer = setTimeout(() => _prcRerenderTabla(), 250);
+}
+
+// El toggle sí rearma el panel: cambia el estado de los botones y el texto de ayuda.
+function setPrcBase(base) {
+  window._prcBase = base;
+  renderPrecios();
+}
+
+function _prcBuscar(v) {
+  window._prcSearch = v;
+  window._prcLimite = 200;
+  _prcRerenderTabla();
+  const inp = document.getElementById('prcBuscar');
+  if (inp) { inp.focus(); inp.setSelectionRange(inp.value.length, inp.value.length); }
+}
+
+function _prcSetFiltro(v) { window._prcFiltro = v; window._prcLimite = 200; _prcRerenderTabla(); }
+function verMasPrecios()  { window._prcLimite = (window._prcLimite || 200) + 200; _prcRerenderTabla(); }
+
+function sortPrecios(col) {
+  const s = window._prcSort;
+  if (s.col === col) s.asc = !s.asc; else { s.col = col; s.asc = false; }
+  _prcRerenderTabla();
+}
+
+function togglePrecioDetalle(mla) {
+  window._prcExpandido[mla] = !window._prcExpandido[mla];
+  _prcRerenderTabla();
+}
+
+function ajustarPrecioItem(mla, campo, valor) {
+  const v = parseFloat(valor);
+  if (!window._prcOverrides[mla]) window._prcOverrides[mla] = {};
+  if (Number.isFinite(v)) window._prcOverrides[mla][campo] = v;
+  else delete window._prcOverrides[mla][campo];
+  _prcRerenderTabla();
+}
+
+// El CMV se guarda donde vive: product_costs, la misma tabla que lee el P&L.
+async function guardarCostoPrecios(mla, valor) {
+  const client = getActiveClient();
+  if (!client) { showToast('Seleccioná una cuenta'); return; }
+  const fila = (window._prcData || []).find(p => p.id === mla);
+  if (!fila) return;
+  const costo = parseFloat(valor) || 0;
+  fila.cmv = costo;
+  fila.hasCMV = costo > 0;
+  _prcRerenderTabla();
+  try {
+    await apiCall('POST', '/api/reporte/costos', {
+      client_id: client.id,
+      costos: [{ mla_id: mla, title: fila.title, costo_unit: costo, alicuota_iva: Math.round(fila.alic * 100) }],
+    });
+    showToast('💾 CMV guardado (' + _prcFmt(costo) + ')');
+  } catch (e) {
+    showToast('⚠️ No se pudo guardar el CMV');
+  }
+}
+
+async function guardarObjetivoGlobal() {
+  const client = getActiveClient();
+  if (!client) { showToast('Seleccioná una cuenta'); return; }
+  const obj = _prcObjetivo();
+  const r = await apiCall('PUT', '/api/precios/objetivo', {
+    client_id: client.id, cm_objetivo_pct: obj.pct, cm_objetivo_base: obj.base,
+  }).catch(() => null);
+  if (!r || r.error) { showToast('⚠️ ' + ((r && r.error) || 'No se pudo guardar el objetivo')); return; }
+  if (window._prcMeta) { window._prcMeta.cm_objetivo_pct = obj.pct; window._prcMeta.cm_objetivo_base = obj.base; }
+  showToast('🎯 Objetivo guardado: CM ' + obj.pct + '% ' + (obj.base === 'costo' ? 'sobre costo' : 'sobre precio'));
+}
+
+// Objetivo propio de una publicación. Vacío borra el override y la fila vuelve al global.
+async function guardarObjetivoItem(mla, valor) {
+  const client = getActiveClient();
+  if (!client) { showToast('Seleccioná una cuenta'); return; }
+  const fila = (window._prcData || []).find(p => p.id === mla);
+  if (!fila) return;
+  const limpio = (valor === '' || valor == null) ? null : parseFloat(valor);
+  if (limpio != null && (!Number.isFinite(limpio) || limpio < 0 || limpio >= 100)) {
+    showToast('⚠️ El objetivo tiene que estar entre 0 y 99,99');
+    return;
+  }
+  fila.objetivoItem = limpio;
+  _prcRerenderTabla();
+  const r = await apiCall('PUT', '/api/precios/objetivo-item', {
+    client_id: client.id, mla_id: mla, title: fila.title, cm_objetivo_pct: limpio,
+  }).catch(() => null);
+  if (!r || r.error) { showToast('⚠️ No se pudo guardar el objetivo de ' + mla); return; }
+  showToast(limpio == null ? '🎯 ' + mla + ' vuelve al objetivo global'
+                           : '🎯 ' + mla + ': CM objetivo ' + limpio + '%');
+}
+
+// Baja lo que estás viendo (mismo filtro y mismo orden), no el catálogo crudo.
+function exportarPreciosExcel() {
+  const filas = _prcFiltrar(window._prcFilas || _prcCalcular());
+  if (!filas.length) { showToast('No hay filas para exportar'); return; }
+  const client = getActiveClient();
+  const base = window._prcBase || 'precio';
+
+  const rows = filas.map(f => {
+    const it = f.it, a = f.actual, s = f.enSugerido;
+    return {
+      'MLA': it.id,
+      'Título': it.title,
+      'SKU': it.sku,
+      'CMV': Math.round(it.cmv),
+      'Comisión %': parseFloat((it.comPct * 100).toFixed(2)),
+      'Comisión $': Math.round(a.com),
+      'Cargo fijo ML $': Math.round(a.cargo),
+      'Envío $': Math.round(a.envio),
+      'IIBB $': Math.round(a.iibb),
+      'TACOS $': Math.round(a.tacos),
+      'Déb/Créd $': Math.round(a.debCred),
+      'IVA neto $': Math.round(a.ivaNeto),
+      'Otros $': Math.round(a.otros),
+      'Costos variables $': Math.round(a.total),
+      'Precio de lista': it.precioLista ? Math.round(it.precioLista) : '',
+      'Precio actual': Math.round(it.precio),
+      'CM actual $': it.hasCMV ? Math.round(a.cm) : '',
+      'CM actual % s/precio': it.hasCMV ? parseFloat(a.cmPct.toFixed(1)) : '',
+      'CM actual % s/costo': it.hasCMV && a.cmCosto != null ? parseFloat(a.cmCosto.toFixed(1)) : '',
+      'CM objetivo %': f.obj.pct,
+      'Objetivo medido sobre': base === 'costo' ? 'costo' : 'precio',
+      'Objetivo propio': it.objetivoItem != null ? 'sí' : 'no (global)',
+      'Precio objetivo': f.sugerido != null ? f.sugerido : (it.hasCMV ? 'inalcanzable' : 'sin CMV'),
+      'Diferencia $': f.gap != null ? Math.round(f.gap) : '',
+      'Diferencia %': f.gapPct != null ? parseFloat(f.gapPct.toFixed(1)) : '',
+      'CM al precio objetivo $': s ? Math.round(s.cm) : '',
+      'Peso kg': it.pesoKg != null ? it.pesoKg : '',
+      'Stock': it.stock != null ? it.stock : '',
+    };
+  });
+
+  const ctx  = _prcCtx();
+  const meta = window._prcMeta || {};
+  const contexto = [
+    { Concepto: 'Cuenta',                 Valor: (client && client.name) || '' },
+    { Concepto: 'CM objetivo global',     Valor: (meta.cm_objetivo_pct ?? '') + '%' },
+    { Concepto: 'Objetivo medido sobre',  Valor: base === 'costo' ? 'costo (markup)' : 'precio de venta' },
+    { Concepto: 'IIBB',                   Valor: (ctx.iibb * 100).toFixed(2) + '%' },
+    { Concepto: 'TACOS',                  Valor: (ctx.tacos * 100).toFixed(2) + '%' },
+    { Concepto: 'TACOS medido',           Valor: meta.tacos_real ? `${meta.tacos_real.pct}% (${meta.tacos_real.desde} a ${meta.tacos_real.hasta})` : 'sin datos' },
+    { Concepto: 'Déb/Créd',               Valor: (ctx.debCred * 100).toFixed(2) + '%' },
+    { Concepto: 'Otros por unidad',       Valor: '$' + ctx.otros },
+    { Concepto: 'Condición IVA',          Valor: meta.condicion_iva || '' },
+    { Concepto: 'Tarifas ML vigentes',    Valor: meta.vigencia_tarifas || '' },
+    { Concepto: 'Filtro aplicado',        Valor: window._prcFiltro || 'todas' },
+    { Concepto: 'Búsqueda',               Valor: window._prcSearch || '(ninguna)' },
+    { Concepto: 'Definición de CM',       Valor: 'precio − costos variables − CMV (sin gastos fijos de estructura)' },
+  ];
+
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Precios');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(contexto), 'Supuestos');
+  const nombre = ((client && client.name) || 'cliente').replace(/\s+/g, '_');
+  XLSX.writeFile(wb, `Precios_${nombre}_${ymd(new Date())}.xlsx`);
+  showToast('📥 ' + rows.length + ' publicaciones exportadas');
+}
 
 async function loadSimulador() {
   const el = document.getElementById('simuladorContent');

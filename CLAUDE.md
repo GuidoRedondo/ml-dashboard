@@ -27,7 +27,7 @@ There are no tests or linting scripts configured.
 | Section | What it does |
 |---|---|
 | **Dashboard** | Main overview with weekly evolution chart |
-| **Rentabilidad** | 6 KPI cards, CMV loaded from DB (`product_costs`), import/export Excel for bulk cost updates |
+| **Rentabilidad** | 6 KPI cards, CMV loaded from DB (`product_costs`), import/export Excel for bulk cost updates. Sub-tab **Precios**: whole catalogue with CMV, variable costs (expandable breakdown), current price and the price needed to hit a target contribution margin — global per client or per listing, measured on price or on cost |
 | **Publicidad** | Ad performance with TACOS, ROAS, spend; sub-tab **Anuncios** shows per-item metrics via ML PADS API |
 | **Escalabilidad** | Composite score 0–100 with traffic-light indicator (green/yellow/red) |
 | **Competencia** | Two tabs: **Mis Categorías** (seller's own categories) and **Mercado** (market-wide search) |
@@ -69,6 +69,7 @@ This is a **single-file Node.js/Express backend** (`server.js`) + **single-file 
 | `panel_metricas_diarias` | One row per client per day (revenue, orders, units, visits, ad spend/sales) written by the 00:00 ART cron; backs the fast Panel de Clientes view |
 | `billing_detalle` | ML's actual invoice, one row per charge line, keyed by `detail_id`. Written by the 02:00 ART cron in `backend_billing.js` |
 | `billing_sync` | Which (client, period) pairs have been downloaded and whether they came back complete — lets the P&L tell "pays no FULL" apart from "not synced yet" |
+| `precios_cache` | Base of the Precios sub-tab (listing + real commission + shipping + weight), 12h TTL. Building it costs one `listing_prices` call per listing, so it is never rebuilt on a plain tab open |
 
 ### API surface (grouped)
 
@@ -79,6 +80,7 @@ This is a **single-file Node.js/Express backend** (`server.js`) + **single-file 
 - **Ads / Publicidad**: `GET /api/ads`, `GET /api/ads-anuncios`, `GET /api/ads-items`
 - **Listings**: `GET /api/items-full`, `GET /api/categorias-ventas`
 - **Diagnóstico mensual**: `GET /api/diagnostico`, `POST /api/diagnostico/calcular`, `POST /api/diagnostico/manuales`
+- **Precios (CM objetivo)**: `GET /api/precios`, `PUT /api/precios/objetivo`, `PUT /api/precios/objetivo-item`, `GET /api/tarifas` (`?bandas=1` returns all 27 weight bands)
 - **Reporte financiero (P&L)**: `GET /api/reporte/items-vendidos`, `GET /api/reporte/items-activos`, `POST /api/reporte/costos`, `GET|POST /api/reporte/gastos`, `GET /api/reporte/pyl`, `GET /api/reporte/devoluciones-analisis`, `GET /api/reporte/meses-disponibles`, `GET /api/reporte/comparar`
 - **Logística / Full Stock**: `GET /api/logistica`, `GET /api/logistica/full-stock`, `PUT /api/logistica/full-stock-global`, `PUT /api/logistica/full-stock/:item_id`
 - **Competencia**: `GET /api/competencia`, `GET /api/competencia/item`, `GET /api/competencia/categorias`, `GET /api/competencia/diagnostico`
