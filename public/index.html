@@ -8932,6 +8932,7 @@ window._prcData      = null;   // filas normalizadas
 window._prcMeta      = null;   // cliente, supuestos y objetivo global
 window._prcFilas     = null;   // filas ya calculadas (lo que se ve y lo que se exporta)
 window._prcOverrides = {};     // { mla: { comPct, envio } } — ajustes de la sesión, no se guardan
+window._prcPrecioManual = {};  // { mla: precio } — precio objetivo escrito a mano, pisa al calculado
 window._prcExpandido = {};     // { mla: true }
 window._prcSort      = { col: 'gap', asc: false };
 window._prcSearch    = '';
@@ -8944,6 +8945,7 @@ let _prcRecalcTimer  = null;
 function resetPrecios() {
   window._prcData = null; window._prcFilas = null; window._prcMeta = null;
   window._prcClientId = null; window._prcOverrides = {}; window._prcExpandido = {};
+  window._prcPrecioManual = {};
   window._prcBase = null; window._prcSearch = ''; window._prcFiltro = 'todas';
   window._prcLimite = 200;
   const panel = document.getElementById('preciosContent');
@@ -9090,9 +9092,15 @@ function _prcCalcular() {
     // Objetivo propio de la publicación si lo tiene; si no, el global del cliente.
     const objItem = { base: obj.base, pct: base.objetivoItem != null ? base.objetivoItem : obj.pct };
     const actual  = _prcCM(it.precio, it, ctx);
-    const sugerido = it.hasCMV ? _prcPrecioObjetivo(it, ctx, objItem) : null;
+    // La misma cuenta en las dos direcciones: con la CM objetivo se despeja el precio;
+    // con un precio escrito a mano se calcula qué CM deja. Si hay precio manual manda
+    // ése, y el calculado queda a la vista como referencia.
+    const calculado  = it.hasCMV ? _prcPrecioObjetivo(it, ctx, objItem) : null;
+    const manual     = window._prcPrecioManual[base.id];
+    const esManual   = manual != null && manual > 0;
+    const sugerido   = esManual ? manual : calculado;
     const enSugerido = sugerido ? _prcCM(sugerido, it, ctx) : null;
-    return { it, ctx, obj: objItem, actual, sugerido, enSugerido,
+    return { it, ctx, obj: objItem, actual, calculado, esManual, sugerido, enSugerido,
              gap: (sugerido && it.precio > 0) ? sugerido - it.precio : null,
              gapPct: (sugerido && it.precio > 0) ? (sugerido / it.precio - 1) * 100 : null };
   });
@@ -9196,6 +9204,7 @@ function renderPrecios() {
             <option value="negativa" ${window._prcFiltro==='negativa'?'selected':''}>CM negativa</option>
             <option value="sincmv"   ${window._prcFiltro==='sincmv'?'selected':''}>Sin CMV</option>
             <option value="propio"   ${window._prcFiltro==='propio'?'selected':''}>Con objetivo propio</option>
+            <option value="manual"   ${window._prcFiltro==='manual'?'selected':''}>Con precio a mano</option>
           </select>
           <button class="sync-btn" onclick="exportarPreciosExcel()" title="Baja la tabla tal como la estás viendo">📥 Excel</button>
           <button class="sync-btn" onclick="recargarPrecios(true)" title="Vuelve a pedirle a ML la comisión y el envío de cada publicación">🔄</button>
@@ -9249,6 +9258,60 @@ function _prcResumenHtml(filas) {
        + card('Sin CMV', sinCMV.toLocaleString('es-AR'), sinCMV ? '#ff9100' : 'var(--muted)', 'no se les puede calcular');
 }
 
+// Lo que deja un precio: la CM en la base activa, en verde si llega al objetivo de la
+// fila y en naranja/rojo si no. Lo usan el render y la vista previa mientras se tipea.
+function _prcHtmlCmEnPrecio(f, precio) {
+  const it = f.it;
+  if (!(precio > 0)) {
+    if (!it.hasCMV) return '<span style="color:var(--muted)">sin CMV</span>';
+    return '<span style="color:#ff5252" title="Con esta comisión, IIBB, TACOS e IVA la CM pedida no se alcanza a ningún precio">inalcanzable</span>';
+  }
+  if (!it.hasCMV) return '<span style="color:var(--muted)">CM: falta costo</span>';
+  const d = _prcCM(precio, it, f.ctx);
+  const v = _prcCMValor(d, it);
+  const color = d.cm < 0 ? '#ff5252' : (v != null && v >= f.obj.pct - 0.05) ? '#00e676' : '#ff9100';
+  const manual = window._prcPrecioManual[it.id] > 0;
+  // Mientras se tipea pasan precios intermedios absurdos ("9", "95") que dan -184.000%.
+  // No aportan nada: se acota la lectura para que el número no salte a lo loco.
+  const txt = v == null ? '—' : v < -999 ? '< −999%' : v > 999 ? '> 999%' : _prcPct(v);
+  return `<span style="color:${color};font-weight:700">CM ${txt}</span>`
+       + ` <span style="color:var(--muted)">${_prcFmt(d.cm)}</span>`
+       + (manual && f.calculado != null
+           ? `<div style="color:var(--muted)">calc. ${_prcFmt(f.calculado)}</div>` : '');
+}
+
+function _prcHtmlGap(f, precio) {
+  const it = f.it;
+  if (!(precio > 0) || !(it.precio > 0)) return '<span style="color:var(--muted)">—</span>';
+  const gap = precio - it.precio;
+  if (Math.abs(gap) < 1) return '<span style="color:#00e676;font-size:11px">igual al actual</span>';
+  const sube = gap > 0;
+  return `<span style="color:${sube ? '#ff5252' : '#00e676'};font-weight:700">${sube ? '+' : '−'}${_prcFmt(Math.abs(gap))}</span>
+          <div style="font-size:10px;color:var(--muted)">${sube ? '+' : ''}${_prcPct((precio / it.precio - 1) * 100)}</div>`;
+}
+
+// Mientras se tipea: se actualiza sólo la CM y la diferencia de ESA fila, sin repintar
+// la tabla — si se repintara, el input perdería el foco en cada tecla.
+function _prcPreviewPrecio(mla, valor) {
+  const f = (window._prcFilas || []).find(x => x.it.id === mla);
+  if (!f) return;
+  const v = parseFloat(valor);
+  const precio = v > 0 ? v : f.calculado;
+  const cm = document.getElementById('prcCmSug_' + mla);
+  const gap = document.getElementById('prcGap_' + mla);
+  if (cm)  cm.innerHTML  = _prcHtmlCmEnPrecio(f, precio);
+  if (gap) gap.innerHTML = _prcHtmlGap(f, precio);
+}
+
+// Al confirmar (Enter o salir del campo) el precio queda fijado y se recalcula todo:
+// resumen, filtros, orden y el desglose de la fila si está abierto.
+function _prcSetPrecioManual(mla, valor) {
+  const v = parseFloat(valor);
+  if (v > 0) window._prcPrecioManual[mla] = Math.round(v);
+  else delete window._prcPrecioManual[mla];
+  _prcRerenderTabla();
+}
+
 function _prcTh(col, label, align, titulo) {
   const act = window._prcSort.col === col;
   const arrow = act ? (window._prcSort.asc ? ' ↑' : ' ↓') : '';
@@ -9268,6 +9331,7 @@ function _prcFiltrar(filas) {
   if (modo === 'negativa') out = out.filter(f => f.it.hasCMV && f.actual.cm < 0);
   if (modo === 'sincmv')   out = out.filter(f => !f.it.hasCMV);
   if (modo === 'propio')   out = out.filter(f => f.it.objetivoItem != null);
+  if (modo === 'manual')   out = out.filter(f => f.esManual);
 
   const { col, asc } = window._prcSort;
   const val = f => {
@@ -9303,7 +9367,7 @@ function _prcTabla(filas, sufijo) {
     ${_prcTh('precio', 'Precio actual', 'right')}
     ${_prcTh('cm', 'CM actual', 'right', 'Contribución marginal al precio de hoy')}
     ${_prcTh('objetivo', 'CM objetivo', 'right', 'Vacío = sigue el objetivo global de la cuenta. Cargá un número para que esta publicación tenga el suyo')}
-    ${_prcTh('sugerido', 'Precio objetivo', 'right', 'Precio mínimo al que se alcanza la CM objetivo, con los saltos de cargo fijo y envío de ML ya contemplados')}
+    ${_prcTh('sugerido', 'Precio objetivo', 'right', 'Vacío: el precio mínimo al que se alcanza la CM objetivo, con los saltos de cargo fijo y envío de ML ya contemplados. Escribí un precio a mano para ver qué CM te deja')}
     ${_prcTh('gap', 'Diferencia', 'right')}
   </tr></thead>`;
 
@@ -9320,21 +9384,18 @@ function _prcTabla(filas, sufijo) {
          <div style="font-size:10px;color:var(--muted);text-decoration:line-through">${_prcFmt(it.precioLista)}</div>`
       : `<span style="font-weight:600">${_prcFmt(it.precio)}</span>`;
 
-    let sugHtml, gapHtml;
-    if (!it.hasCMV) {
-      sugHtml = '<span style="color:var(--muted);font-size:11px">sin CMV</span>';
-      gapHtml = '<span style="color:var(--muted)">—</span>';
-    } else if (f.sugerido == null) {
-      sugHtml = '<span style="color:#ff5252;font-size:11px" title="Con esta comisión, IIBB, TACOS e IVA la CM pedida no se alcanza a ningún precio">inalcanzable</span>';
-      gapHtml = '<span style="color:var(--muted)">—</span>';
-    } else {
-      const sube = f.gap > 0;
-      sugHtml = `<span style="font-weight:800;font-size:13px;color:${sube ? '#ff5252' : '#00e676'}">${_prcFmt(f.sugerido)}</span>`;
-      gapHtml = Math.abs(f.gap) < 1
-        ? '<span style="color:#00e676;font-size:11px">en objetivo</span>'
-        : `<span style="color:${sube ? '#ff5252' : '#00e676'};font-weight:700">${sube ? '+' : '−'}${_prcFmt(Math.abs(f.gap))}</span>
-           <div style="font-size:10px;color:var(--muted)">${sube ? '+' : ''}${_prcPct(f.gapPct)}</div>`;
-    }
+    // Input del precio objetivo. Vacío = lo calcula la CM objetivo (se ve de placeholder);
+    // con un número escrito, manda ése y abajo se ve qué CM deja.
+    const placeholder = f.calculado != null ? Math.round(f.calculado) : (it.hasCMV ? 'inalcanzable' : '');
+    const sugHtml = `
+      <input type="number" min="0" step="1" value="${f.esManual ? Math.round(f.sugerido) : ''}"
+        placeholder="${placeholder}"
+        oninput="_prcPreviewPrecio('${it.id}', this.value)"
+        onchange="_prcSetPrecioManual('${it.id}', this.value)"
+        title="${f.esManual ? 'Precio puesto a mano. Borralo para volver al que calcula la CM objetivo' : 'Escribí un precio para ver qué CM te deja. Vacío = el que calcula la CM objetivo'}"
+        style="width:92px;padding:4px 6px;border-radius:6px;border:1px solid ${f.esManual ? 'var(--accent)' : 'var(--border)'};background:var(--surface2);color:var(--text);font-size:13px;font-weight:800;text-align:right;outline:none">
+      <div id="prcCmSug_${it.id}" style="font-size:10px;margin-top:2px">${_prcHtmlCmEnPrecio(f, f.sugerido)}</div>`;
+    const gapHtml = `<span id="prcGap_${it.id}">${_prcHtmlGap(f, f.sugerido)}</span>`;
 
     const mlaLink = 'MLA-' + it.id.replace(/^MLA/i, '');
     const abierto = !!window._prcExpandido[it.id];
@@ -9416,7 +9477,7 @@ function _prcDetalle(f) {
             <thead><tr>
               <th style="padding:3px 8px;text-align:left;font-size:10px;color:var(--muted);text-transform:uppercase">Costo variable</th>
               <th style="padding:3px 8px;text-align:right;font-size:10px;color:var(--muted);text-transform:uppercase">Hoy (${_prcFmt(it.precio)})</th>
-              <th style="padding:3px 8px;text-align:right;font-size:10px;color:var(--muted);text-transform:uppercase">${f.sugerido ? 'Objetivo (' + _prcFmt(f.sugerido) + ')' : 'Objetivo'}</th>
+              <th style="padding:3px 8px;text-align:right;font-size:10px;color:var(--muted);text-transform:uppercase">${f.sugerido ? (f.esManual ? 'A mano (' : 'Objetivo (') + _prcFmt(f.sugerido) + ')' : 'Objetivo'}</th>
             </tr></thead>
             <tbody>
               ${linea('Comisión ML', a.com, s && s.com, `${(it.comPct * 100).toFixed(2)}% · ${it.comSource}`)}
@@ -9658,10 +9719,14 @@ function exportarPreciosExcel() {
       'CM objetivo %': f.obj.pct,
       'Objetivo medido sobre': base === 'costo' ? 'costo' : 'precio',
       'Objetivo propio': it.objetivoItem != null ? 'sí' : 'no (global)',
+      'Precio objetivo calculado': f.calculado != null ? f.calculado : (it.hasCMV ? 'inalcanzable' : 'sin CMV'),
+      'Precio puesto a mano': f.esManual ? f.sugerido : '',
       'Precio objetivo': f.sugerido != null ? f.sugerido : (it.hasCMV ? 'inalcanzable' : 'sin CMV'),
       'Diferencia $': f.gap != null ? Math.round(f.gap) : '',
       'Diferencia %': f.gapPct != null ? parseFloat(f.gapPct.toFixed(1)) : '',
-      'CM al precio objetivo $': s ? Math.round(s.cm) : '',
+      'CM al precio objetivo $': s && it.hasCMV ? Math.round(s.cm) : '',
+      'CM al precio objetivo % s/precio': s && it.hasCMV ? parseFloat(s.cmPct.toFixed(1)) : '',
+      'CM al precio objetivo % s/costo': s && it.hasCMV && s.cmCosto != null ? parseFloat(s.cmCosto.toFixed(1)) : '',
       'Peso kg': it.pesoKg != null ? it.pesoKg : '',
       'Stock': it.stock != null ? it.stock : '',
     };
