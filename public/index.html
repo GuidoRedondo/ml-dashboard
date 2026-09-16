@@ -8997,7 +8997,10 @@ async function loadPrecios() {
       comPct: comPct / 100,
       comSource: i.com_pct != null ? 'ML' : 'est.',
       envioML,
-      envioSource: i.envio_source === 'ML' ? 'ML' : 'est.',
+      // ML casi nunca devuelve el envío en listing_prices, así que lo normal es que
+      // salga de la tabla de tarifas por peso. Se marca de dónde viene para que el
+      // desglose no haga pasar una estimación por un dato duro.
+      envioSource: i.envio_source === 'ML' ? 'dato de ML' : 'tabla ML por peso',
       noPagaEnvio: i.envio_source === 'ML' && !(envioML > 0) && precio >= _prcUmbralEnvio,
       pesoKg: i.peso_kg != null ? parseFloat(i.peso_kg) : null,
       pesoSource: i.peso_source || 'default',
@@ -9456,9 +9459,16 @@ function _prcDetalle(f) {
               onchange="ajustarPrecioItem('${it.id}','envio',this.value)"
               style="width:100%;padding:6px 8px;border-radius:7px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:12px;box-sizing:border-box;outline:none">
           </div>
+          <button class="sync-btn" style="width:100%;margin-bottom:10px" onclick="verificarEnvioReal('${it.id}')"
+            title="Le pregunta a ML cuánto sale el envío de esta publicación (list_cost de shipping_options) en dos puntas del país">
+            🚚 Verificar envío con ML
+          </button>
+          <div id="prcEnvioReal_${it.id}" style="font-size:10px;color:var(--muted);margin-bottom:10px"></div>
+
           <div style="font-size:10px;color:var(--muted);line-height:1.5">
             Peso: ${pesoTxt}<br>
             Alícuota IVA del producto: ${(it.alic * 100).toFixed(1)}%<br>
+            Comisión: ${it.comSource === 'ML' ? 'la real de ML' : 'estimada'}${it.comPct > 0.22 ? ' — incluye el cargo por ofrecer cuotas' : ''}<br>
             ${it.stock != null ? 'Stock: ' + it.stock.toLocaleString('es-AR') + '<br>' : ''}
             <span style="opacity:.75">Los ajustes de comisión y envío valen para esta sesión: no se guardan.</span>
           </div>
@@ -9584,6 +9594,31 @@ async function guardarObjetivoItem(mla, valor) {
   if (!r || r.error) { showToast('⚠️ No se pudo guardar el objetivo de ' + mla); return; }
   showToast(limpio == null ? '🎯 ' + mla + ' vuelve al objetivo global'
                            : '🎯 ' + mla + ': CM objetivo ' + limpio + '%');
+}
+
+// Le pregunta a ML el envío real de una publicación. La tabla de tarifas por peso
+// alcanza para proyectar el catálogo, pero se desvía cuando el paquete factura por peso
+// volumétrico o cuando la cuenta tiene tarifas negociadas — y eso no se ve venir.
+async function verificarEnvioReal(mla) {
+  const client = getActiveClient();
+  const cont = document.getElementById('prcEnvioReal_' + mla);
+  if (!client || !cont) return;
+  cont.innerHTML = 'Consultando a ML…';
+  const r = await apiCall('GET', `/api/precios/envio-real?client_id=${client.id}&mla_id=${mla}`).catch(() => null);
+  if (!r || r.error || r.min == null) {
+    cont.innerHTML = `<span style="color:#ff9100">ML no devolvió costo de envío para esta publicación${r && r.error ? ' — ' + r.error : ''}.</span>`;
+    return;
+  }
+  const fila = (window._prcData || []).find(x => x.id === mla);
+  const estimado = fila ? _prcEnvio(Math.max(fila.precio, _prcUmbralEnvio), fila) : null;
+  const detalle = r.zonas.map(z => `${z.zona}: ${z.costo != null ? _prcFmt(z.costo) : '—'}`).join(' · ');
+  const rango = r.min === r.max ? _prcFmt(r.min) : `${_prcFmt(r.min)} a ${_prcFmt(r.max)}`;
+  cont.innerHTML = `
+    <div style="color:var(--text)"><b>ML: ${rango}</b> <span style="opacity:.7">(${detalle})</span></div>
+    ${estimado != null ? `<div>La tabla por peso estimaba ${_prcFmt(estimado)}.</div>` : ''}
+    <button class="sync-btn" style="margin-top:6px;font-size:10px" onclick="ajustarPrecioItem('${mla}','envio',${r.max})">
+      Usar ${_prcFmt(r.max)} en el cálculo
+    </button>`;
 }
 
 // Baja lo que estás viendo (mismo filtro y mismo orden), no el catálogo crudo.

@@ -122,6 +122,18 @@ These are hard limits — do not attempt workarounds or assume they'll change:
 
 - **No refresh tokens** are issued. Tokens must be renewed manually via the OAuth flow.
 - **Category search** (`/sites/MLA/categories` search endpoint) returns `403 Forbidden`.
+- **`listing_prices` does not return shipping** (verified 16/9/2026). The response has no
+  `shipping` object at all — not with `logistic_type`, not with `billable_weight`. Treat a
+  missing shipping cost as *unknown*, never as "the seller pays 0": that mistake made every
+  listing above the free-shipping threshold look like it had no shipping cost.
+  The seller's shipping price comes from `/items/{id}/shipping_options?zip_code=...` →
+  `options[].list_cost` (`cost` is what the *buyer* pays, which is 0 under free shipping).
+  Checked against the tariff table in `backend_impacto_costos.js`: MLA2208661434 at 0.08 kg
+  returns `list_cost: 6190`, exactly the table's value for that weight band.
+- **`sale_fee_details.percentage_fee` includes `financing_add_on_fee`** — the charge for
+  offering interest-free instalments. On Primer Luna that is 13.4 points on top of the
+  15.83% base commission, so 21 of 50 listings really do cost ~29% in commission. That is a
+  genuine cost and belongs in the margin; `meli_percentage_fee` is the commission alone.
 
 ### Billing API — the real invoiced charges (verified 10/9/2026)
 

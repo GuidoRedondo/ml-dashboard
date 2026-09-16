@@ -6608,14 +6608,27 @@ async function traerItemsActivos(clientId, { withFees = false } = {}) {
               const totalFee = lpData.sale_fee_amount;
               if (pctFee != null) { comPct = parseFloat(parseFloat(pctFee).toFixed(2)); comSource = 'ML'; }
               else if (totalFee != null) { comPct = parseFloat((totalFee / price * 100).toFixed(2)); comSource = 'ML'; }
+              // OJO: listing_prices NO devuelve envío. Verificado el 16/9/2026 contra la
+              // respuesta real de ML: el objeto `shipping` directamente no viene, ni
+              // mandando logistic_type ni billable_weight en la query.
+              //
+              // El código de antes leía esa ausencia como "el vendedor paga $0" y lo
+              // firmaba como dato de ML. Resultado: TODAS las publicaciones de arriba
+              // del umbral de envío gratis salían con envío $0 — en Primer Luna, 49 de
+              // 49. Sobre eso se calculaba margen y se decidían descuentos.
+              //
+              // Ahora, sin dato, envío queda null y decide el llamador. La solapa
+              // Precios cae a la tabla de tarifas por peso, que está verificada: para
+              // MLA2208661434 (0,08 kg) da $6.190, exactamente el list_cost que
+              // devuelve /items/{id}/shipping_options.
               const costs = lpData.shipping?.costs;
               const sellerCost = Array.isArray(costs)
                 ? (costs.find(c => c.type === 'seller')?.amount ?? null)
                 : (lpData.shipping?.seller_cost ?? lpData.shipping?.cost ?? null);
-              // envío = costo del vendedor si aplica; 0 explícito si ML respondió pero el
-              // vendedor no paga envío en este ítem (no es "sin dato", es "no paga").
-              envioUnit = (sellerCost != null && parseFloat(sellerCost) > 0) ? Math.round(parseFloat(sellerCost)) : 0;
-              envioSource = 'ML';
+              if (sellerCost != null) {
+                envioUnit   = Math.max(0, Math.round(parseFloat(sellerCost) || 0));
+                envioSource = 'ML';
+              }
             }
           } catch(e) {}
         }
@@ -6777,6 +6790,52 @@ app.get('/api/precios', requireAuth, async (req, res) => {
   } catch (e) {
     console.error('[PRECIOS]', e.message);
     res.status(e.status || 500).json({ error: e.message });
+  }
+});
+
+// GET /api/precios/envio-real — cuánto paga de envío el vendedor en UNA publicación.
+//
+// La tabla de tarifas por peso alcanza para proyectar todo el catálogo, pero se desvía
+// cuando el paquete factura por peso volumétrico o cuando la cuenta tiene tarifas
+// negociadas. Acá se le pregunta a ML por la publicación concreta: `list_cost` de
+// /items/{id}/shipping_options es lo que se le cobra al vendedor (`cost` es lo que paga
+// el comprador, que con envío gratis da 0).
+//
+// El costo cambia según el destino, así que se consultan dos puntas del país y se
+// devuelve el rango, en vez de hacer pasar un número por el único verdadero.
+const ENVIO_CP_SONDA = [{ cp: '1425', zona: 'CABA' }, { cp: '5500', zona: 'Mendoza' }];
+
+app.get('/api/precios/envio-real', requireAuth, async (req, res) => {
+  try {
+    const { client_id, mla_id } = req.query;
+    if (!client_id || !mla_id) return res.status(400).json({ error: 'Falta client_id o mla_id' });
+    const token = await getClientToken(parseInt(client_id));
+    if (!token) return res.status(403).json({ error: 'Sin token' });
+    const headers = { 'Authorization': `Bearer ${token}` };
+
+    const zonas = await Promise.all(ENVIO_CP_SONDA.map(async z => {
+      try {
+        const r = await fetch(`${ML_API}/items/${mla_id}/shipping_options?zip_code=${z.cp}`, { headers });
+        if (!r.ok) return { ...z, costo: null, motivo: 'ML no ofrece envío a esa zona' };
+        const d = await r.json();
+        const costos = (d.options || [])
+          .map(o => parseFloat(o.list_cost))
+          .filter(v => Number.isFinite(v) && v > 0);
+        if (!costos.length) return { ...z, costo: null, motivo: 'sin opciones con costo' };
+        return { ...z, costo: Math.min(...costos) };
+      } catch (e) { return { ...z, costo: null, motivo: e.message }; }
+    }));
+
+    const validos = zonas.map(z => z.costo).filter(v => v != null);
+    res.json({
+      mla_id,
+      zonas,
+      min: validos.length ? Math.min(...validos) : null,
+      max: validos.length ? Math.max(...validos) : null,
+    });
+  } catch (e) {
+    console.error('[PRECIOS ENVIO REAL]', e.message);
+    res.status(500).json({ error: e.message });
   }
 });
 
