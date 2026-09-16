@@ -62,6 +62,10 @@ function auditarEnvio({ shipment, costs, items, ordenes }) {
   const cobrado = Math.round(parseFloat(sender.cost) || 0);
   const bonif = (sender.discounts || []).reduce((a, d) => a + (parseFloat(d.rate) || 0), 0);
   const logistica = LOGISTICA[shipment.logistic_type] || shipment.logistic_type || 'otro';
+  // Un envío anterior al 1/9/2026 se cobró con el tarifario viejo: auditarlo contra el
+  // nuevo lo hacía aparecer entero como "cobrado de menos". Manda la fecha de la venta.
+  const fechaVenta = (ordenes || []).map(o => o.date_created).filter(Boolean).sort()[0];
+  const esquema = fechaVenta && new Date(fechaVenta) < new Date(`${TARIFAS.VIGENCIA}T00:00:00-03:00`) ? 'actual' : 'sep';
 
   const itemsOrden = new Map();
   for (const o of ordenes || []) {
@@ -84,8 +88,8 @@ function auditarEnvio({ shipment, costs, items, ordenes }) {
     let tabla = null, tablaFis = null;
     if (fact == null) faltanMedidas = true;
     else {
-      tabla = TARIFAS.costoEnvioLinea(precio, fact, qty);
-      tablaFis = TARIFAS.costoEnvioLinea(precio, fis || fact, qty);
+      tabla = TARIFAS.costoEnvioLinea(precio, fact, qty, esquema);
+      tablaFis = TARIFAS.costoEnvioLinea(precio, fis || fact, qty, esquema);
       esperado += tabla; esperadoFisico += tablaFis;
     }
     return {
@@ -254,7 +258,7 @@ module.exports = (app, { pool, requireAuth, requireConsultor, requireAdmin, getC
     return ordenes;
   }
 
-  async function syncCliente(clientId, { dias = DIAS_CRON } = {}) {
+  async function syncCliente(clientId, { dias = DIAS_CRON, forzar = false } = {}) {
     const c = await pool.query('SELECT ml_user_id FROM clients WHERE id=$1', [clientId]);
     const uid = c.rows[0] && c.rows[0].ml_user_id;
     if (!uid) throw new Error('cliente sin ML User ID');
@@ -275,10 +279,12 @@ module.exports = (app, { pool, requireAuth, requireConsultor, requireAdmin, getC
     }
 
     // Los que ya llegaron a un estado final no cambian más: no se vuelven a pedir.
+    // `forzar` los repide igual — hace falta cuando cambia la lógica de la auditoría.
     const guardados = await pool.query(
       `SELECT shipment_id, status FROM envios_auditoria WHERE client_id=$1 AND shipment_id = ANY($2::bigint[])`,
       [clientId, [...envios.keys()]]);
-    const cerrados = new Set(guardados.rows.filter(r => ESTADOS_FINALES.has(r.status)).map(r => String(r.shipment_id)));
+    const cerrados = new Set(forzar ? [] :
+      guardados.rows.filter(r => ESTADOS_FINALES.has(r.status)).map(r => String(r.shipment_id)));
     const pendientes = [...envios.entries()].filter(([id]) => !cerrados.has(String(id)));
 
     let ok = 0, fallidos = 0;
@@ -413,7 +419,7 @@ module.exports = (app, { pool, requireAuth, requireConsultor, requireAdmin, getC
       if (!puedeVer(req, clientId)) return res.status(403).json({ error: 'Sin acceso a esta cuenta' });
       const dias = parseInt(req.body.dias) || DIAS_CRON;
       const ya = enCurso.has(clientId);
-      lanzarSync(clientId, { dias });
+      lanzarSync(clientId, { dias, forzar: req.body.forzar === true });
       res.json({ ok: true, ya_estaba_corriendo: ya, dias: Math.min(dias, DIAS_MAX) });
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
