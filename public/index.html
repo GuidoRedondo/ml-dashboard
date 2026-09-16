@@ -9104,7 +9104,12 @@ function _prcPct(n)  { return (Math.round(n * 10) / 10).toFixed(1) + '%'; }
 
 // El valor de CM que se muestra depende del toggle: sobre precio (como el P&L) o
 // sobre costo (markup, como razona el que compra y remarca).
+//
+// Sin CMV cargado devuelve null, no un numero. La formula da un resultado igual —
+// seria la CM suponiendo costo cero — y ese numero se lee como si fuera la CM real:
+// una publicacion sin costo mostraba "40,7%" al lado de las que si lo tienen.
 function _prcCMValor(d, it) {
+  if (!it.hasCMV) return null;
   if ((window._prcBase || 'precio') === 'costo') return d.cmCosto;
   return d.cmPct;
 }
