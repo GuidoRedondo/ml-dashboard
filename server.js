@@ -6718,6 +6718,18 @@ async function tacosRealPct(clientId, dias = 30) {
   };
 }
 
+// Peso con el que ML cobró el último envío de cada publicación (backend_envios.js). Se
+// suma en cada lectura y no se guarda en precios_cache: la auditoría de envíos se
+// actualiza todas las noches y el caché dura 12h.
+async function conPesoEnvio(clientId, items) {
+  const pesos = await enviosAuditoria.pesoEnvioPorItem(clientId).catch(() => ({}));
+  return items.map(i => {
+    const p = pesos[i.mla_id];
+    return p ? { ...i, peso_envio_kg: p.kg, peso_envio_origen: p.origen,
+                 peso_envio_logistica: p.logistica, peso_envio_fecha: p.fecha } : i;
+  });
+}
+
 app.get('/api/precios', requireAuth, async (req, res) => {
   try {
     const clientId = parseInt(req.query.client_id);
@@ -6773,7 +6785,7 @@ app.get('/api/precios', requireAuth, async (req, res) => {
             has_cost:        !!c,
           };
         });
-        return res.json({ ...meta, items,
+        return res.json({ ...meta, items: await conPesoEnvio(clientId, items),
           completeness: items.length ? Math.round(items.filter(i => i.has_cost).length / items.length * 100) : 0,
           fetched_at: row.fetched_at, desde_cache: true });
       }
@@ -6785,7 +6797,7 @@ app.get('/api/precios', requireAuth, async (req, res) => {
          ON CONFLICT (client_id) DO UPDATE SET data=$2, fetched_at=NOW()`,
       [clientId, JSON.stringify({ items: base.items })]);
 
-    res.json({ ...meta, items: base.items, completeness: base.completeness,
+    res.json({ ...meta, items: await conPesoEnvio(clientId, base.items), completeness: base.completeness,
                fetched_at: new Date().toISOString(), desde_cache: false });
   } catch (e) {
     console.error('[PRECIOS]', e.message);
@@ -9765,6 +9777,13 @@ require('./backend_impacto_costos')(app, { pool, requireAuth, getClientToken, ML
 // tablas y programa su propio cron a las 02:00 ART.
 const billing = require('./backend_billing')(app, {
   pool, requireAuth, requireConsultor, requireAdmin, getClientToken, ML_API, nodeCron, ART
+});
+
+// Auditoría de costos de envío — módulo aparte (backend_envios.js). Guarda cada envío
+// con lo que ML cobró y las medidas con que lo cobró, y lo compara contra la tabla.
+// Crea su tabla y programa su propio cron a las 04:00 ART.
+const enviosAuditoria = require('./backend_envios')(app, {
+  pool, requireAuth, requireConsultor, requireAdmin, getClientToken, ML_API, nodeCron, ART, ymd, ymdShift
 });
 
 // GET /api/tarifas — escalas vigentes de cargo fijo, para que el front no tenga su

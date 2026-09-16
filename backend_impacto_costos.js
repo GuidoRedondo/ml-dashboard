@@ -89,23 +89,20 @@ const ENV_ACTUAL = [
   [95800, 102660], [104570, 112060],
 ];
 
-// OJO — el envío de tabla es PRECIO DE LISTA, no lo que ML termina cobrando.
-// Medido el 2/9/2026 contra 40 envíos reales (`/shipments/{id}/costs` → senders[0].cost)
-// de ventas del 1 y 2 de septiembre: sólo 8 coinciden exacto con esta tabla, y el resto
-// casi siempre paga MÁS. Dos causas identificadas:
+// La tabla es exacta SI se la consulta con el peso facturable correcto. Auditado el
+// 16/9/2026 sobre ~380 envíos de colecta y FULL (GC Iluminación, Bonafide, Solus): con
+// las medidas que ML informa en `/shipments/{id}/items` y el divisor volumétrico 4000,
+// lo cobrado (`/shipments/{id}/costs` → senders[0].cost) coincide al peso en todos
+// menos 4, que ML cobró de menos. Lo que antes parecía "ML cobra de más" era:
 //
-//   · PESO VOLUMÉTRICO. ML factura por el mayor entre el peso declarado y el del bulto.
-//     GC Iluminación declara 2 kg, el paquete da 5,5 kg volumétricos y ML cobra $14.190
-//     (la banda de 10 kg) contra los $8.790 que dice la tabla. Casi ninguna publicación
-//     declara dimensiones, así que el desvío no se ve venir.
-//   · TARIFAS NEGOCIADAS. Aquamarket paga $6.291 donde la tabla dice $15.190.
+//   · PESO VOLUMÉTRICO. Un velador de 1,45 kg en caja de 46×37×35 factura 14,9 kg.
+//   · MEDIDAS DE ML, no del vendedor: base maestra (`bmp`) o medidas de FULL (`fd`).
+//   · COBRO POR UNIDAD, con los cortes de precio mirados sobre el precio unitario.
+//   · FLEX, que no usa esta tabla: cobra por zona ($4.990 / $6.990 / $8.990 con 10% de
+//     bonificación) sin importar las medidas. Ése era el "Aquamarket paga $6.291".
 //
 // El P&L no usa esta tabla: toma el envío real de cada orden (repartirEnvioPorItem). Acá
-// se usa para PROYECTAR sobre publicaciones que todavía no vendieron — cliff finder,
-// combos, promos —, donde no hay otro dato. Tratar el resultado como orden de magnitud.
-//
-// La tabla del esquema anterior (ENV_ACTUAL) no explica NINGUNO de esos 40 envíos, así
-// que la que rige desde el 1/9/2026 es ésta.
+// se usa para PROYECTAR — Precios, cliff finder, combos, promos.
 const ENV_SEP = [
   [6190, 6790], [6790, 7290], [7790, 8290], [7990, 8590], [8290, 8790],
   [8890, 9590], [9790, 10890], [10790, 11890], [11790, 13090],
@@ -138,6 +135,36 @@ function costoEnvio(precio, peso, esquema = 'sep') {
 // Cargo fijo + envío. Uno de los dos siempre es 0.
 function costoMlVariable(precio, peso, esquema = 'sep') {
   return cargoFijo(precio, peso, esquema) + costoEnvio(precio, peso, esquema);
+}
+
+// ── Peso facturable ──
+// ML cobra el envío por el MAYOR entre el peso físico y el volumétrico, y el
+// volumétrico es largo × ancho × alto (cm) / 4000. Verificado el 16/9/2026 contra
+// 380 envíos reales de GC Iluminación, Bonafide y Solus (colecta y FULL): con las
+// medidas que ML informa en /shipments/{id}/items, lo cobrado coincide al peso con
+// esta tabla. Con divisor 5000 los paquetes grandes caían una banda abajo.
+const DIVISOR_VOLUMETRICO = 4000;
+
+function pesoVolumetricoKg(largo, ancho, alto) {
+  if (!(largo > 0 && ancho > 0 && alto > 0)) return null;
+  return largo * ancho * alto / DIVISOR_VOLUMETRICO;
+}
+
+// dims = { largo, ancho, alto } en cm y peso_g en gramos. null si no alcanza el dato.
+function pesoFacturableKg({ largo, ancho, alto, peso_g } = {}) {
+  const vol = pesoVolumetricoKg(largo, ancho, alto);
+  const fis = peso_g > 0 ? peso_g / 1000 : null;
+  if (vol == null && fis == null) return null;
+  return Math.max(vol || 0, fis || 0);
+}
+
+// Lo que ML le cobra al vendedor por UNA línea de un envío. Dos reglas que no son
+// obvias y que salieron de comparar contra cobros reales:
+//   · Se cobra por UNIDAD: una orden de 5 unidades paga 5 veces la tarifa.
+//   · El umbral de envío gratis y el corte de $50.000 se miran contra el precio
+//     UNITARIO, no contra el total de la orden. Dos unidades de $26.000 no pagan envío.
+function costoEnvioLinea(precioUnit, pesoKg, cantidad = 1, esquema = 'sep') {
+  return costoEnvio(precioUnit, pesoKg, esquema) * (cantidad || 1);
 }
 
 // La misma tabla de cargo fijo, expresada como escalas planas {desde, hasta, cargo}.
@@ -607,10 +634,10 @@ function proyectarCuenta(pyl, res, esRi = true, pylConfiable = true) {
 // fuerte los productos pesados. Se toma el peso DECLARADO por el vendedor
 // (SELLER_PACKAGE_WEIGHT) y, si no está, el que midió ML (PACKAGE_WEIGHT).
 //
-// No se calcula peso volumétrico a propósito: ML factura por el mayor entre físico
-// y volumétrico, pero el divisor que usa no está documentado en la API y meter uno
-// inventado movería los costos de envío sin respaldo. Los bultos voluminosos y
-// livianos quedan, entonces, subestimados — está declarado en la respuesta.
+// Acá no se aplica el volumétrico: las medidas declaradas en la publicación casi
+// nunca son las que ML usa para cobrar (usa su base maestra o lo que midió en FULL).
+// El peso facturable real sale de los envíos auditados — ver pesoFacturableKg y
+// backend_envios.js.
 
 const _PESO_UNITS = { kg: 1000, g: 1 };
 
@@ -754,6 +781,7 @@ module.exports.tarifas = {
   puntoIndiferencia, precioParaMargen, analizarCliente, analizarItem,
   costoTransaccional, proyectarCuenta, validarPyl,
   escalasCargoFijo, pesoDeItemKg,
+  pesoVolumetricoKg, pesoFacturableKg, costoEnvioLinea, DIVISOR_VOLUMETRICO,
   UMBRAL_ENVIO_GRATIS, ENV_CORTE_BANDA, PESO_DEFAULT, BANDAS_PESO,
   VIGENCIA: '2026-09-01',
 };
