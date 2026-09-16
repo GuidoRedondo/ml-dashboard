@@ -1471,7 +1471,12 @@ tbody td {
           style="padding:8px 18px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-2px;font-family:var(--font-b)">
           📊 Desempeño
         </button>
+        <button id="tab-logistica-costoenvios" onclick="switchLogisticaTab('costoenvios')"
+          style="padding:8px 18px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-2px;font-family:var(--font-b)">
+          💸 Costo de envíos
+        </button>
       </div>
+      <div id="costoEnviosContent" style="display:none"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Seleccioná la pestaña Costo de envíos para cargar</div></div>
       <div id="logisticaContent"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Cargando...</div></div>
       <div id="fullStockContent" style="display:none"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Seleccioná la pestaña Stock FULL para cargar</div></div>
       <div id="desempenioContent" style="display:none"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Seleccioná la pestaña Desempeño para cargar</div></div>
@@ -15478,6 +15483,8 @@ function exportFotosExcel() {
 }
 
 async function loadLogistica() {
+  // Se llama también al cambiar de cuenta: la pestaña abierta tiene que seguir a la cuenta nueva.
+  if (typeof _logisticaActiveTab !== 'undefined' && _logisticaActiveTab === 'costoenvios') loadCostoEnvios();
   const el = document.getElementById('logisticaContent');
   el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">⏳ Consultando configuración de envíos...</div>';
   try {
@@ -16536,7 +16543,8 @@ let _fsSearch = '';
 
 function switchLogisticaTab(tab) {
   _logisticaActiveTab = tab;
-  const tabs = { general: 'logisticaContent', fullstock: 'fullStockContent', desempenio: 'desempenioContent' };
+  const tabs = { general: 'logisticaContent', fullstock: 'fullStockContent', desempenio: 'desempenioContent',
+                 costoenvios: 'costoEnviosContent' };
   Object.keys(tabs).forEach(t => {
     document.getElementById(tabs[t]).style.display = t === tab ? '' : 'none';
     const btn = document.getElementById(`tab-logistica-${t}`);
@@ -16547,11 +16555,16 @@ function switchLogisticaTab(tab) {
   });
   if (tab === 'fullstock' && !_fullStockData) loadFullStock();
   if (tab === 'desempenio' && !_desempData) loadDesempenioEnvios();
+  if (tab === 'costoenvios') {
+    const c = getActiveClient();
+    if (!_cenvData || !c || _cenvData.client_id !== c.id) loadCostoEnvios();
+  }
   const btnXls = document.getElementById('logisticaExcelBtn');
   if (btnXls) btnXls.style.display = tab === 'desempenio' ? '' : 'none';
 }
 
 function refreshLogisticaTab() {
+  if (_logisticaActiveTab === 'costoenvios') { loadCostoEnvios(); return; }
   if (_logisticaActiveTab === 'desempenio') {
     // Recalcula el mes contra ML en vez de servir el cache de 12h.
     _desempData = null;
@@ -16568,6 +16581,344 @@ function refreshLogisticaTab() {
   } else {
     loadLogistica();
   }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// COSTO DE ENVÍOS — ¿lo que cobra ML es lo que corresponde, y con qué medidas?
+// ════════════════════════════════════════════════════════════════════════════
+//
+// Lee /api/envios/auditoria, que sale de la base (backend_envios.js): cada envío con lo
+// que ML cobró, las medidas con que lo cobró y lo que dice la tabla. No toca ML al abrir.
+// "Actualizar con ML" lanza la sincronización en background y espera a que termine.
+
+let _cenvData = null;
+let _cenvMes = null;
+let _cenvLog = 'todas';          // todas | colecta | full
+let _cenvEdit = null;            // item_id con el formulario de medidas reales abierto
+let _cenvReq = 0;
+let _cenvSyncTimer = null;
+
+const _CENV_LOG = { colecta: 'Colecta', full: 'FULL', flex: 'Flex' };
+const _CENV_ESTADO = {
+  cierra:         { label: 'Cierra con la tabla', color: '#16a34a' },
+  cobro_de_mas:   { label: 'Cobró de más',        color: '#dc2626' },
+  cobro_de_menos: { label: 'Cobró de menos',      color: '#d97706' },
+  flex:           { label: 'Flex (por zona)',     color: 'var(--muted)' },
+  cancelado:      { label: 'Cancelado',           color: 'var(--muted)' },
+  sin_datos:      { label: 'Sin datos',           color: 'var(--muted)' },
+};
+
+function _cenvEsc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+const _cenvKg = v => v == null ? '—' : parseFloat(v).toLocaleString('es-AR', { maximumFractionDigits: 2 }) + ' kg';
+const _cenvMedidas = (l, a, h) => (l && a && h) ? `${+l}×${+a}×${+h} cm` : '—';
+
+async function loadCostoEnvios() {
+  const el = document.getElementById('costoEnviosContent');
+  const client = getActiveClient();
+  if (!client || !client.id) {
+    el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">Sin cuenta conectada — seleccioná una cuenta en el topbar</div>';
+    return;
+  }
+  if (_cenvData && _cenvData.client_id !== client.id) { _cenvEdit = null; }
+  const mes = Array.from({ length: 6 }, (_, i) => mesART(i)).find(m => m.val === _cenvMes) || mesART(0);
+  _cenvMes = mes.val;
+  const hasta = mes.ultimo < ymd() ? mes.ultimo : ymd();
+  const req = ++_cenvReq;
+  el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">⏳ Cargando envíos…</div>';
+  try {
+    const data = await apiCall('GET', `/api/envios/auditoria?client_id=${client.id}&date_from=${mes.primero}&date_to=${hasta}`);
+    if (req !== _cenvReq) return;
+    if (!data || data.error) {
+      el.innerHTML = `<div style="color:var(--muted);padding:40px;text-align:center">${_cenvEsc((data && data.error) || 'Error al cargar')}</div>`;
+      return;
+    }
+    _cenvData = data;
+    renderCostoEnvios();
+    if (data.sincronizando) _cenvEsperarSync(client.id);
+  } catch (e) {
+    if (req !== _cenvReq) return;
+    el.innerHTML = `<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Error: ${_cenvEsc(e.message)}</div>`;
+  }
+}
+
+function cambiarMesCostoEnvios(mes) { _cenvMes = mes; loadCostoEnvios(); }
+function filtrarLogCostoEnvios(log) { _cenvLog = log; renderCostoEnvios(); }
+function editarMedidasReales(itemId) { _cenvEdit = _cenvEdit === itemId ? null : itemId; renderCostoEnvios(); }
+
+async function sincronizarCostoEnvios(dias) {
+  const client = getActiveClient();
+  if (!client) return;
+  const r = await apiCall('POST', '/api/envios/sync', { client_id: client.id, dias });
+  if (!r || r.error) { showToast('❌ ' + ((r && r.error) || 'No se pudo lanzar la actualización')); return; }
+  showToast('🔄 Trayendo los envíos desde Mercado Libre…');
+  _cenvEsperarSync(client.id);
+}
+
+function _cenvEsperarSync(clientId) {
+  clearTimeout(_cenvSyncTimer);
+  const aviso = document.getElementById('cenvSyncAviso');
+  if (aviso) aviso.innerHTML = '⏳ Actualizando con Mercado Libre — cada envío son 3 consultas, en cuentas grandes tarda unos minutos.';
+  const btn = document.getElementById('cenvSyncBtn');
+  if (btn) btn.disabled = true;
+  const tick = async () => {
+    const c = getActiveClient();
+    if (!c || c.id !== clientId) return;                      // cambió de cuenta: se deja de esperar
+    const e = await apiCall('GET', `/api/envios/sync/estado?client_id=${clientId}`).catch(() => null);
+    if (e && e.corriendo) { _cenvSyncTimer = setTimeout(tick, 5000); return; }
+    if (e && e.error) showToast('❌ ' + e.error);
+    else if (e && e.resultado) showToast(`✅ ${e.resultado.actualizados} envíos actualizados`);
+    loadCostoEnvios();
+  };
+  _cenvSyncTimer = setTimeout(tick, 4000);
+}
+
+async function guardarMedidasReales(itemId, borrar) {
+  const client = getActiveClient();
+  if (!client) return;
+  const val = id => { const x = document.getElementById(`cenv_${id}`); return x ? x.value.trim() : ''; };
+  const body = borrar
+    ? { client_id: client.id, item_id: itemId, largo: '', ancho: '', alto: '', peso_g: '' }
+    : { client_id: client.id, item_id: itemId, largo: val('largo'), ancho: val('ancho'), alto: val('alto'), peso_g: val('peso') };
+  const r = await apiCall('PUT', '/api/envios/medidas-reales', body);
+  if (!r || r.error) { showToast('❌ ' + ((r && r.error) || 'No se pudo guardar')); return; }
+  showToast(borrar ? '🗑️ Medidas reales borradas' : '✅ Medidas reales guardadas');
+  _cenvEdit = null;
+  loadCostoEnvios();
+}
+
+function renderCostoEnvios() {
+  const d = _cenvData;
+  const el = document.getElementById('costoEnviosContent');
+  if (!d) return;
+  const th = (t, right) => `<th style="padding:8px 10px;text-align:${right ? 'right' : 'left'};font-size:11px;font-weight:600;color:var(--muted);white-space:nowrap">${t}</th>`;
+  const td = (v, right, extra) => `<td style="padding:8px 10px;border-top:1px solid var(--border);font-size:12px;text-align:${right ? 'right' : 'left'};${extra || ''}">${v}</td>`;
+  const card = (titulo, valor, sub, color) => `
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:14px 16px;min-width:180px;flex:1">
+      <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em">${titulo}</div>
+      <div style="font-size:22px;font-weight:800;margin-top:4px;color:${color || 'var(--text)'}">${valor}</div>
+      <div style="font-size:11px;color:var(--muted);margin-top:4px">${sub || ''}</div>
+    </div>`;
+
+  // ── Cabecera ──
+  const ult = d.ultimo_sync
+    ? new Date(d.ultimo_sync).toLocaleString('es-AR', { timeZone: ART_TZ, day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
+    : null;
+  const cabecera = `<div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;flex-wrap:wrap">
+    <span style="font-size:12px;color:var(--muted)">Mes:</span>
+    <select onchange="cambiarMesCostoEnvios(this.value)" style="padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--text);font-size:13px;font-family:inherit">
+      ${Array.from({ length: 6 }, (_, i) => mesART(i)).map(x => `<option value="${x.val}" ${x.val === _cenvMes ? 'selected' : ''}>${x.label}</option>`).join('')}
+    </select>
+    <button id="cenvSyncBtn" class="sync-btn" onclick="sincronizarCostoEnvios(60)" ${d.sincronizando ? 'disabled' : ''}>🔄 Actualizar con ML</button>
+    <button class="sync-btn" onclick="exportarCostoEnvios()" ${d.envios.length ? '' : 'disabled'}>📥 Excel</button>
+    <span style="font-size:11px;color:var(--muted)">${ult ? 'datos al ' + ult : 'todavía sin datos de esta cuenta'}</span>
+  </div>
+  <div id="cenvSyncAviso" style="font-size:12px;color:var(--muted);margin-bottom:16px;min-height:16px"></div>`;
+
+  if (!d.envios.length) {
+    el.innerHTML = cabecera + `<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:30px;text-align:center;color:var(--muted);font-size:13px">
+      ${ult ? 'No hay envíos a cargo del vendedor en este mes.' : 'Esta cuenta todavía no tiene los envíos auditados. Se cargan solos todas las noches, o podés traerlos ahora con <b>Actualizar con ML</b>.'}
+    </div>`;
+    return;
+  }
+
+  // ── Tarjetas ──
+  const L = d.por_logistica || {};
+  const vacio = { envios: 0, cobrado: 0, cierra: 0, cobro_de_mas: 0, monto_de_mas: 0, cobro_de_menos: 0, monto_de_menos: 0, sobrecosto_volumetrico: 0 };
+  const col = L.colecta || vacio, full = L.full || vacio, flex = L.flex || vacio;
+  const auditados = col.envios + full.envios;
+  const cierran = col.cierra + full.cierra;
+  const deMas = col.cobro_de_mas + full.cobro_de_mas;
+  const montoDeMas = col.monto_de_mas + full.monto_de_mas;
+  const vol = col.sobrecosto_volumetrico + full.sobrecosto_volumetrico;
+  const cobradoTotal = col.cobrado + full.cobrado + flex.cobrado;
+  const mr = d.medidas_reales || { publicaciones: 0, pagado_de_mas: 0 };
+  const canc = d.cancelados_con_cobro || { envios: 0, cobrado: 0 };
+
+  const tarjetas = `<div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:14px">
+    ${card('Envíos cobrados', fmt$(cobradoTotal),
+      [col.envios ? `Colecta ${fmt$(col.cobrado)}` : '', full.envios ? `FULL ${fmt$(full.cobrado)}` : '', flex.envios ? `Flex ${fmt$(flex.cobrado)}` : '']
+        .filter(Boolean).join(' · '))}
+    ${card('Cobro correcto', auditados ? `${cierran} de ${auditados}` : '—',
+      auditados ? 'envíos de colecta y FULL que cierran exacto con la tabla y las medidas de ML' : 'solo Flex: cobra por zona, no por medidas',
+      auditados && cierran === auditados ? '#16a34a' : null)}
+    ${card('Cobrado de más', deMas ? fmt$(montoDeMas) : '$0',
+      deMas ? `${deMas} envíos por encima de la tabla — para reclamar` : 'ningún envío por encima de la tabla',
+      deMas ? '#dc2626' : '#16a34a')}
+    ${card('Sobrecosto por volumen', fmt$(vol),
+      'lo que se pagó por encima de cobrar con el peso físico, por el tamaño de la caja',
+      vol > 0 ? '#d97706' : null)}
+    ${card('Con medidas reales', mr.publicaciones ? fmt$(mr.pagado_de_mas) : '—',
+      mr.publicaciones ? `pagado de más en ${mr.publicaciones} publicaciones con la caja medida` : 'cargá las medidas reales abajo para ver cuánto se paga de más',
+      mr.pagado_de_mas > 0 ? '#dc2626' : null)}
+  </div>
+  ${canc.envios ? `<div style="background:rgba(217,119,6,.08);border:1px solid rgba(217,119,6,.35);border-radius:10px;padding:10px 14px;font-size:12px;margin-bottom:14px">
+      ⚠️ <b>${canc.envios} envíos cancelados tienen ${fmt$(canc.cobrado)} cobrados.</b> Verificá en la facturación de ML que el cargo se haya revertido.
+    </div>` : ''}
+  <details style="margin-bottom:22px;font-size:12px;color:var(--muted)">
+    <summary style="cursor:pointer">Cómo cobra ML el envío</summary>
+    <div style="margin-top:8px;line-height:1.6">
+      • ML cobra con <b>sus</b> medidas, no con las que declara el vendedor: la base maestra en colecta y lo que midió en su depósito en FULL.<br>
+      • Peso facturable = el mayor entre el peso físico y el volumétrico (largo × ancho × alto en cm / ${d.divisor_volumetrico || 4000}).<br>
+      • Se cobra <b>por unidad</b>: una orden de 3 unidades paga 3 envíos. Por debajo de $33.000 de precio unitario el vendedor no paga envío; desde $50.000 rige la tarifa más alta.<br>
+      • Flex cobra por zona de entrega, así que las medidas no mueven el monto y no se audita contra la tabla.<br>
+      • Si el cobro cierra pero la caja real es más chica que la que tiene ML, la plata se pierde en las medidas: cargalas en la tabla de abajo y se calcula cuánto.
+    </div>
+  </details>`;
+
+  // ── Tabla por publicación ──
+  const pubsTodas = d.publicaciones || [];
+  const pubs = _cenvLog === 'todas' ? pubsTodas : pubsTodas.filter(p => p.logistica === _cenvLog);
+  const chips = ['todas', 'colecta', 'full'].filter(k => k === 'todas' || pubsTodas.some(p => p.logistica === k)).map(k => {
+    const on = _cenvLog === k;
+    return `<button onclick="filtrarLogCostoEnvios('${k}')" style="padding:4px 12px;border-radius:14px;border:1px solid ${on ? 'var(--accent)' : 'var(--border)'};background:${on ? 'var(--accent)' : 'var(--surface)'};color:${on ? '#fff' : 'var(--muted)'};font-size:12px;cursor:pointer;font-family:inherit">${k === 'todas' ? 'Todas' : _CENV_LOG[k]}</button>`;
+  }).join('');
+
+  const inp = (id, v, ph) => `<input id="cenv_${id}" type="number" step="any" min="0" value="${v == null ? '' : v}" placeholder="${ph}"
+      style="width:74px;padding:5px 6px;border-radius:6px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:12px">`;
+
+  const filas = pubs.map(p => {
+    const paga = p.volumetrico_kg != null && p.peso_g > 0 && p.volumetrico_kg > p.peso_g / 1000 * 1.5;
+    const abierta = _cenvEdit === p.item_id;
+    const real = p.medidas_reales;
+    const fila = `<tr>
+      ${td(`<a href="https://articulo.mercadolibre.com.ar/${_cenvEsc(p.item_id)}" target="_blank" style="color:var(--accent);text-decoration:none">${_cenvEsc(p.title || p.item_id)}</a>
+            <div style="font-size:10px;color:var(--muted)">${_cenvEsc(p.item_id)}${p.sku ? ' · ' + _cenvEsc(p.sku) : ''}</div>`, false, 'max-width:300px')}
+      ${td(`${_CENV_LOG[p.logistica] || p.logistica}<div style="font-size:10px;color:var(--muted)">${p.origen_medidas === 'fd' ? 'medidas FULL' : p.origen_medidas === 'bmp' ? 'base de ML' : _cenvEsc(p.origen_medidas || '')}</div>`)}
+      ${td(_cenvMedidas(p.largo, p.ancho, p.alto), true, 'white-space:nowrap')}
+      ${td(p.peso_g ? (+p.peso_g).toLocaleString('es-AR') + ' g' : '—', true)}
+      ${td(`<b>${_cenvKg(p.facturable_kg)}</b>${paga ? '<div style="font-size:10px;color:#d97706">paga por volumen</div>' : ''}`, true)}
+      ${td(p.unidades, true)}
+      ${td(fmt$(p.cobrado), true)}
+      ${td(fmt$(p.cobrado_por_unidad), true)}
+      ${td(p.sobrecosto_volumetrico > 0 ? fmt$(p.sobrecosto_volumetrico) : '—', true, p.sobrecosto_volumetrico > 0 ? 'color:#d97706' : '')}
+      ${td(real
+          ? `${_cenvMedidas(real.largo, real.ancho, real.alto)}<div style="font-size:10px;color:var(--muted)">${(+real.peso_g).toLocaleString('es-AR')} g · ${_cenvKg(p.facturable_real_kg)}</div>`
+          : '<span style="color:var(--muted)">—</span>', true, 'white-space:nowrap')}
+      ${td(p.pagado_de_mas == null ? '—' : fmt$(p.pagado_de_mas), true,
+           p.pagado_de_mas > 0 ? 'color:#dc2626;font-weight:700' : p.pagado_de_mas != null ? 'color:#16a34a' : '')}
+      ${td(`<button onclick="editarMedidasReales('${_cenvEsc(p.item_id)}')" title="Cargar las medidas reales de la caja"
+              style="padding:4px 8px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text);cursor:pointer;font-size:12px">✏️</button>`, true)}
+    </tr>`;
+    if (!abierta) return fila;
+    return fila + `<tr style="background:rgba(34,211,238,.05)"><td colspan="12" style="padding:12px 16px">
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:12px">
+        <b>Medidas reales de la caja</b>
+        ${inp('largo', real && real.largo, 'largo cm')} × ${inp('ancho', real && real.ancho, 'ancho cm')} × ${inp('alto', real && real.alto, 'alto cm')} cm
+        ${inp('peso', real && real.peso_g, 'peso g')} g
+        <button class="sync-btn" onclick="guardarMedidasReales('${_cenvEsc(p.item_id)}')">Guardar</button>
+        ${real ? `<button class="sync-btn" onclick="guardarMedidasReales('${_cenvEsc(p.item_id)}', true)">Borrar</button>` : ''}
+        <span style="color:var(--muted)">ML hoy cobra con ${_cenvMedidas(p.largo, p.ancho, p.alto)} y ${p.peso_g ? (+p.peso_g).toLocaleString('es-AR') + ' g' : 'sin peso'}.</span>
+      </div></td></tr>`;
+  }).join('');
+
+  const tablaPubs = `<div style="margin-bottom:26px">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px;flex-wrap:wrap">
+      <span style="font-size:14px;font-weight:600;font-family:var(--font-b);flex:1">Por publicación — con qué medidas cobra ML</span>
+      ${chips}
+    </div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:12px">Colecta y FULL, ordenado por lo cobrado en el mes. Una publicación aparece más de una vez si ML la cobró con medidas distintas.</div>
+    ${pubs.length ? `<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden"><div style="overflow-x:auto">
+      <table style="width:100%;border-collapse:collapse">
+        <thead><tr style="background:var(--surface2)">
+          ${th('Publicación')}${th('Logística')}${th('Medidas ML', true)}${th('Peso ML', true)}${th('Facturable', true)}
+          ${th('Unid.', true)}${th('Cobrado', true)}${th('Por unidad', true)}${th('Sobrecosto volumen', true)}
+          ${th('Medidas reales', true)}${th('Pagado de más', true)}${th('', true)}
+        </tr></thead>
+        <tbody>${filas}</tbody>
+      </table></div></div>`
+      : `<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:20px;text-align:center;color:var(--muted);font-size:13px">Sin envíos de colecta ni FULL en el mes: los de Flex no dependen de las medidas.</div>`}
+  </div>`;
+
+  // ── Envíos que no cierran ──
+  const raros = d.envios.filter(e => ['cobro_de_mas', 'cobro_de_menos', 'sin_datos'].includes(e.estado) || (e.estado === 'cancelado' && e.cobrado > 0));
+  const tablaRaros = raros.length ? `<div style="margin-bottom:10px">
+    <div style="font-size:14px;font-weight:600;font-family:var(--font-b);margin-bottom:4px">Envíos para revisar</div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:12px">Los que no cierran con la tabla y los cancelados que igual tienen cobro.</div>
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden"><div style="overflow-x:auto">
+      <table style="width:100%;border-collapse:collapse">
+        <thead><tr style="background:var(--surface2)">
+          ${th('Fecha')}${th('Envío')}${th('Publicación')}${th('Logística')}${th('Medidas ML', true)}${th('Cobrado', true)}${th('Tabla', true)}${th('Diferencia', true)}${th('Resultado')}
+        </tr></thead>
+        <tbody>${raros.map(e => {
+          const l = (e.lineas || [])[0] || {};
+          const dif = e.esperado == null ? null : e.cobrado - e.esperado;
+          const est = _CENV_ESTADO[e.estado] || { label: e.estado, color: 'var(--muted)' };
+          return `<tr>
+            ${td(dART(e.fecha).toLocaleDateString('es-AR', { timeZone: ART_TZ, day: '2-digit', month: '2-digit' }))}
+            ${td(_cenvEsc(e.shipment_id))}
+            ${td(`${_cenvEsc(l.title || l.item_id || '—')}${(e.lineas || []).length > 1 ? ` <span style="color:var(--muted)">+${e.lineas.length - 1}</span>` : ''}
+                  <div style="font-size:10px;color:var(--muted)">${(e.lineas || []).reduce((a, x) => a + (x.cantidad || 0), 0)} unid. · ${fmt$(l.precio_unit)} c/u</div>`, false, 'max-width:280px')}
+            ${td(_CENV_LOG[e.logistica] || e.logistica)}
+            ${td(_cenvMedidas(l.largo, l.ancho, l.alto), true, 'white-space:nowrap')}
+            ${td(fmt$(e.cobrado), true)}
+            ${td(e.esperado == null ? '—' : fmt$(e.esperado), true)}
+            ${td(dif == null ? '—' : (dif > 0 ? '+' : '') + fmt$(dif).replace('$-', '-$'), true, dif > 0 ? 'color:#dc2626;font-weight:700' : '')}
+            ${td(`<span style="color:${est.color};font-weight:600">${est.label}</span>`)}
+          </tr>`;
+        }).join('')}</tbody>
+      </table></div></div>
+  </div>` : '';
+
+  el.innerHTML = cabecera + tarjetas + tablaPubs + tablaRaros;
+  if (d.sincronizando) {
+    const aviso = document.getElementById('cenvSyncAviso');
+    if (aviso) aviso.innerHTML = '⏳ Actualizando con Mercado Libre — cada envío son 3 consultas, en cuentas grandes tarda unos minutos.';
+  }
+}
+
+function exportarCostoEnvios() {
+  const d = _cenvData;
+  if (!d || !d.envios.length) return;
+  const client = getActiveClient();
+  const L = d.por_logistica || {};
+  const resumen = [];
+  Object.entries(L).forEach(([k, v]) => {
+    resumen.push({ Concepto: `${_CENV_LOG[k] || k} — envíos`, Valor: v.envios });
+    resumen.push({ Concepto: `${_CENV_LOG[k] || k} — cobrado`, Valor: v.cobrado });
+    if (k !== 'flex') {
+      resumen.push({ Concepto: `${_CENV_LOG[k] || k} — cierran con la tabla`, Valor: v.cierra });
+      resumen.push({ Concepto: `${_CENV_LOG[k] || k} — cobrado de más ($)`, Valor: v.monto_de_mas });
+      resumen.push({ Concepto: `${_CENV_LOG[k] || k} — cobrado de menos ($)`, Valor: v.monto_de_menos });
+      resumen.push({ Concepto: `${_CENV_LOG[k] || k} — sobrecosto por volumen ($)`, Valor: v.sobrecosto_volumetrico });
+    }
+  });
+  resumen.push({ Concepto: 'Cancelados con cobro — envíos', Valor: (d.cancelados_con_cobro || {}).envios || 0 });
+  resumen.push({ Concepto: 'Cancelados con cobro — $', Valor: (d.cancelados_con_cobro || {}).cobrado || 0 });
+  resumen.push({ Concepto: 'Pagado de más según medidas reales ($)', Valor: (d.medidas_reales || {}).pagado_de_mas ?? '' });
+  resumen.push({ Concepto: 'Divisor volumétrico', Valor: d.divisor_volumetrico });
+
+  const pubs = (d.publicaciones || []).map(p => ({
+    Publicacion: p.item_id, Titulo: p.title || '', SKU: p.sku || '', Logistica: _CENV_LOG[p.logistica] || p.logistica,
+    'Origen medidas': p.origen_medidas || '',
+    'Largo ML cm': p.largo ?? '', 'Ancho ML cm': p.ancho ?? '', 'Alto ML cm': p.alto ?? '', 'Peso ML g': p.peso_g ?? '',
+    'Volumetrico kg': p.volumetrico_kg ?? '', 'Facturable kg': p.facturable_kg ?? '',
+    Envios: p.envios, Unidades: p.unidades, 'Precio unit. prom.': p.precio_unit_prom,
+    Cobrado: p.cobrado, 'Cobrado por unidad': p.cobrado_por_unidad, 'Sobrecosto volumen': p.sobrecosto_volumetrico,
+    'Largo real cm': p.medidas_reales ? p.medidas_reales.largo : '', 'Ancho real cm': p.medidas_reales ? p.medidas_reales.ancho : '',
+    'Alto real cm': p.medidas_reales ? p.medidas_reales.alto : '', 'Peso real g': p.medidas_reales ? p.medidas_reales.peso_g : '',
+    'Facturable real kg': p.facturable_real_kg ?? '', 'Cobrado con medidas reales': p.cobrado_con_medidas_reales ?? '',
+    'Pagado de mas': p.pagado_de_mas ?? '',
+  }));
+  const envios = [];
+  d.envios.forEach(e => (e.lineas && e.lineas.length ? e.lineas : [{}]).forEach((l, i) => envios.push({
+    Envio: e.shipment_id, Fecha: ymd(e.fecha), Ordenes: (e.order_ids || []).join(' '), Logistica: _CENV_LOG[e.logistica] || e.logistica,
+    'Estado envio': e.status, Publicacion: l.item_id || '', Titulo: l.title || '', SKU: l.sku || '', Unidades: l.cantidad ?? '',
+    'Precio unit.': l.precio_unit ?? '', 'Largo cm': l.largo ?? '', 'Ancho cm': l.ancho ?? '', 'Alto cm': l.alto ?? '', 'Peso g': l.peso_g ?? '',
+    'Origen medidas': l.origen_medidas || '', 'Volumetrico kg': l.volumetrico_kg ?? '', 'Facturable kg': l.facturable_kg ?? '',
+    'Base ML': i === 0 ? e.base_cost : '', 'Bonificacion %': i === 0 ? e.bonificacion_pct : '',
+    Cobrado: i === 0 ? e.cobrado : '', 'Tabla con medidas ML': i === 0 ? (e.esperado ?? '') : '',
+    'Tabla con peso fisico': i === 0 ? (e.esperado_fisico ?? '') : '',
+    Resultado: i === 0 ? ((_CENV_ESTADO[e.estado] || {}).label || e.estado) : '',
+  })));
+
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(resumen), 'Resumen');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(pubs), 'Por publicacion');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(envios), 'Detalle envios');
+  XLSX.writeFile(wb, `CostoEnvios_${(client?.name || 'cliente').replace(/\s+/g, '_')}_${_cenvMes}.xlsx`);
+  showToast(`✅ Excel descargado (${envios.length} filas de envíos)`);
 }
 
 async function loadFullStock() {

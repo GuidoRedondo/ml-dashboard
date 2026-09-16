@@ -46,6 +46,12 @@ const LOGISTICA = {
   drop_off:      'colecta',
 };
 
+// Un envío anterior al 1/9/2026 se cobró con el tarifario viejo: auditarlo contra el
+// nuevo lo hacía aparecer entero como "cobrado de menos". Manda la fecha de la venta.
+function esquemaPorFecha(fecha) {
+  return fecha && new Date(fecha) < new Date(`${TARIFAS.VIGENCIA}T00:00:00-03:00`) ? 'actual' : 'sep';
+}
+
 // ════════════════════════════════════════════════════════════════════
 // AUDITORÍA DE UN ENVÍO (pura: no toca ML ni la base)
 // ════════════════════════════════════════════════════════════════════
@@ -62,10 +68,7 @@ function auditarEnvio({ shipment, costs, items, ordenes }) {
   const cobrado = Math.round(parseFloat(sender.cost) || 0);
   const bonif = (sender.discounts || []).reduce((a, d) => a + (parseFloat(d.rate) || 0), 0);
   const logistica = LOGISTICA[shipment.logistic_type] || shipment.logistic_type || 'otro';
-  // Un envío anterior al 1/9/2026 se cobró con el tarifario viejo: auditarlo contra el
-  // nuevo lo hacía aparecer entero como "cobrado de menos". Manda la fecha de la venta.
-  const fechaVenta = (ordenes || []).map(o => o.date_created).filter(Boolean).sort()[0];
-  const esquema = fechaVenta && new Date(fechaVenta) < new Date(`${TARIFAS.VIGENCIA}T00:00:00-03:00`) ? 'actual' : 'sep';
+  const esquema = esquemaPorFecha((ordenes || []).map(o => o.date_created).filter(Boolean).sort()[0]);
 
   const itemsOrden = new Map();
   for (const o of ordenes || []) {
@@ -149,13 +152,30 @@ async function crearTablas(pool) {
     )
   `);
   await pool.query(`CREATE INDEX IF NOT EXISTS envios_auditoria_fecha ON envios_auditoria (client_id, fecha)`);
+  // Medidas de la caja tomadas a mano por el vendedor. Contra éstas se calcula cuánto
+  // se pagó de más porque ML tiene cargadas otras.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS medidas_reales (
+      client_id  INTEGER NOT NULL,
+      item_id    TEXT    NOT NULL,
+      largo      NUMERIC,
+      ancho      NUMERIC,
+      alto       NUMERIC,
+      peso_g     NUMERIC,
+      updated_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_by TEXT,
+      PRIMARY KEY (client_id, item_id)
+    )
+  `);
 }
 
 // ════════════════════════════════════════════════════════════════════
 // RESUMEN PARA LA PANTALLA (lee de la base)
 // ════════════════════════════════════════════════════════════════════
 
-function resumir(rows) {
+// medidasReales: { item_id: { largo, ancho, alto, peso_g } }. Con ellas cada línea se
+// vuelve a tarifar con el peso facturable real, y la diferencia es lo pagado de más.
+function resumir(rows, medidasReales = {}) {
   const porLogistica = {};
   const porPublicacion = new Map();
   const cancelados = { envios: 0, cobrado: 0 };
@@ -191,12 +211,22 @@ function resumir(rows) {
         origen_medidas: l.origen_medidas, largo: l.largo, ancho: l.ancho, alto: l.alto, peso_g: l.peso_g,
         volumetrico_kg: l.volumetrico_kg, facturable_kg: l.facturable_kg,
         envios: 0, unidades: 0, cobrado: 0, sobrecosto_volumetrico: 0, _precios: 0,
+        medidas_reales: null, facturable_real_kg: null, cobrado_con_medidas_reales: null, pagado_de_mas: null,
       };
       p.envios++; p.unidades += l.cantidad; p._precios += l.precio_unit * l.cantidad;
       // En un envío con varias publicaciones lo cobrado se reparte según la tabla
       const parte = totTabla > 0 ? (l.tabla || 0) / totTabla : 1 / lineas.length;
       p.cobrado += cobrado * parte;
       if (l.tabla != null && l.tabla_fisico != null) p.sobrecosto_volumetrico += l.tabla - l.tabla_fisico;
+      const mr = medidasReales[l.item_id];
+      const factReal = mr ? TARIFAS.pesoFacturableKg(mr) : null;
+      if (factReal != null) {
+        const real = TARIFAS.costoEnvioLinea(l.precio_unit, factReal, l.cantidad, esquemaPorFecha(r.fecha));
+        p.medidas_reales = mr;
+        p.facturable_real_kg = +factReal.toFixed(3);
+        p.cobrado_con_medidas_reales = (p.cobrado_con_medidas_reales || 0) + real;
+        p.pagado_de_mas = (p.pagado_de_mas || 0) + cobrado * parte - real;
+      }
       porPublicacion.set(k, p);
     }
   }
@@ -208,6 +238,7 @@ function resumir(rows) {
       cobrado: Math.round(p.cobrado),
       precio_unit_prom: p.unidades ? Math.round(_precios / p.unidades) : 0,
       cobrado_por_unidad: p.unidades ? Math.round(p.cobrado / p.unidades) : 0,
+      pagado_de_mas: p.pagado_de_mas == null ? null : Math.round(p.pagado_de_mas),
     };
   }).sort((a, b) => b.cobrado - a.cobrado);
 
@@ -215,7 +246,12 @@ function resumir(rows) {
     for (const k of ['cobrado', 'monto_de_mas', 'monto_de_menos', 'sobrecosto_volumetrico']) L[k] = Math.round(L[k]);
   }
   cancelados.cobrado = Math.round(cancelados.cobrado);
-  return { por_logistica: porLogistica, cancelados_con_cobro: cancelados, publicaciones };
+  const conReales = publicaciones.filter(p => p.pagado_de_mas != null);
+  const medidas = {
+    publicaciones: conReales.length,
+    pagado_de_mas: conReales.reduce((a, p) => a + p.pagado_de_mas, 0),
+  };
+  return { por_logistica: porLogistica, cancelados_con_cobro: cancelados, publicaciones, medidas_reales: medidas };
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -390,13 +426,20 @@ module.exports = (app, { pool, requireAuth, requireConsultor, requireAdmin, getC
          ORDER BY fecha DESC`, [clientId, desde, hasta]);
       const sync = await pool.query(
         'SELECT MAX(synced_at) AS ultimo FROM envios_auditoria WHERE client_id=$1', [clientId]);
+      const mr = await pool.query(
+        'SELECT item_id, largo, ancho, alto, peso_g FROM medidas_reales WHERE client_id=$1', [clientId]);
+      const medidasReales = {};
+      mr.rows.forEach(m => {
+        medidasReales[m.item_id] = { largo: parseFloat(m.largo), ancho: parseFloat(m.ancho),
+                                     alto: parseFloat(m.alto), peso_g: parseFloat(m.peso_g) };
+      });
 
       res.json({
         client_id: clientId, desde, hasta,
         ultimo_sync: sync.rows[0].ultimo,
         sincronizando: enCurso.has(clientId),
         divisor_volumetrico: TARIFAS.DIVISOR_VOLUMETRICO,
-        ...resumir(r.rows),
+        ...resumir(r.rows, medidasReales),
         envios: r.rows.map(x => ({
           ...x,
           cobrado: parseFloat(x.cobrado), base_cost: parseFloat(x.base_cost),
@@ -408,6 +451,33 @@ module.exports = (app, { pool, requireAuth, requireConsultor, requireAdmin, getC
       console.error('[ENVIOS AUDITORIA]', e.message);
       res.status(500).json({ error: e.message });
     }
+  });
+
+  // Medidas reales de la caja de una publicación. Todo vacío borra la carga.
+  app.put('/api/envios/medidas-reales', requireAuth, async (req, res) => {
+    try {
+      const { client_id, item_id } = req.body || {};
+      const clientId = parseInt(client_id);
+      if (!clientId || !item_id) return res.status(400).json({ error: 'Falta client_id o item_id' });
+      if (!puedeVer(req, clientId)) return res.status(403).json({ error: 'Sin acceso a esta cuenta' });
+      const num = v => (v === '' || v == null) ? null : parseFloat(String(v).replace(',', '.'));
+      const m = { largo: num(req.body.largo), ancho: num(req.body.ancho), alto: num(req.body.alto), peso_g: num(req.body.peso_g) };
+      const vals = Object.values(m);
+      if (vals.every(v => v == null)) {
+        await pool.query('DELETE FROM medidas_reales WHERE client_id=$1 AND item_id=$2', [clientId, item_id]);
+        return res.json({ ok: true, borrado: true });
+      }
+      if (vals.some(v => !(v > 0))) {
+        return res.status(400).json({ error: 'Cargá las cuatro medidas: largo, ancho y alto en cm, y peso en gramos' });
+      }
+      await pool.query(`
+        INSERT INTO medidas_reales (client_id, item_id, largo, ancho, alto, peso_g, updated_at, updated_by)
+        VALUES ($1,$2,$3,$4,$5,$6,NOW(),$7)
+        ON CONFLICT (client_id, item_id) DO UPDATE
+          SET largo=$3, ancho=$4, alto=$5, peso_g=$6, updated_at=NOW(), updated_by=$7`,
+        [clientId, item_id, m.largo, m.ancho, m.alto, m.peso_g, req.user.username]);
+      res.json({ ok: true, ...m, facturable_kg: TARIFAS.pesoFacturableKg(m) });
+    } catch (e) { res.status(500).json({ error: e.message }); }
   });
 
   // Sincronización manual de un cliente. Contesta al toque y sigue en background:
@@ -469,4 +539,5 @@ module.exports = (app, { pool, requireAuth, requireConsultor, requireAdmin, getC
 };
 
 module.exports.auditarEnvio = auditarEnvio;
+module.exports.esquemaPorFecha = esquemaPorFecha;
 module.exports.resumir = resumir;
