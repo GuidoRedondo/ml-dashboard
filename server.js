@@ -10129,6 +10129,19 @@ app.get('/api/debug/claim-write', requireAuth, requireAdmin, async (req, res) =>
     await probar('send_message_v2', `/post-purchase/v2/claims/${claim_id}/actions/send-message`,
       { receiver_role: '__sonda_invalida__', message: '' });
 
+    // Si el hilo del reclamo está cerrado para la app, el otro camino para contestar
+    // es el chat post-venta común de la orden. Se prueba igual: payload inválido.
+    const orderId = claim.resource === 'order' ? claim.resource_id : null;
+    if (orderId) {
+      const order = await fetch(`${ML_API}/orders/${orderId}`, { headers }).then(r => r.json()).catch(() => null);
+      const packId = order?.pack_id || orderId;
+      sondas._pack_id = packId;
+      sondas.chat_read = await fetch(`${ML_API}/messages/packs/${packId}/sellers/${uid}?tag=post_sale`, { headers })
+        .then(async r => ({ status: r.status, mensajes: (await r.json().catch(() => null))?.messages?.length ?? null }));
+      await probar('chat_write', `/messages/packs/${packId}/sellers/${uid}`,
+        { from: { user_id: String(uid) }, to: { user_id: '__sonda_invalida__' }, text: '' });
+    }
+
     res.json({ claim: { id: claim.id, type: claim.type, stage: claim.stage, status: claim.status }, sondas });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
