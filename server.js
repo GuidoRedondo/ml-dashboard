@@ -10752,54 +10752,77 @@ app.get('/api/logistica/desempenio', requireAuth, async (req, res) => {
 // propio para que nadie la lea como un número de ML.
 //
 // El detalle del mes (casos post-venta y ventas caídas) es lo caro: claims/search
-// ignora el filtro de fecha y el sort, así que hay que paginar el historial entero
-// y filtrar acá. Por eso se cachea 12h igual que el resto.
+// ignora el filtro de fecha, así que hay que pedir los reclamos ordenados por fecha
+// y cortar en código. Por eso se cachea 12h igual que el resto.
 
-// Todos los claims de la cuenta, sin filtrar. Se pagina una sola vez y después se
-// filtra en memoria por los distintos rangos que hagan falta (el mes y los 60 días).
-// OJO con la paginación: repite filas entre páginas y se saltea otras, igual que la
-// de PADS, y NO se saltea siempre las mismas. Medido en REDFISHOK sobre 1971
-// reclamos: una pasada trae entre 1932 y 1966 ids distintos, y el conteo de julio
-// baila entre 65 y 83 según la corrida. Deduplicar no alcanza: hay que recorrer dos
-// veces y unir. Con dos pasadas el acumulado queda en 1971 y ya no crece (probado
-// hasta cuatro), así que dos es el punto donde se estabiliza sin pagar de más.
-async function fetchClaimsTodos(headers, maxPaginas = 80, pasadas = 2) {
+// Los claims de la cuenta, del más nuevo al más viejo, hasta la fecha que se pida.
+//
+// TRES COSAS QUE CUESTA CARO NO SABER (medidas sobre AB Fitness, 18.959 reclamos
+// cerrados, el 21/9/2026):
+//
+// 1. `sort=date_desc` SÍ funciona, aunque `date_created.from/to` siga ignorándose.
+//    Sin sort, ML devuelve los reclamos del MÁS VIEJO al más nuevo: la página 0 de
+//    esta cuenta son reclamos de 2018. Paginar "las primeras N páginas" traía 2018,
+//    no el mes en curso.
+// 2. El offset corta en 10.000 con `bad_request_error`, igual que items/search corta
+//    en 1.000. Sin orden, los reclamos recientes de una cuenta con más de 10.000
+//    casos eran literalmente inalcanzables: septiembre aparecía con 34 casos cuando
+//    tenía 129.
+// 3. Con el sort puesto, la paginación deja de saltear filas. Medido: 6 páginas de
+//    100 dan 600 ids distintos y una segunda pasada no agrega ninguno. Las dos
+//    pasadas que hacía falta hacer antes eran un parche contra el desorden, no
+//    contra un bug de ML: con sort alcanza una sola.
+//
+// Se corta en cuanto una página trae algo anterior a `desde`, con una página de
+// gracia por si el orden tiene algún hueco. Para AB Fitness, 400 días son ~27
+// páginas en vez de las 1.600 que costaba bajar el historial entero.
+async function fetchClaimsTodos(headers, { desde = null, maxPaginas = 200 } = {}) {
   const porId = new Map();
   let truncado = false, totalDeclarado = 0, fallidas = 0;
 
-  // Una página que falla se lleva 50 reclamos sin hacer ruido: pedir tantas seguidas
-  // hace que ML empiece a cortar, y sin reintento el mes aparecía con la mitad de los
-  // casos y nadie se enteraba. Se reintenta con una espera creciente y, si igual falla,
-  // se cuenta para poder avisar que el número quedó incompleto.
+  // Una página que falla se lleva 100 reclamos sin hacer ruido. Se reintenta con
+  // espera creciente y, si igual no viene, se cuenta para poder avisar que el número
+  // quedó incompleto en vez de mostrarlo como si estuviera entero.
   const traerPagina = async (url) => {
     for (let intento = 0; intento < 3; intento++) {
       const r = await fetch(url, { headers }).then(r => r.json()).catch(() => null);
       if (r && Array.isArray(r.data)) return r;
-      await new Promise(res => setTimeout(res, 400 * (intento + 1)));
+      await new Promise(res => setTimeout(res, 500 * (intento + 1)));
     }
     fallidas++;
     return null;
   };
 
-  for (let pasada = 0; pasada < pasadas; pasada++) {
-    for (const estado of ['opened', 'closed']) {
-      for (let pag = 0; pag < maxPaginas; pag++) {
-        const url = `${ML_API}/post-purchase/v1/claims/search?status=${estado}&limit=50&offset=${pag * 50}`;
-        const r = await traerPagina(url);
-        if (!r) continue;                       // se reintentó y no vino: seguimos con la próxima
-        r.data.forEach(c => { if (c && c.id != null) porId.set(c.id, c); });
-        const total = (r.paging && r.paging.total) || 0;
-        if (pasada === 0 && pag === 0) totalDeclarado += total;
-        if ((pag + 1) * 50 >= total) break;
-        if (pag === maxPaginas - 1) truncado = true;
+  for (const estado of ['opened', 'closed']) {
+    let gracia = 1;
+    for (let pag = 0; pag < maxPaginas; pag++) {
+      const url = `${ML_API}/post-purchase/v1/claims/search?status=${estado}` +
+                  `&sort=date_desc&limit=100&offset=${pag * 100}`;
+      const r = await traerPagina(url);
+      if (!r) continue;                       // se reintentó y no vino: seguimos
+      r.data.forEach(c => { if (c && c.id != null) porId.set(c.id, c); });
+      const total = (r.paging && r.paging.total) || 0;
+      if (pag === 0) totalDeclarado += total;
+
+      if (desde && r.data.length) {
+        const masVieja = r.data.reduce((min, c) =>
+          (c.date_created && (!min || c.date_created < min)) ? c.date_created : min, null);
+        if (masVieja && ymd(new Date(masVieja)) < desde && --gracia < 0) break;
       }
+      if ((pag + 1) * 100 >= total) break;
+      // 10.000 es el techo duro del offset: más allá ML responde bad_request.
+      if ((pag + 1) * 100 >= 10000) { truncado = true; break; }
+      if (pag === maxPaginas - 1) truncado = true;
     }
   }
   const claims = [...porId.values()];
   return {
     claims, truncado, fallidas,
-    perdidos: Math.max(0, totalDeclarado - claims.length),
-    // Con páginas caídas el conteo del mes queda corto: no sirve para mostrarlo como dato firme.
+    // Con `desde` puesto no se baja todo el historial, así que la diferencia contra
+    // el total declarado por ML es lo que quedó afuera A PROPÓSITO, no un faltante.
+    perdidos: desde ? 0 : Math.max(0, totalDeclarado - claims.length),
+    total_ml: totalDeclarado,
+    // Con páginas caídas el conteo queda corto: no sirve para mostrarlo como dato firme.
     incompleto: fallidas > 0
   };
 }
@@ -10833,8 +10856,12 @@ async function calcularReputacionMes(uid, headers, desde, hasta, ventas60) {
   const hoy = ymd();
   const hace60 = ymdShift(hoy, -60);
 
+  // Se piden los claims hasta la más vieja de las dos ventanas que se miran acá: el
+  // mes elegido y los últimos 60 días de las mediaciones. Antes se bajaba el historial
+  // entero, que en una cuenta grande ni siquiera entraba en el límite de offset.
+  const desdeClaims = desde < hace60 ? desde : hace60;
   const [{ claims, truncado, perdidos, incompleto, fallidas }, ordenesMes] = await Promise.all([
-    fetchClaimsTodos(headers),
+    fetchClaimsTodos(headers, { desde: desdeClaims }),
     fetchOrdenesMes(uid, headers, desde, hasta)
   ]);
   const canceladasRaw = ordenesMes.canceladas;

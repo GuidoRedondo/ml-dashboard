@@ -33,11 +33,12 @@
 //
 //  POR QUÉ SE PERSISTE
 //  -------------------
-//  `claims/search` ignora el filtro de fecha, así que para ver un mes hay que
-//  recorrer el historial entero: en una cuenta con 2.000 reclamos son ~160 páginas,
-//  y encima la paginación se saltea filas (de ahí las dos pasadas de
-//  `fetchClaimsTodos`). Eso no se puede pagar al abrir una pestaña. El cron baja
-//  todo de madrugada, lo guarda acá, y la vista lee de la base.
+//  `claims/search` ignora el filtro de fecha: para ver un mes hay que pedir los
+//  reclamos ordenados por fecha (`sort=date_desc`, que sí anda) e ir cortando en
+//  código. Encima el offset topa en 10.000, así que el historial de una cuenta grande
+//  no se puede recorrer entero ni queriendo. Eso no se paga al abrir una pestaña: el
+//  cron baja los últimos DIAS_HISTORIAL días de madrugada, los guarda acá, y la vista
+//  lee de la base — donde las filas se van acumulando corrida tras corrida.
 //
 //  El enriquecido (detail + hilo + devolución + costo de etiqueta) son 4 o 5
 //  llamadas POR RECLAMO, así que va con presupuesto: los abiertos se refrescan
@@ -230,6 +231,9 @@ module.exports = (app, { pool, requireAuth, requireAdmin, getClientToken, ML_API
   // Historial que se enriquece. Más atrás quedan los datos del header (tipo, motivo,
   // fecha), que es lo que se usa para contar; el detalle fino no se va a mirar.
   const DIAS_DETALLE = 400;
+  // Hasta dónde se baja el historial. La vista muestra 12 meses, así que con 400 días
+  // sobra y cada noche cuesta unas pocas decenas de requests por cuenta.
+  const DIAS_HISTORIAL = 400;
 
   const enCurso = new Map();
   const ultimos = new Map();
@@ -364,11 +368,14 @@ module.exports = (app, { pool, requireAuth, requireAdmin, getClientToken, ML_API
     if (!token) throw new Error('cliente sin token de ML');
     const headers = { 'Authorization': `Bearer ${token}` };
 
-    // 400 páginas por estado y por pasada (20.000 casos). El default de
-    // fetchClaimsTodos son 80, que alcanza para la vista de Reputación pero recorta
-    // las cuentas grandes: AB Fitness declara ~19.000 casos post-venta y con el tope
-    // viejo bajaba 4.034, así que el mes podía aparecer con la mitad de los casos.
-    const { claims, perdidos, incompleto, fallidas, truncado } = await fetchClaimsTodos(headers, 400);
+    // Se baja hasta DIAS_HISTORIAL atrás, no el historial completo: ML pagina del más
+    // nuevo al más viejo con sort=date_desc y corta el offset en 10.000, así que bajar
+    // todo no sólo es carísimo — en una cuenta con más de 10.000 casos es imposible.
+    // Medido en AB Fitness: el historial entero eran ~1.600 requests y 20 minutos y
+    // volvía incompleto; 400 días son ~27 páginas.
+    const desdeHist = ymdShift(ymd(), -DIAS_HISTORIAL);
+    const { claims, perdidos, incompleto, fallidas, truncado } =
+      await fetchClaimsTodos(headers, { desde: desdeHist });
     await upsertHeaders(clientId, claims);
 
     // Qué enriquecer, en este orden: primero los abiertos (cambian todos los días,
