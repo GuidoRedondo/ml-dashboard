@@ -10093,64 +10093,6 @@ app.get('/api/debug/billing', requireAuth, async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
-// SONDA de escritura sobre reclamos. Con las promociones pasó que leer andaba y
-// escribir daba 403 PolicyAgent, así que antes de construir nada hay que saber si ML
-// deja al vendedor contestar desde una app no certificada.
-// A propósito manda un payload INVÁLIDO (receiver_role inexistente y mensaje vacío):
-// si ML responde 400 el permiso existe y lo que falla es el cuerpo; si responde 403
-// está bloqueado. En ningún caso le llega un mensaje al comprador.
-app.get('/api/debug/claim-write', requireAuth, requireAdmin, async (req, res) => {
-  try {
-    const { client_id, claim_id } = req.query;
-    if (!client_id || !claim_id) return res.status(400).json({ error: 'Falta client_id o claim_id' });
-    const token = await getClientToken(parseInt(client_id));
-    if (!token) return res.status(403).json({ error: 'Sin token' });
-    const headers = { 'Authorization': `Bearer ${token}` };
-
-    const cl = await pool.query('SELECT ml_user_id FROM clients WHERE id=$1', [client_id]);
-    const uid = cl.rows[0]?.ml_user_id;
-
-    // Ownership: el reclamo tiene que ser de la cuenta de ese cliente
-    const claim = await fetch(`${ML_API}/post-purchase/v1/claims/${claim_id}`, { headers }).then(r => r.json());
-    const esSuyo = (claim.players || []).some(p => p.type === 'seller' && String(p.user_id) === String(uid));
-    if (!esSuyo) return res.status(403).json({ error: 'El reclamo no pertenece a este cliente', claim_status: claim.status || null });
-
-    const sondas = {};
-    const probar = async (nombre, path, body) => {
-      const r = await fetch(`${ML_API}${path}`, {
-        method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' },
-        body: JSON.stringify(body)
-      });
-      sondas[nombre] = { status: r.status, body: await r.json().catch(() => null) };
-    };
-
-    await probar('send_message_v1', `/post-purchase/v1/claims/${claim_id}/actions/send-message`,
-      { receiver_role: '__sonda_invalida__', message: '' });
-    await probar('send_message_v2', `/post-purchase/v2/claims/${claim_id}/actions/send-message`,
-      { receiver_role: '__sonda_invalida__', message: '' });
-
-    // Si el hilo del reclamo está cerrado para la app, el otro camino para contestar
-    // es el chat post-venta común de la orden. Se prueba igual: payload inválido.
-    const orderId = claim.resource === 'order' ? claim.resource_id : null;
-    if (orderId) {
-      const order = await fetch(`${ML_API}/orders/${orderId}`, { headers }).then(r => r.json()).catch(() => null);
-      const packId = order?.pack_id || orderId;
-      sondas._pack_id = packId;
-      sondas.chat_read = await fetch(`${ML_API}/messages/packs/${packId}/sellers/${uid}?tag=post_sale`, { headers })
-        .then(async r => ({ status: r.status, mensajes: (await r.json().catch(() => null))?.messages?.length ?? null }));
-      const buyer = order?.buyer?.id;
-      await probar('chat_write', `/messages/packs/${packId}/sellers/${uid}`,
-        { from: { user_id: String(uid) }, to: { user_id: '__sonda_invalida__' }, text: '' });
-      await probar('chat_write_tag', `/messages/packs/${packId}/sellers/${uid}?tag=post_sale`,
-        { from: { user_id: String(uid) }, to: { user_id: '__sonda_invalida__' }, text: '' });
-      await probar('chat_write_buyer_invalido', `/messages/packs/${packId}/sellers/${uid}?application_id=${process.env.ML_APP_ID || ''}`,
-        { from: { user_id: String(uid) }, to: { user_id: buyer ? String(buyer) : '0' }, text: '' });
-    }
-
-    res.json({ claim: { id: claim.id, type: claim.type, stage: claim.stage, status: claim.status }, sondas });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
 app.get('/api/debug/order', requireAuth, async (req, res) => {
   try {
     const { order_id, client_id } = req.query;
