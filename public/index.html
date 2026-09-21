@@ -16393,7 +16393,9 @@ function renderReclamos() {
     <button onclick="loadReclamos({sync:true})" ${sy.sincronizando ? 'disabled' : ''} style="padding:6px 12px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:${sy.sincronizando ? 'var(--muted)' : 'var(--text)'};font-size:12px;cursor:${sy.sincronizando ? 'default' : 'pointer'};font-family:inherit">
       ${sy.sincronizando ? '⏳ Sincronizando con ML…' : '🔄 Sincronizar con ML'}</button>
     ${sy.synced_at ? `<span style="font-size:11px;color:var(--muted)">datos al ${fechaHora(sy.synced_at)} · ${(sy.casos || 0).toLocaleString('es-AR')} casos en el historial${sy.pendientes_de_detalle ? ` · ${sy.pendientes_de_detalle} sin detalle fino, se completan de noche` : ''}</span>` : ''}
-    ${sy.incompleto ? '<span style="font-size:11px;color:#92400e;background:#fef3c7;padding:2px 8px;border-radius:20px">ML rechazó páginas al paginar: puede faltar algún caso viejo</span>' : ''}
+    ${sy.incompleto ? '<span style="font-size:11px;color:#92400e;background:#fef3c7;padding:2px 8px;border-radius:20px">ML rechazó páginas al paginar: puede faltar algún caso</span>' : ''}
+    ${sy.truncado ? '<span style="font-size:11px;color:#92400e;background:#fef3c7;padding:2px 8px;border-radius:20px" title="ML no deja ordenar los reclamos, así que lo que falta no es lo más viejo sino un pedazo cualquiera del historial">historial recortado por volumen</span>'
+      : sy.perdidos > 0 ? `<span style="font-size:11px;color:var(--muted)" title="La paginación de ML se saltea filas: ML declara más casos de los que devuelve">ML declara ${(sy.perdidos + (sy.casos || 0)).toLocaleString('es-AR')} casos y devolvió ${(sy.casos || 0).toLocaleString('es-AR')}</span>` : ''}
     ${sy.error ? `<span style="font-size:11px;color:#dc2626">último intento falló: ${esc(sy.error)}</span>` : ''}
   </div>`;
 

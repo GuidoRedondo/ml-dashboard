@@ -209,8 +209,13 @@ async function crearTablas(pool) {
       -- "este cliente tuvo 40 reclamos" de "bajé 40 de los 70 que hay"
       incompleto    BOOLEAN DEFAULT FALSE,
       perdidos      INTEGER DEFAULT 0,
+      -- true si se llegó al tope de páginas: el historial quedó recortado y, como
+      -- claims/search ignora el sort, lo que falta no es "lo más viejo" sino un
+      -- pedazo cualquiera. Hay que poder decirlo en la vista.
+      truncado      BOOLEAN DEFAULT FALSE,
       error         TEXT
     );
+    ALTER TABLE reclamos_sync ADD COLUMN IF NOT EXISTS truncado BOOLEAN DEFAULT FALSE;
   `);
 }
 
@@ -359,7 +364,11 @@ module.exports = (app, { pool, requireAuth, requireAdmin, getClientToken, ML_API
     if (!token) throw new Error('cliente sin token de ML');
     const headers = { 'Authorization': `Bearer ${token}` };
 
-    const { claims, perdidos, incompleto, fallidas } = await fetchClaimsTodos(headers);
+    // 400 páginas por estado y por pasada (20.000 casos). El default de
+    // fetchClaimsTodos son 80, que alcanza para la vista de Reputación pero recorta
+    // las cuentas grandes: AB Fitness declara ~19.000 casos post-venta y con el tope
+    // viejo bajaba 4.034, así que el mes podía aparecer con la mitad de los casos.
+    const { claims, perdidos, incompleto, fallidas, truncado } = await fetchClaimsTodos(headers, 400);
     await upsertHeaders(clientId, claims);
 
     // Qué enriquecer, en este orden: primero los abiertos (cambian todos los días,
@@ -381,13 +390,14 @@ module.exports = (app, { pool, requireAuth, requireAdmin, getClientToken, ML_API
     }
 
     await pool.query(`
-      INSERT INTO reclamos_sync (client_id, synced_at, casos, enriquecidos, incompleto, perdidos, error)
-      VALUES ($1, NOW(), $2, $3, $4, $5, NULL)
+      INSERT INTO reclamos_sync (client_id, synced_at, casos, enriquecidos, incompleto, perdidos, truncado, error)
+      VALUES ($1, NOW(), $2, $3, $4, $5, $6, NULL)
       ON CONFLICT (client_id) DO UPDATE SET
-        synced_at=NOW(), casos=$2, enriquecidos=$3, incompleto=$4, perdidos=$5, error=NULL`,
-      [clientId, claims.length, hechos, !!incompleto, perdidos || 0]);
+        synced_at=NOW(), casos=$2, enriquecidos=$3, incompleto=$4, perdidos=$5, truncado=$6, error=NULL`,
+      [clientId, claims.length, hechos, !!incompleto, perdidos || 0, !!truncado]);
 
-    return { casos: claims.length, enriquecidos: hechos, incompleto: !!incompleto, perdidos, paginas_fallidas: fallidas };
+    return { casos: claims.length, enriquecidos: hechos, incompleto: !!incompleto,
+             perdidos, truncado: !!truncado, paginas_fallidas: fallidas };
   }
 
   function lanzarSync(clientId, opts) {
@@ -484,7 +494,7 @@ module.exports = (app, { pool, requireAuth, requireAdmin, getClientToken, ML_API
          LIMIT 20`, [clientId]);
 
       const sync = await pool.query(`
-        SELECT synced_at, casos, enriquecidos, incompleto, perdidos, error
+        SELECT synced_at, casos, enriquecidos, incompleto, perdidos, truncado, error
           FROM reclamos_sync WHERE client_id = $1`, [clientId]);
 
       const pend = await pool.query(`
