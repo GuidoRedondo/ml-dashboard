@@ -1851,10 +1851,22 @@ tbody td {
     <div class="page" id="page-reputacion">
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap">
         <h2 style="margin:0;font-family:var(--font-b);flex:1">⭐ Reputación</h2>
-        <button class="sync-btn" onclick="exportarReputacionEnvios()">📥 Excel</button>
-        <button class="sync-btn" onclick="loadReputacion({calcular:true})">🔄 Actualizar</button>
+        <button class="sync-btn" id="repExcelBtn" onclick="exportarReputacionEnvios()">📥 Excel</button>
+        <button class="sync-btn" onclick="refreshRepTab()">🔄 Actualizar</button>
+      </div>
+      <!-- Tabs -->
+      <div style="display:flex;gap:0;border-bottom:2px solid var(--border);margin-bottom:20px">
+        <button id="tab-rep-metricas" onclick="switchRepTab('metricas')"
+          style="padding:8px 18px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--accent);border-bottom:2px solid var(--accent);margin-bottom:-2px;font-family:var(--font-b)">
+          🎯 Cómo te mide ML
+        </button>
+        <button id="tab-rep-reclamos" onclick="switchRepTab('reclamos')"
+          style="padding:8px 18px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-2px;font-family:var(--font-b)">
+          ⚖️ Reclamos
+        </button>
       </div>
       <div id="reputacionContent"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Cargando...</div></div>
+      <div id="reclamosContent" style="display:none"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Seleccioná la pestaña Reclamos para cargar</div></div>
     </div>
 
     <!-- CENTRO DE INTELIGENCIA -->
@@ -2804,11 +2816,15 @@ async function selectClient(clientId, el) {
   _catVentasLoaded = false;
   window._abcFilter = 'todos';
   window._formasPagoData = null;
+  // Los reclamos se cargan una sola vez por cuenta y quedan en memoria: sin esto,
+  // cambiar de cuenta mostraba los reclamos de la anterior.
+  _recData = null; _recHilos = {}; _recAbiertoId = null; _recMes = null;
   resetPrecios();
   document.querySelectorAll('#clientSelector .nav-item').forEach(n => n.classList.remove('active'));
   if (el) el.classList.add('active');
   syncCondicionIvaSelectores();
   await loadDashboardData();
+  if (_repTabActiva === 'reclamos') loadReclamos();
 }
 
 async function loadDashboardData() {
@@ -16204,6 +16220,355 @@ let _desempReq = 0;              // token anti-carrera: sólo pinta la respuesta
 function mesLabel(mes) {
   const l = dART(`${mes}-15`).toLocaleDateString('es-AR', { timeZone: ART_TZ, month: 'long', year: 'numeric' });
   return l.charAt(0).toUpperCase() + l.slice(1);
+}
+
+// ── RECLAMOS (Reputación > Reclamos) ─────────────────────────────────────────
+// Seguimiento caso por caso: en qué instancia está cada reclamo, quién lo atendió,
+// por qué se abrió y cuánta plata se fue en etiquetas de devolución.
+//
+// OJO: contestar desde acá NO se puede. ML devuelve 403 PolicyAgent tanto en el hilo
+// del reclamo como en el chat post-venta de la orden (probado el 21/9/2026). Todo lo
+// que sigue es lectura, y el link manda al reclamo en ML. No agregues un "responder"
+// sin volver a sondear la API primero.
+let _recData = null;
+let _recMes = null;
+let _recReq = 0;
+let _recHilos = {};        // claim_id -> mensajes ya traídos (para no pedirlos dos veces)
+let _recAbiertoId = null;
+let _recPoll = null;
+let _recFiltro = 'todos';  // todos | vence | ia | sin_atender
+let _repTabActiva = 'metricas';
+
+function switchRepTab(tab) {
+  const tabs = { metricas: 'reputacionContent', reclamos: 'reclamosContent' };
+  Object.keys(tabs).forEach(t => {
+    document.getElementById(tabs[t]).style.display = t === tab ? '' : 'none';
+    const btn = document.getElementById(`tab-rep-${t}`);
+    if (btn) {
+      btn.style.color        = t === tab ? 'var(--accent)' : 'var(--muted)';
+      btn.style.borderBottom = t === tab ? '2px solid var(--accent)' : '2px solid transparent';
+    }
+  });
+  _repTabActiva = tab;
+  const excel = document.getElementById('repExcelBtn');
+  if (excel) excel.style.display = tab === 'metricas' ? '' : 'none';
+  if (tab === 'reclamos' && !_recData) loadReclamos();
+}
+
+function refreshRepTab() {
+  if (_repTabActiva === 'reclamos') loadReclamos({ sync: true });
+  else loadReputacion({ calcular: true });
+}
+
+async function loadReclamos(opts = {}) {
+  const el = document.getElementById('reclamosContent');
+  const client = getActiveClient();
+  if (!client || !client.id) {
+    el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">Sin cuenta conectada — seleccioná una cuenta en el topbar</div>';
+    return;
+  }
+  const mes = _recMes || mesART(0).val;
+  _recMes = mes;
+  const req = ++_recReq;
+
+  if (opts.sync) {
+    try { await apiCall('POST', '/api/reclamos/sync', { client_id: client.id }); } catch (e) {}
+    arrancarPollReclamos();
+  }
+  if (!_recData) el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">⏳ Cargando reclamos…</div>';
+
+  try {
+    const data = await apiCall('GET', `/api/reclamos?client_id=${client.id}&mes=${mes}`);
+    if (req !== _recReq) return;
+    if (!data || data.error) {
+      el.innerHTML = `<div style="color:var(--muted);padding:40px;text-align:center">${(data && data.error) || 'Error al cargar'}</div>`;
+      return;
+    }
+    _recData = data;
+    renderReclamos();
+    if (data.sync && data.sync.sincronizando) arrancarPollReclamos();
+  } catch (e) {
+    if (req !== _recReq) return;
+    el.innerHTML = `<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Error: ${e.message}</div>`;
+  }
+}
+
+// El primer sync de una cuenta con historial largo tarda varios minutos (ML no deja
+// filtrar los reclamos por fecha: hay que recorrer todo), así que la vista se refresca
+// sola cuando termina en vez de dejar al usuario tocando Actualizar.
+function arrancarPollReclamos() {
+  if (_recPoll) return;
+  _recPoll = setInterval(async () => {
+    const client = getActiveClient();
+    if (!client || !client.id || _repTabActiva !== 'reclamos') { clearInterval(_recPoll); _recPoll = null; return; }
+    try {
+      const e = await apiCall('GET', `/api/reclamos/sync/estado?client_id=${client.id}`);
+      if (!e || !e.corriendo) {
+        clearInterval(_recPoll); _recPoll = null;
+        _recData = null;
+        loadReclamos();
+      }
+    } catch (err) { clearInterval(_recPoll); _recPoll = null; }
+  }, 15000);
+}
+
+function cambiarMesReclamos(mes) { _recMes = mes; _recAbiertoId = null; loadReclamos(); }
+function filtrarReclamos(f) { _recFiltro = f; renderReclamos(); }
+
+async function verHiloReclamo(claimId) {
+  _recAbiertoId = _recAbiertoId === claimId ? null : claimId;
+  renderReclamos();
+  if (!_recAbiertoId || _recHilos[claimId]) return;
+  const client = getActiveClient();
+  try {
+    const d = await apiCall('GET', `/api/reclamos/hilo?client_id=${client.id}&claim_id=${claimId}`);
+    _recHilos[claimId] = (d && d.mensajes) || [];
+  } catch (e) { _recHilos[claimId] = []; }
+  renderReclamos();
+}
+
+function renderReclamos() {
+  const data = _recData;
+  const el = document.getElementById('reclamosContent');
+  const N = data.nombres || {};
+  const esc = s => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  const plata = n => '$' + Math.round(parseFloat(n) || 0).toLocaleString('es-AR');
+  const tipoN = t => (N.tipos && N.tipos[t]) || t || '—';
+  const motivoN = r => (N.motivos && N.motivos[r.motivo]) || (r.motivo ? String(r.motivo).replace(/_/g, ' ') : (r.motivo_id || '—'));
+  const resolN = r => (N.resoluciones && N.resoluciones[r.resolucion]) || r.resolucion || null;
+  const fechaCorta = f => f ? dART(f).toLocaleDateString('es-AR', { timeZone: ART_TZ, day: '2-digit', month: '2-digit' }) : '—';
+  const fechaHora = f => f ? new Date(f).toLocaleString('es-AR', { timeZone: ART_TZ, day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '—';
+  const linkML = r => r.order_id
+    ? `<a href="https://www.mercadolibre.com.ar/ventas/${r.order_id}/detalle" target="_blank" onclick="event.stopPropagation()" style="color:var(--accent);text-decoration:none;font-size:11px;white-space:nowrap">abrir en ML ↗</a>`
+    : '';
+  const limpiar = t => String(t || '').replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/\*\*/g, '');
+  const esIA = m => /asistente virtual/i.test(m.texto || '');
+
+  // Quién atendió el caso. "vendedor" no distingue si escribió el cliente o nosotros:
+  // ML firma a los dos como respondent.
+  const ATENDIO = {
+    vendedor:   { txt: 'Lo contestó el vendedor', color: '#166534', fondo: '#dcfce7' },
+    ia_ml:      { txt: 'Lo manejó la IA de ML',   color: '#6d28d9', fondo: '#ede9fe' },
+    ml_persona: { txt: 'Intervino ML',            color: '#0369a1', fondo: '#e0f2fe' },
+    nadie:      { txt: 'Nadie respondió',         color: '#b91c1c', fondo: '#fee2e2' },
+  };
+  const chipAtendio = r => {
+    if (!r.enriquecido) return '<span style="font-size:11px;color:var(--muted)">sin detalle todavía</span>';
+    const a = ATENDIO[r.atendio] || ATENDIO.nadie;
+    return `<span style="background:${a.fondo};color:${a.color};padding:2px 8px;border-radius:20px;font-size:11px;font-weight:600;white-space:nowrap">${a.txt}</span>`
+      + (r.ia_intervino && r.atendio === 'vendedor' ? '<div style="font-size:10px;color:var(--muted);margin-top:2px">la IA abrió el caso</div>' : '');
+  };
+  const RESPONSABLE = {
+    respondent:  ['Te toca a vos', '#dc2626'],
+    complainant: ['Espera al comprador', '#6b7280'],
+    mediator:    ['Lo está viendo ML', '#0369a1'],
+  };
+
+  const hiloHTML = (claimId, compacto) => {
+    const hilo = _recHilos[claimId];
+    if (hilo === undefined) return '<div style="font-size:12px;color:var(--muted);padding:8px 0">⏳ Trayendo el hilo…</div>';
+    if (!hilo.length) return '<div style="font-size:12px;color:var(--muted);padding:8px 0">Sin mensajes en el reclamo.</div>';
+    return hilo.map(m => {
+      const quien = m.role === 'complainant' ? ['Comprador', '#b45309', '#fef3c7']
+        : m.role === 'respondent' ? ['Vendedor', '#166534', '#dcfce7']
+        : esIA(m) ? ['IA de Mercado Libre', '#6d28d9', '#ede9fe']
+        : ['Mercado Libre', '#0369a1', '#e0f2fe'];
+      return `<div style="margin:8px 0;padding:10px 12px;background:var(--surface);border:1px solid var(--border);border-left:3px solid ${quien[1]};border-radius:8px">
+        <div style="display:flex;gap:8px;align-items:baseline;margin-bottom:4px">
+          <span style="background:${quien[2]};color:${quien[1]};padding:1px 8px;border-radius:20px;font-size:10px;font-weight:700">${quien[0]}</span>
+          <span style="font-size:10px;color:var(--muted)">${fechaHora(m.fecha)}</span>
+          ${m.adjuntos ? `<span style="font-size:10px;color:var(--muted)">📎 ${m.adjuntos}</span>` : ''}
+        </div>
+        <div style="font-size:12px;line-height:1.5;white-space:pre-wrap">${esc(limpiar(m.texto))}</div>
+      </div>`;
+    }).join('');
+  };
+
+  // ── Barra de sincronización ────────────────────────────────────────────────
+  const sy = data.sync || {};
+  const barra = `<div style="display:flex;align-items:center;gap:10px;margin-bottom:18px;flex-wrap:wrap">
+    <button onclick="loadReclamos({sync:true})" ${sy.sincronizando ? 'disabled' : ''} style="padding:6px 12px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:${sy.sincronizando ? 'var(--muted)' : 'var(--text)'};font-size:12px;cursor:${sy.sincronizando ? 'default' : 'pointer'};font-family:inherit">
+      ${sy.sincronizando ? '⏳ Sincronizando con ML…' : '🔄 Sincronizar con ML'}</button>
+    ${sy.synced_at ? `<span style="font-size:11px;color:var(--muted)">datos al ${fechaHora(sy.synced_at)} · ${(sy.casos || 0).toLocaleString('es-AR')} casos en el historial${sy.pendientes_de_detalle ? ` · ${sy.pendientes_de_detalle} sin detalle fino, se completan de noche` : ''}</span>` : ''}
+    ${sy.incompleto ? '<span style="font-size:11px;color:#92400e;background:#fef3c7;padding:2px 8px;border-radius:20px">ML rechazó páginas al paginar: puede faltar algún caso viejo</span>' : ''}
+    ${sy.error ? `<span style="font-size:11px;color:#dc2626">último intento falló: ${esc(sy.error)}</span>` : ''}
+  </div>`;
+
+  if (!sy.synced_at && !(data.abiertos || []).length && !(data.casos || []).length) {
+    el.innerHTML = barra + `<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:28px;text-align:center">
+      <div style="font-size:14px;font-weight:600;font-family:var(--font-b);margin-bottom:6px">Esta cuenta todavía no tiene los reclamos bajados</div>
+      <div style="font-size:12px;color:var(--muted);line-height:1.5;max-width:580px;margin:0 auto">
+        ML no deja filtrar los reclamos por fecha, así que la primera vez hay que recorrer el historial completo: en una cuenta con 2.000 reclamos son varios minutos.
+        Después queda guardado y se actualiza solo todas las noches a las 5.
+      </div>
+    </div>`;
+    return;
+  }
+
+  // ── Sin resolver ──────────────────────────────────────────────────────────
+  const ab = data.abiertos || [];
+  const venceEnUnDia = r => r.vence && (new Date(r.vence) - new Date()) / 3600000 < 24;
+  const sinAtender = r => r.enriquecido && !r.vendedor_respondio;
+
+  let abF = ab;
+  if (_recFiltro === 'vence')       abF = ab.filter(venceEnUnDia);
+  if (_recFiltro === 'ia')          abF = ab.filter(r => r.ia_intervino);
+  if (_recFiltro === 'sin_atender') abF = ab.filter(sinAtender);
+
+  const fbtn = (v, label, n) => `<button onclick="filtrarReclamos('${v}')" style="padding:5px 12px;border:1px solid ${_recFiltro === v ? 'var(--accent)' : 'var(--border)'};border-radius:20px;background:${_recFiltro === v ? 'var(--accent)' : 'var(--surface)'};color:${_recFiltro === v ? '#fff' : 'var(--text)'};font-size:12px;font-weight:${_recFiltro === v ? '600' : '500'};cursor:pointer;font-family:inherit">${label}${n != null ? ` (${n})` : ''}</button>`;
+
+  const filaAbierto = r => {
+    const resp = RESPONSABLE[r.responsable] || null;
+    const urge = venceEnUnDia(r);
+    const abierto = _recAbiertoId === r.id;
+    return `<tr style="cursor:pointer;background:${abierto ? 'var(--surface2)' : 'transparent'}" onclick="verHiloReclamo('${r.id}')">
+      <td style="padding:10px 12px;border-top:1px solid var(--border);font-size:12px">
+        <div style="font-weight:600">${esc(r.titulo || tipoN(r.tipo))}</div>
+        <div style="font-size:11px;color:var(--muted);margin-top:2px">${esc(motivoN(r))} · ${tipoN(r.tipo)}${r.etapa === 'dispute' ? ' · <span style="color:#dc2626;font-weight:600">en disputa</span>' : ''} · abierto el ${fechaCorta(r.fecha)}</div>
+        ${r.item_titulo ? `<div style="font-size:11px;color:var(--muted);margin-top:2px">📦 ${esc(r.item_titulo)}</div>` : ''}
+      </td>
+      <td style="padding:10px 12px;border-top:1px solid var(--border);font-size:12px;text-align:center;white-space:nowrap">
+        ${resp ? `<span style="color:${resp[1]};font-weight:600">${resp[0]}</span>` : '<span style="color:var(--muted)">—</span>'}
+        ${r.vence ? `<div style="font-size:11px;color:${urge ? '#dc2626' : 'var(--muted)'};margin-top:2px">${urge ? '⏰ ' : ''}vence ${fechaHora(r.vence)}</div>` : ''}
+      </td>
+      <td style="padding:10px 12px;border-top:1px solid var(--border);font-size:12px;text-align:center">${chipAtendio(r)}</td>
+      <td style="padding:10px 12px;border-top:1px solid var(--border);font-size:12px;text-align:right;white-space:nowrap">
+        ${r.etiqueta_costo != null && parseFloat(r.etiqueta_costo) > 0
+          ? `<span title="Etiqueta de devolución a cargo del vendedor">${plata(r.etiqueta_costo)}</span>`
+          : r.etiqueta_costo != null ? '<span style="color:#166534;font-size:11px">sin costo de envío</span>'
+          : '<span style="color:var(--muted)">—</span>'}
+        <div>${linkML(r)}</div>
+      </td>
+    </tr>
+    ${abierto ? `<tr><td colspan="4" style="padding:0 12px 14px;background:var(--surface2)">
+      ${r.descripcion ? `<div style="font-size:12px;padding:8px 0 4px">${esc(r.descripcion)}</div>` : ''}
+      ${hiloHTML(r.id)}
+      <div style="font-size:11px;color:var(--muted);padding:6px 0 0">Para contestar hay que entrar a Mercado Libre: la API no habilita responder desde otra aplicación. ${linkML(r)}</div>
+    </td></tr>` : ''}`;
+  };
+
+  const bloqueAbiertos = `<div style="margin-bottom:26px">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px">
+      <span style="font-size:16px">${ab.length ? '⚖️' : '✅'}</span>
+      <span style="font-size:14px;font-weight:600;font-family:var(--font-b)">Sin resolver · ${ab.length}</span>
+    </div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:12px">Tocá cualquier fila para ver el hilo completo. Cuando ML marca una acción con fecha, no contestar a tiempo se resuelve en contra.</div>
+    ${ab.length ? `<div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap">
+      ${fbtn('todos', 'Todos', ab.length)}
+      ${fbtn('vence', '⏰ Vencen en 24 h', ab.filter(venceEnUnDia).length)}
+      ${fbtn('sin_atender', 'Sin respuesta del vendedor', ab.filter(sinAtender).length)}
+      ${fbtn('ia', 'Con la IA de ML metida', ab.filter(r => r.ia_intervino).length)}
+    </div>` : ''}
+    ${ab.length === 0
+      ? '<div style="background:#dcfce7;border:1px solid #86efac;border-radius:12px;padding:14px 16px;font-size:13px;color:#166534">Ningún reclamo abierto. Al día.</div>'
+      : `<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden"><div style="overflow-x:auto">
+        <table style="width:100%;border-collapse:collapse">
+          <thead><tr style="background:var(--surface2)">
+            <th style="padding:8px 12px;text-align:left;font-size:11px;font-weight:600;color:var(--muted)">Caso</th>
+            <th style="padding:8px 12px;text-align:center;font-size:11px;font-weight:600;color:var(--muted)">De quién depende</th>
+            <th style="padding:8px 12px;text-align:center;font-size:11px;font-weight:600;color:var(--muted)">Quién lo atendió</th>
+            <th style="padding:8px 12px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Etiqueta</th>
+          </tr></thead>
+          <tbody>${abF.map(filaAbierto).join('') || '<tr><td colspan="4" style="padding:18px;text-align:center;color:var(--muted);font-size:12px">Ninguno con ese filtro.</td></tr>'}</tbody>
+        </table></div></div>`}
+  </div>`;
+
+  // ── El mes ────────────────────────────────────────────────────────────────
+  const casos = data.casos || [];
+  const porTipo = {};
+  casos.forEach(c => { porTipo[c.tipo] = (porTipo[c.tipo] || 0) + 1; });
+
+  // La plata de las devoluciones tiene dos fuentes y no son lo mismo: `etiqueta_costo`
+  // es lo que declara el reclamo, `etiqueta_facturada` es lo que ML efectivamente
+  // cobró en la factura. Manda la factura.
+  const conCosto = casos.filter(c => c.etiqueta_costo != null);
+  const totalApi = conCosto.reduce((s, c) => s + (parseFloat(c.etiqueta_costo) || 0), 0);
+  const totalFact = casos.reduce((s, c) => s + (parseFloat(c.etiqueta_facturada) || 0), 0);
+  const gratis = conCosto.filter(c => parseFloat(c.etiqueta_costo) === 0).length;
+
+  const cardMini = (label, valor, nota, color) => `<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:14px 16px">
+    <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">${label}</div>
+    <div style="font-size:24px;font-weight:700;font-family:var(--font-b);margin-top:4px;color:${color || 'var(--text)'}">${valor}</div>
+    <div style="font-size:11px;color:var(--muted);margin-top:4px;line-height:1.4">${nota}</div>
+  </div>`;
+
+  const comoTermino = r => {
+    const quien = { mediator: 'Lo cerró ML', complainant: 'Lo cerró el comprador', respondent: 'Lo cerró el vendedor' }[r.cerrado_por] || null;
+    const favor = r.beneficiado === 'complainant' ? 'a favor del comprador'
+      : r.beneficiado === 'respondent' ? 'a favor del vendedor'
+      : r.beneficiado ? 'para los dos' : null;
+    return [quien, favor].filter(Boolean).join(' · ') || (r.estado === 'opened' ? 'todavía abierto' : '—');
+  };
+
+  const etiquetaCelda = r => r.etiqueta_facturada != null ? plata(r.etiqueta_facturada)
+    : r.etiqueta_costo != null && parseFloat(r.etiqueta_costo) > 0 ? plata(r.etiqueta_costo)
+    : r.etiqueta_costo != null ? '<span style="color:#166534;font-size:11px">sin costo</span>' : '—';
+
+  const bloqueMes = `<div style="margin-bottom:26px">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap">
+      <span style="font-size:14px;font-weight:600;font-family:var(--font-b)">Historial</span>
+      <select onchange="cambiarMesReclamos(this.value)" style="padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--text);font-size:13px;font-family:inherit">
+        ${Array.from({ length: 12 }, (_, i) => mesART(i)).map(x => `<option value="${x.val}" ${x.val === data.mes ? 'selected' : ''}>${x.label}</option>`).join('')}
+      </select>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:12px;margin-bottom:14px">
+      ${cardMini('Casos del mes', casos.length, Object.keys(porTipo).map(t => `${porTipo[t]} ${tipoN(t).toLowerCase()}`).join(' · ') || 'sin casos')}
+      ${cardMini('Etiquetas de devolución', plata(totalFact || totalApi),
+        totalFact ? `lo que ML facturó de verdad${totalApi ? ` · el reclamo declaraba ${plata(totalApi)}` : ''}`
+          : sy.factura_sincronizada ? 'ML no facturó etiquetas de devolución este mes'
+          : 'según el reclamo — la factura del mes todavía no está bajada',
+        (totalFact || totalApi) > 0 ? '#dc2626' : '#166534')}
+      ${cardMini('Devoluciones sin costo de envío', gratis,
+        conCosto.length ? `de ${conCosto.length} con dato, ML no le cobró la etiqueta` : 'sin datos de etiqueta este mes', '#166534')}
+    </div>
+    ${casos.length === 0
+      ? '<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:22px;text-align:center;color:var(--muted);font-size:13px">Sin casos en el mes.</div>'
+      : `<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden"><div style="overflow-x:auto">
+      <table style="width:100%;border-collapse:collapse">
+        <thead><tr style="background:var(--surface2)">
+          <th style="padding:8px 12px;text-align:left;font-size:11px;font-weight:600;color:var(--muted)">Fecha</th>
+          <th style="padding:8px 12px;text-align:left;font-size:11px;font-weight:600;color:var(--muted)">Tipo</th>
+          <th style="padding:8px 12px;text-align:left;font-size:11px;font-weight:600;color:var(--muted)">Motivo</th>
+          <th style="padding:8px 12px;text-align:left;font-size:11px;font-weight:600;color:var(--muted)">Cómo terminó</th>
+          <th style="padding:8px 12px;text-align:center;font-size:11px;font-weight:600;color:var(--muted)">Quién lo atendió</th>
+          <th style="padding:8px 12px;text-align:center;font-size:11px;font-weight:600;color:var(--muted)">Reputación</th>
+          <th style="padding:8px 12px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Etiqueta</th>
+        </tr></thead>
+        <tbody>${casos.map(r => `<tr style="cursor:pointer" onclick="verHiloReclamo('${r.id}')">
+          <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px;white-space:nowrap">${fechaCorta(r.fecha)}</td>
+          <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px">${tipoN(r.tipo)}${r.etapa === 'dispute' ? '<div style="font-size:10px;color:#dc2626;font-weight:600">disputa</div>' : ''}</td>
+          <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px">${esc(motivoN(r))}</td>
+          <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px">${esc(comoTermino(r))}${resolN(r) ? `<div style="font-size:10px;color:var(--muted)">${esc(resolN(r))}</div>` : ''}</td>
+          <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px;text-align:center">${chipAtendio(r)}</td>
+          <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px;text-align:center">${r.afecta_reputacion === true ? '<span style="color:#dc2626;font-weight:600">pega</span>' : r.afecta_reputacion === false ? '<span style="color:#166534">no pega</span>' : '<span style="color:var(--muted)">—</span>'}</td>
+          <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px;text-align:right;white-space:nowrap">${etiquetaCelda(r)}${linkML(r) ? `<div>${linkML(r)}</div>` : ''}</td>
+        </tr>${_recAbiertoId === r.id ? `<tr><td colspan="7" style="padding:0 12px 14px;background:var(--surface2)">${hiloHTML(r.id)}</td></tr>` : ''}`).join('')}</tbody>
+      </table></div></div>`}
+  </div>`;
+
+  // ── Publicaciones que generan reclamos ────────────────────────────────────
+  const items = data.items || [];
+  const bloqueItems = items.length ? `<div style="margin-bottom:10px">
+    <div style="font-size:14px;font-weight:600;font-family:var(--font-b);margin-bottom:4px">Publicaciones que más reclamos generan</div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:12px">Últimos 180 días. El producto llega por la devolución, así que una mediación que no terminó en devolución no aparece acá.</div>
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden"><div style="overflow-x:auto">
+      <table style="width:100%;border-collapse:collapse">
+        <thead><tr style="background:var(--surface2)">
+          <th style="padding:8px 12px;text-align:left;font-size:11px;font-weight:600;color:var(--muted)">Publicación</th>
+          <th style="padding:8px 12px;text-align:center;font-size:11px;font-weight:600;color:var(--muted)">Casos</th>
+          <th style="padding:8px 12px;text-align:right;font-size:11px;font-weight:600;color:var(--muted)">Etiquetas</th>
+          <th style="padding:8px 12px;text-align:center;font-size:11px;font-weight:600;color:var(--muted)">Último</th>
+        </tr></thead>
+        <tbody>${items.map(i => `<tr>
+          <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px"><a href="https://articulo.mercadolibre.com.ar/${String(i.item_id || '').replace('MLA', 'MLA-')}" target="_blank" style="color:var(--text);text-decoration:none">${esc(i.titulo)}</a></td>
+          <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px;text-align:center;font-weight:600">${i.casos}</td>
+          <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px;text-align:right">${parseFloat(i.etiquetas) > 0 ? plata(i.etiquetas) : '—'}</td>
+          <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px;text-align:center">${fechaCorta(i.ultimo)}</td>
+        </tr>`).join('')}</tbody>
+      </table></div></div>
+  </div>` : '';
+
+  el.innerHTML = barra + bloqueAbiertos + bloqueMes + bloqueItems;
 }
 
 async function loadDesempenioEnvios(opts = {}) {

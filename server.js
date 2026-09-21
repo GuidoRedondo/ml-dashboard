@@ -9779,6 +9779,16 @@ const billing = require('./backend_billing')(app, {
   pool, requireAuth, requireConsultor, requireAdmin, getClientToken, ML_API, nodeCron, ART
 });
 
+// Gestión de reclamos — módulo aparte (backend_reclamos.js). Persiste el historial
+// de reclamos con su instancia, quién lo atendió y el costo de la etiqueta de
+// devolución. Crea sus tablas y programa su propio cron a las 05:00 ART.
+// Reusa fetchClaimsTodos de acá: es el único lugar donde está resuelta la
+// paginación de ML, que se saltea filas y necesita dos pasadas.
+const reclamos = require('./backend_reclamos')(app, {
+  pool, requireAuth, requireAdmin, getClientToken, ML_API, nodeCron, ART, ymd, ymdShift,
+  fetchClaimsTodos
+});
+
 // Auditoría de costos de envío — módulo aparte (backend_envios.js). Guarda cada envío
 // con lo que ML cobró y las medidas con que lo cobró, y lo compara contra la tabla.
 // Crea su tabla y programa su propio cron a las 04:00 ART.
