@@ -407,10 +407,41 @@ module.exports = (app, { pool, requireAuth, requireAdmin, getClientToken, ML_API
              perdidos, truncado: !!truncado, paginas_fallidas: fallidas };
   }
 
+  // Completar el detalle de un mes puntual, a pedido de la vista. El cron enriquece
+  // de a poco (son 4 o 5 llamadas por reclamo y hay cuentas con 2.000 pendientes: a
+  // tope fijo tardaría un mes de noches). Cuando alguien abre un mes y le faltan
+  // casos, se completan esos y nada más.
+  async function enriquecerMes(clientId, { mes = null, tope = 300 } = {}) {
+    const token = await getClientToken(clientId);
+    if (!token) throw new Error('cliente sin token de ML');
+    const headers = { 'Authorization': `Bearer ${token}` };
+
+    const pend = await pool.query(`
+      SELECT claim_id, tipo, motivo_id FROM reclamos
+       WHERE client_id=$1 AND enriquecido_at IS NULL
+         AND ($2::text IS NULL OR to_char(fecha,'YYYY-MM') = $2)
+       ORDER BY fecha DESC
+       LIMIT $3`, [clientId, mes, tope]);
+
+    const motivoCache = new Map();
+    let hechos = 0;
+    for (const fila of pend.rows) {
+      try { await enriquecer(clientId, fila, headers, motivoCache); hechos++; }
+      catch (e) { console.error(`[RECLAMOS] claim ${fila.claim_id}:`, e.message); }
+    }
+    await pool.query(
+      'UPDATE reclamos_sync SET enriquecidos = COALESCE(enriquecidos,0) + $2 WHERE client_id=$1',
+      [clientId, hechos]).catch(() => {});
+    return { enriquecidos: hechos, pendientes: pend.rows.length - hechos };
+  }
+
   function lanzarSync(clientId, opts) {
     if (enCurso.has(clientId)) return enCurso.get(clientId);
-    const estado = { client_id: clientId, inicio: new Date(), terminado: false };
-    estado.promesa = syncCliente(clientId, opts)
+    const estado = { client_id: clientId, inicio: new Date(), terminado: false, tarea: (opts && opts.tarea) || 'sync' };
+    const trabajo = (opts && opts.tarea === 'enriquecer')
+      ? enriquecerMes(clientId, opts)
+      : syncCliente(clientId, opts);
+    estado.promesa = trabajo
       .then(r => { estado.resultado = r; })
       .catch(e => {
         estado.error = e.message;
@@ -574,6 +605,18 @@ module.exports = (app, { pool, requireAuth, requireAdmin, getClientToken, ML_API
     const ya = enCurso.has(clientId);
     lanzarSync(clientId, { tope: parseInt((req.body && req.body.tope)) || TOPE_ENRIQUECIDO });
     res.json({ ok: true, ya_corria: ya });
+  });
+
+  // Completar el detalle de un mes. Va en background por lo mismo que el sync: son
+  // cientos de llamadas a ML y nadie va a esperar con la pestaña abierta.
+  app.post('/api/reclamos/enriquecer', requireAuth, async (req, res) => {
+    const clientId = parseInt((req.body && req.body.client_id) || req.query.client_id);
+    const mes = /^\d{4}-\d{2}$/.test((req.body && req.body.mes) || '') ? req.body.mes : null;
+    if (!clientId) return res.status(400).json({ error: 'Falta client_id' });
+    if (!puedeVer(req, clientId)) return res.status(403).json({ error: 'Sin acceso a esta cuenta' });
+    const ya = enCurso.has(clientId);
+    lanzarSync(clientId, { tarea: 'enriquecer', mes, tope: 300 });
+    res.json({ ok: true, ya_corria: ya, mes });
   });
 
   app.get('/api/reclamos/sync/estado', requireAuth, (req, res) => {

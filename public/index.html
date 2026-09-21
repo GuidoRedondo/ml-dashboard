@@ -16313,6 +16313,17 @@ function arrancarPollReclamos() {
 }
 
 function cambiarMesReclamos(mes) { _recMes = mes; _recAbiertoId = null; loadReclamos(); }
+
+// El detalle fino son 4 o 5 llamadas a ML por reclamo, así que no se baja entero de
+// una: el cron completa de a poco y acá se completa el mes que se está mirando.
+async function completarDetalleMes() {
+  const client = getActiveClient();
+  if (!client || !client.id) return;
+  try { await apiCall('POST', '/api/reclamos/enriquecer', { client_id: client.id, mes: _recData.mes }); } catch (e) {}
+  if (_recData && _recData.sync) _recData.sync.sincronizando = true;
+  renderReclamos();
+  arrancarPollReclamos();
+}
 function filtrarReclamos(f) { _recFiltro = f; renderReclamos(); }
 
 async function verHiloReclamo(claimId) {
@@ -16482,6 +16493,8 @@ function renderReclamos() {
 
   // ── El mes ────────────────────────────────────────────────────────────────
   const casos = data.casos || [];
+  // Casos del mes a los que todavía les falta el detalle fino (quién atendió, etiqueta).
+  const pendMes = casos.filter(c => !c.enriquecido).length;
   const porTipo = {};
   casos.forEach(c => { porTipo[c.tipo] = (porTipo[c.tipo] || 0) + 1; });
 
@@ -16517,6 +16530,9 @@ function renderReclamos() {
       <select onchange="cambiarMesReclamos(this.value)" style="padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--text);font-size:13px;font-family:inherit">
         ${Array.from({ length: 12 }, (_, i) => mesART(i)).map(x => `<option value="${x.val}" ${x.val === data.mes ? 'selected' : ''}>${x.label}</option>`).join('')}
       </select>
+      ${pendMes ? (sy.sincronizando
+        ? `<span style="font-size:11px;color:var(--muted)">⏳ completando el detalle de ${pendMes} ${pendMes === 1 ? 'caso' : 'casos'}…</span>`
+        : `<button onclick="completarDetalleMes()" style="padding:5px 12px;border:1px solid var(--border);border-radius:20px;background:var(--surface);color:var(--text);font-size:12px;cursor:pointer;font-family:inherit" title="Quién atendió el caso y cuánto costó la etiqueta salen de 4 o 5 llamadas más a ML por reclamo, así que no se bajan todas de una">Completar el detalle de ${pendMes} ${pendMes === 1 ? 'caso' : 'casos'}</button>`) : ''}
     </div>
     <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:12px;margin-bottom:14px">
       ${cardMini('Casos del mes', casos.length, Object.keys(porTipo).map(t => `${porTipo[t]} ${tipoN(t).toLowerCase()}`).join(' · ') || 'sin casos')}
