@@ -78,6 +78,9 @@ const MOTIVOS = {
   uncompats_item_with_vehicle_acc:   'No es compatible con su vehículo',
   delivered_but_not_receive_package: 'ML lo dio por entregado y dice que no lo recibió',
   product_not_received:              'No lo recibió',
+  estimated_delivery_out_of_time:    'La entrega se pasó de la fecha prometida',
+  change_receiver_address:           'Quiso cambiar la dirección de entrega',
+  different_item_other:              'Dice que le llegó otra cosa',
   fake_item:                         'Dice que no es original',
   incomplete_item:                   'Llegó incompleto',
   expired_item:                      'Producto vencido',
@@ -104,6 +107,7 @@ const RESOLUCIONES = {
   prefered_to_keep_product: 'Prefirió quedárselo',
   coverage_decision:      'Lo cubrió Mercado Libre',
   no_bpp:                 'Sin cobertura de ML',
+  warehouse_decision:     'Lo decidió el depósito de ML al revisar el producto',
   return_cancelled:       'La devolución se canceló',
   shipment_not_stopped:   'El envío no se pudo frenar',
   low_cost:               'Cerrado por monto bajo',
@@ -129,8 +133,12 @@ function quienAtendio(mensajes) {
   const ia       = msgs.some(m => m.sender_role === 'mediator' && ES_BOT.test(m.message || ''));
   const mlPersona= msgs.some(m => m.sender_role === 'mediator' && !ES_BOT.test(m.message || ''));
   const ultimo   = msgs.length ? msgs[msgs.length - 1] : null;
+  // "Nadie respondió" y "no hubo conversación" no son lo mismo: un pedido de
+  // cancelación se resuelve sin que nadie escriba una línea, y marcarlo en rojo
+  // como si el vendedor hubiera dejado un reclamo sin contestar es mentir.
   return {
-    atendio: vendedor ? 'vendedor' : mlPersona ? 'ml_persona' : ia ? 'ia_ml' : 'nadie',
+    atendio: !msgs.length ? 'sin_hilo'
+           : vendedor ? 'vendedor' : mlPersona ? 'ml_persona' : ia ? 'ia_ml' : 'nadie',
     ia_intervino: ia,
     vendedor_respondio: vendedor,
     ml_humano: mlPersona,

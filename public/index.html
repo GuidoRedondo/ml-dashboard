@@ -16351,10 +16351,13 @@ function renderReclamos() {
     ia_ml:      { txt: 'Lo manejó la IA de ML',   color: '#6d28d9', fondo: '#ede9fe' },
     ml_persona: { txt: 'Intervino ML',            color: '#0369a1', fondo: '#e0f2fe' },
     nadie:      { txt: 'Nadie respondió',         color: '#b91c1c', fondo: '#fee2e2' },
+    sin_hilo:   { txt: 'Sin conversación',        color: '#6b7280', fondo: 'var(--surface2)' },
   };
   const chipAtendio = r => {
     if (!r.enriquecido) return '<span style="font-size:11px;color:var(--muted)">sin detalle todavía</span>';
-    const a = ATENDIO[r.atendio] || ATENDIO.nadie;
+    // Un pedido de cancelación se cierra sin que nadie escriba: eso no es un
+    // reclamo desatendido. Se mira el conteo de mensajes, no sólo lo guardado.
+    const a = !r.msgs ? ATENDIO.sin_hilo : (ATENDIO[r.atendio] || ATENDIO.nadie);
     return `<span style="background:${a.fondo};color:${a.color};padding:2px 8px;border-radius:20px;font-size:11px;font-weight:600;white-space:nowrap">${a.txt}</span>`
       + (r.ia_intervino && r.atendio === 'vendedor' ? '<div style="font-size:10px;color:var(--muted);margin-top:2px">la IA abrió el caso</div>' : '');
   };
@@ -16408,7 +16411,9 @@ function renderReclamos() {
   // ── Sin resolver ──────────────────────────────────────────────────────────
   const ab = data.abiertos || [];
   const venceEnUnDia = r => r.vence && (new Date(r.vence) - new Date()) / 3600000 < 24;
-  const sinAtender = r => r.enriquecido && !r.vendedor_respondio;
+  // Sin respuesta del vendedor: sólo cuenta si hubo algo que contestar. Un caso sin
+  // mensajes no es un caso desatendido.
+  const sinAtender = r => r.enriquecido && r.msgs > 0 && !r.vendedor_respondio;
 
   let abF = ab;
   if (_recFiltro === 'vence')       abF = ab.filter(venceEnUnDia);
