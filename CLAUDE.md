@@ -34,6 +34,7 @@ There are no tests or linting scripts configured.
 | **Logística** | Shipping performance + Full Stock calculator with per-item coverage targets |
 | **Fotos** | Listing image quality review |
 | **Preguntas** | Unanswered questions queue |
+| **Reputación → Reclamos** | Claim-by-claim tracking: what stage each case is in (ML's own Spanish wording), who handled it (seller / ML agent / **ML's AI assistant**, told apart by the bot introducing itself in the thread), why it was opened, what the return label cost, and which listings generate the claims. Read-only — see below |
 | **Diagnóstico Mensual** | Last 3 months of KPI snapshots side-by-side; manual fields stored in `manuales` JSONB column |
 | **Bitácora** | CRM-style task/note log per client |
 | **Tokens** | OAuth token status page per client (expiry, refresh availability) |
@@ -69,6 +70,8 @@ This is a **single-file Node.js/Express backend** (`server.js`) + **single-file 
 | `panel_metricas_diarias` | One row per client per day (revenue, orders, units, visits, ad spend/sales) written by the 00:00 ART cron; backs the fast Panel de Clientes view |
 | `billing_detalle` | ML's actual invoice, one row per charge line, keyed by `detail_id`. Written by the 02:00 ART cron in `backend_billing.js` |
 | `billing_sync` | Which (client, period) pairs have been downloaded and whether they came back complete — lets the P&L tell "pays no FULL" apart from "not synced yet" |
+| `reclamos` | One row per claim with its stage, reason, who answered, return status, return-label cost and the message thread. Filled by the 05:00 ART cron in `backend_reclamos.js`; the view never hits ML |
+| `reclamos_sync` | Per client: when it last synced, how many cases, and whether the pagination came back short — so "no claims" can be told apart from "not synced yet" |
 | `precios_cache` | Base of the Precios sub-tab (listing + real commission + shipping + weight), 12h TTL. Building it costs one `listing_prices` call per listing, so it is never rebuilt on a plain tab open |
 
 ### API surface (grouped)
@@ -85,6 +88,7 @@ This is a **single-file Node.js/Express backend** (`server.js`) + **single-file 
 - **Logística / Full Stock**: `GET /api/logistica`, `GET /api/logistica/full-stock`, `PUT /api/logistica/full-stock-global`, `PUT /api/logistica/full-stock/:item_id`
 - **Competencia**: `GET /api/competencia`, `GET /api/competencia/item`, `GET /api/competencia/categorias`, `GET /api/competencia/diagnostico`
 - **Panel de Clientes (vista rápida)**: `GET /api/panel/metricas`, `GET /api/panel/metricas/hoy`, `POST /api/panel/metricas/backfill`, `GET|POST /api/panel/metricas/cron`
+- **Reclamos** (`backend_reclamos.js`): `GET /api/reclamos`, `GET /api/reclamos/hilo`, `POST /api/reclamos/sync`, `POST /api/reclamos/enriquecer`, `GET /api/reclamos/sync/estado`, `GET|POST /api/reclamos/cron`
 - **Facturación real** (`backend_billing.js`): `GET /api/billing/resumen`, `GET /api/billing/estado`, `POST /api/billing/sync`, `POST /api/billing/backfill`, `GET|POST /api/billing/cron`
 - **Other**: `GET /api/promociones`, `GET /api/preguntas`, `GET /api/devoluciones`, `GET /api/bitacora`, `POST /api/bitacora`, `PUT|DELETE /api/bitacora/:id`, `GET /api/proxy-ml`, `GET /api/item-fees`
 - **Debug**: `GET /api/debug/shipping|item|billing|order|app-token`
@@ -174,6 +178,32 @@ whole portfolio must be a slow serial job (~13s between pages), never a parallel
 
 `total` is only populated on the first page; later pages return `total: 0`. Latch it once or the
 pagination loop stops early. Max page size confirmed at `limit=1000`.
+
+### Claims API — read everything, write nothing (verified 21/9/2026)
+
+`/post-purchase/v1/claims/*` works with the non-certified app and returns far more
+than the claim list: `/detail` gives ML's own Spanish status line plus who owes the
+next action and when it expires, `/messages` the whole thread by role,
+`/charges/return-cost` what ML charges the seller for the return label (0 means ML
+did not charge it), `/returns` the return with its `item_id`, `/affects-reputation`
+whether the case counts against the account.
+
+**Answering is blocked.** `POST /claims/{id}/actions/send-message` and
+`POST /messages/packs/{pack}/sellers/{uid}?tag=post_sale` both return
+**403 `PolicyAgent`** — same wall as promotions. Don't add a reply box without
+probing again first. Note that `players[].available_actions` lists
+`send_message_to_complainant`, `refund`, `open_dispute`: that is what ML expects
+**from the seller**, not what this app is allowed to do.
+
+**Pagination is the trap.** Without `sort`, `claims/search` returns **oldest first**
+(page 0 of a 2018-era account is 2018), and the offset dies at **10.000** with
+`bad_request_error` — so in an account with more than 10k cases the recent claims are
+unreachable. `sort=date_desc` works (`date_created.from/to` still does not), and with
+it the pagination also stops skipping rows, so one pass is enough. Measured on AB
+Fitness: September went from 34 cases to 225 once the order was fixed.
+
+**The AI is detectable**: ML's automated mediator introduces itself as "Hola, soy el
+asistente virtual de Mercado Libre". There is no field for it — it's the text.
 
 ### Known pending feature
 
