@@ -10138,8 +10138,13 @@ app.get('/api/debug/claim-write', requireAuth, requireAdmin, async (req, res) =>
       sondas._pack_id = packId;
       sondas.chat_read = await fetch(`${ML_API}/messages/packs/${packId}/sellers/${uid}?tag=post_sale`, { headers })
         .then(async r => ({ status: r.status, mensajes: (await r.json().catch(() => null))?.messages?.length ?? null }));
+      const buyer = order?.buyer?.id;
       await probar('chat_write', `/messages/packs/${packId}/sellers/${uid}`,
         { from: { user_id: String(uid) }, to: { user_id: '__sonda_invalida__' }, text: '' });
+      await probar('chat_write_tag', `/messages/packs/${packId}/sellers/${uid}?tag=post_sale`,
+        { from: { user_id: String(uid) }, to: { user_id: '__sonda_invalida__' }, text: '' });
+      await probar('chat_write_buyer_invalido', `/messages/packs/${packId}/sellers/${uid}?application_id=${process.env.ML_APP_ID || ''}`,
+        { from: { user_id: String(uid) }, to: { user_id: buyer ? String(buyer) : '0' }, text: '' });
     }
 
     res.json({ claim: { id: claim.id, type: claim.type, stage: claim.stage, status: claim.status }, sondas });
