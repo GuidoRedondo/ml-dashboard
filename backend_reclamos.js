@@ -89,6 +89,14 @@ const MOTIVOS = {
   wrong_item:                        'Le llegó otro producto',
   delayed_shipment:                  'Demora en la entrega',
   buyer_paid_less:                   'Diferencia de precio',
+  undelivered_other:                 'No se entregó (sin motivo declarado)',
+  damaged_package_broken_item:       'El paquete llegó dañado y el producto roto',
+  damaged_package_missing_item:      'El paquete llegó abierto y faltaba el producto',
+  out_of_stock:                      'El vendedor se quedó sin stock',
+  dont_want_it_another_cause_fashion:'Ya no lo quiere',
+  unauthorized_purchase:             'Dice que no hizo la compra',
+  delivery_date_was_not_met:         'No se cumplió la fecha de entrega',
+  bought_by_mistake:                 'Lo compró por error',
 };
 
 const legible = s => {
