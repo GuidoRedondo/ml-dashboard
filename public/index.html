@@ -4806,6 +4806,9 @@ function exportPubsExcel() {
       'SKU':             i.sku || '',
       'Título':          i.title,
       'Estado':          i.status === 'active' ? 'Activa' : i.status === 'paused' ? 'Pausada' : i.status,
+      'Categoría':       i.category_name || '',
+      'Ruta categoría':  i.category_path || '',
+      'ID categoría':    i.category_id || '',
       // Precio que ve el comprador + el de lista tachado, sólo cuando hay descuento activo
       'Precio':          Math.round(i._precioReal ?? i.price ?? 0) || '',
       'Precio lista':    i._precioLista ? Math.round(i._precioLista) : '',
@@ -4830,7 +4833,7 @@ function exportPubsExcel() {
   });
 
   const ws = XLSX.utils.json_to_sheet(rows);
-  ws['!cols'] = [16,14,50,10,13,13,12,13,6,8,10,16,6,10,14,14,10,10,12,12,12,10].map(w=>({wch:w}));
+  ws['!cols'] = [16,14,50,10,28,50,14,13,13,12,13,6,8,10,16,6,10,14,14,10,10,12,12,12,10].map(w=>({wch:w}));
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Publicaciones');
   const client = getActiveClient();

@@ -5166,6 +5166,28 @@ function armarEscaleras(items) {
     .sort((a, b) => (b.rota_total - a.rota_total) || (b.fuera_catalogo - a.fuera_catalogo));
 }
 
+// Nombre y ruta completa de cada categoría ("Hogar > Cocina > Sartenes"). Las categorías
+// de ML casi no cambian, así que se guardan en memoria mientras vive el proceso: una
+// cuenta de 1.000 publicaciones suele tener 30-80 categorías y sólo la primera vez se piden.
+const _categoriasCache = new Map();
+
+async function nombresCategorias(ids, headers) {
+  const faltan = [...new Set(ids.filter(Boolean))].filter(id => !_categoriasCache.has(id));
+  for (let i = 0; i < faltan.length; i += 10) {
+    await Promise.all(faltan.slice(i, i + 10).map(async id => {
+      try {
+        const c = await fetch(`${ML_API}/categories/${id}`, { headers }).then(r => r.json());
+        if (!c || c.error || !c.name) return;   // sin dato no se cachea: se reintenta la próxima
+        const ruta = (c.path_from_root || []).map(x => x.name).filter(Boolean);
+        _categoriasCache.set(id, { name: c.name, path: ruta.length ? ruta.join(' > ') : c.name });
+      } catch (e) {}
+    }));
+  }
+  const out = {};
+  ids.forEach(id => { if (_categoriasCache.has(id)) out[id] = _categoriasCache.get(id); });
+  return out;
+}
+
 app.get('/api/items-full', requireAuth, async (req, res) => {
   try {
     const clientId = parseInt(req.query.client_id);
@@ -5439,6 +5461,15 @@ app.get('/api/items-full', requireAuth, async (req, res) => {
     });
 
     const items = [...itemsWithSales, ...itemsNoSales].sort((a,b) => b.revenue - a.revenue);
+
+    // Nombre de la categoría para la tabla y el Excel. Degradable: si ML no responde queda
+    // el category_id solo.
+    const cats = await nombresCategorias(items.map(i => i.category_id), headers).catch(() => ({}));
+    items.forEach(i => {
+      const c = cats[i.category_id];
+      i.category_name = c ? c.name : '';
+      i.category_path = c ? c.path : '';
+    });
 
     // ── 8. Summary stats ─────────────────────────────────────────────────────
     const summary = {
