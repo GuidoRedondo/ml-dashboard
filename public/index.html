@@ -8955,7 +8955,8 @@ window._prcFilas     = null;   // filas ya calculadas (lo que se ve y lo que se 
 window._prcOverrides = {};     // { mla: { comPct, envio } } — ajustes de la sesión, no se guardan
 window._prcPrecioManual = {};  // { mla: precio } — precio objetivo escrito a mano, pisa al calculado
 window._prcExpandido = {};     // { mla: true }
-window._prcSort      = { col: 'gap', asc: false };
+// Arranca ordenada por facturación: lo primero que se mira es lo que más pesa en la cuenta.
+window._prcSort      = { col: 'fact', asc: false };
 window._prcSearch    = '';
 window._prcFiltro    = 'todas';
 window._prcLimite    = 200;    // filas dibujadas; el cálculo y el Excel van sobre todas
@@ -8968,7 +8969,7 @@ function resetPrecios() {
   window._prcClientId = null; window._prcOverrides = {}; window._prcExpandido = {};
   window._prcPrecioManual = {};
   window._prcBase = null; window._prcSearch = ''; window._prcFiltro = 'todas';
-  window._prcLimite = 200;
+  window._prcLimite = 200; window._prcTacosModo = 'global';
   const panel = document.getElementById('preciosContent');
   if (panel && panel.style.display !== 'none') loadPrecios();
 }
@@ -9029,6 +9030,11 @@ async function loadPrecios() {
       pesoSource: i.peso_source || 'default',
       objetivoItem: i.cm_objetivo_pct != null ? parseFloat(i.cm_objetivo_pct) : null,
       stock: i.stock ?? null,
+      // Últimos 30 días. null = no se pudieron leer las ventas (distinto de "vendió 0").
+      fact:  i.fact_30d  != null ? parseFloat(i.fact_30d)  : null,
+      units: i.units_30d != null ? parseInt(i.units_30d)   : null,
+      ads:   i.ads_30d   != null ? parseFloat(i.ads_30d)   : null,
+      tacosManual: i.tacos_pct != null ? parseFloat(i.tacos_pct) : null,
     };
   });
   renderPrecios();
@@ -9067,6 +9073,29 @@ function _prcInitSupuestos(meta) {
   };
   window._prcObjPct = meta && meta.cm_objetivo_pct != null ? meta.cm_objetivo_pct : 30;
   window._prcBase   = (meta && meta.cm_objetivo_base) || 'precio';
+  window._prcTacosModo = (meta && meta.tacos_modo) === 'item' ? 'item' : 'global';
+}
+
+// TACOS medido de UNA publicación: su publicidad de 30 días sobre su facturación de 30
+// días. null cuando no se puede calcular (sin ventas leídas, o pautó y no vendió nada).
+function _prcTacosReal(it) {
+  if (it.fact == null) return null;
+  if (it.fact > 0) return (it.ads || 0) / it.fact * 100;
+  return (it.ads || 0) > 0 ? null : 0;
+}
+
+// Qué TACOS se usa en la cuenta de ESTA fila, y de dónde sale.
+//   global -> el mismo para todo el catálogo (el input de arriba)
+//   item   -> el que se cargó a mano; si no, el real de 30 días; si no se puede medir
+//             (pautó sin vender, o no hay datos de ventas) cae al global y lo avisa.
+function _prcTacosDe(it) {
+  const global = (window._prcSup && window._prcSup.tacos) || 0;
+  if (window._prcTacosModo !== 'item') return { pct: global, origen: 'global' };
+  if (it.tacosManual != null) return { pct: it.tacosManual, origen: 'a mano' };
+  const real = _prcTacosReal(it);
+  if (real != null) return { pct: real, origen: (it.ads || 0) > 0 ? 'real 30 días' : 'sin pauta' };
+  if (it.fact === 0) return { pct: global, origen: 'pautó sin vender → global' };
+  return { pct: global, origen: 'sin datos → global' };
 }
 
 function _prcCtx() {
@@ -9102,8 +9131,9 @@ function _prcSetObj(valor) {
 // cada cambio de supuesto — son ~40 evaluaciones por tramo y por ítem, imperceptible
 // hasta varios miles de publicaciones — y el resultado alimenta tabla, resumen y Excel.
 function _prcCalcular() {
-  const ctx = _prcCtx();
+  const ctxBase = _prcCtx();
   const obj = _prcObjetivo();
+  const totalFact = (window._prcMeta && window._prcMeta.ventas && window._prcMeta.ventas.total_fact) || 0;
   window._prcFilas = (window._prcData || []).map(base => {
     const ov = window._prcOverrides[base.id] || {};
     const it = { ...base,
@@ -9112,6 +9142,9 @@ function _prcCalcular() {
     };
     // Objetivo propio de la publicación si lo tiene; si no, el global del cliente.
     const objItem = { base: obj.base, pct: base.objetivoItem != null ? base.objetivoItem : obj.pct };
+    // El TACOS puede ser propio de la fila (modo por publicación): cada fila lleva su ctx.
+    const tacos   = _prcTacosDe(base);
+    const ctx     = { ...ctxBase, tacos: tacos.pct / 100 };
     const actual  = _prcCM(it.precio, it, ctx);
     // La misma cuenta en las dos direcciones: con la CM objetivo se despeja el precio;
     // con un precio escrito a mano se calcula qué CM deja. Si hay precio manual manda
@@ -9121,10 +9154,17 @@ function _prcCalcular() {
     const esManual   = manual != null && manual > 0;
     const sugerido   = esManual ? manual : calculado;
     const enSugerido = sugerido ? _prcCM(sugerido, it, ctx) : null;
-    return { it, ctx, obj: objItem, actual, calculado, esManual, sugerido, enSugerido,
+    return { it, ctx, obj: objItem, actual, calculado, esManual, sugerido, enSugerido, tacos,
+             part: (totalFact > 0 && it.fact != null) ? it.fact / totalFact * 100 : null,
              gap: (sugerido && it.precio > 0) ? sugerido - it.precio : null,
              gapPct: (sugerido && it.precio > 0) ? (sugerido / it.precio - 1) * 100 : null };
   });
+  // Ranking y acumulado por facturación (Pareto): con qué pocas publicaciones se llega
+  // al 80% de la cuenta. Se calcula sobre el catálogo entero, no sobre lo filtrado.
+  let acum = 0;
+  window._prcFilas.filter(f => f.part != null && f.it.fact > 0)
+    .sort((a, b) => b.it.fact - a.it.fact)
+    .forEach((f, i) => { acum += f.part; f.rank = i + 1; f.acum = acum; });
   return window._prcFilas;
 }
 
@@ -9159,6 +9199,7 @@ function renderPrecios() {
   const sufijo = base === 'costo' ? 's/costo' : 's/precio';
   const supuestos = window._prcSup || { iibb: 4, tacos: 0, debCred: 1.2, otros: 0 };
   const tacosReal = meta.tacos_real;
+  const tacosModo = window._prcTacosModo || 'global';
   const fetched   = meta.fetched_at ? new Date(meta.fetched_at) : null;
   const horas     = fetched ? Math.round((Date.now() - fetched.getTime()) / 3600000) : null;
 
@@ -9204,9 +9245,19 @@ function renderPrecios() {
 
         <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end">
           ${inputSup('prcIIBB', 'iibb', 'IIBB', supuestos.iibb, '%', 'Sale de la ficha del cliente (tasa de IIBB)')}
-          ${inputSup('prcTACOS', 'tacos', 'TACOS', supuestos.tacos, '%',
-            tacosReal ? `Medido: publicidad / facturación de los últimos ${tacosReal.dias} días (${tacosReal.desde} a ${tacosReal.hasta})`
-                      : 'Sin historial de publicidad para esta cuenta — cargalo a mano si hace pauta')}
+          <div>
+            <div style="font-size:10px;color:var(--muted);margin-bottom:3px">TACOS</div>
+            <div style="display:flex;background:var(--surface2);border-radius:8px;padding:2px">
+              <button onclick="setPrcTacosModo('global')" title="Un solo TACOS para todo el catálogo"
+                style="padding:5px 9px;border-radius:6px;border:none;cursor:pointer;font-size:11px;font-weight:700;background:${tacosModo==='global'?'var(--accent)':'transparent'};color:${tacosModo==='global'?'#000':'var(--muted)'}">Global</button>
+              <button onclick="setPrcTacosModo('item')" title="Cada publicación con su TACOS real de 30 días (editable en la tabla)"
+                style="padding:5px 9px;border-radius:6px;border:none;cursor:pointer;font-size:11px;font-weight:700;background:${tacosModo==='item'?'var(--accent)':'transparent'};color:${tacosModo==='item'?'#000':'var(--muted)'}">Por publicación</button>
+            </div>
+          </div>
+          ${inputSup('prcTACOS', 'tacos', tacosModo === 'item' ? 'TACOS global (respaldo)' : 'TACOS global', supuestos.tacos, '%',
+            (tacosReal ? `Medido: publicidad / facturación de los últimos ${tacosReal.dias} días (${tacosReal.desde} a ${tacosReal.hasta})`
+                       : 'Sin historial de publicidad para esta cuenta — cargalo a mano si hace pauta')
+            + (tacosModo === 'item' ? '. En modo por publicación se usa sólo en las que no tienen TACOS medible (pautaron sin vender o no hay datos de ventas)' : ''))}
           ${inputSup('prcDebCred', 'debCred', 'Déb/Créd', supuestos.debCred, '%', 'Impuesto al cheque sobre el movimiento de fondos')}
           ${inputSup('prcOtros', 'otros', 'Otros', supuestos.otros, '$', 'Costo extra por unidad: packaging, armado, lo que sea')}
         </div>
@@ -9238,6 +9289,7 @@ function renderPrecios() {
         · Tarifas de ML vigentes ${meta.vigencia_tarifas || '1/9/2026'}
         ${meta.condicion_iva === 'monotributista' ? ' · Monotributista: IVA en 0' : ''}
         ${horas != null ? ` · datos de ${horas < 1 ? 'recién' : 'hace ' + horas + 'h'}` : ''}
+        ${meta.ventas ? ` · facturación y publicidad del ${meta.ventas.desde} al ${meta.ventas.hasta}` : ' · <span style="color:#ff9100">no se pudieron leer las ventas de 30 días</span>'}
         <span id="prcAvisoImposible"></span>
       </div>
     </div>
@@ -9272,7 +9324,13 @@ function _prcResumenHtml(filas) {
       ${hint ? `<div style="font-size:10px;color:var(--muted);margin-top:2px">${hint}</div>` : ''}
     </div>`;
 
+  const v = meta.ventas;
+  // Cuántas publicaciones hacen el 80% de la facturación: la lectura rápida del Pareto.
+  const n80 = filas.filter(f => f.acum != null && f.acum - f.part < 80).length;
   return card('Publicaciones', filas.length.toLocaleString('es-AR'), 'var(--text)', `${meta.completeness ?? 0}% con CMV cargado`)
+       + (v ? card(`Facturación ${v.dias}d`, _prcFmt(v.total_fact), 'var(--text)',
+                   `${n80.toLocaleString('es-AR')} publicaciones hacen el 80%`
+                   + (v.total_fact > 0 && v.publi_ok ? ` · TACOS ${_prcPct(v.total_ads / v.total_fact * 100)}` : '')) : '')
        + card('Hay que subir', subir.toLocaleString('es-AR'), subir ? '#ff5252' : 'var(--muted)', 'están por debajo del objetivo')
        + card('Podés bajar', bajar.toLocaleString('es-AR'), bajar ? '#00e676' : 'var(--muted)', 'ya superan el objetivo')
        + card('CM negativa hoy', bajoCero.toLocaleString('es-AR'), bajoCero ? '#ff5252' : 'var(--muted)', 'pierden plata en cada venta')
@@ -9365,6 +9423,9 @@ function _prcFiltrar(filas) {
     if (col === 'cm')       return _prcCMValor(f.actual, f.it) ?? -1e9;
     if (col === 'objetivo') return f.obj.pct;
     if (col === 'sugerido') return f.sugerido ?? -1;
+    if (col === 'fact')     return f.it.fact ?? -1;
+    if (col === 'part')     return f.part ?? -1;
+    if (col === 'tacos')    return f.tacos.pct;
     return f.gap ?? -1e12;   // 'gap'
   };
   return out.sort((a, b) => {
@@ -9383,7 +9444,10 @@ function _prcTabla(filas, sufijo) {
     ${_prcTh('mla', 'MLA', 'left')}
     ${_prcTh('title', 'Título', 'left')}
     ${_prcTh('sku', 'SKU', 'left')}
+    ${_prcTh('fact', 'Facturación 30d', 'right', 'Lo que facturó la publicación en los últimos 30 días (órdenes pagas), con las unidades abajo')}
+    ${_prcTh('part', '% cuenta', 'right', 'Participación en la facturación total de la cuenta en 30 días. Abajo: su puesto en el ranking y el acumulado (Pareto)')}
     ${_prcTh('cmv', 'CMV', 'right', 'Costo del producto. Editable: se guarda en el Reporte Financiero')}
+    ${_prcTh('tacos', 'TACOS', 'right', 'El TACOS que entra en la cuenta de esta fila. En modo Por publicación: el real de 30 días (publicidad / facturación del ítem), editable — vacío vuelve al medido')}
     ${_prcTh('costos', 'Costos var.', 'right', 'Comisión + cargo fijo/envío ML + IIBB + TACOS + déb/créd + IVA neto + otros. Click en la fila para abrir el detalle')}
     ${_prcTh('precio', 'Precio actual', 'right')}
     ${_prcTh('cm', 'CM actual', 'right', 'Contribución marginal al precio de hoy')}
@@ -9421,6 +9485,32 @@ function _prcTabla(filas, sufijo) {
     const mlaLink = 'MLA-' + it.id.replace(/^MLA/i, '');
     const abierto = !!window._prcExpandido[it.id];
 
+    const factHtml = it.fact == null
+      ? '<span style="color:var(--muted)">—</span>'
+      : `<span style="font-size:12px;font-weight:${it.fact > 0 ? 700 : 400};color:${it.fact > 0 ? 'var(--text)' : 'var(--muted)'}">${_prcFmt(it.fact)}</span>
+         <div style="font-size:10px;color:var(--muted)">${(it.units || 0).toLocaleString('es-AR')} u.</div>`;
+    const partHtml = f.part == null
+      ? '<span style="color:var(--muted)">—</span>'
+      : `<span style="font-size:12px;font-weight:700;color:${f.part >= 5 ? 'var(--accent)' : 'var(--text)'}">${f.part > 0 && f.part < 0.05 ? '<0,1%' : _prcPct(f.part)}</span>
+         ${f.rank ? `<div style="font-size:10px;color:var(--muted)" title="Puesto por facturación · acumulado hasta esta publicación">#${f.rank} · acum ${_prcPct(f.acum)}</div>` : ''}`;
+
+    // TACOS: en modo global se muestra el medido de referencia; en modo por publicación
+    // es un input — vacío usa el real de 30 días (de placeholder), un número lo pisa.
+    const real = _prcTacosReal(it);
+    const realTxt = real != null ? _prcPct(real) : (it.fact === 0 && it.ads > 0 ? 'sin ventas' : '—');
+    const adsTxt  = it.ads > 0 ? _prcFmt(it.ads) + ' de pauta' : 'sin pauta';
+    const tacosCae = f.tacos.origen.includes('global');
+    const tacosHtml = (window._prcTacosModo === 'item')
+      ? `<input type="number" min="0" max="99" step="any" value="${it.tacosManual != null ? it.tacosManual : ''}"
+           placeholder="${real != null ? (Math.round(real * 10) / 10) : f.tacos.pct}"
+           onchange="guardarTacosItem('${it.id}', this.value)"
+           title="${f.tacos.origen === 'a mano' ? 'TACOS a mano. Borralo para volver al real de 30 días (' + realTxt + ')' : 'Usando: ' + f.tacos.origen + '. Escribí un número para pisarlo'}"
+           style="width:58px;padding:4px 6px;border-radius:6px;border:1px solid ${it.tacosManual != null ? 'var(--accent)' : 'var(--border)'};background:var(--surface2);color:var(--text);font-size:12px;text-align:right;outline:none">
+         <span style="font-size:10px;color:var(--muted)">%</span>
+         <div style="font-size:10px;color:${tacosCae ? '#ff9100' : 'var(--muted)'}">${f.tacos.origen === 'a mano' ? 'real ' + realTxt : tacosCae ? f.tacos.origen : adsTxt}</div>`
+      : `<span style="font-size:12px;color:var(--muted)" title="TACOS real de la publicación en 30 días. En modo Global no se usa: la cuenta va con el ${_prcPct(f.tacos.pct)} de arriba">${realTxt}</span>
+         <div style="font-size:10px;color:var(--muted)">${adsTxt}</div>`;
+
     let html = `<tr style="border-bottom:1px solid var(--border);${bg}">
       <td style="padding:6px 8px;font-size:11px;white-space:nowrap">
         <span onclick="navigator.clipboard.writeText('${it.id}');showToast('${it.id} copiado')"
@@ -9430,12 +9520,15 @@ function _prcTabla(filas, sufijo) {
         <a href="https://articulo.mercadolibre.com.ar/${mlaLink}" target="_blank" style="color:var(--text);text-decoration:none">${it.title || '—'}</a>
       </td>
       <td style="padding:6px 8px;font-size:11px;color:var(--muted);max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${(it.sku || '').replace(/"/g, "'")}">${it.sku || '—'}</td>
+      <td style="padding:6px 8px;text-align:right;white-space:nowrap">${factHtml}</td>
+      <td style="padding:6px 8px;text-align:right;white-space:nowrap">${partHtml}</td>
       <td style="padding:4px 6px;text-align:right;white-space:nowrap">
         <span style="font-size:11px;color:var(--muted)">$</span>
         <input type="number" value="${it.cmv || ''}" min="0" step="1" placeholder="0"
           onchange="guardarCostoPrecios('${it.id}', this.value)"
           style="width:80px;padding:4px 6px;border-radius:6px;border:1px solid ${it.hasCMV ? 'var(--border)' : '#ff9100'};background:var(--surface2);color:var(--text);font-size:12px;text-align:right;outline:none">
       </td>
+      <td style="padding:4px 6px;text-align:right;white-space:nowrap">${tacosHtml}</td>
       <td onclick="togglePrecioDetalle('${it.id}')" style="padding:6px 8px;text-align:right;cursor:pointer" title="Click para ver el desglose">
         <span style="font-size:12px;font-weight:600">${_prcFmt(f.actual.total)}</span>
         <div style="font-size:10px;color:var(--muted)">${it.precio > 0 ? _prcPct(f.actual.total / it.precio * 100) : '—'} ${abierto ? '▾' : '▸'}</div>
@@ -9490,7 +9583,7 @@ function _prcDetalle(f) {
     : `sin declarar — se calcula con ${_prcPesoDefault} kg de referencia`;
 
   return `<tr style="background:rgba(34,211,238,.05)">
-    <td colspan="10" style="padding:12px 16px">
+    <td colspan="13" style="padding:12px 16px">
       <div style="display:flex;gap:24px;flex-wrap:wrap">
 
         <div style="flex:1;min-width:320px">
@@ -9505,7 +9598,7 @@ function _prcDetalle(f) {
               ${linea('Cargo fijo por venta', a.cargo, s && s.cargo, a.cargo > 0 ? 'publicación bajo $' + _prcUmbralEnvio.toLocaleString('es-AR') : 'no aplica arriba del umbral')}
               ${linea('Envío', a.envio, s && s.envio, it.noPagaEnvio ? 'ML: no lo paga el vendedor' : it.envioSource)}
               ${linea('IIBB', a.iibb, s && s.iibb)}
-              ${linea('TACOS (publicidad)', a.tacos, s && s.tacos)}
+              ${linea('TACOS (publicidad)', a.tacos, s && s.tacos, `${_prcPct(f.tacos.pct)} · ${f.tacos.origen}`)}
               ${linea('Déb/Créd', a.debCred, s && s.debCred)}
               ${linea('IVA neto', a.ivaNeto, s && s.ivaNeto, f.ctx.esMono ? 'monotributista' : `débito ${_prcFmt(a.ivaVentas)} − crédito ${_prcFmt(a.ivaCompras)}`)}
               ${a.otros > 0 ? linea('Otros por unidad', a.otros, s && s.otros) : ''}
@@ -9597,6 +9690,37 @@ function _prcRecalcDebounce() {
 function setPrcBase(base) {
   window._prcBase = base;
   renderPrecios();
+}
+
+async function setPrcTacosModo(modo) {
+  window._prcTacosModo = modo === 'item' ? 'item' : 'global';
+  renderPrecios();
+  const client = getActiveClient();
+  if (!client) return;
+  const r = await apiCall('PUT', '/api/precios/tacos-modo', { client_id: client.id, modo: window._prcTacosModo }).catch(() => null);
+  if (!r || r.error) { showToast('⚠️ No se pudo guardar el modo de TACOS'); return; }
+  if (window._prcMeta) window._prcMeta.tacos_modo = window._prcTacosModo;
+  showToast(window._prcTacosModo === 'item' ? '📣 TACOS por publicación (real de 30 días)' : '📣 TACOS global para todo el catálogo');
+}
+
+// TACOS a mano de una publicación. Vacío borra el override y vuelve al real de 30 días.
+async function guardarTacosItem(mla, valor) {
+  const client = getActiveClient();
+  if (!client) { showToast('Seleccioná una cuenta'); return; }
+  const fila = (window._prcData || []).find(p => p.id === mla);
+  if (!fila) return;
+  const limpio = (valor === '' || valor == null) ? null : parseFloat(valor);
+  if (limpio != null && (!Number.isFinite(limpio) || limpio < 0 || limpio >= 100)) {
+    showToast('⚠️ El TACOS tiene que estar entre 0 y 99,99');
+    return;
+  }
+  fila.tacosManual = limpio;
+  _prcRerenderTabla();
+  const r = await apiCall('PUT', '/api/precios/tacos-item', {
+    client_id: client.id, mla_id: mla, title: fila.title, tacos_pct: limpio,
+  }).catch(() => null);
+  if (!r || r.error) { showToast('⚠️ No se pudo guardar el TACOS de ' + mla); return; }
+  showToast(limpio == null ? '📣 ' + mla + ' vuelve a su TACOS real' : '📣 ' + mla + ': TACOS ' + limpio + '%');
 }
 
 function _prcBuscar(v) {
@@ -9721,6 +9845,15 @@ function exportarPreciosExcel() {
       'MLA': it.id,
       'Título': it.title,
       'SKU': it.sku,
+      'Facturación 30d': it.fact != null ? Math.round(it.fact) : '',
+      'Unidades 30d': it.units != null ? it.units : '',
+      '% de la cuenta': f.part != null ? parseFloat(f.part.toFixed(2)) : '',
+      'Puesto por facturación': f.rank || '',
+      '% acumulado': f.acum != null ? parseFloat(f.acum.toFixed(1)) : '',
+      'Publicidad 30d $': it.ads != null ? Math.round(it.ads) : '',
+      'TACOS real 30d %': _prcTacosReal(it) != null ? parseFloat(_prcTacosReal(it).toFixed(1)) : '',
+      'TACOS usado %': parseFloat(f.tacos.pct.toFixed(2)),
+      'Origen TACOS': f.tacos.origen,
       'CMV': Math.round(it.cmv),
       'Comisión %': parseFloat((it.comPct * 100).toFixed(2)),
       'Comisión $': Math.round(a.com),
@@ -9760,7 +9893,9 @@ function exportarPreciosExcel() {
     { Concepto: 'CM objetivo global',     Valor: (meta.cm_objetivo_pct ?? '') + '%' },
     { Concepto: 'Objetivo medido sobre',  Valor: base === 'costo' ? 'costo (markup)' : 'precio de venta' },
     { Concepto: 'IIBB',                   Valor: (ctx.iibb * 100).toFixed(2) + '%' },
-    { Concepto: 'TACOS',                  Valor: (ctx.tacos * 100).toFixed(2) + '%' },
+    { Concepto: 'Modo TACOS',             Valor: window._prcTacosModo === 'item' ? 'por publicación (real 30 días, con overrides a mano)' : 'global' },
+    { Concepto: 'TACOS global',           Valor: (ctx.tacos * 100).toFixed(2) + '%' },
+    { Concepto: 'Facturación 30d cuenta', Valor: meta.ventas ? `$${(meta.ventas.total_fact || 0).toLocaleString('es-AR')} (${meta.ventas.desde} a ${meta.ventas.hasta})` : 'sin datos' },
     { Concepto: 'TACOS medido',           Valor: meta.tacos_real ? `${meta.tacos_real.pct}% (${meta.tacos_real.desde} a ${meta.tacos_real.hasta})` : 'sin datos' },
     { Concepto: 'Déb/Créd',               Valor: (ctx.debCred * 100).toFixed(2) + '%' },
     { Concepto: 'Otros por unidad',       Valor: '$' + ctx.otros },

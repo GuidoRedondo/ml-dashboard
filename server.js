@@ -501,6 +501,11 @@ async function initDB() {
       -- Override por publicación. NULL = usa el objetivo global del cliente; no se le pone
       -- default para poder distinguir "no lo tocaron" de "lo pusieron igual al global".
       ALTER TABLE product_costs ADD COLUMN IF NOT EXISTS cm_objetivo_pct NUMERIC(6,2);
+      -- TACOS de la solapa Precios. Modo 'global' = un solo TACOS para todo el catálogo;
+      -- 'item' = cada publicación con su TACOS real de 30 días. El override por
+      -- publicación va en product_costs: NULL = usa el medido, un número lo pisa.
+      ALTER TABLE clients ADD COLUMN IF NOT EXISTS precios_tacos_modo VARCHAR(10) DEFAULT 'global';
+      ALTER TABLE product_costs ADD COLUMN IF NOT EXISTS tacos_pct NUMERIC(6,2);
       -- ── PASO 1: publi automática con aprobación + ejecución real ───────
       -- Gate por cliente: el motor solo procesa clientes con publi_activa=true.
       -- Default false => se activa de a uno, nadie entra sin prenderlo.
@@ -719,6 +724,14 @@ async function initDB() {
     -- publicación (listing_prices), así que en cuentas de +1.000 pubs tarda minutos.
     -- Se cachea 12h, mismo criterio que ciclo_vida_cache; ?force_refresh=true la saltea.
     CREATE TABLE IF NOT EXISTS precios_cache (
+      client_id  INTEGER PRIMARY KEY REFERENCES clients(id) ON DELETE CASCADE,
+      data       JSONB NOT NULL,
+      fetched_at TIMESTAMPTZ DEFAULT NOW()
+    );
+    -- Facturación y publicidad por publicación de los últimos 30 días, para la solapa
+    -- Precios (participación en la cuenta y TACOS por ítem). Aparte de precios_cache
+    -- porque se arma con otra fuente (órdenes + PADS) y no depende de listing_prices.
+    CREATE TABLE IF NOT EXISTS precios_ventas_cache (
       client_id  INTEGER PRIMARY KEY REFERENCES clients(id) ON DELETE CASCADE,
       data       JSONB NOT NULL,
       fetched_at TIMESTAMPTZ DEFAULT NOW()
@@ -6646,9 +6659,9 @@ async function traerItemsActivos(clientId, { withFees = false } = {}) {
   }
 
   // Costos guardados
-  const costsRes = await pool.query('SELECT mla_id, costo_unit, alicuota_iva, notas, cm_objetivo_pct FROM product_costs WHERE client_id=$1', [client_id]);
+  const costsRes = await pool.query('SELECT mla_id, costo_unit, alicuota_iva, notas, cm_objetivo_pct, tacos_pct FROM product_costs WHERE client_id=$1', [client_id]);
   const costsMap = {};
-  costsRes.rows.forEach(r => { costsMap[r.mla_id] = { costo_unit: parseFloat(r.costo_unit)||0, alicuota_iva: parseFloat(r.alicuota_iva) || 21, notas: r.notas, cm_objetivo_pct: r.cm_objetivo_pct == null ? null : parseFloat(r.cm_objetivo_pct) }; });
+  costsRes.rows.forEach(r => { costsMap[r.mla_id] = { costo_unit: parseFloat(r.costo_unit)||0, alicuota_iva: parseFloat(r.alicuota_iva) || 21, notas: r.notas, cm_objetivo_pct: r.cm_objetivo_pct == null ? null : parseFloat(r.cm_objetivo_pct), tacos_pct: r.tacos_pct == null ? null : parseFloat(r.tacos_pct) }; });
 
   const items = Object.values(itemsMap).map(i => ({
     ...i,
@@ -6657,6 +6670,7 @@ async function traerItemsActivos(clientId, { withFees = false } = {}) {
     notas: costsMap[i.mla_id]?.notas || '',
     // null = esta publicación no tiene objetivo propio y sigue al global del cliente
     cm_objetivo_pct: costsMap[i.mla_id]?.cm_objetivo_pct ?? null,
+    tacos_pct: costsMap[i.mla_id]?.tacos_pct ?? null,
     has_cost: costsMap[i.mla_id] != null,
   })).sort((a, b) => (a.title || '').localeCompare(b.title || ''));
 
@@ -6730,6 +6744,100 @@ async function conPesoEnvio(clientId, items) {
   });
 }
 
+// Facturación, unidades y publicidad por publicación de los últimos `dias` días (ayer
+// inclusive, hoy afuera: misma ventana que tacosRealPct). Alimenta dos columnas de
+// Precios: la participación de cada publicación en la cuenta, y su TACOS real.
+//
+// - Facturación: órdenes pagas (fetchAllOrders), unit_price × quantity. El total de la
+//   cuenta suma TODAS las publicaciones vendidas, también las que hoy están pausadas,
+//   para que la participación sea contra lo que facturó la cuenta de verdad.
+// - Publicidad: PADS por ítem, con dedupAdsPorItem (ML repite el costo del ítem en cada
+//   campaña donde está y sumarlo inflaba la inversión ~25%).
+//
+// Se cachea 12h en precios_ventas_cache. `publi_ok` = PADS respondió: sin eso, un ítem
+// sin fila de publicidad no puede leerse como "no hace pauta".
+const PRECIOS_VENTAS_DIAS = 30;
+
+async function ventasYPubliPorItem(clientId, { force = false } = {}) {
+  if (!force) {
+    const hit = await pool.query(
+      'SELECT data, fetched_at FROM precios_ventas_cache WHERE client_id=$1', [clientId]);
+    const row = hit.rows[0];
+    if (row && (Date.now() - new Date(row.fetched_at).getTime()) < PRECIOS_TTL_MS) {
+      return { ...row.data, fetched_at: row.fetched_at };
+    }
+  }
+
+  const token = await getClientToken(clientId);
+  if (!token) return null;
+  const headers = { 'Authorization': `Bearer ${token}` };
+  const cRes = await pool.query('SELECT ml_user_id FROM clients WHERE id=$1', [clientId]);
+  const uid = cRes.rows[0]?.ml_user_id;
+  if (!uid) return null;
+
+  const hasta = ymdShift(ymd(), -1);
+  const desde = ymdShift(ymd(), -PRECIOS_VENTAS_DIAS);
+
+  const porItem = {};
+  const fila = id => porItem[id] || (porItem[id] = { fact: 0, units: 0, ads: 0 });
+
+  const { orders, ok } = await fetchAllOrders(uid, headers, mlFrom(desde), mlTo(hasta));
+  if (!ok) return null;   // sin órdenes no hay participación: mejor "sin dato" que todo en 0
+  let totalFact = 0;
+  orders.forEach(o => {
+    (o.order_items || []).forEach(oi => {
+      if (!oi.item?.id) return;
+      const monto = (parseFloat(oi.unit_price) || 0) * (oi.quantity || 0);
+      const f = fila(oi.item.id);
+      f.fact  += monto;
+      f.units += oi.quantity || 0;
+      totalFact += monto;
+    });
+  });
+
+  let totalAds = 0, publiOk = false;
+  try {
+    const advData = await fetch(`${ML_API}/advertising/advertisers?product_id=PADS`,
+      { headers: { ...headers, 'Content-Type': 'application/json', 'Api-Version': '1' } }).then(r => r.json());
+    const advs = advData.advertisers || [];
+    const adv = advs.find(a => a.site_id === 'MLA') || advs[0];
+    publiOk = !!advData && !advData.error;   // sin advertiser = no hace pauta, es un dato
+    if (adv) {
+      const ads = dedupAdsPorItem(await fetchPadsAds(adv.site_id || 'MLA', adv.advertiser_id,
+        { ...headers, 'api-version': '2' }, { date_from: desde, date_to: hasta, metrics: 'cost' }));
+      ads.forEach(ad => {
+        const cost = parseFloat(ad.metrics?.cost) || 0;
+        if (!(cost > 0)) return;
+        fila(ad.item_id).ads += cost;
+        totalAds += cost;
+      });
+    }
+  } catch (e) { publiOk = false; }
+
+  Object.values(porItem).forEach(f => {
+    f.fact = Math.round(f.fact);
+    f.ads  = Math.round(f.ads);
+  });
+  const data = { desde, hasta, dias: PRECIOS_VENTAS_DIAS, total_fact: Math.round(totalFact),
+                 total_ads: Math.round(totalAds), publi_ok: publiOk, por_item: porItem };
+  await pool.query(
+    `INSERT INTO precios_ventas_cache (client_id, data, fetched_at) VALUES ($1,$2,NOW())
+       ON CONFLICT (client_id) DO UPDATE SET data=$2, fetched_at=NOW()`,
+    [clientId, JSON.stringify(data)]);
+  return { ...data, fetched_at: new Date().toISOString() };
+}
+
+// Suma a cada fila su facturación, unidades y publicidad de 30 días. Las publicaciones
+// que no vendieron ni pautaron quedan en 0 (el dato existe: no movieron nada).
+function conVentas(items, ventas) {
+  if (!ventas) return items;
+  const m = ventas.por_item || {};
+  return items.map(i => {
+    const v = m[i.mla_id] || { fact: 0, units: 0, ads: 0 };
+    return { ...i, fact_30d: v.fact, units_30d: v.units, ads_30d: v.ads };
+  });
+}
+
 app.get('/api/precios', requireAuth, async (req, res) => {
   try {
     const clientId = parseInt(req.query.client_id);
@@ -6737,7 +6845,7 @@ app.get('/api/precios', requireAuth, async (req, res) => {
     const force = req.query.force_refresh === 'true' || req.query.force_refresh === '1';
 
     const cliRes = await pool.query(
-      `SELECT name, condicion_iva, tasa_iibb_pct, cm_objetivo_pct, cm_objetivo_base
+      `SELECT name, condicion_iva, tasa_iibb_pct, cm_objetivo_pct, cm_objetivo_base, precios_tacos_modo
          FROM clients WHERE id=$1`, [clientId]);
     if (!cliRes.rows.length) return res.status(404).json({ error: 'Cliente no encontrado' });
     const cli = cliRes.rows[0];
@@ -6745,7 +6853,12 @@ app.get('/api/precios', requireAuth, async (req, res) => {
     // Los supuestos y los objetivos se leen SIEMPRE frescos de la base, aunque los ítems
     // vengan del caché: cambiar el CM objetivo no puede obligar a esperar de nuevo los
     // minutos que tarda ML en devolver la comisión de cada publicación.
-    const tacos = await tacosRealPct(clientId).catch(() => null);
+    // Ventas y publicidad por publicación: se piden en paralelo con el resto y, si ML no
+    // responde, la solapa sigue andando sin las columnas de participación y TACOS por ítem.
+    const [tacos, ventas] = await Promise.all([
+      tacosRealPct(clientId).catch(() => null),
+      ventasYPubliPorItem(clientId, { force }).catch(e => { console.error('[PRECIOS VENTAS]', e.message); return null; }),
+    ]);
     const meta = {
       cliente: cli.name,
       condicion_iva: cli.condicion_iva || 'responsable_inscripto',
@@ -6761,6 +6874,10 @@ app.get('/api/precios', requireAuth, async (req, res) => {
         otros_unit:   0,
       },
       tacos_real: tacos,
+      tacos_modo: cli.precios_tacos_modo === 'item' ? 'item' : 'global',
+      ventas: ventas ? { desde: ventas.desde, hasta: ventas.hasta, dias: ventas.dias,
+                         total_fact: ventas.total_fact, total_ads: ventas.total_ads,
+                         publi_ok: ventas.publi_ok, fetched_at: ventas.fetched_at } : null,
       vigencia_tarifas: TARIFAS_ML.VIGENCIA,
     };
 
@@ -6772,7 +6889,7 @@ app.get('/api/precios', requireAuth, async (req, res) => {
         // Los costos guardados SÍ se releen sobre el caché: el CMV y el objetivo por
         // producto se cargan desde esta misma pantalla y tienen que verse al instante.
         const costs = await pool.query(
-          'SELECT mla_id, costo_unit, alicuota_iva, cm_objetivo_pct FROM product_costs WHERE client_id=$1',
+          'SELECT mla_id, costo_unit, alicuota_iva, cm_objetivo_pct, tacos_pct FROM product_costs WHERE client_id=$1',
           [clientId]);
         const cmap = {};
         costs.rows.forEach(c => { cmap[c.mla_id] = c; });
@@ -6782,10 +6899,11 @@ app.get('/api/precios', requireAuth, async (req, res) => {
             costo_unit:      c ? parseFloat(c.costo_unit) : null,
             alicuota_iva:    c ? (parseFloat(c.alicuota_iva) || 21) : 21,
             cm_objetivo_pct: c && c.cm_objetivo_pct != null ? parseFloat(c.cm_objetivo_pct) : null,
+            tacos_pct:       c && c.tacos_pct != null ? parseFloat(c.tacos_pct) : null,
             has_cost:        !!c,
           };
         });
-        return res.json({ ...meta, items: await conPesoEnvio(clientId, items),
+        return res.json({ ...meta, items: await conPesoEnvio(clientId, conVentas(items, ventas)),
           completeness: items.length ? Math.round(items.filter(i => i.has_cost).length / items.length * 100) : 0,
           fetched_at: row.fetched_at, desde_cache: true });
       }
@@ -6797,7 +6915,7 @@ app.get('/api/precios', requireAuth, async (req, res) => {
          ON CONFLICT (client_id) DO UPDATE SET data=$2, fetched_at=NOW()`,
       [clientId, JSON.stringify({ items: base.items })]);
 
-    res.json({ ...meta, items: await conPesoEnvio(clientId, base.items), completeness: base.completeness,
+    res.json({ ...meta, items: await conPesoEnvio(clientId, conVentas(base.items, ventas)), completeness: base.completeness,
                fetched_at: new Date().toISOString(), desde_cache: false });
   } catch (e) {
     console.error('[PRECIOS]', e.message);
@@ -6900,6 +7018,50 @@ app.put('/api/precios/objetivo-item', requireAuth, async (req, res) => {
     res.json({ ok: true, cm_objetivo_pct: pct });
   } catch (e) {
     console.error('[PRECIOS OBJETIVO ITEM]', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// PUT /api/precios/tacos-modo — TACOS global para todo el catálogo, o el real de cada
+// publicación ('item').
+app.put('/api/precios/tacos-modo', requireAuth, async (req, res) => {
+  try {
+    const { client_id, modo } = req.body || {};
+    if (!client_id) return res.status(400).json({ error: 'Falta client_id' });
+    const m = modo === 'item' ? 'item' : 'global';
+    await pool.query('UPDATE clients SET precios_tacos_modo=$1, updated_at=NOW() WHERE id=$2', [m, client_id]);
+    res.json({ ok: true, modo: m });
+  } catch (e) {
+    console.error('[PRECIOS TACOS MODO]', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// PUT /api/precios/tacos-item — TACOS a mano de UNA publicación (pisa el medido).
+// tacos_pct null o vacío borra el override y vuelve al real de 30 días.
+app.put('/api/precios/tacos-item', requireAuth, async (req, res) => {
+  try {
+    const { client_id, mla_id, title, tacos_pct } = req.body || {};
+    if (!client_id || !mla_id) return res.status(400).json({ error: 'Falta client_id o mla_id' });
+    let pct = null;
+    if (tacos_pct !== null && tacos_pct !== '' && tacos_pct !== undefined) {
+      pct = parseFloat(tacos_pct);
+      if (!Number.isFinite(pct) || pct < 0 || pct >= 100) {
+        return res.status(400).json({ error: 'TACOS fuera de rango (0 a 99,99)' });
+      }
+    }
+    // Misma lógica que el objetivo por ítem: puede no haber fila todavía.
+    await pool.query(
+      `INSERT INTO product_costs (client_id, mla_id, title, costo_unit, tacos_pct, updated_at)
+            VALUES ($1,$2,$3,0,$4,NOW())
+       ON CONFLICT (client_id, mla_id) DO UPDATE
+          SET tacos_pct = $4,
+              title     = COALESCE(product_costs.title, EXCLUDED.title),
+              updated_at = NOW()`,
+      [client_id, mla_id, title || null, pct]);
+    res.json({ ok: true, tacos_pct: pct });
+  } catch (e) {
+    console.error('[PRECIOS TACOS ITEM]', e.message);
     res.status(500).json({ error: e.message });
   }
 });
