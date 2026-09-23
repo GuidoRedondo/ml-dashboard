@@ -6929,11 +6929,12 @@ function renderPerfPublicaciones() {
   if (!el) return;
 
   // Con la ficha de una publicación abierta: si cambió el cliente se cierra (esa publicación
-  // es de otra cuenta); si cambió el período se recarga con el nuevo.
+  // es de otra cuenta); si cambió el período del panel se recarga con el nuevo, salvo que la
+  // ficha tenga fechas propias — esas no las pisa el período de la cuenta.
   if (_pubDet && _pubDet.itemId) {
     const c = getActiveClient(), r = getDateRange();
     if (!c || c.id !== _pubDet.clientId) cerrarDetallePub();
-    else if (r.date_from !== _pubDet.from || r.date_to !== _pubDet.to) cargarDetallePub(false);
+    else if (!_pubDet.rangoPropio && (r.date_from !== _pubDet.from || r.date_to !== _pubDet.to)) cargarDetallePub(false);
   }
 
   // Recopilar by_product de todas las cuentas conectadas
@@ -7113,7 +7114,10 @@ function sortPerfPub(col) {
 // Todo sale de /api/publicacion/detalle con el período global. El gráfico es el mismo
 // del Dashboard (dibujarSerieDiaria), con unidades en vez de órdenes en las barras.
 // var y no const: renderPerfPublicaciones la consulta y puede correr antes de llegar acá.
-var _pubDet = { itemId: null, clientId: null, from: null, to: null, data: null, scrollY: 0, pedido: 0 };
+// rangoPropio: fechas elegidas dentro de la ficha ({ from, to }). Mientras esté puesto la ficha
+// ignora el período global; queda al pasar de una publicación a otra (sirve para compararlas
+// en el mismo rango) y se vuelve al del panel con "Período del panel".
+var _pubDet = { itemId: null, clientId: null, from: null, to: null, rangoPropio: null, data: null, scrollY: 0, pedido: 0 };
 if (!window._pubChartSeries) window._pubChartSeries = { fac: true, ventas: true, visitas: true, conversion: true, cm: true, tacos: true };
 
 function abrirDetallePub(itemId) {
@@ -7141,7 +7145,9 @@ function cerrarDetallePub() {
 async function cargarDetallePub(force) {
   const el = document.getElementById('perfPubDetalle');
   if (!el || !_pubDet.itemId) return;
-  const { date_from, date_to } = getDateRange();
+  const { date_from, date_to } = _pubDet.rangoPropio
+    ? { date_from: _pubDet.rangoPropio.from, date_to: _pubDet.rangoPropio.to }
+    : getDateRange();
   _pubDet.from = date_from; _pubDet.to = date_to;
   // Si el usuario abre otra publicación mientras esta carga, la respuesta vieja se descarta.
   const pedido = ++_pubDet.pedido;
@@ -7160,6 +7166,25 @@ async function cargarDetallePub(force) {
     el.innerHTML = `<div style="margin-bottom:14px">${volver}</div>
       <div style="color:#ff5252;font-size:13px;padding:40px;text-align:center">No se pudo armar la ficha: ${e.message}</div>`;
   }
+}
+
+// Fechas propias de la ficha. `dias` = atajo (N días calendario terminando hoy); sin `dias`
+// toma los inputs desde/hasta. null vuelve al período del panel.
+function setRangoDetallePub(dias) {
+  const hoy = ymd();
+  if (dias === null) {
+    _pubDet.rangoPropio = null;
+  } else if (dias) {
+    _pubDet.rangoPropio = { from: ymd(new Date(Date.now() - (dias - 1) * 86400000)), to: hoy, dias };
+  } else {
+    const from = document.getElementById('pubDetDesde')?.value;
+    const to   = document.getElementById('pubDetHasta')?.value;
+    if (!from || !to) { showToast('Elegí las dos fechas'); return; }
+    if (from > to)    { showToast('La fecha "desde" es posterior a "hasta"'); return; }
+    if (to > hoy)     { showToast('La fecha "hasta" no puede ser futura'); return; }
+    _pubDet.rangoPropio = { from, to };
+  }
+  cargarDetallePub(false);
 }
 
 function togglePubChartSeries(key) {
@@ -7207,29 +7232,57 @@ function renderDetallePub() {
   ].filter(Boolean).map(c => `<span style="font-size:12px;color:var(--muted);padding:3px 9px;border:1px solid var(--border);border-radius:999px">${c}</span>`).join('');
 
   // ── KPIs ──
-  const kpi = (label, valor, sub, color, tip) => `
+  const kpi = (label, valor, sub, color, tip, delta) => `
     <div title="${esc(tip || '')}" style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:12px 14px">
       <div style="font-size:11px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.03em">${label}</div>
       <div style="font-size:20px;font-weight:800;font-family:var(--font-b);color:${color || 'var(--text)'};margin-top:3px">${valor}</div>
       <div style="font-size:11px;color:var(--muted);margin-top:2px">${sub || '&nbsp;'}</div>
+      <div style="font-size:11px;font-weight:700;margin-top:4px;min-height:14px">${delta || ''}</div>
     </div>`;
   const pu = d.publicidad, ca = d.cancelaciones, re = d.reclamos;
+
+  // ── Variación contra el período anterior (mismo largo, justo antes) ──
+  // Montos y cantidades en %, lo que ya es un porcentaje en puntos. `subeBien` = false para
+  // lo que conviene que baje (TACOS, cancelaciones, reclamos): ahí subir se pinta de rojo.
+  const A = d.anterior, AT = A ? A.totales : null;
+  const chipVar = (v, unidad, subeBien, texto = 'vs anterior') => {
+    const quieto = Math.abs(v) < 0.05;
+    const color = quieto ? 'var(--muted)' : ((v > 0) === subeBien ? '#00c853' : '#ff5252');
+    const flecha = quieto ? '=' : v > 0 ? '▲' : '▼';
+    return `<span style="color:${color}" title="Contra ${fecha(A.desde)} → ${fecha(A.hasta)}">${flecha} ${Math.abs(v).toFixed(1).replace('.', ',')}${unidad} <span style="color:var(--muted);font-weight:400">${texto}</span></span>`;
+  };
+  const dPct = (cur, prev, subeBien = true) => {
+    if (!A || cur == null || prev == null) return '';
+    if (prev === 0) return cur > 0 ? `<span style="color:var(--muted);font-weight:400">sin datos en el período anterior</span>` : '';
+    return chipVar((cur - prev) / Math.abs(prev) * 100, '%', subeBien);
+  };
+  const dPts = (cur, prev, subeBien = true, texto) =>
+    (!A || cur == null || prev == null) ? '' : chipVar(cur - prev, ' pts', subeBien, texto);
   const cmColor = T.cm == null ? 'var(--muted)' : T.cm < 0 ? '#ff5252' : '#00c853';
+  // Publicidad: sólo se compara si PADS tiene los dos períodos completos (guarda ~90 días).
+  const publiComparable = A && A.publicidad.comparable;
   const kpis = [
-    kpi('Facturación', $(T.facturacion), T.ticket_promedio ? `Ticket ${$(T.ticket_promedio)}` : '', '#FFD700'),
-    kpi('Unidades', N(T.unidades), `${N(T.ordenes)} órdenes`, '#00e676'),
-    kpi('Visitas', N(T.visitas), d.meta.visitas_recortadas ? 'ML da hasta 150 días' : '', '#6366f1'),
-    kpi('Conversión', P(T.conversion), 'unidades / visitas', '#22d3ee'),
+    kpi('Facturación', $(T.facturacion), T.ticket_promedio ? `Ticket ${$(T.ticket_promedio)}` : '', '#FFD700', '',
+        dPct(T.facturacion, AT?.facturacion)),
+    kpi('Unidades', N(T.unidades), `${N(T.ordenes)} órdenes`, '#00e676', '', dPct(T.unidades, AT?.unidades)),
+    kpi('Visitas', N(T.visitas), d.meta.visitas_recortadas ? 'ML da hasta 150 días' : '', '#6366f1', '', dPct(T.visitas, AT?.visitas)),
+    kpi('Conversión', P(T.conversion), 'unidades / visitas', '#22d3ee', '', dPts(T.conversion, AT?.conversion)),
     kpi('Contrib. marginal', T.cm == null ? 'Sin costo' : $(T.cm), T.cm == null ? 'Cargá el costo en Rentabilidad' : `${P(T.cm_pct)} de la facturación`, cmColor,
-        'Facturación − comisión − CMV − envío − publicidad − IVA − IIBB − impuestos − reembolsos. Mismo criterio que el P&L por producto de Rentabilidad.'),
+        'Facturación − comisión − CMV − envío − publicidad − IVA − IIBB − impuestos − reembolsos. Mismo criterio que el P&L por producto de Rentabilidad.',
+        [dPct(T.cm, AT?.cm), dPts(T.cm_pct, AT?.cm_pct, true, 'de margen')].filter(Boolean).join('<br>')),
     kpi('TACOS', pu.tiene_anuncio ? P(T.tacos) : '—', pu.tiene_anuncio ? `${$(T.publicidad)} de pauta` : 'Sin anuncio', '#ff9100',
-        'Inversión en publicidad de esta publicación / su facturación'),
+        'Inversión en publicidad de esta publicación / su facturación',
+        publiComparable ? dPts(T.tacos, AT.tacos, false) : ''),
     kpi('Ventas por publicidad', pu.tiene_anuncio ? P(pu.pct_unidades_publi) : '—', pu.tiene_anuncio ? `${N(pu.unidades_directas)} u. después de un click` : 'Sin anuncio', '#f472b6',
-        'Unidades de esta publicación que ML atribuye a un click en su propio anuncio (ventas directas), sobre las unidades vendidas'),
-    kpi('Cancelaciones', P(ca.pct), `${N(ca.ordenes)} de ${N(d.meta.ordenes_totales)} órdenes`, ca.pct > 5 ? '#ff5252' : 'var(--text)'),
-    kpi('Ventas no concretadas', $(ca.monto), `${N(ca.unidades)} u. que se cayeron`, ca.monto > 0 ? '#ff5252' : 'var(--text)'),
+        'Unidades de esta publicación que ML atribuye a un click en su propio anuncio (ventas directas), sobre las unidades vendidas',
+        publiComparable ? dPts(pu.pct_unidades_publi, A.publicidad.pct_unidades_publi) : ''),
+    kpi('Cancelaciones', P(ca.pct), `${N(ca.ordenes)} de ${N(d.meta.ordenes_totales)} órdenes`, ca.pct > 5 ? '#ff5252' : 'var(--text)', '',
+        dPts(ca.pct, A?.cancelaciones.pct, false)),
+    kpi('Ventas no concretadas', $(ca.monto), `${N(ca.unidades)} u. que se cayeron`, ca.monto > 0 ? '#ff5252' : 'var(--text)', '',
+        dPct(ca.monto, A?.cancelaciones.monto, false)),
     kpi('Reclamos', re.sincronizado ? P(re.pct) : '—', re.sincronizado ? `${N(re.total)} casos${re.abiertos ? ` · ${re.abiertos} abiertos` : ''}` : 'Reclamos sin sincronizar',
-        re.pct > 3 ? '#ff5252' : 'var(--text)', 'Reclamos abiertos en el período sobre las órdenes del período'),
+        re.pct > 3 ? '#ff5252' : 'var(--text)', 'Reclamos abiertos en el período sobre las órdenes del período',
+        re.sincronizado ? dPts(re.pct, A?.reclamos.pct, false) : ''),
   ].join('');
 
   // ── Bloques ──
@@ -7338,10 +7391,33 @@ function renderDetallePub() {
           <span>Contribución marginal</span><span style="color:${c.cm < 0 ? '#ff5252' : '#00c853'}">${$(c.cm)} <span style="font-size:12px">${P(T.cm_pct)}</span></span></div>`}`;
   const cascadaPie = `Costo unitario ${d.costo.tiene_costo ? $(d.costo.costo_unit) : 'no cargado'} · IVA ${String(d.costo.alicuota_iva).replace('.', ',')}% · IIBB ${String(d.costo.tasa_iibb_pct).replace('.', ',')}%${d.costo.monotributista ? ' · monotributista (sin IVA)' : ''}. No incluye el Flex/FULL cargado a mano como gasto mensual: se reparte sobre toda la cuenta.`;
 
+  // Selector de fechas propio de la ficha: no toca el período de la cuenta.
+  const rp = _pubDet.rangoPropio;
+  const btnRango = (dias) => {
+    const on = rp && rp.dias === dias;
+    return `<button onclick="setRangoDetallePub(${dias})" style="padding:5px 10px;border-radius:7px;font-size:12px;font-weight:600;cursor:pointer;
+      border:1px solid ${on ? 'var(--accent)' : 'var(--border)'};background:${on ? 'rgba(99,102,241,.12)' : 'var(--surface)'};color:${on ? 'var(--accent)' : 'var(--text)'}">${dias}d</button>`;
+  };
+  const inputFecha = (id, val) => `<input id="${id}" type="date" value="${val}" max="${ymd()}"
+    style="padding:5px 8px;border-radius:7px;border:1px solid ${rp && !rp.dias ? 'var(--accent)' : 'var(--border)'};background:var(--surface2);color:var(--text);font-size:12px">`;
+  const barraFechas = `
+    <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+      ${[7, 15, 30, 60, 90].map(btnRango).join('')}
+      <span style="width:1px;height:20px;background:var(--border);margin:0 4px"></span>
+      ${inputFecha('pubDetDesde', d.desde)}
+      <span style="font-size:12px;color:var(--muted)">→</span>
+      ${inputFecha('pubDetHasta', d.hasta)}
+      <button onclick="setRangoDetallePub()" class="sync-btn" style="font-size:12px;padding:5px 12px">Aplicar</button>
+      ${rp ? `<button onclick="setRangoDetallePub(null)" title="Volver al período elegido arriba para toda la cuenta"
+          style="padding:5px 10px;border-radius:7px;font-size:12px;cursor:pointer;border:1px dashed var(--border);background:none;color:var(--muted)">↺ Período del panel</button>`
+        : `<span style="font-size:11px;color:var(--muted)">usando el período del panel</span>`}
+      ${d.anterior ? `<span style="font-size:11px;color:var(--muted);margin-left:6px">· comparado con ${fecha(d.anterior.desde)} → ${fecha(d.anterior.hasta)}</span>` : ''}
+    </div>`;
+
   el.innerHTML = `
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap">
       <button onclick="cerrarDetallePub()" class="sync-btn" style="font-size:12px;padding:6px 14px">← Publicaciones</button>
-      <span style="font-size:12px;color:var(--muted)">${fecha(d.desde)} → ${fecha(d.hasta)} · el período se cambia arriba, como en el resto del panel</span>
+      ${barraFechas}
       <button onclick="cargarDetallePub(true)" class="sync-btn" style="font-size:12px;padding:6px 14px;margin-left:auto"
         title="${d.cache ? 'Calculada hace un rato: la ficha se guarda 30 minutos. Click para recalcular con lo último de ML.' : 'Recalcular con lo último de ML'}">🔄 ${d.cache ? 'Recalcular' : 'Actualizar'}</button>
     </div>

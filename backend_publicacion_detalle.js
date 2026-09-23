@@ -152,6 +152,253 @@ module.exports = (app, deps) => {
     return { porDia, tieneAnuncio: true, fallo: false, datosDesde };
   }
 
+  // Todo el cálculo de la ficha para un rango. Se corre dos veces por pedido (el período y el
+  // anterior, en paralelo) para poder mostrar la variación.
+  async function calcularFicha({ clientId, itemId, headers, uid, tasaIibb, esMonotrib }, desde, hasta) {
+    // Eje de días calendario argentinos, extremos incluidos.
+    const fechas = [];
+    for (let f = desde; f <= hasta && fechas.length < 400; f = ymdShift(f, 1)) fechas.push(f);
+    const idx = {}; fechas.forEach((f, i) => { idx[f] = i; });
+    const N = fechas.length;
+    const serie = () => new Array(N).fill(0);
+
+    // Visitas: ML ignora date_from en este endpoint, así que se piden los últimos N días
+    // hasta hoy y se recorta (mismo criterio que /api/item/conversion-diaria).
+    const hoy = ymd();
+    let diasAtras = 1;
+    for (let f = desde; f < hoy && diasAtras < MAX_DIAS_VISITAS; f = ymdShift(f, 1)) diasAtras++;
+
+    const [itemR, ordenes, visR, publi, costoR, recSync] = await Promise.all([
+      getJson(`${ML_API}/items/${itemId}?attributes=id,title,thumbnail,price,original_price,available_quantity,sold_quantity,status,listing_type_id,permalink,shipping,catalog_listing,seller_id`, headers),
+      ordenesDeItem(uid, itemId, headers, desde, hasta),
+      getJson(`${ML_API}/items/${itemId}/visits/time_window?last=${diasAtras}&unit=day`, headers),
+      publiDiaria(itemId, headers, desde, hasta),
+      pool.query('SELECT costo_unit, alicuota_iva FROM product_costs WHERE client_id=$1 AND mla_id=$2', [clientId, itemId]),
+      pool.query("SELECT to_char(synced_at AT TIME ZONE 'America/Argentina/Buenos_Aires','YYYY-MM-DD HH24:MI') AS synced_at, incompleto FROM reclamos_sync WHERE client_id=$1", [clientId])
+        .catch(() => ({ rows: [] })),
+    ]);
+
+    const item = itemR.body && !itemR.body.error ? itemR.body : null;
+    if (item && item.seller_id && String(item.seller_id) !== String(uid)) {
+      const e = new Error('La publicación no es de esta cuenta'); e.status = 403; throw e;
+    }
+
+    const costoUnit = costoR.rows[0] ? parseFloat(costoR.rows[0].costo_unit) : null;
+    const tieneCosto = costoUnit != null && costoUnit > 0;
+    const alic = parseFloat(costoR.rows[0]?.alicuota_iva) || 21;
+
+    // ── Órdenes: concretadas vs canceladas ────────────────────────────────────
+    const enPyl = ordenes.filter(o => PYL_ESTADOS.includes(o.status));
+    const shipMap = await fetchShippingCosts(enPyl, headers);
+    const hermanas = await ordenesHermanas(enPyl, shipMap, headers);
+    const envioPorItem = repartirEnvioPorItem(enPyl.concat(hermanas), shipMap);
+
+    const s = {
+      unidades: serie(), ordenes: serie(), fac: serie(), comision: serie(), impuestos: serie(),
+      reembolsos: serie(), envio: serie(), cmv: serie(), iva: serie(), iibb: serie(),
+      canceladas: serie(), monto_cancelado: serie(),
+    };
+    const porModo = {}, porProv = {}, porCiudad = {}, porCuotas = {}, porTipoPago = {};
+    const cancel = { ordenes: 0, unidades: 0, monto: 0, por_quien: {}, motivos: {} };
+    let devParciales = 0, ordenesConcretadas = 0;
+    const sumar = (m, k, u, monto) => {
+      const x = m[k] || (m[k] = { unidades: 0, ordenes: 0, monto: 0 });
+      x.unidades += u; x.ordenes += 1; x.monto += monto;
+    };
+
+    enPyl.forEach(o => {
+      const i = idx[ymd(o.date_created)];
+      if (i === undefined) return;
+      const cancelada = o.status === 'cancelled';
+      const lineas = (o.order_items || []).filter(oi => oi.item?.id);
+      const propias = lineas.filter(oi => oi.item.id === itemId);
+      if (!propias.length) return;
+      const baseOrden = lineas.reduce((t, oi) => t + (parseFloat(oi.unit_price) || 0) * (oi.quantity || 0), 0);
+      const montoProp = propias.reduce((t, oi) => t + (parseFloat(oi.unit_price) || 0) * (oi.quantity || 0), 0);
+      const unid = propias.reduce((t, oi) => t + (oi.quantity || 0), 0);
+      const frac = baseOrden > 0 ? montoProp / baseOrden : propias.length / lineas.length;
+      const fee = propias.reduce((t, oi) => t + (parseFloat(oi.sale_fee) || 0), 0);
+      const imp = (parseFloat(o.taxes?.amount) || 0) * frac;
+      const env = (envioPorItem[`${o.id}|${itemId}`]?.seller) || 0;
+
+      // Cargos que ML cobra aunque la venta se caiga
+      s.comision[i] += fee; s.impuestos[i] += imp; s.envio[i] += env;
+      s.iva[i] -= esMonotrib ? 0 : ivaContenido(fee + env, IVA_SERVICIOS_PCT);
+
+      if (cancelada) {
+        s.canceladas[i] += 1; s.monto_cancelado[i] += montoProp;
+        cancel.ordenes += 1; cancel.unidades += unid; cancel.monto += montoProp;
+        const cd = o.cancel_detail || {};
+        const quien = GRUPO_CANCELACION[cd.group] || (cd.group ? cd.group : 'Sin dato');
+        cancel.por_quien[quien] = (cancel.por_quien[quien] || 0) + 1;
+        const motivo = motivoCancelacion(cd.description || cd.code || 'Sin motivo declarado');
+        cancel.motivos[motivo] = (cancel.motivos[motivo] || 0) + 1;
+        return;
+      }
+
+      ordenesConcretadas += 1;
+      if (o.status === 'partially_refunded') devParciales += 1;
+      const refund = (o.payments || []).reduce((t, p) => t + (parseFloat(p.transaction_amount_refunded) || 0), 0) * frac;
+      s.unidades[i] += unid; s.ordenes[i] += 1; s.fac[i] += montoProp; s.reembolsos[i] += refund;
+      s.iibb[i] += montoProp * tasaIibb / 100;
+      if (!esMonotrib) s.iva[i] += ivaContenido(montoProp, alic);
+      if (tieneCosto) {
+        s.cmv[i] += costoUnit * unid;
+        if (!esMonotrib) s.iva[i] -= ivaContenido(costoUnit * unid, alic);
+      }
+
+      const sd = o.shipping?.id ? shipMap[o.shipping.id] : null;
+      sumar(porModo, sd?.mode || (o.shipping?.id ? 'Sin dato' : 'Sin envío'), unid, montoProp);
+      sumar(porProv, sd?.province || 'Sin dato', unid, montoProp);
+      sumar(porCiudad, sd ? `${sd.city || 'Sin dato'}${sd.province && sd.province !== 'Sin dato' ? ' · ' + sd.province : ''}` : 'Sin dato', unid, montoProp);
+
+      const pagos = o.payments || [];
+      const pago = pagos.find(p => p.status === 'approved') || pagos[0] || null;
+      const cuotas = pago ? Math.max(1, parseInt(pago.installments) || 1) : null;
+      sumar(porCuotas, cuotas == null ? 'sin dato' : String(cuotas), unid, montoProp);
+      sumar(porTipoPago, pago?.payment_type || 'sin dato', unid, montoProp);
+    });
+
+    // ── Visitas y publicidad por día ──────────────────────────────────────────
+    const visitas = serie();
+    (visR.body?.results || []).forEach(v => {
+      const i = v?.date ? idx[v.date.slice(0, 10)] : undefined;
+      if (i !== undefined) visitas[i] = v.total || v.visits || 0;
+    });
+    const ads = serie(), adsClicks = serie(), adsPrints = serie(), adsUniDir = serie(), adsUniInd = serie();
+    let adsMontoDir = 0, adsMontoTot = 0;
+    Object.entries(publi.porDia).forEach(([f, d]) => {
+      const i = idx[f]; if (i === undefined) return;
+      ads[i] = parseFloat(d.cost) || 0;
+      adsClicks[i] = d.clicks || 0; adsPrints[i] = d.prints || 0;
+      adsUniDir[i] = d.direct_units_quantity || 0; adsUniInd[i] = d.indirect_units_quantity || 0;
+      adsMontoDir += parseFloat(d.direct_amount) || 0; adsMontoTot += parseFloat(d.total_amount) || 0;
+    });
+
+    // ── Contribución marginal por día ─────────────────────────────────────────
+    const cm = tieneCosto ? fechas.map((_, i) => s.fac[i] - s.comision[i] - s.cmv[i] - s.envio[i] - ads[i]
+      - s.iva[i] - s.iibb[i] - s.impuestos[i] - s.reembolsos[i]) : null;
+
+    // ── Reclamos (de la base, los baja el cron de las 05:00) ──────────────────
+    const orderIds = ordenes.map(o => String(o.id));
+    const rec = await pool.query(
+      `SELECT claim_id, to_char(fecha,'YYYY-MM-DD') AS fecha, estado, etapa, motivo, tipo, afecta_reputacion
+         FROM reclamos
+        WHERE client_id=$1 AND fecha BETWEEN $2 AND $3
+          AND (item_id=$4 OR order_id = ANY($5::bigint[]))
+        ORDER BY fecha DESC`,
+      [clientId, desde, hasta, itemId, orderIds]).catch(() => ({ rows: [] }));
+    const recMotivos = {};
+    rec.rows.forEach(r => { const k = motivoReclamo(r.motivo) || 'Sin motivo'; recMotivos[k] = (recMotivos[k] || 0) + 1; });
+
+    // ── Totales ───────────────────────────────────────────────────────────────
+    const tot = a => a.reduce((t, v) => t + v, 0);
+    const r0 = n => Math.round(n);
+    const pct = (a, b) => b > 0 ? +(a / b * 100).toFixed(1) : null;
+    const T = {
+      visitas: tot(visitas), unidades: tot(s.unidades), ordenes: ordenesConcretadas, facturacion: r0(tot(s.fac)),
+      publicidad: r0(tot(ads)),
+    };
+    T.conversion = pct(T.unidades, T.visitas);
+    // TACOS y % de ventas por publicidad se miden sólo sobre los días que PADS todavía
+    // guarda: si el período arranca antes, dividir por todo el período los achica.
+    const iAds = publi.datosDesde ? (idx[publi.datosDesde] ?? 0) : 0;
+    const uniVentanaAds = tot(s.unidades.slice(iAds));
+    const facVentanaAds = tot(s.fac.slice(iAds));
+    T.tacos = pct(T.publicidad, facVentanaAds);
+    T.ticket_promedio = T.ordenes > 0 ? r0(T.facturacion / T.ordenes) : null;
+    const cmTotal = cm ? r0(tot(cm)) : null;
+    const ordenesTotales = ordenesConcretadas + cancel.ordenes;
+    const uniDir = tot(adsUniDir), uniInd = tot(adsUniInd);
+
+    const listar = (m, base) => Object.entries(m)
+      .map(([k, v]) => ({ nombre: k, unidades: v.unidades, ordenes: v.ordenes, monto: r0(v.monto), pct: pct(v.unidades, base) }))
+      .sort((a, b) => b.unidades - a.unidades);
+    const cuotasLista = Object.entries(porCuotas)
+      .map(([k, v]) => ({ cuotas: k, ordenes: v.ordenes, unidades: v.unidades, monto: r0(v.monto), pct: pct(v.ordenes, ordenesConcretadas) }))
+      .sort((a, b) => (parseInt(a.cuotas) || 99) - (parseInt(b.cuotas) || 99));
+    const unPago = porCuotas['1']?.ordenes || 0;
+    const conDatoPago = ordenesConcretadas - (porCuotas['sin dato']?.ordenes || 0);
+
+    const data = {
+      item_id: itemId, desde, hasta, calculado: new Date().toISOString(),
+      item: item ? {
+        titulo: item.title, thumbnail: item.thumbnail, precio: item.price, precio_original: item.original_price,
+        stock: item.available_quantity, estado: item.status, tipo: item.listing_type_id,
+        permalink: item.permalink, logistica: item.shipping?.logistic_type || null,
+        envio_gratis: !!item.shipping?.free_shipping, catalogo: !!item.catalog_listing,
+      } : null,
+      totales: { ...T, cm: cmTotal, cm_pct: cmTotal != null ? pct(cmTotal, T.facturacion) : null },
+      serie: {
+        fechas, visitas, unidades: s.unidades, ordenes: s.ordenes, facturacion: s.fac.map(r0),
+        publicidad: ads.map(v => +v.toFixed(2)), cm: cm ? cm.map(r0) : null,
+        canceladas: s.canceladas,
+      },
+      // Cascada de la CM del período: permite ver en qué se va cada peso.
+      cascada: {
+        facturacion: T.facturacion, comision: r0(tot(s.comision)), cmv: tieneCosto ? r0(tot(s.cmv)) : null,
+        envio: r0(tot(s.envio)), publicidad: T.publicidad, iva: r0(tot(s.iva)), iibb: r0(tot(s.iibb)),
+        impuestos: r0(tot(s.impuestos)), reembolsos: r0(tot(s.reembolsos)), cm: cmTotal,
+      },
+      costo: { tiene_costo: tieneCosto, costo_unit: tieneCosto ? costoUnit : null, alicuota_iva: alic,
+               tasa_iibb_pct: tasaIibb, monotributista: esMonotrib },
+      envio: listar(porModo, T.unidades),
+      pago: {
+        un_pago: { ordenes: unPago, pct: pct(unPago, conDatoPago) },
+        en_cuotas: { ordenes: conDatoPago - unPago, pct: pct(conDatoPago - unPago, conDatoPago) },
+        por_cuotas: cuotasLista,
+        por_tipo: listar(porTipoPago, T.unidades),
+      },
+      publicidad: {
+        tiene_anuncio: publi.tieneAnuncio, error: publi.fallo, datos_desde: publi.datosDesde,
+        inversion: T.publicidad, clicks: tot(adsClicks), impresiones: tot(adsPrints),
+        ctr: pct(tot(adsClicks), tot(adsPrints)),
+        unidades_directas: uniDir, unidades_indirectas: uniInd,
+        // Unidades de ESTA publicación vendidas después de un click en su anuncio. Las
+        // indirectas son otros productos que el comprador se llevó: no cuentan acá.
+        pct_unidades_publi: uniVentanaAds > 0 ? Math.min(100, +(uniDir / uniVentanaAds * 100).toFixed(1)) : null,
+        ingresos_directos: r0(adsMontoDir), ingresos_totales: r0(adsMontoTot),
+        acos: pct(T.publicidad, adsMontoTot),
+      },
+      zonas: {
+        provincias: listar(porProv, T.unidades).slice(0, 12),
+        ciudades: listar(porCiudad, T.unidades).slice(0, 12),
+      },
+      cancelaciones: {
+        ordenes: cancel.ordenes, unidades: cancel.unidades, monto: r0(cancel.monto),
+        pct: pct(cancel.ordenes, ordenesTotales),
+        por_quien: Object.entries(cancel.por_quien).map(([k, v]) => ({ nombre: k, ordenes: v })).sort((a, b) => b.ordenes - a.ordenes),
+        motivos: Object.entries(cancel.motivos).map(([k, v]) => ({ nombre: k, ordenes: v })).sort((a, b) => b.ordenes - a.ordenes).slice(0, 6),
+        devoluciones_parciales: devParciales,
+      },
+      reclamos: {
+        total: rec.rows.length, pct: pct(rec.rows.length, ordenesTotales),
+        abiertos: rec.rows.filter(r => r.estado === 'opened').length,
+        afectan_reputacion: rec.rows.filter(r => r.afecta_reputacion).length,
+        motivos: Object.entries(recMotivos).map(([k, v]) => ({ nombre: k, casos: v })).sort((a, b) => b.casos - a.casos),
+        sincronizado: recSync.rows[0]?.synced_at || null, incompleto: !!recSync.rows[0]?.incompleto,
+      },
+      meta: {
+        ordenes_totales: ordenesTotales, carritos_con_hermanas: hermanas.length,
+        visitas_recortadas: diasAtras >= MAX_DIAS_VISITAS,
+      },
+    };
+    return data;
+  }
+
+  // Lo que se compara contra el período anterior. La publicidad sólo es comparable si PADS
+  // tiene los dos períodos completos (guarda ~90 días): con uno recortado la variación mentiría.
+  const resumenComparable = (d, actual) => ({
+    desde: d.desde, hasta: d.hasta,
+    totales: d.totales,
+    publicidad: {
+      pct_unidades_publi: d.publicidad.pct_unidades_publi,
+      comparable: d.publicidad.tiene_anuncio && !d.publicidad.datos_desde && !actual.publicidad.datos_desde,
+    },
+    cancelaciones: { pct: d.cancelaciones.pct, monto: d.cancelaciones.monto, ordenes: d.cancelaciones.ordenes },
+    reclamos: { pct: d.reclamos.pct, total: d.reclamos.total },
+  });
+
   app.get('/api/publicacion/detalle', requireAuth, async (req, res) => {
     try {
       const clientId = parseInt(req.query.client_id);
@@ -178,233 +425,17 @@ module.exports = (app, deps) => {
       const tasaIibb = parseFloat(cRes.rows[0].tasa_iibb_pct) || 0;
       const esMonotrib = cRes.rows[0].condicion_iva === 'monotributista';
 
-      // Eje de días calendario argentinos, extremos incluidos.
-      const fechas = [];
-      for (let f = desde; f <= hasta && fechas.length < 400; f = ymdShift(f, 1)) fechas.push(f);
-      const idx = {}; fechas.forEach((f, i) => { idx[f] = i; });
-      const N = fechas.length;
-      const serie = () => new Array(N).fill(0);
-
-      // Visitas: ML ignora date_from en este endpoint, así que se piden los últimos N días
-      // hasta hoy y se recorta (mismo criterio que /api/item/conversion-diaria).
-      const hoy = ymd();
-      let diasAtras = 1;
-      for (let f = desde; f < hoy && diasAtras < MAX_DIAS_VISITAS; f = ymdShift(f, 1)) diasAtras++;
-
-      const [itemR, ordenes, visR, publi, costoR, recSync] = await Promise.all([
-        getJson(`${ML_API}/items/${itemId}?attributes=id,title,thumbnail,price,original_price,available_quantity,sold_quantity,status,listing_type_id,permalink,shipping,catalog_listing,seller_id`, headers),
-        ordenesDeItem(uid, itemId, headers, desde, hasta),
-        getJson(`${ML_API}/items/${itemId}/visits/time_window?last=${diasAtras}&unit=day`, headers),
-        publiDiaria(itemId, headers, desde, hasta),
-        pool.query('SELECT costo_unit, alicuota_iva FROM product_costs WHERE client_id=$1 AND mla_id=$2', [clientId, itemId]),
-        pool.query("SELECT to_char(synced_at AT TIME ZONE 'America/Argentina/Buenos_Aires','YYYY-MM-DD HH24:MI') AS synced_at, incompleto FROM reclamos_sync WHERE client_id=$1", [clientId])
-          .catch(() => ({ rows: [] })),
+      const ctx = { clientId, itemId, headers, uid, tasaIibb, esMonotrib };
+      // Período anterior: mismo largo, inmediatamente antes.
+      let dias = 0;
+      for (let f = desde; f <= hasta && dias < 400; f = ymdShift(f, 1)) dias++;
+      const [data, anterior] = await Promise.all([
+        calcularFicha(ctx, desde, hasta),
+        calcularFicha(ctx, ymdShift(desde, -dias), ymdShift(desde, -1)).catch(e => {
+          console.error('[PUBLICACION DETALLE] período anterior:', e.message); return null;
+        }),
       ]);
-
-      const item = itemR.body && !itemR.body.error ? itemR.body : null;
-      if (item && item.seller_id && String(item.seller_id) !== String(uid))
-        return res.status(403).json({ error: 'La publicación no es de esta cuenta' });
-
-      const costoUnit = costoR.rows[0] ? parseFloat(costoR.rows[0].costo_unit) : null;
-      const tieneCosto = costoUnit != null && costoUnit > 0;
-      const alic = parseFloat(costoR.rows[0]?.alicuota_iva) || 21;
-
-      // ── Órdenes: concretadas vs canceladas ────────────────────────────────────
-      const enPyl = ordenes.filter(o => PYL_ESTADOS.includes(o.status));
-      const shipMap = await fetchShippingCosts(enPyl, headers);
-      const hermanas = await ordenesHermanas(enPyl, shipMap, headers);
-      const envioPorItem = repartirEnvioPorItem(enPyl.concat(hermanas), shipMap);
-
-      const s = {
-        unidades: serie(), ordenes: serie(), fac: serie(), comision: serie(), impuestos: serie(),
-        reembolsos: serie(), envio: serie(), cmv: serie(), iva: serie(), iibb: serie(),
-        canceladas: serie(), monto_cancelado: serie(),
-      };
-      const porModo = {}, porProv = {}, porCiudad = {}, porCuotas = {}, porTipoPago = {};
-      const cancel = { ordenes: 0, unidades: 0, monto: 0, por_quien: {}, motivos: {} };
-      let devParciales = 0, ordenesConcretadas = 0;
-      const sumar = (m, k, u, monto) => {
-        const x = m[k] || (m[k] = { unidades: 0, ordenes: 0, monto: 0 });
-        x.unidades += u; x.ordenes += 1; x.monto += monto;
-      };
-
-      enPyl.forEach(o => {
-        const i = idx[ymd(o.date_created)];
-        if (i === undefined) return;
-        const cancelada = o.status === 'cancelled';
-        const lineas = (o.order_items || []).filter(oi => oi.item?.id);
-        const propias = lineas.filter(oi => oi.item.id === itemId);
-        if (!propias.length) return;
-        const baseOrden = lineas.reduce((t, oi) => t + (parseFloat(oi.unit_price) || 0) * (oi.quantity || 0), 0);
-        const montoProp = propias.reduce((t, oi) => t + (parseFloat(oi.unit_price) || 0) * (oi.quantity || 0), 0);
-        const unid = propias.reduce((t, oi) => t + (oi.quantity || 0), 0);
-        const frac = baseOrden > 0 ? montoProp / baseOrden : propias.length / lineas.length;
-        const fee = propias.reduce((t, oi) => t + (parseFloat(oi.sale_fee) || 0), 0);
-        const imp = (parseFloat(o.taxes?.amount) || 0) * frac;
-        const env = (envioPorItem[`${o.id}|${itemId}`]?.seller) || 0;
-
-        // Cargos que ML cobra aunque la venta se caiga
-        s.comision[i] += fee; s.impuestos[i] += imp; s.envio[i] += env;
-        s.iva[i] -= esMonotrib ? 0 : ivaContenido(fee + env, IVA_SERVICIOS_PCT);
-
-        if (cancelada) {
-          s.canceladas[i] += 1; s.monto_cancelado[i] += montoProp;
-          cancel.ordenes += 1; cancel.unidades += unid; cancel.monto += montoProp;
-          const cd = o.cancel_detail || {};
-          const quien = GRUPO_CANCELACION[cd.group] || (cd.group ? cd.group : 'Sin dato');
-          cancel.por_quien[quien] = (cancel.por_quien[quien] || 0) + 1;
-          const motivo = motivoCancelacion(cd.description || cd.code || 'Sin motivo declarado');
-          cancel.motivos[motivo] = (cancel.motivos[motivo] || 0) + 1;
-          return;
-        }
-
-        ordenesConcretadas += 1;
-        if (o.status === 'partially_refunded') devParciales += 1;
-        const refund = (o.payments || []).reduce((t, p) => t + (parseFloat(p.transaction_amount_refunded) || 0), 0) * frac;
-        s.unidades[i] += unid; s.ordenes[i] += 1; s.fac[i] += montoProp; s.reembolsos[i] += refund;
-        s.iibb[i] += montoProp * tasaIibb / 100;
-        if (!esMonotrib) s.iva[i] += ivaContenido(montoProp, alic);
-        if (tieneCosto) {
-          s.cmv[i] += costoUnit * unid;
-          if (!esMonotrib) s.iva[i] -= ivaContenido(costoUnit * unid, alic);
-        }
-
-        const sd = o.shipping?.id ? shipMap[o.shipping.id] : null;
-        sumar(porModo, sd?.mode || (o.shipping?.id ? 'Sin dato' : 'Sin envío'), unid, montoProp);
-        sumar(porProv, sd?.province || 'Sin dato', unid, montoProp);
-        sumar(porCiudad, sd ? `${sd.city || 'Sin dato'}${sd.province && sd.province !== 'Sin dato' ? ' · ' + sd.province : ''}` : 'Sin dato', unid, montoProp);
-
-        const pagos = o.payments || [];
-        const pago = pagos.find(p => p.status === 'approved') || pagos[0] || null;
-        const cuotas = pago ? Math.max(1, parseInt(pago.installments) || 1) : null;
-        sumar(porCuotas, cuotas == null ? 'sin dato' : String(cuotas), unid, montoProp);
-        sumar(porTipoPago, pago?.payment_type || 'sin dato', unid, montoProp);
-      });
-
-      // ── Visitas y publicidad por día ──────────────────────────────────────────
-      const visitas = serie();
-      (visR.body?.results || []).forEach(v => {
-        const i = v?.date ? idx[v.date.slice(0, 10)] : undefined;
-        if (i !== undefined) visitas[i] = v.total || v.visits || 0;
-      });
-      const ads = serie(), adsClicks = serie(), adsPrints = serie(), adsUniDir = serie(), adsUniInd = serie();
-      let adsMontoDir = 0, adsMontoTot = 0;
-      Object.entries(publi.porDia).forEach(([f, d]) => {
-        const i = idx[f]; if (i === undefined) return;
-        ads[i] = parseFloat(d.cost) || 0;
-        adsClicks[i] = d.clicks || 0; adsPrints[i] = d.prints || 0;
-        adsUniDir[i] = d.direct_units_quantity || 0; adsUniInd[i] = d.indirect_units_quantity || 0;
-        adsMontoDir += parseFloat(d.direct_amount) || 0; adsMontoTot += parseFloat(d.total_amount) || 0;
-      });
-
-      // ── Contribución marginal por día ─────────────────────────────────────────
-      const cm = tieneCosto ? fechas.map((_, i) => s.fac[i] - s.comision[i] - s.cmv[i] - s.envio[i] - ads[i]
-        - s.iva[i] - s.iibb[i] - s.impuestos[i] - s.reembolsos[i]) : null;
-
-      // ── Reclamos (de la base, los baja el cron de las 05:00) ──────────────────
-      const orderIds = ordenes.map(o => String(o.id));
-      const rec = await pool.query(
-        `SELECT claim_id, to_char(fecha,'YYYY-MM-DD') AS fecha, estado, etapa, motivo, tipo, afecta_reputacion
-           FROM reclamos
-          WHERE client_id=$1 AND fecha BETWEEN $2 AND $3
-            AND (item_id=$4 OR order_id = ANY($5::bigint[]))
-          ORDER BY fecha DESC`,
-        [clientId, desde, hasta, itemId, orderIds]).catch(() => ({ rows: [] }));
-      const recMotivos = {};
-      rec.rows.forEach(r => { const k = motivoReclamo(r.motivo) || 'Sin motivo'; recMotivos[k] = (recMotivos[k] || 0) + 1; });
-
-      // ── Totales ───────────────────────────────────────────────────────────────
-      const tot = a => a.reduce((t, v) => t + v, 0);
-      const r0 = n => Math.round(n);
-      const pct = (a, b) => b > 0 ? +(a / b * 100).toFixed(1) : null;
-      const T = {
-        visitas: tot(visitas), unidades: tot(s.unidades), ordenes: ordenesConcretadas, facturacion: r0(tot(s.fac)),
-        publicidad: r0(tot(ads)),
-      };
-      T.conversion = pct(T.unidades, T.visitas);
-      // TACOS y % de ventas por publicidad se miden sólo sobre los días que PADS todavía
-      // guarda: si el período arranca antes, dividir por todo el período los achica.
-      const iAds = publi.datosDesde ? (idx[publi.datosDesde] ?? 0) : 0;
-      const uniVentanaAds = tot(s.unidades.slice(iAds));
-      const facVentanaAds = tot(s.fac.slice(iAds));
-      T.tacos = pct(T.publicidad, facVentanaAds);
-      T.ticket_promedio = T.ordenes > 0 ? r0(T.facturacion / T.ordenes) : null;
-      const cmTotal = cm ? r0(tot(cm)) : null;
-      const ordenesTotales = ordenesConcretadas + cancel.ordenes;
-      const uniDir = tot(adsUniDir), uniInd = tot(adsUniInd);
-
-      const listar = (m, base) => Object.entries(m)
-        .map(([k, v]) => ({ nombre: k, unidades: v.unidades, ordenes: v.ordenes, monto: r0(v.monto), pct: pct(v.unidades, base) }))
-        .sort((a, b) => b.unidades - a.unidades);
-      const cuotasLista = Object.entries(porCuotas)
-        .map(([k, v]) => ({ cuotas: k, ordenes: v.ordenes, unidades: v.unidades, monto: r0(v.monto), pct: pct(v.ordenes, ordenesConcretadas) }))
-        .sort((a, b) => (parseInt(a.cuotas) || 99) - (parseInt(b.cuotas) || 99));
-      const unPago = porCuotas['1']?.ordenes || 0;
-      const conDatoPago = ordenesConcretadas - (porCuotas['sin dato']?.ordenes || 0);
-
-      const data = {
-        item_id: itemId, desde, hasta, calculado: new Date().toISOString(),
-        item: item ? {
-          titulo: item.title, thumbnail: item.thumbnail, precio: item.price, precio_original: item.original_price,
-          stock: item.available_quantity, estado: item.status, tipo: item.listing_type_id,
-          permalink: item.permalink, logistica: item.shipping?.logistic_type || null,
-          envio_gratis: !!item.shipping?.free_shipping, catalogo: !!item.catalog_listing,
-        } : null,
-        totales: { ...T, cm: cmTotal, cm_pct: cmTotal != null ? pct(cmTotal, T.facturacion) : null },
-        serie: {
-          fechas, visitas, unidades: s.unidades, ordenes: s.ordenes, facturacion: s.fac.map(r0),
-          publicidad: ads.map(v => +v.toFixed(2)), cm: cm ? cm.map(r0) : null,
-          canceladas: s.canceladas,
-        },
-        // Cascada de la CM del período: permite ver en qué se va cada peso.
-        cascada: {
-          facturacion: T.facturacion, comision: r0(tot(s.comision)), cmv: tieneCosto ? r0(tot(s.cmv)) : null,
-          envio: r0(tot(s.envio)), publicidad: T.publicidad, iva: r0(tot(s.iva)), iibb: r0(tot(s.iibb)),
-          impuestos: r0(tot(s.impuestos)), reembolsos: r0(tot(s.reembolsos)), cm: cmTotal,
-        },
-        costo: { tiene_costo: tieneCosto, costo_unit: tieneCosto ? costoUnit : null, alicuota_iva: alic,
-                 tasa_iibb_pct: tasaIibb, monotributista: esMonotrib },
-        envio: listar(porModo, T.unidades),
-        pago: {
-          un_pago: { ordenes: unPago, pct: pct(unPago, conDatoPago) },
-          en_cuotas: { ordenes: conDatoPago - unPago, pct: pct(conDatoPago - unPago, conDatoPago) },
-          por_cuotas: cuotasLista,
-          por_tipo: listar(porTipoPago, T.unidades),
-        },
-        publicidad: {
-          tiene_anuncio: publi.tieneAnuncio, error: publi.fallo, datos_desde: publi.datosDesde,
-          inversion: T.publicidad, clicks: tot(adsClicks), impresiones: tot(adsPrints),
-          ctr: pct(tot(adsClicks), tot(adsPrints)),
-          unidades_directas: uniDir, unidades_indirectas: uniInd,
-          // Unidades de ESTA publicación vendidas después de un click en su anuncio. Las
-          // indirectas son otros productos que el comprador se llevó: no cuentan acá.
-          pct_unidades_publi: uniVentanaAds > 0 ? Math.min(100, +(uniDir / uniVentanaAds * 100).toFixed(1)) : null,
-          ingresos_directos: r0(adsMontoDir), ingresos_totales: r0(adsMontoTot),
-          acos: pct(T.publicidad, adsMontoTot),
-        },
-        zonas: {
-          provincias: listar(porProv, T.unidades).slice(0, 12),
-          ciudades: listar(porCiudad, T.unidades).slice(0, 12),
-        },
-        cancelaciones: {
-          ordenes: cancel.ordenes, unidades: cancel.unidades, monto: r0(cancel.monto),
-          pct: pct(cancel.ordenes, ordenesTotales),
-          por_quien: Object.entries(cancel.por_quien).map(([k, v]) => ({ nombre: k, ordenes: v })).sort((a, b) => b.ordenes - a.ordenes),
-          motivos: Object.entries(cancel.motivos).map(([k, v]) => ({ nombre: k, ordenes: v })).sort((a, b) => b.ordenes - a.ordenes).slice(0, 6),
-          devoluciones_parciales: devParciales,
-        },
-        reclamos: {
-          total: rec.rows.length, pct: pct(rec.rows.length, ordenesTotales),
-          abiertos: rec.rows.filter(r => r.estado === 'opened').length,
-          afectan_reputacion: rec.rows.filter(r => r.afecta_reputacion).length,
-          motivos: Object.entries(recMotivos).map(([k, v]) => ({ nombre: k, casos: v })).sort((a, b) => b.casos - a.casos),
-          sincronizado: recSync.rows[0]?.synced_at || null, incompleto: !!recSync.rows[0]?.incompleto,
-        },
-        meta: {
-          ordenes_totales: ordenesTotales, carritos_con_hermanas: hermanas.length,
-          visitas_recortadas: diasAtras >= MAX_DIAS_VISITAS,
-        },
-      };
+      data.anterior = anterior ? resumenComparable(anterior, data) : null;
       cache.set(claveCache, { t: Date.now(), data });
       // Que el mapa no crezca sin techo en un proceso que vive semanas.
       if (cache.size > 300) cache.delete(cache.keys().next().value);
