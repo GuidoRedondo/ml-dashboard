@@ -1734,14 +1734,26 @@ async function fetchOrdersForPyL(uid, headers, fromStr, toStr) {
   } catch(e) { return { orders: [], amount: 0 }; }
 }
 
+// GET a ML que reintenta cuando responde 429. Pedir visitas de a 20 publicaciones en
+// paralelo dispara el límite de ML (medido en AB Fitness: 1 de 92 volvía "Too many
+// requests") y esa publicación quedaba con 0 visitas: la conversión salía "—" en la tabla
+// de Performance → Publicaciones aunque tuviera ventas.
+async function getJsonML(url, headers, intentos = 4) {
+  for (let n = 0; ; n++) {
+    const r = await fetch(url, { headers });
+    if (r.status !== 429 || n >= intentos - 1) return r.json();
+    await new Promise(ok => setTimeout(ok, 600 * 2 ** n + Math.random() * 300));
+  }
+}
+
 async function fetchVisits(itemIds, days, headers) {
   try {
     const results = await Promise.all(itemIds.map(id =>
-      fetch(`${ML_API}/items/${id}/visits/time_window?last=${days}&unit=day`, { headers }).then(r => r.json()).catch(() => null)
+      getJsonML(`${ML_API}/items/${id}/visits/time_window?last=${days}&unit=day`, headers).catch(() => null)
     ));
     const map = {};
     results.forEach((v, i) => {
-      if (!v) return;
+      if (!v || v.error) return;   // error de ML: sin dato, no "0 visitas"
       const id = itemIds[i];
       if (typeof v.total_visits === 'number') map[id] = v.total_visits;
       else if (Array.isArray(v)) map[id] = v.reduce((s, r) => s + (r.visits || r.total || 0), 0);
@@ -1755,12 +1767,12 @@ async function fetchVisits(itemIds, days, headers) {
 async function fetchVisitsRange(itemIds, dateFrom, dateTo, headers) {
   try {
     const results = await Promise.all(itemIds.map(id =>
-      fetch(`${ML_API}/items/${id}/visits/time_window?date_from=${dateFrom}&date_to=${dateTo}&unit=day`, { headers })
-        .then(r => r.json()).catch(() => null)
+      getJsonML(`${ML_API}/items/${id}/visits/time_window?date_from=${dateFrom}&date_to=${dateTo}&unit=day`, headers)
+        .catch(() => null)
     ));
     const map = {};
     results.forEach((v, i) => {
-      if (!v) return;
+      if (!v || v.error) return;   // error de ML: sin dato, no "0 visitas"
       const id = itemIds[i];
       if (typeof v.total_visits === 'number') map[id] = v.total_visits;
       else if (Array.isArray(v)) map[id] = v.reduce((s, r) => s + (r.visits || r.total || 0), 0);

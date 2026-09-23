@@ -7215,6 +7215,9 @@ function renderDetallePub() {
   const fecha = f => dART(f).toLocaleDateString('es-AR', { timeZone: ART_TZ, day: '2-digit', month: 'short' }).replace('.', '');
   const T = d.totales, it = d.item || {};
 
+  const PROMO_TIPO = { campaign: 'Campaña', seller_campaign: 'Campaña propia', marketplace_campaign: 'Campaña de ML',
+    deal: 'Oferta', dod: 'Oferta del día', lightning: 'Oferta relámpago', price_discount: 'Descuento',
+    pre_negotiated: 'Descuento negociado', volume: 'Descuento por cantidad' };
   const LOGISTICA = { fulfillment: 'FULL', self_service: 'Flex', cross_docking: 'Colecta', xd_drop_off: 'Punto de despacho', drop_off: 'Correo' };
   const TIPO_PAGO = { credit_card: 'Tarjeta de crédito', debit_card: 'Tarjeta de débito', account_money: 'Dinero en cuenta',
     ticket: 'Efectivo (Rapipago / Pago Fácil)', bank_transfer: 'Transferencia', digital_currency: 'Mercado Crédito',
@@ -7223,7 +7226,11 @@ function renderDetallePub() {
 
   // ── Encabezado ──
   const chips = [
-    it.precio != null ? `<b style="color:var(--text)">${$(it.precio)}</b>${it.precio_original > it.precio ? ` <s>${$(it.precio_original)}</s>` : ''}` : '',
+    // Precio que ve hoy el comprador (sale_price, con la promo aplicada) y el de lista tachado.
+    it.precio != null ? `<b style="color:var(--text)">${$(it.precio)}</b>${it.precio_original > it.precio
+      ? ` <s>${$(it.precio_original)}</s> <b style="color:#00c853">−${Math.round((1 - it.precio / it.precio_original) * 100)}%</b>`
+        + `<span style="margin-left:4px">${PROMO_TIPO[it.promo_tipo] || (it.promo_tipo ? 'Promoción' : '')}</span>`
+      : ''}` : '',
     it.stock != null ? `Stock ${N(it.stock)}` : '',
     it.estado ? (it.estado === 'active' ? '🟢 Activa' : it.estado === 'paused' ? '⏸ Pausada' : esc(it.estado)) : '',
     it.logistica ? (LOGISTICA[it.logistica] || esc(it.logistica)) : '',
