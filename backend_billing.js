@@ -33,10 +33,11 @@
 //
 //  LO QUE NO HACE
 //  --------------
-//  No toca la comisión ni la publicidad del P&L. Se verificó orden por orden que
-//  el monto facturado (CVFV+CVFF) es idéntico al `sale_fee` que el P&L ya usa
-//  —ratio 1,0000 en 11 de 12 órdenes— así que ahí no hay nada que corregir. La
-//  brecha que queda contra el mes calendario es desfasaje de fechas de facturación.
+//  No toca la comisión ni la publicidad del P&L. Lo facturado (CVFV+CVFF+CVFN) es
+//  idéntico a sale_fee × quantity (comisionLinea): ratio 1,0002 en 1.628 órdenes de
+//  AB Fitness, sep-2026. OJO: sale_fee viene por unidad — la verificación vieja
+//  (11 de 12 órdenes) era sobre órdenes de una unidad y no lo mostraba. La brecha que
+//  queda contra el mes calendario es desfasaje de fechas de facturación.
 
 'use strict';
 

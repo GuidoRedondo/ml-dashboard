@@ -77,7 +77,7 @@ const cache = new Map();
 module.exports = (app, deps) => {
   const {
     pool, requireAuth, getClientToken, ML_API, ymd, ymdShift, mlFrom, mlTo,
-    fetchShippingCosts, repartirEnvioPorItem, ivaContenido, IVA_SERVICIOS_PCT, PYL_ESTADOS,
+    fetchShippingCosts, repartirEnvioPorItem, ivaContenido, IVA_SERVICIOS_PCT, PYL_ESTADOS, comisionLinea,
   } = deps;
 
   const tieneAcceso = (req, clientId) =>
@@ -228,13 +228,20 @@ module.exports = (app, deps) => {
       const montoProp = propias.reduce((t, oi) => t + (parseFloat(oi.unit_price) || 0) * (oi.quantity || 0), 0);
       const unid = propias.reduce((t, oi) => t + (oi.quantity || 0), 0);
       const frac = baseOrden > 0 ? montoProp / baseOrden : propias.length / lineas.length;
-      const fee = propias.reduce((t, oi) => t + (parseFloat(oi.sale_fee) || 0), 0);
+      const fee = propias.reduce((t, oi) => t + comisionLinea(oi), 0);
       const imp = (parseFloat(o.taxes?.amount) || 0) * frac;
-      const env = (envioPorItem[`${o.id}|${itemId}`]?.seller) || 0;
+      const envIt = envioPorItem[`${o.id}|${itemId}`] || {};
+      const sdEnv = o.shipping?.id ? shipMap[o.shipping.id] : null;
+      // En Flex el envío que paga el comprador le llega al vendedor (verificado contra
+      // net_received_amount en Mercado Pago); en Correo/ME2 se lo queda ML.
+      const env = (envIt.seller || 0) - (sdEnv?.mode === 'FLEX' ? (envIt.buyer || 0) : 0);
 
-      // Cargos que ML cobra aunque la venta se caiga
-      s.comision[i] += fee; s.impuestos[i] += imp; s.envio[i] += env;
-      s.iva[i] -= esMonotrib ? 0 : ivaContenido(fee + env, IVA_SERVICIOS_PCT);
+      // Una cancelada no carga comisión, impuestos ni envío: ML los anula en la factura
+      // (CVFV/CVFF/CXD con status BONUS_ON_BILL — verificado en AB Fitness, sep-2026).
+      if (!cancelada) {
+        s.comision[i] += fee; s.impuestos[i] += imp; s.envio[i] += env;
+        s.iva[i] -= esMonotrib ? 0 : ivaContenido(fee + Math.max(0, envIt.seller || 0), IVA_SERVICIOS_PCT);
+      }
 
       if (cancelada) {
         s.canceladas[i] += 1; s.monto_cancelado[i] += montoProp;

@@ -139,6 +139,27 @@ These are hard limits — do not attempt workarounds or assume they'll change:
   15.83% base commission, so 21 of 50 listings really do cost ~29% in commission. That is a
   genuine cost and belongs in the margin; `meli_percentage_fee` is the commission alone.
 
+### Money per order — how ML really charges (verified 23/9/2026 against AB Fitness' invoice)
+
+Every P&L-style number in the app (P&L, "Lo que pasó", Dashboard, ficha) follows these rules.
+Each one was a real bug that moved a client's margin by several points:
+
+- **`order_items[].sale_fee` is PER UNIT.** Always use `comisionLinea(oi)` (= sale_fee × quantity).
+  In 354 multi-unit orders the invoiced CVFV+CVFF+CVFN equals sale_fee × quantity to the peso;
+  summing raw sale_fee left out 6.3% of revenue in commission for a pack seller.
+- **A cancelled order costs nothing.** ML annuls its commission and shipping on the invoice
+  (`status: BONUS_ON_BILL`). Cancelled orders stay in the universe only to count them.
+- **What the buyer pays for shipping (`/shipments/{id}/costs` → `receiver.cost`) is income only
+  in Flex** (`ingresoEnvioFlex`). In Correo/ME2 that money goes to ML; counting it as income
+  (which the P&L did) invented ~80% of the "envío comprador" line.
+- **Seller coupons are a cost the order doesn't show.** `/collections/{payment_id}` →
+  `coupon_fee` (= coupon when the seller paid it, 0 when ML did). `fetchCuponesVendedor` only
+  asks for payments with `coupon_amount > 0`. Neither the order nor the invoice has it.
+- **Monthly manual amounts are prorated by days** (`mesesDelRango`): Flex bolo, fixed costs.
+- **Items without cost get an estimated CMV** at the ratio CMV/revenue of the items that have
+  one (`cmvRatioCubierto`), flagged as estimated. Zero CMV inflated margins by ~8 points.
+- **IIBB**: invoiced if billing is synced, otherwise the client's rate (`iibb_fuente: 'estimado'`).
+
 ### Billing API — the real invoiced charges (verified 10/9/2026)
 
 This supersedes the old notes that said billing was unavailable and that taxes could not be

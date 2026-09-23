@@ -101,6 +101,15 @@ function ivaContenido(montoBruto, alicuotaPct = 21) {
   return (parseFloat(montoBruto) || 0) / (1 + a) * a;
 }
 
+// Comisión de una línea de orden. ML devuelve `sale_fee` POR UNIDAD, no por línea:
+// verificado el 23/9/2026 contra la factura de AB Fitness — en 354 órdenes de más de
+// una unidad lo facturado (CVFV+CVFF+CVFN) es exactamente sale_fee × quantity, al peso.
+// Sumar sale_fee a secas dejaba afuera $4,7M de comisión en 15 días (6,3% de la
+// facturación) en una cuenta que vende packs.
+function comisionLinea(oi) {
+  return (parseFloat(oi && oi.sale_fee) || 0) * ((oi && oi.quantity) ?? 1);
+}
+
 // ── CLIFF FINDER — escalas de cargo fijo ML ──────────────────────────────────
 // Las tarifas NO viven acá: salen de las tablas de backend_impacto_costos.js, que
 // están indexadas por banda de peso y son la única copia del tarifario en el repo.
@@ -1536,6 +1545,101 @@ async function fetchShippingCosts(orders, headers) {
     });
   }
   return costMap;
+}
+
+// ── CUPONES DEL VENDEDOR ──────────────────────────────────────────────────────
+// La orden trae `coupon_amount` pero no dice quién lo pagó. Eso sale del cobro en Mercado
+// Pago: `/collections/{payment_id}` → `coupon_fee`. Si es igual al cupón, lo puso el
+// vendedor y MP se lo descuenta del neto; si es 0, lo puso ML y el neto queda intacto.
+// Verificado en AB Fitness (8–22/9/2026): 91% de los pagos con cupón eran del vendedor.
+// Ni el P&L ni la factura de ML lo mostraban, así que la utilidad salía inflada en el
+// 100% de esos cupones. Se consulta sólo lo que tiene cupón (~8% de los pagos).
+async function fetchCuponesVendedor(orders, headers) {
+  const ids = new Set();
+  orders.forEach(o => {
+    if (o.status === 'cancelled') return;
+    (o.payments || []).forEach(p => {
+      if (p && p.id && p.status === 'approved' && (parseFloat(p.coupon_amount) || 0) > 0) ids.add(p.id);
+    });
+  });
+  const lista = [...ids];
+  const porPago = {};
+  for (let i = 0; i < lista.length; i += 10) {
+    const batch = lista.slice(i, i + 10);
+    const res = await Promise.all(batch.map(id =>
+      getJsonML(`${ML_API}/collections/${id}`, headers).catch(() => null)));
+    res.forEach((c, k) => {
+      if (!c || c.error || c.coupon_fee == null) return;
+      porPago[batch[k]] = parseFloat(c.coupon_fee) || 0;
+    });
+  }
+  return { porPago, consultados: lista.length, respondidos: Object.keys(porPago).length };
+}
+
+// Reparte el cupón del vendedor entre las líneas que pagó. En un carrito el mismo pago
+// aparece en varias órdenes: se cuenta una sola vez y se reparte por facturación.
+// Devuelve { porLinea: { `${orderId}|${itemId}`: monto }, total }.
+function repartirCuponPorItem(orders, porPago) {
+  const ordsPorPago = {};
+  orders.forEach(o => {
+    if (o.status === 'cancelled') return;
+    (o.payments || []).forEach(p => {
+      if (!p || !(porPago[p.id] > 0)) return;
+      if (!ordsPorPago[p.id]) ordsPorPago[p.id] = new Map();
+      ordsPorPago[p.id].set(o.id, o);
+    });
+  });
+  const porLinea = {};
+  let total = 0;
+  Object.entries(ordsPorPago).forEach(([pid, ords]) => {
+    const fee = porPago[pid];
+    total += fee;
+    const lineas = [];
+    ords.forEach(o => (o.order_items || []).forEach(oi => {
+      if (oi.item && oi.item.id) lineas.push({ k: `${o.id}|${oi.item.id}`, fact: (parseFloat(oi.unit_price) || 0) * (oi.quantity || 0) });
+    }));
+    const tot = lineas.reduce((s, l) => s + l.fact, 0);
+    lineas.forEach(l => { porLinea[l.k] = (porLinea[l.k] || 0) + fee * (tot > 0 ? l.fact / tot : 1 / lineas.length); });
+  });
+  return { porLinea, total };
+}
+
+// Envío que paga el comprador y que efectivamente cobra el vendedor. Sólo existe en Flex:
+// el vendedor hace la entrega y MP le acredita lo que pagó el comprador. En Correo/ME2 ese
+// pago va a ML — contarlo como ingreso (lo que hacía el P&L) inventaba plata: en AB
+// Fitness, de cada $100 de `receiver.cost` le llegaban ~$19 al neto (muestra de 300
+// envíos cruzada contra net_received_amount, sep-2026). Cada envío se cuenta una vez y
+// las canceladas no cobran nada.
+function ingresoEnvioFlex(orders, shipCostMap) {
+  const vistos = new Set();
+  let total = 0;
+  orders.forEach(o => {
+    const sid = o.shipping && o.shipping.id;
+    if (!sid || vistos.has(sid) || o.status === 'cancelled') return;
+    vistos.add(sid);
+    const d = shipCostMap[sid];
+    if (d && d.mode === 'FLEX') total += d.buyerCost || 0;
+  });
+  return total;
+}
+
+// Días de cada mes que toca el rango [date_from, date_to], para prorratear montos que se
+// cargan mensuales (Flex manual, gastos fijos, impuestos manuales). Un P&L del 1 al 22
+// cargaba el mes entero; uno de dos meses sólo cargaba el primero.
+function mesesDelRango(date_from, date_to) {
+  const dFrom = new Date(date_from + 'T00:00:00'), dTo = new Date(date_to + 'T00:00:00');
+  const out = [];
+  for (let cur = new Date(dFrom.getFullYear(), dFrom.getMonth(), 1); cur <= dTo;
+       cur = new Date(cur.getFullYear(), cur.getMonth() + 1, 1)) {
+    const y = cur.getFullYear(), mo = cur.getMonth();
+    const diasMes = new Date(y, mo + 1, 0).getDate();
+    const inicioMes = new Date(y, mo, 1), finMes = new Date(y, mo, diasMes);
+    const desde = dFrom > inicioMes ? dFrom : inicioMes;
+    const hasta = dTo < finMes ? dTo : finMes;
+    const diasRango = Math.round((hasta - desde) / (24 * 3600 * 1000)) + 1;
+    out.push({ mes: `${y}-${String(mo + 1).padStart(2, '0')}-01`, factor: diasRango / diasMes });
+  }
+  return out;
 }
 
 // ── ATRIBUCIÓN DEL ENVÍO POR PRODUCTO ────────────────────────────────────────
@@ -3728,7 +3832,7 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
 
 
       (order.order_items || []).forEach(oi => {
-        totalSaleFee += parseFloat(oi.sale_fee) || 0;
+        totalSaleFee += comisionLinea(oi);
       });
 
       if (order.taxes && order.taxes.amount) {
@@ -3841,7 +3945,7 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
         if (!byItemPerMode[mode][id]) byItemPerMode[mode][id] = { id, title: title || id, revenue: 0, units: 0, net: 0, orders: 0 };
 
         const itemRevenue    = (parseFloat(oi.unit_price) || 0) * (oi.quantity || 0);
-        const itemSaleFee    = parseFloat(oi.sale_fee) || 0;
+        const itemSaleFee    = comisionLinea(oi);
         const itemFrac       = itemRevenue / orderItemsRevenue;
         const itemTax        = orderTax * itemFrac;
         const envioIt        = envioPorItem[`${order.id}|${id}`] || { seller: 0, buyer: 0 };
@@ -3859,7 +3963,8 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
         byItem[id].units         += oi.quantity || 0;
         byItem[id].net           += itemNet;
         byItem[id].orders        += 1;
-        byItem[id].envio_cobrado += itemBuyerShip;
+        // Lo que pagó el comprador sólo le llega al vendedor en Flex
+        if (mode === 'FLEX') byItem[id].envio_cobrado += itemBuyerShip;
         byItem[id].envio_pagado  += itemShip;
         // Excluir FLEX del promedio de costo de envío (FLEX no tiene costo para el vendedor)
         const isFlex = (mode || '').toLowerCase().includes('flex') || (mode || '').toLowerCase() === 'me1';
@@ -3923,7 +4028,11 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
     // Facturación = sum of item revenues
     const totalFacturacion = Object.values(byItem).reduce((s, i) => s + i.revenue, 0);
 
-    const netBeforeAds = totalPaidAmount - totalSaleFee - totalTaxes - totalSellerShip;
+    // Base del neto: facturación de los productos + el envío que cobra el vendedor en Flex.
+    // paid_amount no sirve: trae adentro el envío que pagó el comprador, y en Correo/ME2
+    // esa plata va a ML — el % recibido salía inflado en toda cuenta con ventas baratas.
+    const ingresoFlexDash = ingresoEnvioFlex(curData.orders, shippingCostMap);
+    const netBeforeAds = totalFacturacion + ingresoFlexDash - totalSaleFee - totalTaxes - totalSellerShip;
     const totalAmountForPct = curData.amount > 0 ? curData.amount : 1;
 
     // Fetch ads spend to include in calculation
@@ -3988,7 +4097,8 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
     // movimiento real de plata las liquida el P&L de Rentabilidad como egreso_reembolsos, que
     // es el criterio Método Redondo. Acá `anulaciones` queda como dato informativo.
     const totalEgresos = totalSaleFee + totalTaxes + totalSellerShip + adsSpend;
-    const netoML = (totalFacturacion + totalBuyerShip) - totalEgresos;
+    // Sólo el envío Flex que cobra el vendedor: el de Correo/ME2 lo cobra ML (ver ingresoEnvioFlex)
+    const netoML = (totalFacturacion + ingresoFlexDash) - totalEgresos;
 
     // Revenue del período anterior por ítem (para tendencia)
     const prevRevenueByItem = {};
@@ -4025,12 +4135,13 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
 
     const rentabilidad = {
       facturacion:      totalFacturacion,
-      envios_cobrados:  totalBuyerShip,
-      total_ingresos:   totalFacturacion + totalBuyerShip,
+      // Envío que cobra el vendedor: sólo Flex (el de Correo/ME2 lo cobra ML)
+      envios_cobrados:  ingresoFlexDash,
+      total_ingresos:   totalFacturacion + ingresoFlexDash,
       comisiones:       totalSaleFee,
       impuestos:        totalTaxes,
       costo_envios:     totalSellerShip,
-      resultado_envios: totalBuyerShip - totalSellerShip,
+      resultado_envios: ingresoFlexDash - totalSellerShip,
       // Informativo: NO entra en total_egresos ni en la utilidad (ver totalEgresos arriba).
       anulaciones:      totalCancelled,
       // Se completan después de calcular CMV
@@ -4103,7 +4214,7 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
     const prevByItemUnits = {};
     prevData.orders.forEach(o => {
       (o.order_items||[]).forEach(oi => {
-        prevSaleFeeCalc += parseFloat(oi.sale_fee)||0;
+        prevSaleFeeCalc += comisionLinea(oi);
         const id = oi.item?.id; if (!id) return;
         prevFacCalc += (parseFloat(oi.unit_price)||0)*(oi.quantity||0);
         prevByItemUnits[id] = (prevByItemUnits[id]||0) + (oi.quantity||0);
@@ -4158,7 +4269,7 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
       const shipId  = order.shipping && order.shipping.id;
       const shipData = shipId ? shippingCostMap[shipId] : null;
       const facturacion = (order.order_items||[]).reduce((s,oi) => s+(parseFloat(oi.unit_price)||0)*(oi.quantity||0), 0);
-      const comision    = (order.order_items||[]).reduce((s,oi) => s+(parseFloat(oi.sale_fee)||0), 0);
+      const comision    = (order.order_items||[]).reduce((s,oi) => s+comisionLinea(oi), 0);
       const impuestos   = parseFloat((order.taxes||{}).amount) || 0;
 
       // Envío de la orden = la parte del envío que le toca a sus ítems según el reparto
@@ -4218,7 +4329,7 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
     const byDayFac     = new Array(totalDays).fill(0);
     const byDayVisitas = new Array(totalDays).fill(0);
     // Ganancia "de mostrador" del día: todo lo que se puede imputar a una orden concreta.
-    // Ingresos (producto + envío que pagó el comprador) menos comisión, impuestos de la
+    // Ingresos (producto + envío Flex que cobró el vendedor) menos comisión, impuestos de la
     // operación, envío que absorbió el vendedor y CMV de las unidades despachadas.
     const byDayBruto   = new Array(totalDays).fill(0);
 
@@ -4230,13 +4341,15 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
         const qty = oi.quantity || 0;
         const id  = oi.item && oi.item.id;
         fac      += (parseFloat(oi.unit_price) || 0) * qty;
-        comision += parseFloat(oi.sale_fee) || 0;
+        comision += comisionLinea(oi);
         const c = id ? costsMapDash[id] : null;
         if (c != null && c > 0) cmv += c * qty;
         // Mismo reparto de envío que orders_detail: sale de repartirEnvioPorItem, así un
         // carrito no le carga el envío entero a cada una de sus órdenes.
         const e = id ? envioPorItem[`${o.id}|${id}`] : null;
-        if (e) { envioVend += e.seller; envioComp += e.buyer; }
+        // Lo que pagó el comprador sólo le llega al vendedor en Flex (en ME2 va a ML).
+        const esFlex = o.shipping?.id && shippingCostMap[o.shipping.id]?.mode === 'FLEX';
+        if (e) { envioVend += e.seller; if (esFlex) envioComp += e.buyer; }
       });
       const impuestos = parseFloat((o.taxes || {}).amount) || 0;
       byDayFac[idx]   += fac;
@@ -5822,7 +5935,7 @@ app.post('/api/diagnostico/calcular', requireAuth, async (req, res) => {
     // acotado a una muestra y extrapolado para no colgar en cuentas de mucho volumen.
     let finComision=0, finImpuestos=0, finEnvioVendedor=0;
     orders.forEach(o => {
-      finComision  += (o.order_items||[]).reduce((s,oi)=>s+(parseFloat(oi.sale_fee)||0),0);
+      finComision  += (o.order_items||[]).reduce((s,oi)=>s+comisionLinea(oi),0);
       finImpuestos += parseFloat(o.taxes?.amount) || 0;
     });
     try {
@@ -6078,7 +6191,7 @@ app.get('/api/reporte/items-vendidos', requireAuth, async (req, res) => {
         if (!byMla[id]) byMla[id] = { mla_id: id, title, units: 0, revenue: 0, sale_fee: 0 };
         byMla[id].units   += oi.quantity || 0;
         byMla[id].revenue += (parseFloat(oi.unit_price)||0) * (oi.quantity||0);
-        byMla[id].sale_fee += parseFloat(oi.sale_fee)||0;
+        byMla[id].sale_fee += comisionLinea(oi);
       });
     });
 
@@ -6181,7 +6294,21 @@ app.get('/api/reporte/items-vendidos', requireAuth, async (req, res) => {
 //       estado, así que ahora se busca sin filtro y se filtra en el server)
 //   5 → la publicidad por producto ya no suma la misma métrica una vez por campaña
 //       (ver dedupAdsPorItem): venía inflada ~25%. Suma la antigüedad de las fotos.
-const MARGEN_CALC_VERSION = 5;
+const MARGEN_CALC_VERSION = 6;
+
+// Proporción CMV/facturación de los productos con costo cargado. Es la base para estimar
+// el CMV de los que no lo tienen (P&L y detalle por publicación usan la misma). null si
+// no hay ningún costo cargado: ahí no hay de dónde estimar.
+function cmvRatioCubierto(filas, costsMap) {
+  let cmv = 0, fac = 0;
+  filas.forEach(f => {
+    const c = costsMap[f.mla_id];
+    if (c == null || !(f.units > 0) || !(f.revenue > 0)) return;
+    const costo = typeof c === 'object' ? c.costo_unit : c;
+    cmv += (costo || 0) * f.units; fac += f.revenue;
+  });
+  return fac > 0 ? cmv / fac : null;
+}
 
 // Núcleo compartido del cálculo. Lo consumen /api/reporte/margen-real-producto (tabla de
 // Rentabilidad, ordenada por los que pierden) y /api/performance/top-ganancia (ranking de los
@@ -6207,11 +6334,13 @@ async function calcularMargenRealPorMla(client_id, date_from, date_to) {
 
   const nuevoMla = (id, title) => ({ mla_id: id, title: title || id, units: 0, revenue: 0, sale_fee: 0,
     envio_real: 0, units_full: 0, units_flex: 0, impuestos: 0, reembolsos: 0,
-    units_canceladas: 0, revenue_cancelado: 0, sale_fee_cancel: 0, envio_cancel: 0 });
+    ingreso_envio_flex: 0, cupon_vendedor: 0,
+    units_canceladas: 0, revenue_cancelado: 0 });
 
-  // Agrupar por MLA. Criterio del P&L: una cancelación no factura ni consume stock, pero
-  // ML igual se queda con la comisión, los impuestos y el envío — esos cargos sí cargan
-  // contra el producto que los generó.
+  // Agrupar por MLA. Una cancelación no factura, no consume stock y no carga costos: ML
+  // anula la comisión y el envío en la factura (CVFV/CVFF/CXD con status BONUS_ON_BILL —
+  // verificado en AB Fitness, sep-2026: 102 de 145 canceladas con la línea anulada, el
+  // resto sin cargo). Se siguen contando las unidades y el monto cancelado, para mostrar.
   const byMla = {};
   orders.forEach(o => {
     const cancelada = o.status === 'cancelled';
@@ -6225,14 +6354,13 @@ async function calcularMargenRealPorMla(client_id, date_from, date_to) {
       const m = byMla[id] || (byMla[id] = nuevoMla(id, oi.item?.title));
       const monto = (parseFloat(oi.unit_price)||0) * (oi.quantity||0);
       const frac  = baseOrden > 0 ? monto / baseOrden : 1 / lineas.length;
-      const fee   = parseFloat(oi.sale_fee) || 0;
-      m.sale_fee  += fee;
-      m.impuestos += taxes * frac;
+      const fee   = comisionLinea(oi);
       if (cancelada) {
         m.units_canceladas  += oi.quantity || 0;
         m.revenue_cancelado += monto;
-        m.sale_fee_cancel   += fee;
       } else {
+        m.sale_fee   += fee;
+        m.impuestos  += taxes * frac;
         m.units      += oi.quantity || 0;
         m.revenue    += monto;
         // El reembolso de una cancelada volvió al comprador y esa venta nunca entró a
@@ -6245,8 +6373,12 @@ async function calcularMargenRealPorMla(client_id, date_from, date_to) {
   // Envío real por MLA + modo logístico. El reparto agrupa por envío (un carrito es una
   // orden por ítem con el mismo shipping.id: antes cada una cargaba el envío completo) y le
   // imputa el costo al ítem que gatilla el envío gratis, no al que viajó de arrastre.
-  const shipCostMap = await fetchShippingCosts(orders, headers);
+  const [shipCostMap, cuponesRaw] = await Promise.all([
+    fetchShippingCosts(orders, headers),
+    fetchCuponesVendedor(orders, headers),
+  ]);
   const envioPorItem = repartirEnvioPorItem(orders, shipCostMap);
+  const cupones = repartirCuponPorItem(orders, cuponesRaw.porPago);
   orders.forEach(o => {
     const sc = o.shipping?.id ? shipCostMap[o.shipping.id] : null;
     const ois = (o.order_items||[]).filter(oi => oi.item?.id);
@@ -6254,9 +6386,12 @@ async function calcularMargenRealPorMla(client_id, date_from, date_to) {
     const cancelada = o.status === 'cancelled';
     ois.forEach(oi => {
       const m = byMla[oi.item.id], q = oi.quantity||0; if (!m) return;
-      const env = (envioPorItem[`${o.id}|${oi.item.id}`]?.seller) || 0;
-      m.envio_real += env;
-      if (cancelada) { m.envio_cancel += env; return; }   // una cancelada no consume unidades FULL/FLEX
+      if (cancelada) return;   // envío anulado por ML y no consume unidades FULL/FLEX
+      const envIt = envioPorItem[`${o.id}|${oi.item.id}`] || {};
+      m.envio_real += envIt.seller || 0;
+      // En Flex el envío que pagó el comprador le llega al vendedor: es ingreso del producto
+      if (mode === 'FLEX') m.ingreso_envio_flex += envIt.buyer || 0;
+      m.cupon_vendedor += cupones.porLinea[`${o.id}|${oi.item.id}`] || 0;
       if (mode === 'FULL') m.units_full += q; else if (mode === 'FLEX') m.units_flex += q;
     });
   });
@@ -6336,56 +6471,54 @@ async function calcularMargenRealPorMla(client_id, date_from, date_to) {
   // Flex/FULL manual: sumar el de cada mes que toca el rango, escalado por los días
   // del rango que caen en ese mes (el bolo se carga mensual; si el rango es parcial,
   // se prorratea para no inflar el Flex). Luego se reparte sobre las unidades FULL/FLEX.
-  const dFrom = new Date(date_from + 'T00:00:00'), dTo = new Date(date_to + 'T00:00:00');
   let flexManual = 0;
-  for (let cur = new Date(dFrom.getFullYear(), dFrom.getMonth(), 1); cur <= dTo;
-       cur = new Date(cur.getFullYear(), cur.getMonth() + 1, 1)) {
-    const y = cur.getFullYear(), mo = cur.getMonth();
-    const diasMes = new Date(y, mo + 1, 0).getDate();
-    const inicioMes = new Date(y, mo, 1), finMes = new Date(y, mo, diasMes);
-    const desde = dFrom > inicioMes ? dFrom : inicioMes;
-    const hasta = dTo < finMes ? dTo : finMes;
-    const diasRango = Math.round((hasta - desde) / (24 * 3600 * 1000)) + 1;
-    const mesStr = `${y}-${String(mo + 1).padStart(2, '0')}-01`;
+  for (const { mes, factor } of mesesDelRango(date_from, date_to)) {
     const gQ = await pool.query(
-      "SELECT monto FROM gastos_fijos WHERE client_id=$1 AND mes=$2 AND categoria='envios_flex'", [client_id, mesStr]);
-    const flexMes = gQ.rows.reduce((s, g) => s + (parseFloat(g.monto) || 0), 0);
-    flexManual += flexMes * (diasRango / diasMes);
+      "SELECT monto FROM gastos_fijos WHERE client_id=$1 AND mes=$2 AND categoria='envios_flex'", [client_id, mes]);
+    flexManual += gQ.rows.reduce((s, g) => s + (parseFloat(g.monto) || 0), 0) * factor;
   }
   const totFF = Object.values(byMla).reduce((s,m)=>s+m.units_full+m.units_flex,0);
   const flexU = totFF ? flexManual/totFF : 0;
 
+  // CMV de lo que no tiene costo cargado: se estima con la proporción CMV/facturación de
+  // los productos que SÍ lo tienen. Con CMV 0 esas filas salían con 40-60% de margen y
+  // arrastraban el total (AB Fitness, sep-2026: 22% de la facturación sin costo). Sigue
+  // marcado como estimado; si no hay ningún costo cargado no se estima nada.
+  const ratioCmv = cmvRatioCubierto(Object.values(byMla), costsMap);
+
   // Calcular P&L real por SKU
   const items = Object.values(byMla).map(m => {
     const fact = m.revenue, com = m.sale_fee;
-    const cmv = (costsMap[m.mla_id] != null) ? costsMap[m.mla_id] * m.units : 0;
+    const hasCost = costsMap[m.mla_id] != null;
+    const cmvEstimado = !hasCost && ratioCmv != null && fact > 0;
+    const cmv = hasCost ? costsMap[m.mla_id] * m.units : (cmvEstimado ? fact * ratioCmv : 0);
     const envReal = Math.round(m.envio_real);
+    const envFlex = Math.round(m.ingreso_envio_flex);
+    const cupon   = Math.round(m.cupon_vendedor);
     const flexImp = Math.round((m.units_full + m.units_flex) * flexU);
     const ads   = adsByItem[m.mla_id] || null;
     const publi = Math.round(ads?.cost || 0);
     const alic = alicMap[m.mla_id] ?? 21;
     // Débito sobre la venta y crédito sobre el CMV a la alícuota del producto; comisión,
-    // envío y flex son servicios de ML → 21%.
-    const ivaV = esMonotrib ? 0 : ivaContenido(fact, alic);
+    // envío y flex son servicios → 21%. El envío Flex que cobra el vendedor también es venta.
+    const ivaV = esMonotrib ? 0 : ivaContenido(fact, alic) + ivaContenido(envFlex, IVA_SERVICIOS_PCT);
     const ivaC = esMonotrib ? 0 : ivaContenido(cmv, alic) + ivaContenido(com + envReal + flexImp, IVA_SERVICIOS_PCT);
     const ivaDif = Math.round(ivaV - ivaC);
     const iibb = Math.round(fact * (tasaIibb/100));
     const impuestos  = Math.round(m.impuestos);    // impuestos que ML retiene en la operación
     const reembolsos = Math.round(m.reembolsos);   // plata devuelta al comprador
-    const margen = Math.round(fact - com - cmv - envReal - flexImp - publi - ivaDif - iibb - impuestos - reembolsos);
+    const margen = Math.round(fact + envFlex - com - cmv - envReal - flexImp - publi - ivaDif - iibb - impuestos - reembolsos - cupon);
     return {
       mla_id: m.mla_id, title: m.title, sku: skuMap[m.mla_id] || null, units: m.units, revenue: fact,
-      sale_fee: Math.round(com), cmv_total: Math.round(cmv), has_cost: costsMap[m.mla_id] != null,
-      envio_real: envReal, flex_imp: flexImp, publi_real: publi, iva_dif: ivaDif, iibb,
+      sale_fee: Math.round(com), cmv_total: Math.round(cmv), has_cost: hasCost, cmv_estimado: cmvEstimado,
+      envio_real: envReal, ingreso_envio_flex: envFlex, flex_imp: flexImp, publi_real: publi,
+      cupon_vendedor: cupon, iva_dif: ivaDif, iibb,
       impuestos, reembolsos,
       fotos_ultima_fecha: m.fecha_fotos ? ymd(m.fecha_fotos) : null,
       fotos_meses: mesesDesde(m.fecha_fotos),
       units_full: m.units_full, units_flex: m.units_flex,
-      // Cargos que ML cobró igual por operaciones canceladas: no facturan, pero pegan en el
-      // margen del producto. Se exponen para poder explicar por qué la fila no cierra
-      // contra "facturación × margen esperado".
+      // Canceladas: sólo informativo. ML anula comisión y envío, no pegan en el margen.
       units_canceladas: m.units_canceladas, revenue_cancelado: Math.round(m.revenue_cancelado),
-      cargos_cancelados: Math.round(m.sale_fee_cancel + m.envio_cancel),
       margen_real: margen, margen_real_pct: fact ? +(margen/fact*100).toFixed(1) : 0,
       margen_x_unidad: m.units > 0 ? Math.round(margen / m.units) : 0,
       // Retorno sobre la mercadería: cuánto deja cada peso puesto en stock.
@@ -6411,7 +6544,11 @@ async function calcularMargenRealPorMla(client_id, date_from, date_to) {
             unidades_full_flex: totFF, tasa_iibb_pct: tasaIibb, es_monotributista: esMonotrib,
             skus_que_pierden: items.filter(i=>i.margen_real<0).length,
             ordenes_canceladas: canceladas,
-            cargos_cancelados: items.reduce((s,i) => s + (i.cargos_cancelados||0), 0),
+            cmv_ratio_estimacion: ratioCmv,
+            cupones_vendedor: Math.round(cupones.total),
+            cupones_pagos_consultados: cuponesRaw.consultados,
+            cupones_pagos_sin_respuesta: cuponesRaw.consultados - cuponesRaw.respondidos,
+            ingreso_envio_flex: items.reduce((s,i) => s + (i.ingreso_envio_flex||0), 0),
             ads_sin_ventas, gasto_ads_sin_ventas: Math.round(gasto_ads_sin_ventas) },
   };
 }
@@ -7403,9 +7540,10 @@ app.get('/api/reporte/pyl', requireAuth, async (req, res) => {
       if (!cancelada) facturacion += parseFloat(o.total_amount)||0;
 
       (o.order_items||[]).forEach(oi => {
-        // Comisión: ML la cobra igual, incluso si la orden se cancela o se
-        // devuelve parcialmente. sale_fee viene > 0 en esos casos.
-        egreso_comision += parseFloat(oi.sale_fee)||0;
+        // Comisión: por unidad (comisionLinea). En una cancelada ML la anula en la factura
+        // (CVFV/CVFF con status BONUS_ON_BILL, verificado sep-2026), así que no se cuenta.
+        // En una devolución parcial sí queda.
+        if (!cancelada) egreso_comision += comisionLinea(oi);
         const id = oi.item?.id;
         if (!id) return;
         // Las canceladas no aportan unidades/revenue (el producto no se vendió),
@@ -7416,8 +7554,8 @@ app.get('/api/reporte/pyl', requireAuth, async (req, res) => {
         byMla[id].revenue += (parseFloat(oi.unit_price)||0)*(oi.quantity||0);
       });
 
-      // Impuestos: ML los retiene aun en órdenes canceladas o devueltas.
-      egreso_imp_operacion += parseFloat(o.taxes?.amount)||0;
+      // Impuestos de la operación: una cancelada se anula entera.
+      if (!cancelada) egreso_imp_operacion += parseFloat(o.taxes?.amount)||0;
 
       // Reembolsos: monto que ML devolvió al comprador y descontó del payout.
       // Solo se cuenta en órdenes NO canceladas. En una orden cancelada el
@@ -7432,21 +7570,30 @@ app.get('/api/reporte/pyl', requireAuth, async (req, res) => {
       }
     });
 
-    // Shipping costs — usar /costs endpoint que es el correcto
-    const shipIds = [...new Set(orders.map(o=>o.shipping?.id).filter(Boolean))];
+    // Envíos (fuente: /shipments/{id} + /costs, el mismo helper que el detalle por
+    // publicación). Cada envío se cuenta una vez aunque el carrito tenga varias órdenes.
+    //  · Envío vendedor: lo que ML le cobra al vendedor. Los de órdenes canceladas no:
+    //    ML los anula en la factura (CXD con status BONUS_ON_BILL).
+    //  · Ingreso por envío: SÓLO Flex. En Correo/ME2 lo que paga el comprador va a ML;
+    //    antes se sumaba entero como ingreso y en AB Fitness inventaba ~$9M en 22 días.
+    // Los cupones del vendedor se piden en paralelo (ver fetchCuponesVendedor).
+    const [shipCostMap, cuponesRaw] = await Promise.all([
+      fetchShippingCosts(orders, headers),
+      fetchCuponesVendedor(orders, headers),
+    ]);
     let egreso_envio_vendedor = 0;
-    for (let i=0; i<shipIds.length; i+=10) {
-      const batch = shipIds.slice(i,i+10);
-      await Promise.all(batch.map(async sid => {
-        try {
-          const costs = await fetch(`${ML_API}/shipments/${sid}/costs`, {headers}).then(r=>r.json());
-          const receiverCost = parseFloat(costs.receiver?.cost) || 0;
-          const senderCost   = parseFloat(costs.senders?.[0]?.cost) || 0;
-          ingreso_envio_comprador += receiverCost;
-          egreso_envio_vendedor   += senderCost;
-        } catch(e){}
-      }));
+    {
+      const vistos = new Set();
+      orders.forEach(o => {
+        const sid = o.shipping?.id;
+        if (!sid || vistos.has(sid) || o.status === 'cancelled') return;
+        vistos.add(sid);
+        egreso_envio_vendedor += shipCostMap[sid]?.sellerCost || 0;
+      });
     }
+    ingreso_envio_comprador = ingresoEnvioFlex(orders, shipCostMap);
+    const cupones = repartirCuponPorItem(orders, cuponesRaw.porPago);
+    const egreso_cupones = cupones.total;
 
     // PADS
     let egreso_publicidad = 0;
@@ -7467,35 +7614,61 @@ app.get('/api/reporte/pyl', requireAuth, async (req, res) => {
 
     // IVA por producto: débito sobre la venta y crédito sobre el CMV, cada uno a la
     // alícuota del producto (10,5% / 21% / etc). Los servicios de ML van aparte a 21%.
-    let cmv_total = 0, cmv_cubierto = 0, cmv_estimado = false;
+    // Lo que no tiene costo cargado se estima con la proporción CMV/facturación de lo que
+    // sí lo tiene (misma regla que el detalle por publicación). Antes entraba con CMV 0 y
+    // el P&L avisaba "estimado" sobre un número que no estimaba nada.
+    let cmv_total = 0, cmv_real = 0, cmv_estimado_monto = 0, cmv_cubierto = 0, cmv_estimado = false;
+    let revenue_sin_costo = 0;
     let iva_debito_productos = 0, iva_credito_cmv = 0, revenue_productos = 0;
+    const ratioCmv = cmvRatioCubierto(Object.values(byMla), costsMap);
     const items_detalle = Object.values(byMla).map(i => {
       const c = costsMap[i.mla_id];
       const costo = c?.costo_unit;
       const alic = c?.alicuota_iva ?? 21;
       const cmv = costo != null ? costo * i.units : null;
-      if (cmv != null) { cmv_total += cmv; cmv_cubierto++; iva_credito_cmv += ivaContenido(cmv, alic); }
+      if (cmv != null) { cmv_real += cmv; cmv_cubierto++; iva_credito_cmv += ivaContenido(cmv, alic); }
+      let cmvEst = null;
+      if (cmv == null && i.revenue > 0) {
+        revenue_sin_costo += i.revenue;
+        if (ratioCmv != null) {
+          cmvEst = i.revenue * ratioCmv;
+          cmv_estimado_monto += cmvEst;
+          iva_credito_cmv += ivaContenido(cmvEst, alic);
+        }
+      }
       iva_debito_productos += ivaContenido(i.revenue, alic);
       revenue_productos += i.revenue;
-      return { ...i, costo_unit: costo ?? null, alicuota_iva: alic, cmv };
+      return { ...i, costo_unit: costo ?? null, alicuota_iva: alic, cmv,
+               cmv_estimado: cmvEst != null ? Math.round(cmvEst) : null };
     }).sort((a,b) => b.revenue - a.revenue);
 
+    cmv_total = cmv_real + cmv_estimado_monto;
     if (cmv_cubierto < items_detalle.length) cmv_estimado = true;
 
     // ── Gastos Fijos ──────────────────────────────────────────────────────────
-    const mesStr = date_from.slice(0,7) + '-01';
-    const gastosRes = await pool.query(
-      'SELECT concepto, monto, categoria FROM gastos_fijos WHERE client_id=$1 AND mes=$2',
-      [client_id, mesStr]
-    );
-    const gastos = gastosRes.rows;
+    // Se cargan por mes. Si el rango es parcial o toca varios meses, cada mes entra
+    // prorrateado por los días del rango que caen en él (mismo criterio que el Flex del
+    // detalle por publicación). Antes un P&L del 1 al 22 cargaba el mes entero y uno de
+    // dos meses sólo el primero.
+    const mesStr = date_from.slice(0,7) + '-01';   // clave del snapshot en reporte_financiero
+    const gastos = [];
+    for (const { mes, factor } of mesesDelRango(date_from, date_to)) {
+      const gastosRes = await pool.query(
+        'SELECT concepto, monto, categoria FROM gastos_fijos WHERE client_id=$1 AND mes=$2',
+        [client_id, mes]
+      );
+      gastosRes.rows.forEach(g => gastos.push({
+        ...g, mes, monto_mes: parseFloat(g.monto) || 0,
+        monto: (parseFloat(g.monto) || 0) * factor, prorrateo: +factor.toFixed(4),
+      }));
+    }
     // Separar categorías especiales del resto de gastos fijos
     const gastosEnvioFlex    = gastos.filter(g => g.categoria === 'envios_flex');
     const gastosImpuestos    = gastos.filter(g => g.categoria === 'impuestos');
     const gastosRegulares    = gastos.filter(g => g.categoria !== 'envios_flex' && g.categoria !== 'impuestos');
-    const envios_flex_manual       = gastosEnvioFlex.reduce((s,g) => s + parseFloat(g.monto), 0);
-    const total_gastos_fijos       = gastosRegulares.reduce((s,g) => s + parseFloat(g.monto), 0);
-    const total_impuestos_manuales = gastosImpuestos.reduce((s,g) => s + parseFloat(g.monto), 0);
+    const envios_flex_manual       = gastosEnvioFlex.reduce((s,g) => s + g.monto, 0);
+    const total_gastos_fijos       = gastosRegulares.reduce((s,g) => s + g.monto, 0);
+    const total_impuestos_manuales = gastosImpuestos.reduce((s,g) => s + g.monto, 0);
 
     // Envío vendedor total = API + carga manual Flex
     const egreso_envio_total = egreso_envio_vendedor + envios_flex_manual;
@@ -7530,8 +7703,11 @@ app.get('/api/reporte/pyl', requireAuth, async (req, res) => {
     const iibb_estimado  = facturacion * (tasaIibb / 100);
     const iibb_facturado = (billOk && bill.percepciones_iibb.lineas > 0)
       ? bill.percepciones_iibb.total : null;
-    const iibb        = iibb_facturado != null ? iibb_facturado : 0;
-    const iibb_fuente = iibb_facturado != null ? 'facturado' : 'sin_datos';
+    // Sin factura sincronizada se usa la tasa del cliente. Puede quedar vieja, pero un
+    // cero es peor: le regalaba 4 puntos de margen a toda la cartera (en AB Fitness,
+    // sep-2026, $4,4M en 22 días). Se marca 'estimado' para que el front lo diga.
+    const iibb        = iibb_facturado != null ? iibb_facturado : iibb_estimado;
+    const iibb_fuente = iibb_facturado != null ? 'facturado' : (tasaIibb > 0 ? 'estimado' : 'sin_datos');
 
     // Percepciones de IVA: no son un costo, son plata que ML ya retuvo a cuenta del
     // IVA. Van descontadas del IVA a pagar, no sumadas a los egresos.
@@ -7547,7 +7723,7 @@ app.get('/api/reporte/pyl', requireAuth, async (req, res) => {
     // Monotributista no liquida IVA: no discrimina IVA en ventas ni puede tomarlo como crédito.
     // Los cargos de FULL son servicios de ML: tributan 21% y suman crédito fiscal
     // igual que la comisión y el envío.
-    const iva_ventas   = esMonotributista ? 0 : iva_debito_productos + ivaContenido(Math.max(0, facturacion - revenue_productos), IVA_SERVICIOS_PCT);
+    const iva_ventas   = esMonotributista ? 0 : iva_debito_productos + ivaContenido(Math.max(0, facturacion - revenue_productos) + ingreso_envio_comprador, IVA_SERVICIOS_PCT);
     const iva_compras  = esMonotributista ? 0 : iva_credito_cmv + ivaContenido(egreso_comision + egreso_envio_total + costos_full, IVA_SERVICIOS_PCT);
     // Las percepciones sufridas se descuentan de lo que hay que depositar. Si superan
     // el IVA del período no se pierden: quedan como saldo a favor para el mes que viene.
@@ -7556,7 +7732,9 @@ app.get('/api/reporte/pyl', requireAuth, async (req, res) => {
     const iva_saldo_favor = esMonotributista ? 0 : Math.max(0, percepciones_iva - iva_antes_perc);
 
     // IVA + IIBB + costos de FULL forman parte de los egresos ML → afectan el Resultado Neto ML
-    const total_egresos_ml  = egreso_comision + egreso_imp_operacion + egreso_envio_total + egreso_publicidad + egreso_reembolsos + costos_full + iva_neto + iibb;
+    // Cupón del vendedor: MP lo descuenta del neto. No se le saca IVA: no está verificado
+    // cómo lo factura cada vendedor, y tomarlo entero es lo conservador.
+    const total_egresos_ml  = egreso_comision + egreso_imp_operacion + egreso_envio_total + egreso_publicidad + egreso_reembolsos + egreso_cupones + costos_full + iva_neto + iibb;
     const resultado_neto_ml = total_ingresos - total_egresos_ml;
     const utilidad_antes_gf = resultado_neto_ml - cmv_total;
     const utilidad_final    = utilidad_antes_gf - total_gastos_fijos - total_impuestos_manuales;
@@ -7567,6 +7745,7 @@ app.get('/api/reporte/pyl', requireAuth, async (req, res) => {
       ordenes: orders.length,
       ingresos: {
         facturacion,
+        // Sólo el envío Flex que cobra el vendedor (ver ingresoEnvioFlex).
         envio_comprador: ingreso_envio_comprador,
         total: total_ingresos
       },
@@ -7579,6 +7758,10 @@ app.get('/api/reporte/pyl', requireAuth, async (req, res) => {
         envio_total: egreso_envio_total,
         publicidad: egreso_publicidad,
         reembolsos: egreso_reembolsos,
+        // Cupones que pagó el vendedor (coupon_fee del cobro en MP). Los de ML no están.
+        cupones_vendedor: egreso_cupones,
+        cupones_pagos_consultados: cuponesRaw.consultados,
+        cupones_pagos_sin_respuesta: cuponesRaw.consultados - cuponesRaw.respondidos,
         // Costos de operar en FULL — sólo salen de la factura. 0 cuando el período
         // todavía no se sincronizó; mirar facturacion_ml.disponible para distinguir
         // "no paga FULL" de "no lo sé".
@@ -7590,11 +7773,11 @@ app.get('/api/reporte/pyl', requireAuth, async (req, res) => {
         percepciones_iva,
         iva_saldo_favor,
         iva_neto,
-        // `iibb` es el que entra al total, y sólo sale de la factura. Con
-        // iibb_fuente='sin_datos' va en 0 y el período está subestimando egresos:
-        // el front tiene que avisarlo, no mostrarlo como si no hubiera IIBB.
+        // `iibb` es el que entra al total: el facturado si hay factura sincronizada, si no
+        // el estimado por la tasa del cliente (iibb_fuente='estimado'). 'sin_datos' = el
+        // cliente no tiene tasa cargada y va en 0: el front tiene que avisarlo.
         iibb,
-        iibb_estimado,      // referencia por tasa manual — NO entra a ninguna suma
+        iibb_estimado,
         iibb_facturado,
         iibb_fuente,
         iibb_tasa_pct: tasaIibb,
@@ -7620,7 +7803,12 @@ app.get('/api/reporte/pyl', requireAuth, async (req, res) => {
         }
       } : { disponible: false, motivo: 'sin datos de facturación sincronizados' },
       resultado_neto_ml,
-      cmv: { total: cmv_total, estimado: cmv_estimado, cubierto: cmv_cubierto, total_items: items_detalle.length },
+      cmv: { total: cmv_total, estimado: cmv_estimado, cubierto: cmv_cubierto, total_items: items_detalle.length,
+             // total = real (costos cargados) + estimado (lo que no tiene costo, a la
+             // proporción CMV/facturación de lo cargado)
+             real: cmv_real, estimado_monto: cmv_estimado_monto,
+             ratio_estimacion: ratioCmv, facturacion_sin_costo: revenue_sin_costo,
+             revenue_cubierto_pct: revenue_productos > 0 ? +((revenue_productos - revenue_sin_costo) / revenue_productos * 100).toFixed(1) : 100 },
       utilidad_antes_gf,
       gastos_fijos: { items: gastosRegulares, total: total_gastos_fijos },
       impuestos_manuales: { items: gastosImpuestos, total: total_impuestos_manuales },
@@ -7697,14 +7885,15 @@ app.get('/api/reporte/devoluciones-analisis', requireAuth, async (req, res) => {
       // Reembolsos + impuestos van a nivel orden; se prorratean por unidades a cada item.
       // La comisión sí es exacta por item (oi.sale_fee).
       // En una orden 100% cancelada el reembolso volvió al comprador y la venta NO
-      // entró a facturación → contarlo sobreestima la pérdida. La pérdida real de
-      // una cancelación es la comisión + impuestos que ML retuvo igual. En una
-      // devolución parcial el reembolso SÍ es pérdida (la venta sí facturó).
+      // entró a facturación → contarlo sobreestima la pérdida. Tampoco hay comisión ni
+      // envío perdidos: ML los anula en la factura (CVFV/CVFF/CXD con status
+      // BONUS_ON_BILL, verificado en AB Fitness sep-2026). En una devolución parcial el
+      // reembolso SÍ es pérdida (la venta sí facturó).
       let refund = 0;
       (o.payments || []).forEach(p => { refund += parseFloat(p.transaction_amount_refunded) || 0; });
       const impuestos = parseFloat(o.taxes?.amount) || 0;
       const refundComputable = esDevuelta ? refund : 0;
-      const perdidaNivelOrden = problema ? (refundComputable + impuestos) : 0;
+      const perdidaNivelOrden = esDevuelta ? (refundComputable + impuestos) : 0;
       const razon = leerRazon(o.cancel_detail);
 
       items.forEach(oi => {
@@ -7716,13 +7905,13 @@ app.get('/api/reporte/devoluciones-analisis', requireAuth, async (req, res) => {
         if (!problema) return;
         if (esCancelada) b.canceladas += q;
         if (esDevuelta)  b.devueltas  += q;
-        b.monto_perdido += (parseFloat(oi.sale_fee) || 0) + perdidaNivelOrden * (q / unidsOrden);
+        b.monto_perdido += (esDevuelta ? comisionLinea(oi) : 0) + perdidaNivelOrden * (q / unidsOrden);
         if (razon) b._razones[razon] = (b._razones[razon] || 0) + 1;
       });
 
-      if (problema) {
+      if (esDevuelta) {
         let comisionOrden = 0;
-        items.forEach(oi => { comisionOrden += parseFloat(oi.sale_fee) || 0; });
+        items.forEach(oi => { comisionOrden += comisionLinea(oi); });
         monto_perdido_total += refundComputable + impuestos + comisionOrden;
       }
     });
@@ -9999,7 +10188,7 @@ const reclamos = require('./backend_reclamos')(app, {
 // cancelaciones y reclamos de un solo MLA, con el criterio de CM del P&L por producto.
 require('./backend_publicacion_detalle')(app, {
   pool, requireAuth, getClientToken, ML_API, ymd, ymdShift, mlFrom, mlTo,
-  fetchShippingCosts, repartirEnvioPorItem, ivaContenido, IVA_SERVICIOS_PCT, PYL_ESTADOS
+  fetchShippingCosts, repartirEnvioPorItem, ivaContenido, IVA_SERVICIOS_PCT, PYL_ESTADOS, comisionLinea
 });
 
 // Auditoría de costos de envío — módulo aparte (backend_envios.js). Guarda cada envío
@@ -10382,7 +10571,7 @@ app.get('/api/debug/order', requireAuth, async (req, res) => {
         else if (costGross > 0) sellerCost = Math.max(0, costGross - costSpec - costDiscount - receiverCost);
         else sellerCost = 0;
         const facturacion = (order.order_items||[]).reduce((s,oi)=>s+(parseFloat(oi.unit_price)||0)*(oi.quantity||0),0);
-        const comision = (order.order_items||[]).reduce((s,oi)=>s+(parseFloat(oi.sale_fee)||0),0);
+        const comision = (order.order_items||[]).reduce((s,oi)=>s+comisionLinea(oi),0);
         const impuestos = parseFloat(order.taxes?.amount)||0;
         const neto = facturacion - comision - impuestos - sellerCost;
         return { baseCost, costGross, costNet, costSpec, costDiscount, receiverCost, sellerCost, facturacion, comision, impuestos, neto };
