@@ -1121,6 +1121,7 @@ tbody td {
       <!-- Tab Publicaciones -->
       <div id="perf-tab-publicaciones" style="display:none">
         <div id="perfPubContent"></div>
+        <div id="perfPubDetalle" style="display:none"></div>
       </div>
       <!-- Tab Conversión -->
       <div id="perf-tab-conversion" style="display:none">
@@ -3818,6 +3819,9 @@ function updateDashboard() {
   // Subpáginas
   loadPublicaciones();
   loadVentas();
+  // Performance → Publicaciones sólo se dibujaba al entrar a la pestaña: con un período
+  // nuevo quedaba la tabla vieja, y la ficha abierta no se enteraba del cambio.
+  if (_perfActiveTab === 'publicaciones') renderPerfPublicaciones();
   } catch(e) { console.error('Dashboard update error:', e); }
 }
 
@@ -3901,91 +3905,22 @@ function buildSevenDayChart() {
   });
 }
 
-function buildEvolutionChart() {
-  const connected = state.accounts.filter(a => a.data);
-  const chartEl  = document.getElementById('weeklyChart');
-  const legendEl = document.getElementById('chartLegend');
-  if (!chartEl) return;
-  chartEl.innerHTML = '';
-  if (legendEl) legendEl.innerHTML = '';
-  if (!connected.length) return;
-  try {
-
-  const range  = getDateRange();
-  // Días CALENDARIO del rango, contando los dos extremos: del 21/7 al 20/8 son 31 días,
-  // no 30. Antes se restaban los timestamps y quedaba uno de menos, así que el gráfico
-  // perdía el primer día del período (el backend sí lo manda).
-  const days   = (range.date_from && range.date_to)
-    ? Math.max(1, Math.round((dART(range.date_to) - dART(range.date_from)) / (1000*60*60*24)) + 1)
-    : (state.rangeDays || 30);
-  const now    = Date.now();
-
-  // Eje de fechas: días calendario argentinos terminando en el último día del rango.
-  // El backend manda by_day_fechas, así que cada punto se ubica por su fecha y no por
-  // posición en el array — con dos cuentas de rangos distintos no se corre nada.
-  const fechaFinChart = range.date_to ? ymd(dART(range.date_to)) : ymd();
-  const fechas = [];
-  for (let i = days - 1; i >= 0; i--) {
-    fechas.push(ymd(new Date(dART(fechaFinChart).getTime() - i * 24*60*60*1000)));
-  }
-  const idxDeFechaChart = {};
-  fechas.forEach((f, i) => { idxDeFechaChart[f] = i; });
-
-  // Buckets diarios
-  const facByDay      = new Array(days).fill(0);
-  const ventasByDay   = new Array(days).fill(0);
-  const visitasByDay  = new Array(days).fill(0);
-  const cmByDay       = new Array(days).fill(0);
-  const adsByDay      = new Array(days).fill(0);
-  let hayCmChart = false, hayAdsChart = false;
-
-  connected.forEach(acc => {
-    const s = acc.data?.stats;
-    if (!s) return;
-    // Índice del punto i de esta cuenta dentro del eje del gráfico. Si la cuenta no manda
-    // fechas (respuesta vieja en caché) se cae al índice posicional de antes.
-    const F  = Array.isArray(s.by_day_fechas) ? s.by_day_fechas : null;
-    const at = i => F ? (idxDeFechaChart[F[i]] !== undefined ? idxDeFechaChart[F[i]] : -1)
-                      : (i < days ? i : -1);
-    // Usar by_day del backend si están disponibles
-    if (s.by_day_fac && s.by_day_ventas) {
-      s.by_day_fac.forEach((v, i)    => { const j = at(i); if (j >= 0) facByDay[j]    += v; });
-      s.by_day_ventas.forEach((v, i) => { const j = at(i); if (j >= 0) ventasByDay[j] += v; });
-    } else {
-      // Fallback a orders_detail
-      (acc.data.orders_detail || []).forEach(o => {
-        const age = (now - new Date(o.date).getTime()) / (1000*60*60*24);
-        const di  = Math.floor(age);
-        if (di >= 0 && di < days) {
-          const idx = days - 1 - di;
-          facByDay[idx]    += parseFloat(o.facturacion) || 0;
-          ventasByDay[idx] += 1;
-        }
-      });
-    }
-    // Contribución marginal por día. Sólo viene si la cuenta tiene CMV cargado: sin costos
-    // el backend manda null y la serie no se dibuja (sería facturación menos comisiones,
-    // un número que no es la CM de nadie).
-    if (Array.isArray(s.by_day_cm)) {
-      hayCmChart = true;
-      s.by_day_cm.forEach((v, i) => { const j = at(i); if (j >= 0) cmByDay[j] += v; });
-    }
-    // Publicidad por día — alimenta el TACOS diario. Viene aunque no haya CMV.
-    if (Array.isArray(s.by_day_ads)) {
-      hayAdsChart = true;
-      s.by_day_ads.forEach((v, i) => { const j = at(i); if (j >= 0) adsByDay[j] += v; });
-    }
-    // Visitas: reales por día si el backend las trae (by_day_visitas); si no, uniforme.
-    if (Array.isArray(s.by_day_visitas) && s.by_day_visitas.some(v => v > 0)) {
-      s.by_day_visitas.forEach((v, i) => { const j = at(i); if (j >= 0) visitasByDay[j] += v; });
-    } else {
-      const totalVisits = s.total_visits || 0;
-      if (totalVisits > 0 && days > 0) {
-        const dv = totalVisits / days;
-        for (let i = 0; i < days; i++) visitasByDay[i] += dv;
-      }
-    }
-  });
+// Dibuja la serie diaria (facturación, CM, ventas, visitas, conversión y TACOS) con sus
+// chips-filtro. La usan el gráfico del Dashboard y la ficha de una publicación en
+// Performance: mismo SVG, mismo hover, mismas chips. Cada instancia tiene su `key`, que
+// prefija los ids del hover y separa los datos en window._chartDatosPor, así dos gráficos
+// no se pisan.
+//   d   = { fechas, fac, ventas, visitas, cm (array|null), ads (array|null) }
+//   cfg = { key, series (estado de chips), toggle (nombre de la función del onclick), H,
+//           ventasNombre, ventasTipo, ventasSufijo }
+function dibujarSerieDiaria(chartEl, legendEl, d, cfg) {
+  const K = cfg.key || 'chart';
+  const fechas = d.fechas, days = fechas.length;
+  const facByDay = d.fac, ventasByDay = d.ventas, visitasByDay = d.visitas;
+  const hayCmChart  = Array.isArray(d.cm), hayAdsChart = Array.isArray(d.ads);
+  const cmByDay  = d.cm  || new Array(days).fill(0);
+  const adsByDay = d.ads || new Array(days).fill(0);
+  const VN = cfg.ventasNombre || 'Ventas', VT = cfg.ventasTipo || 'ordenes', VS = cfg.ventasSufijo || ' órd.';
 
   // Conversión diaria = ventas (órdenes) / visitas × 100. Con visitas reales por día
   // es verídica; con el fallback uniforme queda proporcional a las ventas del día.
@@ -3997,19 +3932,13 @@ function buildEvolutionChart() {
   const labels = fechas.map(f =>
     dART(f).toLocaleDateString('es-AR', { timeZone: ART_TZ, day:'2-digit', month:'short' }).replace('.',''));
 
-  // Estado activo de series (persistente)
-  if (!window._chartSeries) window._chartSeries = { fac: true, ventas: true, visitas: true, conversion: true, cm: true, tacos: true };
-  if (window._chartSeries.conversion === undefined) window._chartSeries.conversion = true;
-  if (window._chartSeries.cm    === undefined) window._chartSeries.cm    = true;
-  if (window._chartSeries.tacos === undefined) window._chartSeries.tacos = true;
-
   const W = chartEl.clientWidth || 900;
-  const H = 220;
+  const H = cfg.H || 220;
   const padL = 10, padR = 10, padT = 28, padB = 48;
   const innerW = W - padL - padR;
   const innerH = H - padT - padB;
 
-  const series = window._chartSeries;
+  const series = cfg.series;
   const maxFac    = Math.max(...facByDay, 1);
   const maxVentas = Math.max(...ventasByDay, 1);
   const maxVisitas= Math.max(...visitasByDay, 1);
@@ -4042,7 +3971,7 @@ function buildEvolutionChart() {
       const x = centerX - barW / 2;
       const barH = innerH * (v / maxVentas);
       const y = padT + innerH - barH;
-      barsSvg += `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barW.toFixed(1)}" height="${barH.toFixed(1)}" fill="#00e676" opacity="0.7" rx="2"><title>${labels[i]}: ${v} ventas</title></rect>`;
+      barsSvg += `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barW.toFixed(1)}" height="${barH.toFixed(1)}" fill="#00e676" opacity="0.7" rx="2"><title>${labels[i]}: ${v} ${VN.toLowerCase()}</title></rect>`;
       if (v > 0 && barW > 14 && days <= 31) {
         const labelY = barH > 18 ? y + barH - 4 : y - 3;
         const labelFill = barH > 18 ? 'rgba(0,0,0,.7)' : '#00e676';
@@ -4210,10 +4139,10 @@ function buildEvolutionChart() {
   // Antes el cuadro era SVG con <text> fijos: no se podía agregar ni sacar una fila según
   // qué series estuvieran prendidas, y las etiquetas quedaban estiradas porque el viewBox
   // se deforma en Y. Ahora el cuadro es un div HTML sobre el gráfico y los puntos van en
-  // el SVG. Los datos quedan en window._chartDatos y chartHover los lee de ahí, en vez de
+  // el SVG. Los datos quedan en window._chartDatosPor[K] y chartHover los lee de ahí, en vez de
   // viajar serializados en el atributo onmousemove.
-  const hoverLine = `<line id="chartHoverLine" x1="-1" y1="${padT}" x2="-1" y2="${padT+innerH}" stroke="rgba(255,255,255,.35)" stroke-width="1" pointer-events="none"/>`;
-  const hoverDots = `<g id="chartHoverDots" pointer-events="none"></g>`;
+  const hoverLine = `<line id="${K}HoverLine" x1="-1" y1="${padT}" x2="-1" y2="${padT+innerH}" stroke="rgba(255,255,255,.35)" stroke-width="1" pointer-events="none"/>`;
+  const hoverDots = `<g id="${K}HoverDots" pointer-events="none"></g>`;
 
   // Etiquetas largas para el hover: "mié 20 ago". El eje X ya alcanza para ubicarse
   // mientras se mira el gráfico entero; acá hace falta la fecha completa.
@@ -4227,7 +4156,7 @@ function buildEvolutionChart() {
                    vals: facByDay, ys: facByDay.map(yMoney) } : null,
     dibujarCm ? { key:'cm', color:'#00c853', nombre:'Contrib. marginal', tipo:'money', pctDe:'fac',
                    vals: cmByDay, ys: cmByDay.map(yMoney) } : null,
-    series.ventas ? { key:'ventas', color:'#00e676', nombre:'Ventas', tipo:'ordenes',
+    series.ventas ? { key:'ventas', color:'#00e676', nombre:VN, tipo:VT,
                    vals: ventasByDay, ys: ventasByDay.map(yBar) } : null,
     series.visitas && visitasByDay.some(v => v > 0)
       ? { key:'visitas', color:'#6366f1', nombre:'Visitas', tipo:'num',
@@ -4240,18 +4169,18 @@ function buildEvolutionChart() {
                    vals: tacosByDay, ys: tacosByDay.map(v => padT + innerH - (v / maxTacos) * innerH) } : null,
   ].filter(Boolean);
 
-  window._chartDatos = {
+  (window._chartDatosPor = window._chartDatosPor || {})[K] = {
     days, padL, padT, innerW, innerH, W, H,
     labels: labelsTip, facByDay, series: datosHover,
   };
 
   const overlay = `<rect x="${padL}" y="${padT}" width="${innerW}" height="${innerH}" fill="transparent"
-    onmousemove="chartHover(event, this)" onmouseleave="chartHoverOut()"/>`;
+    onmousemove="chartHover(event, this, '${K}')" onmouseleave="chartHoverOut('${K}')"/>`;
 
   chartEl.innerHTML = `<svg width="100%" height="${H}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
     ${grid}${ceroLine}${barsSvg}${facArea}${facPath}${cmArea}${cmPath}${visitasPath}${convPath}${convDots}${tacosPath}${xLabels}${peakLabels}${hoverLine}${hoverDots}${overlay}
   </svg>
-  <div id="chartTipBox" style="position:absolute;top:0;left:0;display:none;pointer-events:none;
+  <div id="${K}TipBox" style="position:absolute;top:0;left:0;display:none;pointer-events:none;
     background:rgba(20,20,30,.96);border:1px solid var(--border);border-radius:8px;padding:8px 10px;
     box-shadow:0 6px 20px rgba(0,0,0,.45);font-size:11px;line-height:1.55;white-space:nowrap;z-index:5"></div>`;
 
@@ -4270,7 +4199,7 @@ function buildEvolutionChart() {
     { key: 'fac',   color: '#FFD700', label: 'Facturación', total: fmt(totFac), sub: '', type: 'line' },
     ...(hayCmChart ? [{ key: 'cm', color: '#00c853', label: 'Contrib. marginal',
         total: fmt(totCm), sub: cmProm.toFixed(1) + '% s/fact.', type: 'line' }] : []),
-    { key: 'ventas',     color: '#00e676', label: 'Ventas',     total: totVentas.toLocaleString('es-AR') + ' órd.', sub: '', type: 'bar' },
+    { key: 'ventas',     color: '#00e676', label: VN,          total: totVentas.toLocaleString('es-AR') + VS, sub: '', type: 'bar' },
     { key: 'visitas',    color: '#6366f1', label: 'Visitas',    total: totVisitas > 0 ? Math.round(totVisitas).toLocaleString('es-AR') : '', sub: '', type: 'dash' },
     { key: 'conversion', color: '#22d3ee', label: 'Conversión', total: totVisitas > 0 ? convProm.toFixed(1) + '%' : '', sub: '', type: 'line' },
     ...(hayAdsChart ? [{ key: 'tacos', color: '#ff9100', label: 'TACOS',
@@ -4282,7 +4211,7 @@ function buildEvolutionChart() {
     const on = !!series[l.key];
     const glifo = l.type === 'line' ? '━' : l.type === 'dash' ? '╌' : '▪';
     return `
-    <div onclick="toggleChartSeries('${l.key}')" title="${on ? 'Ocultar' : 'Mostrar'} ${l.label}"
+    <div onclick="${cfg.toggle}('${l.key}')" title="${on ? 'Ocultar' : 'Mostrar'} ${l.label}"
       style="display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none;transition:all .15s;
              padding:5px 10px;border-radius:999px;border:1px solid ${on ? l.color : 'var(--border)'};
              background:${on ? l.color + '1f' : 'transparent'};opacity:${on ? 1 : 0.5}">
@@ -4291,6 +4220,105 @@ function buildEvolutionChart() {
       ${l.total ? `<span style="font-size:11px;font-weight:700;color:${l.color}">${l.total}</span>` : ''}
       ${l.sub ? `<span style="font-size:10px;color:var(--muted)">${l.sub}</span>` : ''}
     </div>`; }).join('');
+
+}
+
+function buildEvolutionChart() {
+  const connected = state.accounts.filter(a => a.data);
+  const chartEl  = document.getElementById('weeklyChart');
+  const legendEl = document.getElementById('chartLegend');
+  if (!chartEl) return;
+  chartEl.innerHTML = '';
+  if (legendEl) legendEl.innerHTML = '';
+  if (!connected.length) return;
+  try {
+
+  const range  = getDateRange();
+  // Días CALENDARIO del rango, contando los dos extremos: del 21/7 al 20/8 son 31 días,
+  // no 30. Antes se restaban los timestamps y quedaba uno de menos, así que el gráfico
+  // perdía el primer día del período (el backend sí lo manda).
+  const days   = (range.date_from && range.date_to)
+    ? Math.max(1, Math.round((dART(range.date_to) - dART(range.date_from)) / (1000*60*60*24)) + 1)
+    : (state.rangeDays || 30);
+  const now    = Date.now();
+
+  // Eje de fechas: días calendario argentinos terminando en el último día del rango.
+  // El backend manda by_day_fechas, así que cada punto se ubica por su fecha y no por
+  // posición en el array — con dos cuentas de rangos distintos no se corre nada.
+  const fechaFinChart = range.date_to ? ymd(dART(range.date_to)) : ymd();
+  const fechas = [];
+  for (let i = days - 1; i >= 0; i--) {
+    fechas.push(ymd(new Date(dART(fechaFinChart).getTime() - i * 24*60*60*1000)));
+  }
+  const idxDeFechaChart = {};
+  fechas.forEach((f, i) => { idxDeFechaChart[f] = i; });
+
+  // Buckets diarios
+  const facByDay      = new Array(days).fill(0);
+  const ventasByDay   = new Array(days).fill(0);
+  const visitasByDay  = new Array(days).fill(0);
+  const cmByDay       = new Array(days).fill(0);
+  const adsByDay      = new Array(days).fill(0);
+  let hayCmChart = false, hayAdsChart = false;
+
+  connected.forEach(acc => {
+    const s = acc.data?.stats;
+    if (!s) return;
+    // Índice del punto i de esta cuenta dentro del eje del gráfico. Si la cuenta no manda
+    // fechas (respuesta vieja en caché) se cae al índice posicional de antes.
+    const F  = Array.isArray(s.by_day_fechas) ? s.by_day_fechas : null;
+    const at = i => F ? (idxDeFechaChart[F[i]] !== undefined ? idxDeFechaChart[F[i]] : -1)
+                      : (i < days ? i : -1);
+    // Usar by_day del backend si están disponibles
+    if (s.by_day_fac && s.by_day_ventas) {
+      s.by_day_fac.forEach((v, i)    => { const j = at(i); if (j >= 0) facByDay[j]    += v; });
+      s.by_day_ventas.forEach((v, i) => { const j = at(i); if (j >= 0) ventasByDay[j] += v; });
+    } else {
+      // Fallback a orders_detail
+      (acc.data.orders_detail || []).forEach(o => {
+        const age = (now - new Date(o.date).getTime()) / (1000*60*60*24);
+        const di  = Math.floor(age);
+        if (di >= 0 && di < days) {
+          const idx = days - 1 - di;
+          facByDay[idx]    += parseFloat(o.facturacion) || 0;
+          ventasByDay[idx] += 1;
+        }
+      });
+    }
+    // Contribución marginal por día. Sólo viene si la cuenta tiene CMV cargado: sin costos
+    // el backend manda null y la serie no se dibuja (sería facturación menos comisiones,
+    // un número que no es la CM de nadie).
+    if (Array.isArray(s.by_day_cm)) {
+      hayCmChart = true;
+      s.by_day_cm.forEach((v, i) => { const j = at(i); if (j >= 0) cmByDay[j] += v; });
+    }
+    // Publicidad por día — alimenta el TACOS diario. Viene aunque no haya CMV.
+    if (Array.isArray(s.by_day_ads)) {
+      hayAdsChart = true;
+      s.by_day_ads.forEach((v, i) => { const j = at(i); if (j >= 0) adsByDay[j] += v; });
+    }
+    // Visitas: reales por día si el backend las trae (by_day_visitas); si no, uniforme.
+    if (Array.isArray(s.by_day_visitas) && s.by_day_visitas.some(v => v > 0)) {
+      s.by_day_visitas.forEach((v, i) => { const j = at(i); if (j >= 0) visitasByDay[j] += v; });
+    } else {
+      const totalVisits = s.total_visits || 0;
+      if (totalVisits > 0 && days > 0) {
+        const dv = totalVisits / days;
+        for (let i = 0; i < days; i++) visitasByDay[i] += dv;
+      }
+    }
+  });
+
+  // Estado activo de series (persistente)
+  if (!window._chartSeries) window._chartSeries = { fac: true, ventas: true, visitas: true, conversion: true, cm: true, tacos: true };
+  if (window._chartSeries.conversion === undefined) window._chartSeries.conversion = true;
+  if (window._chartSeries.cm    === undefined) window._chartSeries.cm    = true;
+  if (window._chartSeries.tacos === undefined) window._chartSeries.tacos = true;
+
+  dibujarSerieDiaria(chartEl, legendEl, {
+    fechas, fac: facByDay, ventas: ventasByDay, visitas: visitasByDay,
+    cm: hayCmChart ? cmByDay : null, ads: hayAdsChart ? adsByDay : null,
+  }, { key: 'chart', series: window._chartSeries, toggle: 'toggleChartSeries' });
 
   } catch(e) { console.error('Chart error:', e); }
 }
@@ -4698,7 +4726,7 @@ function _initEvoControls() {
 }
 
 // Hover del gráfico de evolución diaria: marca el día señalado con un punto sobre cada
-// serie activa y muestra un cuadro con los valores. Los datos salen de window._chartDatos,
+// serie activa y muestra un cuadro con los valores. Los datos salen de window._chartDatosPor[key],
 // que arma buildEvolutionChart, así que acá no hay que repetir la geometría.
 function _chartFmtVal(tipo, v, pctSobre) {
   if (v == null) return '—';
@@ -4709,11 +4737,12 @@ function _chartFmtVal(tipo, v, pctSobre) {
   }
   if (tipo === 'pct')     return v.toFixed(1) + '%';
   if (tipo === 'ordenes') return Math.round(v).toLocaleString('es-AR') + (Math.round(v) === 1 ? ' orden' : ' órdenes');
+  if (tipo === 'unidades') return Math.round(v).toLocaleString('es-AR') + ' u.';
   return Math.round(v).toLocaleString('es-AR');
 }
 
-function chartHover(e, el) {
-  const D = window._chartDatos;
+function chartHover(e, el, key = 'chart') {
+  const D = (window._chartDatosPor || {})[key];
   if (!D) return;
   const svg = el.closest('svg');
   const rect = svg.getBoundingClientRect();
@@ -4726,13 +4755,13 @@ function chartHover(e, el) {
   const idx = Math.min(D.days - 1, Math.max(0, Math.floor((xVb - D.padL) / anchoCol)));
   const xPos = D.padL + (idx + 0.5) * anchoCol;
 
-  const linea = document.getElementById('chartHoverLine');
+  const linea = document.getElementById(key + 'HoverLine');
   if (linea) { linea.setAttribute('x1', xPos); linea.setAttribute('x2', xPos); }
 
   // Un punto por serie, en el valor de ese día. Los círculos se dibujan como elipses
   // porque el viewBox está estirado en Y y un <circle> saldría ovalado.
   const escalaY = rect.height > 0 ? (D.H / rect.height) : 1;
-  const dots = document.getElementById('chartHoverDots');
+  const dots = document.getElementById(key + 'HoverDots');
   if (dots) {
     dots.innerHTML = D.series.map(s => {
       const y = s.ys[idx];
@@ -4743,7 +4772,7 @@ function chartHover(e, el) {
   }
 
   // Cuadro con los valores del día
-  const box = document.getElementById('chartTipBox');
+  const box = document.getElementById(key + 'TipBox');
   if (box) {
     const facDia = D.facByDay ? D.facByDay[idx] : 0;
     box.innerHTML =
@@ -4766,12 +4795,12 @@ function chartHover(e, el) {
   }
 }
 
-function chartHoverOut() {
-  const linea = document.getElementById('chartHoverLine');
+function chartHoverOut(key = 'chart') {
+  const linea = document.getElementById(key + 'HoverLine');
   if (linea) { linea.setAttribute('x1', '-1'); linea.setAttribute('x2', '-1'); }
-  const dots = document.getElementById('chartHoverDots');
+  const dots = document.getElementById(key + 'HoverDots');
   if (dots) dots.innerHTML = '';
-  const box = document.getElementById('chartTipBox');
+  const box = document.getElementById(key + 'TipBox');
   if (box) box.style.display = 'none';
 }
 function toggleChartSeries(key) {
@@ -6899,6 +6928,14 @@ function renderPerfPublicaciones() {
   const el = document.getElementById('perfPubContent');
   if (!el) return;
 
+  // Con la ficha de una publicación abierta: si cambió el cliente se cierra (esa publicación
+  // es de otra cuenta); si cambió el período se recarga con el nuevo.
+  if (_pubDet && _pubDet.itemId) {
+    const c = getActiveClient(), r = getDateRange();
+    if (!c || c.id !== _pubDet.clientId) cerrarDetallePub();
+    else if (r.date_from !== _pubDet.from || r.date_to !== _pubDet.to) cargarDetallePub(false);
+  }
+
   // Recopilar by_product de todas las cuentas conectadas
   const connected = state.accounts.filter(a => a.data);
   if (!connected.length) {
@@ -7004,12 +7041,14 @@ function renderPerfPublicaciones() {
     const star = seg ? '★' : '☆';
     const starColor = seg ? '#FFD700' : 'var(--muted)';
     const clientId = p.cuenta ? state.accounts.find(a => a.name === p.cuenta)?.id : getActiveClient()?.id;
-    return `<tr style="border-bottom:1px solid var(--border);${idx%2===0?'background:rgba(255,255,255,.015)':''}">
-      <td style="padding:7px 6px;text-align:center;cursor:pointer;font-size:16px;color:${starColor}" title="${seg ? 'Quitar seguimiento' : 'Seguir esta publicación'}" onclick="toggleSeguimiento('${p.id}','${p.title.replace(/'/g,"\\'")}',${clientId})">${star}</td>
+    // Toda la fila abre la ficha de la publicación. La estrella, el MLA (copiar) y el ↗ (ir a
+    // ML) cortan la propagación para seguir haciendo lo suyo.
+    return `<tr onclick="abrirDetallePub('${p.id}')" title="Ver la ficha completa de la publicación" style="cursor:pointer;border-bottom:1px solid var(--border);${idx%2===0?'background:rgba(255,255,255,.015)':''}">
+      <td style="padding:7px 6px;text-align:center;cursor:pointer;font-size:16px;color:${starColor}" title="${seg ? 'Quitar seguimiento' : 'Seguir esta publicación'}" onclick="event.stopPropagation();toggleSeguimiento('${p.id}','${p.title.replace(/'/g,"\\'")}',${clientId})">${star}</td>
       <td style="padding:7px 10px;font-size:11px;white-space:nowrap">
-        <span style="color:var(--accent);font-weight:600;cursor:pointer" title="Click para copiar" onclick="copyMLA(this,'${p.id}')">${p.id}</span>
+        <span style="color:var(--accent);font-weight:600;cursor:pointer" title="Click para copiar" onclick="event.stopPropagation();copyMLA(this,'${p.id}')">${p.id}</span>
       </td>
-      <td style="padding:7px 10px;font-size:12px;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${p.title}"><a href="https://articulo.mercadolibre.com.ar/${p.id.replace(/^MLA(\d)/, 'MLA-$1')}" target="_blank" rel="noopener" style="color:var(--text);text-decoration:none" title="Abrir en ML">${p.title}</a></td>
+      <td style="padding:7px 10px;font-size:12px;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${p.title}"><a href="https://articulo.mercadolibre.com.ar/${p.id.replace(/^MLA(\d)/, 'MLA-$1')}" target="_blank" rel="noopener" onclick="event.stopPropagation()" style="color:var(--muted);text-decoration:none;margin-right:6px" title="Abrir en ML">↗</a>${p.title}</td>
       <td style="padding:7px 10px;text-align:right;font-size:12px;font-weight:700;color:#00e676">${(p.units||0).toLocaleString('es-AR')}</td>
       <td style="padding:7px 10px;text-align:right;font-size:12px;font-weight:700;color:var(--accent)">${fmt(p.revenue||0)}</td>
       <td style="padding:7px 10px;text-align:right;font-size:12px;font-weight:700;color:${trendColor}">${trendStr}</td>
@@ -7066,6 +7105,276 @@ function sortPerfPub(col) {
   if (_perfPubSort.col === col) _perfPubSort.asc = !_perfPubSort.asc;
   else { _perfPubSort.col = col; _perfPubSort.asc = false; }
   renderPerfPublicaciones();
+}
+
+// ── FICHA DE UNA PUBLICACIÓN ─────────────────────────────────────────────────
+// Se abre clickeando una fila de Performance → Publicaciones y ocupa la pestaña entera
+// (la tabla queda oculta, no se destruye: al volver sigue con su filtro y su scroll).
+// Todo sale de /api/publicacion/detalle con el período global. El gráfico es el mismo
+// del Dashboard (dibujarSerieDiaria), con unidades en vez de órdenes en las barras.
+// var y no const: renderPerfPublicaciones la consulta y puede correr antes de llegar acá.
+var _pubDet = { itemId: null, clientId: null, from: null, to: null, data: null, scrollY: 0, pedido: 0 };
+if (!window._pubChartSeries) window._pubChartSeries = { fac: true, ventas: true, visitas: true, conversion: true, cm: true, tacos: true };
+
+function abrirDetallePub(itemId) {
+  const client = getActiveClient();
+  if (!client) { showToast('Seleccioná un cliente primero'); return; }
+  _pubDet.itemId = itemId;
+  _pubDet.clientId = client.id;
+  _pubDet.scrollY = window.scrollY;
+  document.getElementById('perfPubContent').style.display = 'none';
+  document.getElementById('perfPubDetalle').style.display = '';
+  window.scrollTo(0, 0);
+  cargarDetallePub(false);
+}
+
+function cerrarDetallePub() {
+  _pubDet.itemId = null;
+  _pubDet.data = null;
+  const det = document.getElementById('perfPubDetalle');
+  if (det) { det.style.display = 'none'; det.innerHTML = ''; }
+  const tabla = document.getElementById('perfPubContent');
+  if (tabla) tabla.style.display = '';
+  window.scrollTo(0, _pubDet.scrollY || 0);
+}
+
+async function cargarDetallePub(force) {
+  const el = document.getElementById('perfPubDetalle');
+  if (!el || !_pubDet.itemId) return;
+  const { date_from, date_to } = getDateRange();
+  _pubDet.from = date_from; _pubDet.to = date_to;
+  // Si el usuario abre otra publicación mientras esta carga, la respuesta vieja se descarta.
+  const pedido = ++_pubDet.pedido;
+  const volver = `<button onclick="cerrarDetallePub()" class="sync-btn" style="font-size:12px;padding:6px 14px">← Publicaciones</button>`;
+  el.innerHTML = `<div style="margin-bottom:14px">${volver}</div>
+    <div style="color:var(--muted);font-size:13px;padding:60px;text-align:center">⏳ Armando la ficha de ${_pubDet.itemId}…<br>
+    <span style="font-size:11px">Órdenes, envíos, publicidad y visitas día por día. En una publicación de mucho volumen tarda unos segundos.</span></div>`;
+  try {
+    const d = await apiCall('GET', `/api/publicacion/detalle?client_id=${_pubDet.clientId}&item_id=${encodeURIComponent(_pubDet.itemId)}&date_from=${date_from}&date_to=${date_to}${force ? '&force=1' : ''}`);
+    if (pedido !== _pubDet.pedido || !_pubDet.itemId) return;
+    if (!d || d.error) throw new Error(d?.error || 'sin datos');
+    _pubDet.data = d;
+    renderDetallePub();
+  } catch (e) {
+    if (pedido !== _pubDet.pedido) return;
+    el.innerHTML = `<div style="margin-bottom:14px">${volver}</div>
+      <div style="color:#ff5252;font-size:13px;padding:40px;text-align:center">No se pudo armar la ficha: ${e.message}</div>`;
+  }
+}
+
+function togglePubChartSeries(key) {
+  window._pubChartSeries[key] = !window._pubChartSeries[key];
+  dibujarGraficoDetallePub();
+}
+
+function dibujarGraficoDetallePub() {
+  const d = _pubDet.data;
+  const chartEl = document.getElementById('pubDetChart');
+  if (!d || !chartEl) return;
+  const s = d.serie;
+  dibujarSerieDiaria(chartEl, document.getElementById('pubDetLegend'), {
+    fechas: s.fechas, fac: s.facturacion, ventas: s.unidades, visitas: s.visitas,
+    cm: s.cm, ads: d.publicidad.tiene_anuncio ? s.publicidad : null,
+  }, { key: 'pubDet', series: window._pubChartSeries, toggle: 'togglePubChartSeries', H: 260,
+       ventasNombre: 'Unidades', ventasTipo: 'unidades', ventasSufijo: ' u.' });
+}
+
+function renderDetallePub() {
+  const el = document.getElementById('perfPubDetalle');
+  const d = _pubDet.data;
+  if (!el || !d) return;
+  const esc = s => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  const $  = n => n == null ? '—' : (n < 0 ? '-$' : '$') + Math.round(Math.abs(n)).toLocaleString('es-AR');
+  const N  = n => n == null ? '—' : Math.round(n).toLocaleString('es-AR');
+  const P  = n => n == null ? '—' : n.toFixed(1).replace('.', ',') + '%';
+  const fecha = f => dART(f).toLocaleDateString('es-AR', { timeZone: ART_TZ, day: '2-digit', month: 'short' }).replace('.', '');
+  const T = d.totales, it = d.item || {};
+
+  const LOGISTICA = { fulfillment: 'FULL', self_service: 'Flex', cross_docking: 'Colecta', xd_drop_off: 'Punto de despacho', drop_off: 'Correo' };
+  const TIPO_PAGO = { credit_card: 'Tarjeta de crédito', debit_card: 'Tarjeta de débito', account_money: 'Dinero en cuenta',
+    ticket: 'Efectivo (Rapipago / Pago Fácil)', bank_transfer: 'Transferencia', digital_currency: 'Mercado Crédito',
+    prepaid_card: 'Tarjeta prepaga', 'sin dato': 'Sin dato' };
+  const colorModo = { FULL: '#00bcd4', FLEX: '#00e676', Correo: '#2196F3', 'Punto de entrega': '#a78bfa', 'Retiro en local': '#ff9100' };
+
+  // ── Encabezado ──
+  const chips = [
+    it.precio != null ? `<b style="color:var(--text)">${$(it.precio)}</b>${it.precio_original ? ` <s>${$(it.precio_original)}</s>` : ''}` : '',
+    it.stock != null ? `Stock ${N(it.stock)}` : '',
+    it.estado ? (it.estado === 'active' ? '🟢 Activa' : it.estado === 'paused' ? '⏸ Pausada' : esc(it.estado)) : '',
+    it.logistica ? (LOGISTICA[it.logistica] || esc(it.logistica)) : '',
+    it.tipo ? (it.tipo === 'gold_pro' ? 'Premium' : it.tipo === 'gold_special' ? 'Clásica' : esc(it.tipo)) : '',
+    it.catalogo ? 'Catálogo' : '',
+  ].filter(Boolean).map(c => `<span style="font-size:12px;color:var(--muted);padding:3px 9px;border:1px solid var(--border);border-radius:999px">${c}</span>`).join('');
+
+  // ── KPIs ──
+  const kpi = (label, valor, sub, color, tip) => `
+    <div title="${esc(tip || '')}" style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:12px 14px">
+      <div style="font-size:11px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.03em">${label}</div>
+      <div style="font-size:20px;font-weight:800;font-family:var(--font-b);color:${color || 'var(--text)'};margin-top:3px">${valor}</div>
+      <div style="font-size:11px;color:var(--muted);margin-top:2px">${sub || '&nbsp;'}</div>
+    </div>`;
+  const pu = d.publicidad, ca = d.cancelaciones, re = d.reclamos;
+  const cmColor = T.cm == null ? 'var(--muted)' : T.cm < 0 ? '#ff5252' : '#00c853';
+  const kpis = [
+    kpi('Facturación', $(T.facturacion), T.ticket_promedio ? `Ticket ${$(T.ticket_promedio)}` : '', '#FFD700'),
+    kpi('Unidades', N(T.unidades), `${N(T.ordenes)} órdenes`, '#00e676'),
+    kpi('Visitas', N(T.visitas), d.meta.visitas_recortadas ? 'ML da hasta 150 días' : '', '#6366f1'),
+    kpi('Conversión', P(T.conversion), 'unidades / visitas', '#22d3ee'),
+    kpi('Contrib. marginal', T.cm == null ? 'Sin costo' : $(T.cm), T.cm == null ? 'Cargá el costo en Rentabilidad' : `${P(T.cm_pct)} de la facturación`, cmColor,
+        'Facturación − comisión − CMV − envío − publicidad − IVA − IIBB − impuestos − reembolsos. Mismo criterio que el P&L por producto de Rentabilidad.'),
+    kpi('TACOS', pu.tiene_anuncio ? P(T.tacos) : '—', pu.tiene_anuncio ? `${$(T.publicidad)} de pauta` : 'Sin anuncio', '#ff9100',
+        'Inversión en publicidad de esta publicación / su facturación'),
+    kpi('Ventas por publicidad', pu.tiene_anuncio ? P(pu.pct_unidades_publi) : '—', pu.tiene_anuncio ? `${N(pu.unidades_directas)} u. después de un click` : 'Sin anuncio', '#f472b6',
+        'Unidades de esta publicación que ML atribuye a un click en su propio anuncio (ventas directas), sobre las unidades vendidas'),
+    kpi('Cancelaciones', P(ca.pct), `${N(ca.ordenes)} de ${N(d.meta.ordenes_totales)} órdenes`, ca.pct > 5 ? '#ff5252' : 'var(--text)'),
+    kpi('Ventas no concretadas', $(ca.monto), `${N(ca.unidades)} u. que se cayeron`, ca.monto > 0 ? '#ff5252' : 'var(--text)'),
+    kpi('Reclamos', re.sincronizado ? P(re.pct) : '—', re.sincronizado ? `${N(re.total)} casos${re.abiertos ? ` · ${re.abiertos} abiertos` : ''}` : 'Reclamos sin sincronizar',
+        re.pct > 3 ? '#ff5252' : 'var(--text)', 'Reclamos abiertos en el período sobre las órdenes del período'),
+  ].join('');
+
+  // ── Bloques ──
+  const card = (titulo, cuerpo, pie) => `
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px 18px">
+      <div style="font-size:13px;font-weight:700;font-family:var(--font-b);margin-bottom:12px">${titulo}</div>
+      ${cuerpo}
+      ${pie ? `<div style="font-size:11px;color:var(--muted);margin-top:10px;line-height:1.5">${pie}</div>` : ''}
+    </div>`;
+  const vacio = txt => `<div style="font-size:12px;color:var(--muted);padding:8px 0">${txt}</div>`;
+  const barras = (filas, colorDe) => filas.map(f => `
+    <div style="margin-bottom:8px">
+      <div style="display:flex;justify-content:space-between;gap:8px;font-size:12px;margin-bottom:3px">
+        <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(f.nombre)}">${esc(f.nombre)}</span>
+        <span style="white-space:nowrap;color:var(--muted)">${f.detalle || ''} <b style="color:var(--text)">${P(f.pct)}</b></span>
+      </div>
+      <div style="height:7px;background:var(--surface2);border-radius:4px;overflow:hidden">
+        <div style="height:100%;width:${Math.max(0, Math.min(100, f.pct || 0))}%;background:${colorDe ? colorDe(f) : 'var(--accent)'};border-radius:4px"></div>
+      </div>
+    </div>`).join('');
+
+  const envio = d.envio.length
+    ? barras(d.envio.map(e => ({ ...e, detalle: `${N(e.unidades)} u.` })), e => colorModo[e.nombre] || '#9c27b0')
+    : vacio('Sin ventas en el período.');
+
+  const pg = d.pago;
+  const pago = pg.un_pago.ordenes + pg.en_cuotas.ordenes === 0 ? vacio('Sin ventas en el período.') : `
+    <div style="display:flex;height:26px;border-radius:6px;overflow:hidden;margin-bottom:6px;font-size:11px;font-weight:700">
+      <div style="width:${pg.un_pago.pct || 0}%;background:#3b82f6;display:flex;align-items:center;justify-content:center;color:#fff;min-width:${pg.un_pago.pct ? 34 : 0}px">${pg.un_pago.pct ? P(pg.un_pago.pct) : ''}</div>
+      <div style="width:${pg.en_cuotas.pct || 0}%;background:#f59e0b;display:flex;align-items:center;justify-content:center;color:#111;min-width:${pg.en_cuotas.pct ? 34 : 0}px">${pg.en_cuotas.pct ? P(pg.en_cuotas.pct) : ''}</div>
+    </div>
+    <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--muted);margin-bottom:14px">
+      <span><span style="color:#3b82f6">■</span> 1 pago · ${N(pg.un_pago.ordenes)} órd.</span>
+      <span><span style="color:#f59e0b">■</span> En cuotas · ${N(pg.en_cuotas.ordenes)} órd.</span>
+    </div>
+    ${barras(pg.por_cuotas.filter(c => c.cuotas !== '1' && c.cuotas !== 'sin dato')
+        .map(c => ({ nombre: `${c.cuotas} cuotas`, pct: c.pct, detalle: `${N(c.ordenes)} órd.` })), () => '#f59e0b')}
+    <div style="font-size:11px;color:var(--muted);font-weight:600;margin:12px 0 8px">Medio de pago</div>
+    ${barras(pg.por_tipo.map(t => ({ nombre: TIPO_PAGO[t.nombre] || t.nombre, pct: t.pct, detalle: `${N(t.unidades)} u.` })), () => '#60a5fa')}`;
+
+  const publi = !pu.tiene_anuncio
+    ? vacio(pu.error ? 'ML no devolvió la publicidad de esta publicación.' : 'Esta publicación no tiene anuncio en Product Ads (o no tuvo actividad en el período).')
+    : `
+    ${barras([{ nombre: 'Unidades vendidas por su anuncio', pct: pu.pct_unidades_publi, detalle: `${N(pu.unidades_directas)} de ${N(T.unidades)} u.` }], () => '#f472b6')}
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px 16px;font-size:12px;margin-top:6px">
+      <div><span style="color:var(--muted)">Inversión</span><br><b>${$(pu.inversion)}</b></div>
+      <div><span style="color:var(--muted)">ACOS (según ML)</span><br><b>${P(pu.acos)}</b></div>
+      <div><span style="color:var(--muted)">Clicks</span><br><b>${N(pu.clicks)}</b></div>
+      <div><span style="color:var(--muted)">CTR</span><br><b>${P(pu.ctr)}</b></div>
+      <div><span style="color:var(--muted)">Impresiones</span><br><b>${N(pu.impresiones)}</b></div>
+      <div><span style="color:var(--muted)">Ventas indirectas</span><br><b>${N(pu.unidades_indirectas)} u.</b></div>
+    </div>`;
+  const publiPie = pu.tiene_anuncio
+    ? `Indirectas: otros productos que el comprador se llevó después del click — no cuentan en el %.${pu.datos_desde ? ` <b style="color:#ff9100">ML guarda la publicidad de los últimos 90 días: hay dato desde el ${fecha(pu.datos_desde)}, y el TACOS y el % se miden desde ahí.</b>` : ''}`
+    : '';
+
+  const zonas = (lista) => lista.length
+    ? barras(lista.slice(0, 8).map(z => ({ ...z, detalle: `${N(z.unidades)} u.` })), () => '#34d399')
+    : vacio('Sin ventas en el período.');
+
+  const cancel = `
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;font-size:12px;margin-bottom:12px">
+      <div><span style="color:var(--muted)">Canceladas</span><br><b style="font-size:16px">${N(ca.ordenes)}</b></div>
+      <div><span style="color:var(--muted)">% de las órdenes</span><br><b style="font-size:16px">${P(ca.pct)}</b></div>
+      <div><span style="color:var(--muted)">$ no concretado</span><br><b style="font-size:16px;color:${ca.monto > 0 ? '#ff5252' : 'var(--text)'}">${$(ca.monto)}</b></div>
+    </div>
+    ${ca.ordenes ? `<div style="font-size:11px;color:var(--muted);font-weight:600;margin-bottom:8px">Quién la cortó</div>
+      ${barras(ca.por_quien.map(q => ({ nombre: q.nombre, pct: q.ordenes / ca.ordenes * 100, detalle: `${q.ordenes}` })), () => '#f87171')}
+      <div style="font-size:11px;color:var(--muted);font-weight:600;margin:10px 0 8px">Motivo</div>
+      ${barras(ca.motivos.map(m => ({ nombre: m.nombre, pct: m.ordenes / ca.ordenes * 100, detalle: `${m.ordenes}` })), () => '#fb923c')}` : ''}`;
+  const cancelPie = `${ca.devoluciones_parciales ? `${ca.devoluciones_parciales} ${ca.devoluciones_parciales === 1 ? 'orden tuvo' : 'órdenes tuvieron'} devolución parcial (siguen contando como venta). ` : ''}Una cancelada no factura, pero ML igual cobra comisión, impuestos y envío: eso ya está restado en la contribución marginal.`;
+
+  const recl = !re.sincronizado
+    ? vacio('Los reclamos de este cliente todavía no se sincronizaron. Se bajan solos a las 05:00, o desde Reputación → Reclamos.')
+    : `
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;font-size:12px;margin-bottom:12px">
+      <div><span style="color:var(--muted)">Reclamos</span><br><b style="font-size:16px">${N(re.total)}</b></div>
+      <div><span style="color:var(--muted)">% de las órdenes</span><br><b style="font-size:16px">${P(re.pct)}</b></div>
+      <div><span style="color:var(--muted)">Afectan reputación</span><br><b style="font-size:16px;color:${re.afectan_reputacion ? '#ff5252' : 'var(--text)'}">${N(re.afectan_reputacion)}</b></div>
+    </div>
+    ${re.total ? barras(re.motivos.map(m => ({ nombre: m.nombre, pct: m.casos / re.total * 100, detalle: `${m.casos}` })), () => '#f87171') : ''}`;
+  const reclPie = re.sincronizado ? `Última sincronización: ${esc(re.sincronizado)}${re.incompleto ? ' · <b style="color:#ff9100">la última bajada vino incompleta</b>' : ''}.` : '';
+
+  // Cascada de la contribución marginal: en qué se va cada peso de la facturación.
+  const c = d.cascada;
+  const fila = (label, v, signo, fuerte) => {
+    const pctFac = c.facturacion > 0 && v != null ? v / c.facturacion * 100 : null;
+    return `<div style="display:flex;justify-content:space-between;gap:10px;padding:5px 0;font-size:12px;${fuerte ? 'font-weight:700' : ''}">
+      <span style="color:${fuerte ? 'var(--text)' : 'var(--muted)'}">${label}</span>
+      <span>${v == null ? '<span style="color:var(--muted)">sin costo</span>' : signo + $(Math.abs(v))}
+        <span style="color:var(--muted);font-weight:400;display:inline-block;min-width:48px;text-align:right">${pctFac == null ? '' : P(Math.abs(pctFac))}</span></span>
+    </div>`;
+  };
+  const cascada = `
+    ${fila('Facturación', c.facturacion, '', true)}
+    ${fila('Comisión ML', c.comision, '− ')}
+    ${fila('Costo de producto (CMV)', c.cmv, '− ')}
+    ${fila('Envío a cargo del vendedor', c.envio, '− ')}
+    ${fila('Publicidad', c.publicidad, '− ')}
+    ${fila('IVA (débito − crédito)', c.iva, c.iva < 0 ? '+ ' : '− ')}
+    ${fila('IIBB', c.iibb, '− ')}
+    ${c.impuestos ? fila('Impuestos retenidos por ML', c.impuestos, '− ') : ''}
+    ${c.reembolsos ? fila('Reembolsos', c.reembolsos, '− ') : ''}
+    ${c.cm == null ? `<div style="font-size:12px;color:#ff9100;padding-top:8px;border-top:1px solid var(--border);margin-top:4px">Sin costo cargado no hay contribución marginal: sería facturación menos comisiones, un número que no es de nadie.</div>`
+      : `<div style="display:flex;justify-content:space-between;padding-top:8px;border-top:1px solid var(--border);margin-top:4px;font-size:14px;font-weight:800">
+          <span>Contribución marginal</span><span style="color:${c.cm < 0 ? '#ff5252' : '#00c853'}">${$(c.cm)} <span style="font-size:12px">${P(T.cm_pct)}</span></span></div>`}`;
+  const cascadaPie = `Costo unitario ${d.costo.tiene_costo ? $(d.costo.costo_unit) : 'no cargado'} · IVA ${String(d.costo.alicuota_iva).replace('.', ',')}% · IIBB ${String(d.costo.tasa_iibb_pct).replace('.', ',')}%${d.costo.monotributista ? ' · monotributista (sin IVA)' : ''}. No incluye el Flex/FULL cargado a mano como gasto mensual: se reparte sobre toda la cuenta.`;
+
+  el.innerHTML = `
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap">
+      <button onclick="cerrarDetallePub()" class="sync-btn" style="font-size:12px;padding:6px 14px">← Publicaciones</button>
+      <span style="font-size:12px;color:var(--muted)">${fecha(d.desde)} → ${fecha(d.hasta)} · el período se cambia arriba, como en el resto del panel</span>
+      <button onclick="cargarDetallePub(true)" class="sync-btn" style="font-size:12px;padding:6px 14px;margin-left:auto"
+        title="${d.cache ? 'Calculada hace un rato: la ficha se guarda 30 minutos. Click para recalcular con lo último de ML.' : 'Recalcular con lo último de ML'}">🔄 ${d.cache ? 'Recalcular' : 'Actualizar'}</button>
+    </div>
+    <div style="display:flex;gap:16px;align-items:flex-start;margin-bottom:18px">
+      ${it.thumbnail ? `<img src="${esc(it.thumbnail.replace('http://', 'https://'))}" alt="" style="width:84px;height:84px;object-fit:contain;background:#fff;border-radius:10px;border:1px solid var(--border);flex:none">` : ''}
+      <div style="min-width:0">
+        <h2 style="margin:0 0 6px;font-family:var(--font-b);font-size:19px;line-height:1.3">${esc(it.titulo || d.item_id)}</h2>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+          <span style="font-size:12px;color:var(--accent);font-weight:600;cursor:pointer" title="Click para copiar" onclick="copyMLA(this,'${d.item_id}')">${d.item_id}</span>
+          ${it.permalink ? `<a href="${esc(it.permalink)}" target="_blank" rel="noopener" style="font-size:12px;color:var(--muted);text-decoration:none">↗ Ver en ML</a>` : ''}
+          ${chips}
+        </div>
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(165px,1fr));gap:10px;margin-bottom:16px">${kpis}</div>
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px 18px;margin-bottom:16px">
+      <div style="font-size:13px;font-weight:700;font-family:var(--font-b);margin-bottom:8px">📈 Evolución diaria</div>
+      <div id="pubDetChart" style="width:100%;height:260px;position:relative"></div>
+      <div id="pubDetLegend" style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px"></div>
+      <div style="font-size:11px;color:var(--muted);margin-top:8px">Barras = unidades · Conversión = unidades / visitas del día · Las visitas de ML ya incluyen los clicks de publicidad${T.cm == null ? ' · La contribución marginal aparece al cargar el costo del producto' : ''}</div>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:14px">
+      ${card('🚚 Forma de envío', envio, '% sobre unidades vendidas.')}
+      ${card('💳 Cuotas o un pago', pago, '% sobre órdenes concretadas. Las cuotas son las que eligió el comprador; si son sin interés las paga el vendedor y ya están dentro de la comisión.')}
+      ${card('📣 Publicidad de esta publicación', publi, publiPie)}
+      ${card('🗺️ Provincias donde más vende', zonas(d.zonas.provincias), '% sobre unidades vendidas.')}
+      ${card('🏙️ Ciudades donde más vende', zonas(d.zonas.ciudades), '% sobre unidades vendidas.')}
+      ${card('💰 Contribución marginal', cascada, cascadaPie)}
+      ${card('❌ Cancelaciones / ventas no concretadas', cancel, cancelPie)}
+      ${card('⚠️ Reclamos', recl, reclPie)}
+    </div>`;
+
+  dibujarGraficoDetallePub();
 }
 
 // ── SEGUIMIENTO DE PUBLICACIONES ─────────────────────────────────────────────

@@ -9982,6 +9982,14 @@ const reclamos = require('./backend_reclamos')(app, {
   fetchClaimsTodos
 });
 
+// Ficha de una publicación (Performance → Publicaciones) — módulo aparte
+// (backend_publicacion_detalle.js). Serie diaria, envío, cuotas, publi, zonas,
+// cancelaciones y reclamos de un solo MLA, con el criterio de CM del P&L por producto.
+require('./backend_publicacion_detalle')(app, {
+  pool, requireAuth, getClientToken, ML_API, ymd, ymdShift, mlFrom, mlTo,
+  fetchShippingCosts, repartirEnvioPorItem, ivaContenido, IVA_SERVICIOS_PCT, PYL_ESTADOS
+});
+
 // Auditoría de costos de envío — módulo aparte (backend_envios.js). Guarda cada envío
 // con lo que ML cobró y las medidas con que lo cobró, y lo compara contra la tabla.
 // Crea su tabla y programa su propio cron a las 04:00 ART.
