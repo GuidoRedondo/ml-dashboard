@@ -7254,6 +7254,9 @@ function renderDetallePub() {
   const dPct = (cur, prev, subeBien = true) => {
     if (!A || cur == null || prev == null) return '';
     if (prev === 0) return cur > 0 ? `<span style="color:var(--muted);font-weight:400">sin datos en el período anterior</span>` : '';
+    // Contra una base negativa (una CM que venía perdiendo) el % no dice nada: pasar de
+    // −$16.842 a +$864.349 daba "▲ 5232%". Se muestra el monto de antes.
+    if (prev < 0) return `<span style="color:${(cur > prev) === subeBien ? '#00c853' : '#ff5252'}">antes ${$(prev)}</span>`;
     return chipVar((cur - prev) / Math.abs(prev) * 100, '%', subeBien);
   };
   const dPts = (cur, prev, subeBien = true, texto) =>
