@@ -7198,7 +7198,7 @@ function renderDetallePub() {
 
   // ── Encabezado ──
   const chips = [
-    it.precio != null ? `<b style="color:var(--text)">${$(it.precio)}</b>${it.precio_original ? ` <s>${$(it.precio_original)}</s>` : ''}` : '',
+    it.precio != null ? `<b style="color:var(--text)">${$(it.precio)}</b>${it.precio_original > it.precio ? ` <s>${$(it.precio_original)}</s>` : ''}` : '',
     it.stock != null ? `Stock ${N(it.stock)}` : '',
     it.estado ? (it.estado === 'active' ? '🟢 Activa' : it.estado === 'paused' ? '⏸ Pausada' : esc(it.estado)) : '',
     it.logistica ? (LOGISTICA[it.logistica] || esc(it.logistica)) : '',

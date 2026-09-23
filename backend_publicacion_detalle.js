@@ -40,6 +40,9 @@
 //  Sin costo cargado la CM no se calcula (sería un número inventado).
 
 const fetch = require('node-fetch');
+// El motivo del reclamo se guarda como código de ML (broken_item…): se traduce con el mismo
+// diccionario que usa la sección Reclamos.
+const { legible: motivoReclamo } = require('./backend_reclamos');
 
 const DIAS_HISTORIA_ADS = 90; // PADS no responde fechas más viejas que esto
 const MAX_DIAS_VISITAS = 150; // tope de /items/{id}/visits/time_window?last=
@@ -308,7 +311,7 @@ module.exports = (app, deps) => {
           ORDER BY fecha DESC`,
         [clientId, desde, hasta, itemId, orderIds]).catch(() => ({ rows: [] }));
       const recMotivos = {};
-      rec.rows.forEach(r => { const k = r.motivo || 'Sin motivo'; recMotivos[k] = (recMotivos[k] || 0) + 1; });
+      rec.rows.forEach(r => { const k = motivoReclamo(r.motivo) || 'Sin motivo'; recMotivos[k] = (recMotivos[k] || 0) + 1; });
 
       // ── Totales ───────────────────────────────────────────────────────────────
       const tot = a => a.reduce((t, v) => t + v, 0);
