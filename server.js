@@ -6294,7 +6294,7 @@ app.get('/api/reporte/items-vendidos', requireAuth, async (req, res) => {
 //       estado, así que ahora se busca sin filtro y se filtra en el server)
 //   5 → la publicidad por producto ya no suma la misma métrica una vez por campaña
 //       (ver dedupAdsPorItem): venía inflada ~25%. Suma la antigüedad de las fotos.
-const MARGEN_CALC_VERSION = 6;
+const MARGEN_CALC_VERSION = 7;
 
 // Proporción CMV/facturación de los productos con costo cargado. Es la base para estimar
 // el CMV de los que no lo tienen (P&L y detalle por publicación usan la misma). null si
@@ -6486,6 +6486,22 @@ async function calcularMargenRealPorMla(client_id, date_from, date_to) {
   // marcado como estimado; si no hay ningún costo cargado no se estima nada.
   const ratioCmv = cmvRatioCubierto(Object.values(byMla), costsMap);
 
+  // Factura de ML (si el período está sincronizado): mismo IIBB y mismos costos FULL que
+  // el P&L, para que la suma de las filas cierre contra él. El IIBB facturado se reparte
+  // a la tasa efectiva (facturado / facturación); los costos FULL (almacenamiento, colecta,
+  // stock antiguo) sobre las unidades que salieron por FULL, o por facturación si no hubo.
+  let bill = null;
+  try { bill = await billing.resumenParaPyL(pool, parseInt(client_id), date_from, date_to); } catch (e) {}
+  const billOk = !!(bill && bill.disponible);
+  const factTotal = Object.values(byMla).reduce((s, m) => s + m.revenue, 0);
+  const iibbFacturado = (billOk && bill.percepciones_iibb.lineas > 0) ? bill.percepciones_iibb.total : null;
+  const tasaIibbUsada = iibbFacturado != null && factTotal > 0 ? iibbFacturado / factTotal * 100 : tasaIibb;
+  const costosFull = billOk ? (bill.costos_full.total || 0) : 0;
+  const totUnidFull = Object.values(byMla).reduce((s, m) => s + m.units_full, 0);
+  const fullDe = m => costosFull <= 0 ? 0
+    : totUnidFull > 0 ? costosFull * m.units_full / totUnidFull
+    : (factTotal > 0 ? costosFull * m.revenue / factTotal : 0);
+
   // Calcular P&L real por SKU
   const items = Object.values(byMla).map(m => {
     const fact = m.revenue, com = m.sale_fee;
@@ -6496,22 +6512,23 @@ async function calcularMargenRealPorMla(client_id, date_from, date_to) {
     const envFlex = Math.round(m.ingreso_envio_flex);
     const cupon   = Math.round(m.cupon_vendedor);
     const flexImp = Math.round((m.units_full + m.units_flex) * flexU);
+    const fullImp = Math.round(fullDe(m));
     const ads   = adsByItem[m.mla_id] || null;
     const publi = Math.round(ads?.cost || 0);
     const alic = alicMap[m.mla_id] ?? 21;
     // Débito sobre la venta y crédito sobre el CMV a la alícuota del producto; comisión,
     // envío y flex son servicios → 21%. El envío Flex que cobra el vendedor también es venta.
     const ivaV = esMonotrib ? 0 : ivaContenido(fact, alic) + ivaContenido(envFlex, IVA_SERVICIOS_PCT);
-    const ivaC = esMonotrib ? 0 : ivaContenido(cmv, alic) + ivaContenido(com + envReal + flexImp, IVA_SERVICIOS_PCT);
+    const ivaC = esMonotrib ? 0 : ivaContenido(cmv, alic) + ivaContenido(com + envReal + flexImp + fullImp, IVA_SERVICIOS_PCT);
     const ivaDif = Math.round(ivaV - ivaC);
-    const iibb = Math.round(fact * (tasaIibb/100));
+    const iibb = Math.round(fact * (tasaIibbUsada/100));
     const impuestos  = Math.round(m.impuestos);    // impuestos que ML retiene en la operación
     const reembolsos = Math.round(m.reembolsos);   // plata devuelta al comprador
-    const margen = Math.round(fact + envFlex - com - cmv - envReal - flexImp - publi - ivaDif - iibb - impuestos - reembolsos - cupon);
+    const margen = Math.round(fact + envFlex - com - cmv - envReal - flexImp - fullImp - publi - ivaDif - iibb - impuestos - reembolsos - cupon);
     return {
       mla_id: m.mla_id, title: m.title, sku: skuMap[m.mla_id] || null, units: m.units, revenue: fact,
       sale_fee: Math.round(com), cmv_total: Math.round(cmv), has_cost: hasCost, cmv_estimado: cmvEstimado,
-      envio_real: envReal, ingreso_envio_flex: envFlex, flex_imp: flexImp, publi_real: publi,
+      envio_real: envReal, ingreso_envio_flex: envFlex, flex_imp: flexImp, costos_full: fullImp, publi_real: publi,
       cupon_vendedor: cupon, iva_dif: ivaDif, iibb,
       impuestos, reembolsos,
       fotos_ultima_fecha: m.fecha_fotos ? ymd(m.fecha_fotos) : null,
@@ -6545,6 +6562,10 @@ async function calcularMargenRealPorMla(client_id, date_from, date_to) {
             skus_que_pierden: items.filter(i=>i.margen_real<0).length,
             ordenes_canceladas: canceladas,
             cmv_ratio_estimacion: ratioCmv,
+            factura_sincronizada: billOk,
+            iibb_fuente: iibbFacturado != null ? 'facturado' : 'estimado',
+            tasa_iibb_usada_pct: +tasaIibbUsada.toFixed(3),
+            costos_full: Math.round(costosFull),
             cupones_vendedor: Math.round(cupones.total),
             cupones_pagos_consultados: cuponesRaw.consultados,
             cupones_pagos_sin_respuesta: cuponesRaw.consultados - cuponesRaw.respondidos,
@@ -7709,8 +7730,11 @@ app.get('/api/reporte/pyl', requireAuth, async (req, res) => {
     const iibb        = iibb_facturado != null ? iibb_facturado : iibb_estimado;
     const iibb_fuente = iibb_facturado != null ? 'facturado' : (tasaIibb > 0 ? 'estimado' : 'sin_datos');
 
-    // Percepciones de IVA: no son un costo, son plata que ML ya retuvo a cuenta del
-    // IVA. Van descontadas del IVA a pagar, no sumadas a los egresos.
+    // Percepciones de IVA: plata que ML ya retuvo a cuenta del IVA. Se descuentan de lo
+    // que queda por depositar, pero NO del costo: la carga de IVA del período es el débito
+    // menos el crédito, y una parte ya salió como percepción. Antes el P&L restaba sólo
+    // lo que faltaba depositar y las percepciones no aparecían en ningún lado (en
+    // REDFISHOK, ago-2026, $808.585 de costo que no figuraba).
     const percepciones_iva = billOk ? bill.percepciones_iva.total : 0;
 
     // ── P&L ───────────────────────────────────────────────────────────────────
@@ -7725,10 +7749,12 @@ app.get('/api/reporte/pyl', requireAuth, async (req, res) => {
     // igual que la comisión y el envío.
     const iva_ventas   = esMonotributista ? 0 : iva_debito_productos + ivaContenido(Math.max(0, facturacion - revenue_productos) + ingreso_envio_comprador, IVA_SERVICIOS_PCT);
     const iva_compras  = esMonotributista ? 0 : iva_credito_cmv + ivaContenido(egreso_comision + egreso_envio_total + costos_full, IVA_SERVICIOS_PCT);
-    // Las percepciones sufridas se descuentan de lo que hay que depositar. Si superan
-    // el IVA del período no se pierden: quedan como saldo a favor para el mes que viene.
+    // iva_neto (el que entra al total) = débito − crédito. Las percepciones sufridas sólo
+    // cambian cuánto queda por depositar (iva_a_depositar); si superan el IVA del período
+    // quedan como saldo a favor para el mes que viene.
     const iva_antes_perc = esMonotributista ? 0 : Math.max(0, iva_ventas - iva_compras);
-    const iva_neto       = esMonotributista ? 0 : Math.max(0, iva_antes_perc - percepciones_iva);
+    const iva_neto       = iva_antes_perc;
+    const iva_a_depositar = esMonotributista ? 0 : Math.max(0, iva_antes_perc - percepciones_iva);
     const iva_saldo_favor = esMonotributista ? 0 : Math.max(0, percepciones_iva - iva_antes_perc);
 
     // IVA + IIBB + costos de FULL forman parte de los egresos ML → afectan el Resultado Neto ML
@@ -7772,7 +7798,8 @@ app.get('/api/reporte/pyl', requireAuth, async (req, res) => {
         iva_antes_percepciones: iva_antes_perc,
         percepciones_iva,
         iva_saldo_favor,
-        iva_neto,
+        iva_neto,           // carga de IVA del período (débito − crédito): entra al total
+        iva_a_depositar,    // iva_neto menos las percepciones que ML ya retuvo
         // `iibb` es el que entra al total: el facturado si hay factura sincronizada, si no
         // el estimado por la tasa del cliente (iibb_fuente='estimado'). 'sin_datos' = el
         // cliente no tiene tasa cargada y va en 0: el front tiene que avisarlo.

@@ -7797,6 +7797,7 @@ function _lqpCols() {
     { key: 'reembolsos',label: 'Reembolsos',     tipo: 'money', w: 12, costo: true, soloExcel: true },
     { key: 'units_canceladas',  label: 'U. canceladas',        tipo: 'num',   w: 14, soloExcel: true },
     { key: 'cupon_vendedor', label: 'Cupón vendedor', tipo: 'money', w: 16, costo: true, soloExcel: true },
+    { key: 'costos_full', label: 'Costos FULL (factura)', tipo: 'money', w: 18, costo: true, soloExcel: true },
     { key: 'ingreso_envio_flex', label: 'Envío Flex cobrado', tipo: 'money', w: 18, soloExcel: true },
     { key: 'margen_sin_publi',     label: 'Margen antes de pauta', labelUI: 'Antes de pauta', tipo: 'money', w: 20, sub: true },
     { key: 'margen_sin_publi_pct', label: '% antes de pauta', tipo: 'pct',   w: 15, sub: true, soloExcel: true },
@@ -7997,7 +7998,7 @@ function exportLoQuePasoExcel() {
   const factT = sum('revenue'), cmT = sum('margen_real');
   const tot = { '#': '', 'MLA': 'TOTAL', 'SKU': '', 'Producto': `${items.length} productos` };
   ['units','units_full','units_flex','revenue','sale_fee','cmv_total','envio_real','flex_imp',
-   'iva_dif','iibb','impuestos','reembolsos','cupon_vendedor','ingreso_envio_flex','units_canceladas',
+   'iva_dif','iibb','impuestos','reembolsos','cupon_vendedor','costos_full','ingreso_envio_flex','units_canceladas',
    'margen_sin_publi','publi_real','margen_real','publi_ingresos_ml']
     .forEach(k => { const c = cols.find(x => x.key === k); if (c) tot[c.label] = Math.round(sum(k)); });
   tot['Ticket prom.']      = items.length ? Math.round(factT / sum('units') || 0) : '';
@@ -8026,7 +8027,8 @@ function exportLoQuePasoExcel() {
     ['Flex/FULL', `Bolo manual de gastos fijos repartido solo sobre unidades FULL/FLEX — $${Math.round(meta.flex_por_unidad_ff || 0).toLocaleString('es-AR')} por unidad (${meta.unidades_full_flex || 0} u)`],
     ['Publicidad', 'Inversión real de Product Ads (PADS) por publicación'],
     ['IVA', meta.es_monotributista ? 'Monotributista: IVA = 0' : 'Débito a la alícuota del producto − crédito de CMV y servicios ML (21%)'],
-    ['IIBB', `Estimado ${meta.tasa_iibb_pct || 0}% sobre facturación`],
+    ['IIBB', meta.iibb_fuente === 'facturado' ? `Percepciones facturadas por ML, repartidas a ${meta.tasa_iibb_usada_pct}% de la facturación` : `Estimado ${meta.tasa_iibb_pct || 0}% sobre facturación`],
+    ['Costos FULL', meta.factura_sincronizada ? `De la factura de ML: $${Math.round(meta.costos_full || 0).toLocaleString('es-AR')}, repartidos sobre las unidades FULL` : 'Factura del período sin sincronizar: no entran'],
     ['Sin CMV', `${(window._lqpData.items || []).filter(i => !i.has_cost).length} productos sin costo cargado: CMV estimado a la proporción costo/facturación de los que sí lo tienen${meta.cmv_ratio_estimacion != null ? ' (' + (meta.cmv_ratio_estimacion * 100).toFixed(1) + '%)' : ''}`],
   ];
   const ws2 = XLSX.utils.aoa_to_sheet(supuestos);
@@ -12812,6 +12814,7 @@ function desgloseGananciaHTML(p) {
     { label: p.cmv_estimado ? 'CMV (estimado)' : 'CMV', val: p.cmv_total,  color: '#ff9100', tip: p.cmv_estimado ? 'Sin costo cargado: se estimó con la proporción costo/facturación de los productos que sí lo tienen. Cargá el costo para que sea real.' : 'Costo de la mercadería vendida (costo unitario × unidades)' },
     { label: 'Envío real',      val: p.envio_real, color: '#22d3ee', tip: 'Costo de envío que pagó el vendedor. Se imputa al producto que gatilla el envío gratis (precio ≥ $33.000): si viajó de arrastre en un carrito, no carga envío. Lo que paga el comprador nunca se imputa acá.' },
     { label: 'Flex/FULL',       val: p.flex_imp,   color: '#0e7490', tip: 'Bolo manual de Flex/FULL repartido solo sobre las unidades FULL/FLEX' },
+    { label: 'Costos FULL (factura)', val: p.costos_full || 0, color: '#155e75', tip: 'Almacenamiento, colecta y stock antiguo de FULL según la factura de ML, repartidos sobre las unidades que salieron por FULL' },
     { label: 'IVA neto',        val: p.iva_dif,    color: '#a78bfa', tip: 'IVA débito de la venta menos el crédito del CMV y de los servicios de ML' },
     { label: 'IIBB',            val: p.iibb,       color: '#6366f1', tip: 'Ingresos brutos estimados sobre la facturación' },
     { label: 'Impuestos ML',    val: p.impuestos,  color: '#f472b6', tip: 'Impuestos que ML retiene en la operación' },
@@ -18693,7 +18696,7 @@ function renderComparacion(data, mes_a, mes_b) {
             ${hay(a?.egresos_ml?.impuestos, b?.egresos_ml?.impuestos) ? row('Impuestos / retenciones', a?.egresos_ml?.impuestos, b?.egresos_ml?.impuestos, diff?.imp_operacion, true, false, false, factA, factB) : ''}
             ${hay(a?.egresos_ml?.reembolsos, b?.egresos_ml?.reembolsos) ? row('Reembolsos', a?.egresos_ml?.reembolsos, b?.egresos_ml?.reembolsos, diff?.reembolsos, true, false, false, factA, factB) : ''}
             ${hay(a?.egresos_ml?.cupones_vendedor, b?.egresos_ml?.cupones_vendedor) ? row('Cupones del vendedor', a?.egresos_ml?.cupones_vendedor, b?.egresos_ml?.cupones_vendedor, null, true, false, false, factA, factB) : ''}
-            ${hay(ivaNetoA, ivaNetoB) ? row('IVA neto a pagar', ivaNetoA, ivaNetoB, diff?.iva_neto, true, false, false, factA, factB) : ''}
+            ${hay(ivaNetoA, ivaNetoB) ? row('IVA neto', ivaNetoA, ivaNetoB, diff?.iva_neto, true, false, false, factA, factB) : ''}
             ${hay(iibbPyl(a), iibbPyl(b)) ? row(iibbLbl, iibbPyl(a), iibbPyl(b), diff?.iibb, true, false, false, factA, factB) : ''}
             ${row('TOTAL EGRESOS ML',         a?.egresos_ml?.total,         b?.egresos_ml?.total,         diff?.total_egresos_ml, false, true, false, factA, factB)}
             ${row('RESULTADO NETO ML',        a?.resultado_neto_ml,         b?.resultado_neto_ml,         diff?.resultado_neto, false, true, true, factA, factB)}
@@ -18816,7 +18819,7 @@ function descargarComparacionPDF(mes_a, mes_b) {
       ${hay(a?.egresos_ml?.impuestos, b?.egresos_ml?.impuestos) ? R('Impuestos / retenciones', a?.egresos_ml?.impuestos, b?.egresos_ml?.impuestos, diff?.imp_operacion, {indent:true, pos:false, pctFact:true}) : ''}
       ${hay(a?.egresos_ml?.reembolsos, b?.egresos_ml?.reembolsos) ? R('Reembolsos', a?.egresos_ml?.reembolsos, b?.egresos_ml?.reembolsos, diff?.reembolsos, {indent:true, pos:false, pctFact:true}) : ''}
       ${hay(a?.egresos_ml?.cupones_vendedor, b?.egresos_ml?.cupones_vendedor) ? R('Cupones del vendedor', a?.egresos_ml?.cupones_vendedor, b?.egresos_ml?.cupones_vendedor, null, {indent:true, pos:false, pctFact:true}) : ''}
-      ${hay(ivaNetoA, ivaNetoB) ? R('IVA neto a pagar', ivaNetoA, ivaNetoB, diff?.iva_neto, {indent:true, pos:false, pctFact:true}) : ''}
+      ${hay(ivaNetoA, ivaNetoB) ? R('IVA neto', ivaNetoA, ivaNetoB, diff?.iva_neto, {indent:true, pos:false, pctFact:true}) : ''}
       ${hay(iibbPyl(a), iibbPyl(b)) ? R(iibbLbl, iibbPyl(a), iibbPyl(b), diff?.iibb, {indent:true, pos:false, pctFact:true}) : ''}
       ${R('TOTAL EGRESOS ML', a?.egresos_ml?.total, b?.egresos_ml?.total, diff?.total_egresos_ml, {bold:true, pos:false, pctFact:true})}
       ${R('RESULTADO NETO ML', a?.resultado_neto_ml, b?.resultado_neto_ml, diff?.resultado_neto, {bold:true, pctFact:true})}
@@ -19376,8 +19379,8 @@ function renderPyL(pyl) {
         ${pyl.egresos_ml.impuestos ? detalleRow('Impuestos / retenciones', pyl.egresos_ml.impuestos, pyl.ingresos.facturacion) : ''}
         ${pyl.egresos_ml.reembolsos ? detalleRow('Reembolsos', pyl.egresos_ml.reembolsos, pyl.ingresos.facturacion) : ''}
         ${pyl.egresos_ml.cupones_vendedor ? detalleRow('Cupones del vendedor', pyl.egresos_ml.cupones_vendedor, pyl.ingresos.facturacion) : ''}
-        ${pyl.egresos_ml.iva_neto ? detalleRow('IVA neto a pagar', pyl.egresos_ml.iva_neto, pyl.ingresos.facturacion) : ''}
-        ${pyl.egresos_ml.percepciones_iva > 0 ? `<div style="padding:4px 12px 6px 28px;font-size:11px;color:var(--muted)">└ ya descontadas percepciones de IVA por $${Math.round(pyl.egresos_ml.percepciones_iva).toLocaleString('es-AR')}${
+        ${pyl.egresos_ml.iva_neto ? detalleRow('IVA neto (débito − crédito)', pyl.egresos_ml.iva_neto, pyl.ingresos.facturacion) : ''}
+        ${pyl.egresos_ml.percepciones_iva > 0 ? `<div style="padding:4px 12px 6px 28px;font-size:11px;color:var(--muted)">└ de eso, ML ya retuvo $${Math.round(pyl.egresos_ml.percepciones_iva).toLocaleString('es-AR')} como percepciones${pyl.egresos_ml.iva_a_depositar != null ? ` · queda por depositar $${Math.round(pyl.egresos_ml.iva_a_depositar).toLocaleString('es-AR')}` : ''}${
           pyl.egresos_ml.iva_saldo_favor > 0 ? ` · saldo a favor $${Math.round(pyl.egresos_ml.iva_saldo_favor).toLocaleString('es-AR')}` : ''
         }</div>` : ''}
         ${iibbPyl(pyl) > 0 ? detalleRow(iibbLabel(pyl), iibbPyl(pyl), pyl.ingresos.facturacion) : ''}
@@ -19503,7 +19506,7 @@ async function exportarReporteExcel() {
     ...(pyl.egresos_ml.reembolsos ? [['Reembolsos', -pyl.egresos_ml.reembolsos]] : []),
     ...(pyl.egresos_ml.cupones_vendedor ? [['Cupones del vendedor', -pyl.egresos_ml.cupones_vendedor]] : []),
     ...(pyl.egresos_ml.iva_neto ? [
-      ['IVA neto a pagar', -pyl.egresos_ml.iva_neto],
+      ['IVA neto (débito − crédito)', -pyl.egresos_ml.iva_neto],
       ['   └ IVA ventas (débito fiscal)', '', -(pyl.iva?.ventas ?? 0)],
       ['   └ IVA compras acreditable', '', pyl.iva?.compras ?? 0],
       ...(pyl.egresos_ml.percepciones_iva > 0
