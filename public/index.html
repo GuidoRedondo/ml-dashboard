@@ -6924,6 +6924,23 @@ function exportCicloVidaExcel() {
   XLSX.writeFile(wb, `CicloVida_${(client?.name||'cliente').replace(/\s+/g,'_')}_${fecha}.xlsx`);
 }
 
+// Precio actual de cada publicación (con promo) y el de lista tachado. Se piden aparte de
+// /api/dashboard porque es una llamada a ML por publicación: la tabla se dibuja enseguida con
+// "…" en la columna y se vuelve a dibujar cuando llegan. Clave `${clientId}:${MLA}`.
+window._perfPrecios = window._perfPrecios || {};
+const _perfPreciosPedidos = new Set();
+async function cargarPreciosPerfPub(porCliente) {
+  const pedidos = Object.entries(porCliente).map(async ([clientId, ids]) => {
+    const faltan = ids.filter(id => !_perfPreciosPedidos.has(`${clientId}:${id}`));
+    if (!faltan.length) return false;
+    faltan.forEach(id => _perfPreciosPedidos.add(`${clientId}:${id}`));
+    const r = await apiCall('POST', '/api/performance/precios', { client_id: parseInt(clientId), ids: faltan }).catch(() => null);
+    faltan.forEach(id => { window._perfPrecios[`${clientId}:${id}`] = r?.precios?.[id] || null; });
+    return true;
+  });
+  if ((await Promise.all(pedidos)).some(Boolean) && _perfActiveTab === 'publicaciones') renderPerfPublicaciones();
+}
+
 function renderPerfPublicaciones() {
   const el = document.getElementById('perfPubContent');
   if (!el) return;
@@ -6951,7 +6968,7 @@ function renderPerfPublicaciones() {
   connected.forEach(acc => {
     const bp = acc.data?.rentabilidad?.by_product;
     if (!bp) return;
-    bp.forEach(p => { allProducts.push({ ...p, cuenta: acc.name }); });
+    bp.forEach(p => { allProducts.push({ ...p, cuenta: acc.name, client_id: acc.id }); });
   });
 
   // Calcular totales para % del total
@@ -6984,6 +7001,15 @@ function renderPerfPublicaciones() {
     // Si no hay data por modo, no filtrar (mostrar todos)
     if (modeItemIds.size > 0) allProducts = allProducts.filter(p => modeItemIds.has(p.id));
   }
+
+  // Precio actual: lo que ya llegó se adjunta; lo que falta se pide en segundo plano
+  const porCliente = {};
+  allProducts.forEach(p => {
+    const k = `${p.client_id}:${p.id}`;
+    if (k in window._perfPrecios) { p.precio = window._perfPrecios[k]?.precio ?? null; p.precio_lista = window._perfPrecios[k]?.precio_lista ?? null; }
+    else (porCliente[p.client_id] = porCliente[p.client_id] || []).push(p.id);
+  });
+  if (Object.keys(porCliente).length) cargarPreciosPerfPub(porCliente);
 
   // Ordenar — pct_total y stock son calculados
   const { col, asc } = _perfPubSort;
@@ -7030,6 +7056,16 @@ function renderPerfPublicaciones() {
     </button>`;
   }).join('');
 
+  // Precio de hoy; si hay promo, el de lista tachado arriba y el % de descuento
+  const precioCell = p => {
+    if (!(`${p.client_id}:${p.id}` in window._perfPrecios)) return '<span style="color:var(--muted)">…</span>';
+    if (p.precio == null) return '<span style="color:var(--muted)">—</span>';
+    if (!p.precio_lista) return `<span style="font-weight:700">${fmt(p.precio)}</span>`;
+    const off = Math.round((1 - p.precio / p.precio_lista) * 100);
+    return `<div style="font-size:10px;color:var(--muted);text-decoration:line-through;line-height:1.1">${fmt(p.precio_lista)}</div>`
+         + `<div style="font-weight:700">${fmt(p.precio)} <span style="font-size:10px;color:#00e676">${off}% OFF</span></div>`;
+  };
+
   const rows = allProducts.map((p, idx) => {
     const stock = stockMap[p.id];
     const stockStr = stock == null ? '—' : stock.toLocaleString('es-AR');
@@ -7050,6 +7086,7 @@ function renderPerfPublicaciones() {
         <span style="color:var(--accent);font-weight:600;cursor:pointer" title="Click para copiar" onclick="event.stopPropagation();copyMLA(this,'${p.id}')">${p.id}</span>
       </td>
       <td style="padding:7px 10px;font-size:12px;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${p.title}"><a href="https://articulo.mercadolibre.com.ar/${p.id.replace(/^MLA(\d)/, 'MLA-$1')}" target="_blank" rel="noopener" onclick="event.stopPropagation()" style="color:var(--muted);text-decoration:none;margin-right:6px" title="Abrir en ML">↗</a>${p.title}</td>
+      <td style="padding:7px 10px;text-align:right;font-size:12px;white-space:nowrap">${precioCell(p)}</td>
       <td style="padding:7px 10px;text-align:right;font-size:12px;font-weight:700;color:#00e676">${(p.units||0).toLocaleString('es-AR')}</td>
       <td style="padding:7px 10px;text-align:right;font-size:12px;font-weight:700;color:var(--accent)">${fmt(p.revenue||0)}</td>
       <td style="padding:7px 10px;text-align:right;font-size:12px;font-weight:700;color:${trendColor}">${trendStr}</td>
@@ -7088,6 +7125,7 @@ function renderPerfPublicaciones() {
             <th style="padding:9px 6px;text-align:center;font-size:11px;font-weight:600;color:var(--muted);position:sticky;top:0;background:var(--surface2);z-index:2">★</th>
             ${th('id',        'MLA',          'left')}
             ${th('title',     'Título',       'left')}
+            ${th('precio',    'Precio')}
             ${th('units',     'Unidades')}
             ${th('revenue',   'Facturación')}
             ${th('trend_pct', 'vs anterior')}
@@ -13608,6 +13646,8 @@ function exportPerfPublicacionesExcel() {
     'MLA': p.id,
     'Título': p.title || '',
     'Cuenta': p.cuenta || '',
+    'Precio actual': p.precio != null ? _xR(p.precio) : '',
+    'Precio de lista (tachado)': p.precio_lista != null ? _xR(p.precio_lista) : '',
     'Unidades': _xR(p.units),
     'Facturación': _xR(p.revenue),
     'vs período anterior %': p.trend_pct != null ? _xD(p.trend_pct) : '',
@@ -13618,7 +13658,7 @@ function exportPerfPublicacionesExcel() {
     'En seguimiento': window._seguimientoMap?.[p.id] ? 'Sí' : 'No',
   }));
   _xlsxSave(
-    [{ name: 'Publicaciones', rows, cols: [16, 50, 18, 11, 15, 20, 12, 11, 13, 22, 14] }],
+    [{ name: 'Publicaciones', rows, cols: [16, 50, 18, 13, 22, 11, 15, 20, 12, 11, 13, 22, 14] }],
     _perfFileName('Performance_Publicaciones')
   );
 }

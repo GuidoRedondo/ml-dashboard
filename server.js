@@ -6628,6 +6628,53 @@ app.get('/api/reporte/margen-real-producto', requireAuth, async (req, res) => {
 // Cachea 12h en margen_producto_cache porque el cálculo pide el costo de cada envío a ML
 // (1-2 min). ?solo_cache=1 responde solo si hay cache fresco (para no colgar el render inicial);
 // ?force_refresh=1 recalcula.
+// Precio que ve hoy el comprador en cada publicación de Performance → Publicaciones: el de
+// la promo aplicada y el de lista tachado. Sale de /items/{id}/sale_price (original_price
+// miente: viene igual al precio aunque haya campaña). Es una llamada por publicación, así que
+// va aparte de /api/dashboard (no la frena) y se cachea en memoria 1h por publicación.
+const _precioPubCache = new Map();   // `${clientId}:${itemId}` → { at, data }
+const PRECIO_PUB_TTL = 60 * 60 * 1000;
+app.post('/api/performance/precios', requireAuth, async (req, res) => {
+  try {
+    const clientId = parseInt(req.body?.client_id);
+    const ids = [...new Set((req.body?.ids || []).filter(id => /^MLA\d+$/.test(id)))].slice(0, 1500);
+    if (!clientId) return res.status(400).json({ error: 'client_id requerido' });
+    if (req.user.role === 'cliente' && parseInt(req.user.client_id) !== clientId)
+      return res.status(403).json({ error: 'Sin acceso' });
+
+    const out = {}, faltan = [];
+    ids.forEach(id => {
+      const c = _precioPubCache.get(`${clientId}:${id}`);
+      if (c && Date.now() - c.at < PRECIO_PUB_TTL) out[id] = c.data; else faltan.push(id);
+    });
+
+    if (faltan.length) {
+      const token = await getClientToken(clientId);
+      if (!token) return res.status(403).json({ error: 'Cliente sin token ML' });
+      const headers = { Authorization: `Bearer ${token}` };
+      // De a 8: más en paralelo y ML devuelve 429 (getJsonML igual reintenta).
+      for (let i = 0; i < faltan.length; i += 8) {
+        await Promise.all(faltan.slice(i, i + 8).map(async id => {
+          const b = await getJsonML(`${ML_API}/items/${id}/sale_price?context=channel_marketplace`, headers).catch(() => null);
+          const precio = parseFloat(b?.amount);
+          if (!b || b.error || !(precio > 0)) return;   // sin dato: no se cachea
+          const lista = parseFloat(b.regular_amount);
+          const data = {
+            precio,
+            precio_lista: lista > precio ? lista : null,
+            promo_tipo: b.metadata?.promotion_type || null,
+          };
+          _precioPubCache.set(`${clientId}:${id}`, { at: Date.now(), data });
+          out[id] = data;
+        }));
+      }
+    }
+    res.json({ precios: out });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.get('/api/performance/top-ganancia', requireAuth, async (req, res) => {
   try {
     const clientId = parseInt(req.query.client_id);
