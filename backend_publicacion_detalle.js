@@ -175,7 +175,7 @@ module.exports = (app, deps) => {
     let diasAtras = 1;
     for (let f = desde; f < hoy && diasAtras < MAX_DIAS_VISITAS; f = ymdShift(f, 1)) diasAtras++;
 
-    const [itemR, ordenes, visR, publi, costoR, recSync, precioR] = await Promise.all([
+    const [itemR, ordenes, visR, publi, costoR, recSync, precioR, tramosR] = await Promise.all([
       getJson(`${ML_API}/items/${itemId}?attributes=id,title,thumbnail,price,original_price,available_quantity,sold_quantity,status,listing_type_id,permalink,shipping,catalog_listing,seller_id`, headers),
       ordenesDeItem(uid, itemId, headers, desde, hasta),
       getJson(`${ML_API}/items/${itemId}/visits/time_window?last=${diasAtras}&unit=day`, headers),
@@ -187,6 +187,10 @@ module.exports = (app, deps) => {
       // original_price no sirve: viene null o igual al precio aunque haya campaña
       // (MLA1503463087: price 34.000, original 34.000, y se vende a 31.331).
       getJson(`${ML_API}/items/${itemId}/sale_price?context=channel_marketplace`, headers),
+      // Historial del costo: cada día se costea con el que regía ese día (dólar, cambios).
+      pool.query(`SELECT to_char(vigente_desde,'YYYY-MM-DD') AS desde, costo_unit FROM product_costs_hist
+                   WHERE client_id=$1 AND mla_id=$2 ORDER BY vigente_desde`, [clientId, itemId])
+        .catch(() => ({ rows: [] })),
     ]);
 
     const item = itemR.body && !itemR.body.error ? itemR.body : null;
@@ -197,6 +201,13 @@ module.exports = (app, deps) => {
     const costoUnit = costoR.rows[0] ? parseFloat(costoR.rows[0].costo_unit) : null;
     const tieneCosto = costoUnit != null && costoUnit > 0;
     const alic = parseFloat(costoR.rows[0]?.alicuota_iva) || 21;
+    const tramos = tramosR.rows.map(r => ({ desde: r.desde, costo: parseFloat(r.costo_unit) || 0 }));
+    const costoDelDia = dia => {
+      if (tramos.length < 2) return costoUnit;
+      let c = tramos[0].costo;
+      for (const t of tramos) { if (t.desde <= dia) c = t.costo; else break; }
+      return c;
+    };
 
     // ── Órdenes: concretadas vs canceladas ────────────────────────────────────
     const enPyl = ordenes.filter(o => PYL_ESTADOS.includes(o.status));
@@ -261,8 +272,9 @@ module.exports = (app, deps) => {
       s.iibb[i] += montoProp * tasaIibb / 100;
       if (!esMonotrib) s.iva[i] += ivaContenido(montoProp, alic);
       if (tieneCosto) {
-        s.cmv[i] += costoUnit * unid;
-        if (!esMonotrib) s.iva[i] -= ivaContenido(costoUnit * unid, alic);
+        const cmvOrden = (costoDelDia(fechas[i]) || 0) * unid;
+        s.cmv[i] += cmvOrden;
+        if (!esMonotrib) s.iva[i] -= ivaContenido(cmvOrden, alic);
       }
 
       const sd = o.shipping?.id ? shipMap[o.shipping.id] : null;

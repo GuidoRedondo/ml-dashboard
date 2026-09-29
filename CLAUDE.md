@@ -62,7 +62,9 @@ This is a **single-file Node.js/Express backend** (`server.js`) + **single-file 
 | `sessions` | Active login sessions (7-day TTL) |
 | `user_permissions` | Per-user section access flags |
 | `diagnostico_mensual` | Monthly KPI snapshots per client |
-| `product_costs` | Per-item cost (`costo_unit`) for P&L calculation |
+| `product_costs` | Per-item **current** cost (`costo_unit`, pesos) for P&L calculation. `costo_usd` set = the item is priced in dollars and `costo_unit` = `costo_usd` × `clients.cotizacion_usd` |
+| `product_costs_hist` | Every cost change with the day it takes effect (`vigente_desde`), written by a trigger on `product_costs`. The first real cost of an item takes effect from 2000-01-01 (loading costs for the first time fills past months) |
+| `cotizacion_usd_hist` | Log of manual dollar rate changes per client |
 | `gastos_fijos` | Fixed monthly expenses per client |
 | `reporte_financiero` | Cached financial report JSONB blobs |
 | `full_stock_config` | Suggested stock quantities per item |
@@ -90,6 +92,7 @@ This is a **single-file Node.js/Express backend** (`server.js`) + **single-file 
 - **Panel de Clientes (vista rápida)**: `GET /api/panel/metricas`, `GET /api/panel/metricas/hoy`, `POST /api/panel/metricas/backfill`, `GET|POST /api/panel/metricas/cron`
 - **Reclamos** (`backend_reclamos.js`): `GET /api/reclamos`, `GET /api/reclamos/hilo`, `POST /api/reclamos/sync`, `POST /api/reclamos/enriquecer`, `GET /api/reclamos/sync/estado`, `GET|POST /api/reclamos/cron`
 - **Facturación real** (`backend_billing.js`): `GET /api/billing/resumen`, `GET /api/billing/estado`, `POST /api/billing/sync`, `POST /api/billing/backfill`, `GET|POST /api/billing/cron`
+- **Costos en dólares**: `GET|PUT /api/costos/dolar` (manual rate per client; PUT re-prices every item with `costo_usd`, effective from today). `POST /api/reporte/costos` accepts `costo_usd`
 - **Other**: `GET /api/promociones`, `GET /api/preguntas`, `GET /api/devoluciones`, `GET /api/bitacora`, `POST /api/bitacora`, `PUT|DELETE /api/bitacora/:id`, `GET /api/proxy-ml`, `GET /api/item-fees`
 - **Debug**: `GET /api/debug/shipping|item|billing|order|app-token`
 
@@ -155,6 +158,12 @@ Each one was a real bug that moved a client's margin by several points:
 - **Seller coupons are a cost the order doesn't show.** `/collections/{payment_id}` →
   `coupon_fee` (= coupon when the seller paid it, 0 when ML did). `fetchCuponesVendedor` only
   asks for payments with `coupon_amount > 0`. Neither the order nor the invoice has it.
+- **A sale is costed with the cost in force the day it was made** (verified 29/9/2026). Changing a
+  cost or the dollar rate today must never rewrite last month. Anything that measures a past
+  period uses `cargarCostos()` + `costosDelPeriodo(costos, orders)` (or `costos.en(mla, dia)` per
+  day) on the server and `costoPeriodo(i)` / `costoEnDia()` on the front — never
+  `product_costs.costo_unit` directly. Forward-looking views (Precios, promos, simulador, stock)
+  use the current cost.
 - **Monthly manual amounts are prorated by days** (`mesesDelRango`): Flex bolo, fixed costs.
 - **Items without cost get an estimated CMV** at the ratio CMV/revenue of the items that have
   one (`cmvRatioCubierto`), flagged as estimated. Zero CMV inflated margins by ~8 points.

@@ -1283,6 +1283,8 @@ tbody td {
         </div>
         <button class="sync-btn" id="btnSaludCmv" onclick="chequearSaludCmv(false)" style="background:#0ea5e9;color:#fff"
           title="Revisa si los costos cargados son coherentes: faltantes, en otra moneda, mayores al precio o sin actualizar">💰 Salud del CMV</button>
+        <button class="sync-btn" id="btnDolarCostos" onclick="abrirDolarCostos()" style="background:#16a34a;color:#fff"
+          title="Costos cargados en dólares: la cotización manual los pasa a pesos. Un cambio rige desde hoy, no toca los días anteriores">💵 Costos en USD</button>
         <div style="display:flex;gap:6px">
           <button id="rentTabAnalisis" onclick="switchRentTab('analisis')" class="sync-btn" style="background:var(--accent)">📊 Análisis</button>
           <button id="rentTabLoQuePaso" onclick="switchRentTab('loquepaso')" class="sync-btn" title="P&amp;L real por producto del período seleccionado: envío que pagaste, publicidad PADS, IVA e IIBB">📆 Lo que pasó</button>
@@ -1295,6 +1297,7 @@ tbody td {
         </div>
       </div>
       <div id="saludCmvPanel" style="display:none;margin-bottom:18px"></div>
+      <div id="dolarCostosPanel" style="display:none;margin-bottom:18px"></div>
       <div id="rentabilidadContent"><div style="color:var(--muted);font-size:13px;padding:20px;text-align:center">Sincronizá primero para ver los datos</div></div>
       <div id="loQuePasoContent" style="display:none"></div>
       <div id="preciosContent" style="display:none"></div>
@@ -2562,6 +2565,28 @@ function ymd(d) {
   const x = (d === undefined) ? new Date() : (d instanceof Date ? d : dART(d));
   if (!x || isNaN(x.getTime())) return null;
   return x.toLocaleDateString('en-CA', { timeZone: ART_TZ });
+}
+// Costo de un período YA vendido. /api/reporte/items-vendidos manda costo_unit (el vigente,
+// el que se edita) y costo_unit_periodo (cada venta al costo del día en que se hizo): un
+// cambio de costo o de cotización del dólar rige desde ese día y no reescribe meses pasados.
+// Para calcular CMV / CM de un período siempre este; para editar o mirar para adelante, costo_unit.
+function costoPeriodo(i) {
+  const v = i.costo_unit_periodo ?? i.costo_unit;
+  return v != null && v !== '' ? parseFloat(v) : null;
+}
+// Celda "Costo USD" de un Excel: número, "12,50", "US$ 12.5". null si está vacía.
+function usdDeCelda(v) {
+  if (typeof v === 'number') return v > 0 ? v : null;
+  const t = String(v ?? '').replace(/[^\d.,]/g, '');
+  const n = parseFloat(t.includes(',') ? t.replace(/\./g, '').replace(',', '.') : t);
+  return n > 0 ? n : null;
+}
+// Costo de una publicación un día puntual ('YYYY-MM-DD'): tramos = costo_tramos de items-vendidos.
+function costoEnDia(tramos, vigente, dia) {
+  if (!tramos || tramos.length < 2 || !dia) return vigente;
+  let c = tramos[0].costo;
+  for (const t of tramos) { if (t.desde <= dia) c = t.costo; else break; }
+  return c;
 }
 function dART(v) {
   if (v instanceof Date) return v;
@@ -5378,6 +5403,73 @@ const CMV_TIPOS = {
   costo_igual_precio: 'Costo igual al precio',
   desactualizado:     'Costo viejo',
 };
+// ── COSTOS EN DÓLARES ─────────────────────────────────────────────────────────
+// Clientes con lista de precios en dólares: el costo se carga en USD (columna "Costo USD"
+// de los Excel de costos) y la cotización manual del cliente lo pasa a pesos. Cambiar la
+// cotización rige desde HOY: las ventas de días anteriores se siguen costeando con la que
+// había (product_costs_hist en el server). Entra en CMV, CM y P&L como cualquier costo.
+async function abrirDolarCostos() {
+  const panel = document.getElementById('dolarCostosPanel');
+  if (!panel) return;
+  const cli = getActiveClient();
+  if (!cli) { showToast('Elegí una cuenta'); return; }
+  panel.style.display = 'block';
+  panel.innerHTML = `<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:24px;text-align:center;color:var(--muted);font-size:13px">⏳ Cargando…</div>`;
+  let d;
+  try { d = await apiCall('GET', `/api/costos/dolar?client_id=${cli.id}`); }
+  catch(e) { panel.innerHTML = `<div style="padding:22px;text-align:center;color:#dc2626;font-size:13px">No se pudo cargar: ${e.message}</div>`; return; }
+  if (!d) return;
+  const fh = v => v ? dART(v).toLocaleString('es-AR', { timeZone: ART_TZ, day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—';
+  const pc = n => n == null ? '—' : '$' + Number(n).toLocaleString('es-AR', { maximumFractionDigits: 2 });
+  const kpi = (t, v, sub) => `<div style="flex:1;min-width:150px;padding:10px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:10px">
+    <div style="font-size:10px;color:var(--muted)">${t}</div>
+    <div style="font-size:17px;font-weight:700;font-family:var(--font-b)">${v}</div>
+    <div style="font-size:10px;color:var(--muted)">${sub}</div></div>`;
+  const hist = (d.historial || []).map(h => `<tr style="border-bottom:1px solid var(--border)">
+      <td style="padding:6px 8px;font-size:11px;white-space:nowrap">${fh(h.fecha)}</td>
+      <td style="padding:6px 8px;font-size:12px;font-weight:600">${pc(h.cotizacion)}</td>
+      <td style="padding:6px 8px;font-size:11px">${h.productos} publicaciones</td>
+      <td style="padding:6px 8px;font-size:11px;color:var(--muted)">${h.usuario || ''}</td></tr>`).join('');
+  panel.innerHTML = `<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px 18px">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;gap:8px;flex-wrap:wrap">
+      <div style="font-size:14px;font-weight:700">💵 Costos en dólares — ${cli.name}</div>
+      <button class="sync-btn" onclick="document.getElementById('dolarCostosPanel').style.display='none'" style="padding:4px 10px;font-size:11px">✕ Cerrar</button>
+    </div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:12px;line-height:1.5">
+      Las publicaciones con costo en USD se pasan a pesos con esta cotización y entran así en el CMV, la contribución marginal y el P&amp;L.
+      <b>Al cambiarla, el costo nuevo rige desde hoy</b>: las ventas de días anteriores se siguen calculando con la cotización que tenían.
+      Para dolarizar un producto, completá la columna <b>Costo USD</b> del Excel CMV y subilo (vacío = vuelve a pesos).
+    </div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px">
+      ${kpi('COTIZACIÓN VIGENTE', d.cotizacion ? pc(d.cotizacion) : 'Sin cargar', d.actualizada ? 'desde ' + fh(d.actualizada) : 'cargala antes de subir costos en USD')}
+      ${kpi('PUBLICACIONES EN USD', d.productos_usd, d.productos_usd ? 'se recalculan al cambiar el dólar' : 'ninguna todavía')}
+    </div>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:${hist ? 12 : 0}px">
+      <span style="font-size:12px">Nueva cotización: $</span>
+      <input id="dolarCotInput" type="number" min="0" step="0.01" value="${d.cotizacion ?? ''}" placeholder="ej. 1450"
+        style="width:120px;padding:6px 8px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px"
+        onkeydown="if(event.key==='Enter')guardarDolarCostos()">
+      <button onclick="guardarDolarCostos()" style="padding:7px 14px;background:#16a34a;color:#fff;border:none;border-radius:8px;font-size:12px;font-weight:600;cursor:pointer">Actualizar cotización</button>
+    </div>
+    ${hist ? `<div style="font-size:11px;color:var(--muted);margin-bottom:4px">Últimos cambios</div>
+      <table style="width:100%;border-collapse:collapse">${hist}</table>` : ''}
+  </div>`;
+}
+
+async function guardarDolarCostos() {
+  const cli = getActiveClient();
+  if (!cli) { showToast('Elegí una cuenta'); return; }
+  const v = parseFloat(document.getElementById('dolarCotInput')?.value);
+  if (!(v > 0)) { showToast('⚠ Cotización inválida'); return; }
+  try {
+    const r = await apiCall('PUT', '/api/costos/dolar', { client_id: cli.id, cotizacion: v });
+    if (!r?.ok) { showToast(`❌ ${r?.error || 'No se pudo guardar'}`); return; }
+    showToast(`✅ Dólar a $${v.toLocaleString('es-AR')} · ${r.productos_actualizados} costos actualizados desde hoy`);
+    abrirDolarCostos();
+    if (typeof loadRentabilidad === 'function') loadRentabilidad();
+  } catch(e) { showToast(`❌ Error: ${e.message}`); }
+}
+
 let _cmvSalud = null;
 
 async function chequearSaludCmv(refresh) {
@@ -11169,7 +11261,7 @@ function loadRentabilidad() {
   apiCall('GET', `/api/reporte/items-vendidos?client_id=${clientId}&date_from=${getDateRange().date_from}&date_to=${getDateRange().date_to}`)
     .then(costsData => {
       const costsMap = {};
-      (costsData?.items || []).forEach(i => { if (i.costo_unit) costsMap[i.mla_id] = parseFloat(i.costo_unit)||0; });
+      (costsData?.items || []).forEach(i => { if (i.costo_unit) costsMap[i.mla_id] = costoPeriodo(i) || 0; });
       renderRentabilidad(R, allProducts, costsMap);
     })
     .catch(() => renderRentabilidad(R, allProducts, {}));
@@ -11339,12 +11431,13 @@ async function loadVentas() {
 
   // Cargar costos desde la DB
   const client = getActiveClient();
-  const costoMap = {}, alicMap = {};
+  const costoMap = {}, alicMap = {}, tramosMap = {};
   if (client) {
     const range = getDateRange();
     const costsData = await apiCall('GET', `/api/reporte/items-vendidos?client_id=${client.id}&date_from=${range.date_from}&date_to=${range.date_to}`).catch(() => null);
     (costsData?.items || []).forEach(i => {
       if (i.costo_unit) costoMap[i.mla_id] = parseFloat(i.costo_unit);
+      if (i.costo_tramos) tramosMap[i.mla_id] = i.costo_tramos;
       if (i.alicuota_iva != null) alicMap[i.mla_id] = parseFloat(i.alicuota_iva);
     });
   }
@@ -11356,8 +11449,11 @@ async function loadVentas() {
       // OJO con el nombre del campo: orders_detail manda `qty`, no `quantity`. Con
       // p.quantity la expresión daba undefined y caía siempre en 1, así que una orden de
       // 3 unidades computaba el costo de una sola: el CMV salía corto y la CM inflada.
+      // Cada orden al costo del día en que se vendió (costos en dólares / cambios de costo).
+      const diaOrden = o.date ? ymd(new Date(o.date)) : null;
+      const costoOrden = id => costoMap[id] ? costoEnDia(tramosMap[id], costoMap[id], diaOrden) : null;
       const cmvOrden = (o.productos || []).reduce((s, p) => {
-        const c = costoMap[p.id];
+        const c = costoOrden(p.id);
         return s + (c ? c * (p.qty ?? p.quantity ?? 1) : 0);
       }, 0);
       const hasCMV = cmvOrden > 0;
@@ -11370,7 +11466,7 @@ async function loadVentas() {
       const esMonotrib = esMonotributistaActivo();
       let alicOrden = 21, maxPesoCmv = -1;
       (o.productos || []).forEach(p => {
-        const cmvP = (costoMap[p.id] || 0) * (p.qty ?? p.quantity ?? 1);
+        const cmvP = (costoOrden(p.id) || 0) * (p.qty ?? p.quantity ?? 1);
         if (cmvP > maxPesoCmv) { maxPesoCmv = cmvP; alicOrden = alicMap[p.id] ?? 21; }
       });
       const aO = alicOrden / 100;
@@ -11629,7 +11725,7 @@ async function descargarTablaRentabilidad() {
   let costsMap = {};
   try {
     const data = await apiCall('GET', `/api/reporte/items-vendidos?client_id=${client.id}&date_from=${date_from}&date_to=${date_to}`);
-    (data?.items || []).forEach(i => { if (i.costo_unit) costsMap[i.mla_id] = parseFloat(i.costo_unit)||0; });
+    (data?.items || []).forEach(i => { if (i.costo_unit) costsMap[i.mla_id] = costoPeriodo(i) || 0; });
   } catch(e) {}
 
   const base = Object.values(allProducts).reduce((s, p) => s + p.revenue, 0) || 1;
@@ -11686,15 +11782,15 @@ async function descargarCMVRentabilidad() {
     const XLSX = window.XLSX;
     const wsData = [
       [`COSTOS DE PRODUCTOS — ${client.name} | ${date_from} → ${date_to}`],
-      ['⚠ Completá la columna "Costo Unitario (ARS)". Guardá y subí el archivo para actualizar.'],
-      ['MLA', 'Título', 'SKU', 'Costo Unitario (ARS)', 'Alicuota IVA (%)', 'Unidades vendidas', 'Facturación (ARS)', 'Notas'],
+      ['⚠ Completá "Costo Unitario (ARS)", o "Costo USD" si el proveedor cotiza en dólares (se pasa a pesos con la cotización del cliente). Guardá y subí el archivo.'],
+      ['MLA', 'Título', 'SKU', 'Costo Unitario (ARS)', 'Costo USD', 'Alicuota IVA (%)', 'Unidades vendidas', 'Facturación (ARS)', 'Notas'],
       ...(data.items || []).map(i => [
-        i.mla_id, i.title, i.sku || '', i.costo_unit || '', i.alicuota_iva ?? 21, i.units, Math.round(i.revenue), i.notas || ''
+        i.mla_id, i.title, i.sku || '', i.costo_unit || '', i.costo_usd ?? '', i.alicuota_iva ?? 21, i.units, Math.round(i.revenue), i.notas || ''
       ])
     ];
     const wb = XLSX.utils.book_new();
     const ws = XLSX.utils.aoa_to_sheet(wsData);
-    ws['!cols'] = [{ wch: 18 }, { wch: 50 }, { wch: 20 }, { wch: 22 }, { wch: 16 }, { wch: 18 }, { wch: 20 }, { wch: 25 }];
+    ws['!cols'] = [{ wch: 18 }, { wch: 50 }, { wch: 20 }, { wch: 22 }, { wch: 12 }, { wch: 16 }, { wch: 18 }, { wch: 20 }, { wch: 25 }];
     XLSX.utils.book_append_sheet(wb, ws, 'CMV');
     XLSX.writeFile(wb, `CMV_${client.name.replace(/\s+/g,'_')}_${date_from}.xlsx`);
     showToast('✅ Excel descargado');
@@ -11722,23 +11818,29 @@ async function importarCMVRentabilidad(input) {
     const headers = rows[headerRow].map(h => String(h||'').toLowerCase().trim());
     const colMLA   = headers.findIndex(h => h.includes('mla'));
     const colTit   = headers.findIndex(h => h.includes('títul') || h.includes('title'));
-    const colCosto = headers.findIndex(h => h.includes('costo'));
+    const colCosto = headers.findIndex(h => h.includes('costo') && !h.includes('usd'));
+    const colUsd   = headers.findIndex(h => h.includes('usd'));
     const colAlic  = headers.findIndex(h => h.includes('alicuota') || h.includes('alícuota') || h.includes('iva'));
     const colNotas = headers.findIndex(h => h.includes('nota'));
-    if (colMLA === -1 || colCosto === -1) { showToast('❌ No se encontraron columnas MLA o Costo en el archivo'); input.value=''; return; }
+    if (colMLA === -1 || (colCosto === -1 && colUsd === -1)) { showToast('❌ No se encontraron columnas MLA o Costo en el archivo'); input.value=''; return; }
     const costos = [];
     rows.slice(headerRow + 1).forEach(row => {
       const mla_id = String(row[colMLA]||'').trim();
       const title  = colTit >= 0 ? String(row[colTit]||'').trim() : '';
-      const costo  = parseFloat(String(row[colCosto]||'').replace(/[,$\s]/g,''))||0;
+      const costo  = colCosto >= 0 ? parseFloat(String(row[colCosto]||'').replace(/[,$\s]/g,''))||0 : 0;
+      const usd    = colUsd >= 0 ? usdDeCelda(row[colUsd]) : null;
       const alic   = colAlic >= 0 ? parseFloat(String(row[colAlic]||'').replace(/[%\s]/g,'').replace(',','.')) : undefined;
       const notas  = colNotas >= 0 ? String(row[colNotas]||'').trim() : '';
-      if (mla_id.startsWith('MLA') && costo > 0) costos.push({ mla_id, title, costo_unit: costo, alicuota_iva: alic, notas });
+      if (mla_id.startsWith('MLA') && (costo > 0 || usd > 0)) {
+        // Con la columna USD en el archivo se manda siempre: vacía vuelve la publicación a pesos.
+        costos.push({ mla_id, title, costo_unit: costo, ...(colUsd >= 0 ? { costo_usd: usd || null } : {}), alicuota_iva: alic, notas });
+      }
     });
     if (!costos.length) { showToast('❌ Sin costos válidos en el archivo'); input.value=''; return; }
     const r = await apiCall('POST', '/api/reporte/costos', { client_id: client.id, costos });
+    if (r?.aviso) showToast(`⚠ ${r.aviso}`);
     if (r?.ok) {
-      showToast(`✅ ${r.saved} costos actualizados`);
+      if (!r.aviso) showToast(`✅ ${r.saved} costos actualizados`);
       loadRentabilidad(); // Recargar para reflejar los nuevos CMV
     } else { showToast('❌ Error al guardar'); }
   } catch(e) { showToast(`❌ Error: ${e.message}`); }
@@ -18279,8 +18381,8 @@ async function descargarTemplateExcel() {
 
     const wsData = [
       [`PLANILLA DE COSTOS — ${clientName} | ${data.items.length} publicaciones activas`],
-      ["⚠  Completá la columna 'Costo Unitario (ARS)'. Guardá y subí el archivo al dashboard."],
-      ['MLA', 'SKU', 'Descripción', 'Precio actual', 'Stock', 'Costo Unitario (ARS)', 'Alicuota IVA (%)', 'Notas'],
+      ["⚠  Completá 'Costo Unitario (ARS)', o 'Costo USD' si el proveedor cotiza en dólares (se pasa a pesos con la cotización del cliente). Guardá y subí el archivo al dashboard."],
+      ['MLA', 'SKU', 'Descripción', 'Precio actual', 'Stock', 'Costo Unitario (ARS)', 'Costo USD', 'Alicuota IVA (%)', 'Notas'],
       ...(data.items || []).map(i => [
         i.mla_id,
         i.sku || '',
@@ -18288,6 +18390,7 @@ async function descargarTemplateExcel() {
         i.price || '',
         i.stock || '',
         i.costo_unit || '',
+        i.costo_usd ?? '',
         i.alicuota_iva ?? 21,
         i.notas || '',
       ])
@@ -18295,7 +18398,7 @@ async function descargarTemplateExcel() {
 
     const wb = XLSX.utils.book_new();
     const ws = XLSX.utils.aoa_to_sheet(wsData);
-    ws['!cols'] = [{ wch: 18 }, { wch: 20 }, { wch: 50 }, { wch: 16 }, { wch: 10 }, { wch: 22 }, { wch: 16 }, { wch: 25 }];
+    ws['!cols'] = [{ wch: 18 }, { wch: 20 }, { wch: 50 }, { wch: 16 }, { wch: 10 }, { wch: 22 }, { wch: 12 }, { wch: 16 }, { wch: 25 }];
     XLSX.utils.book_append_sheet(wb, ws, 'Costos');
     XLSX.writeFile(wb, `Costos_${clientName.replace(/\s+/g,'_')}_${hoy}.xlsx`);
     showToast(`✅ Excel con ${data.items.length} publicaciones descargado`);
@@ -18329,7 +18432,8 @@ async function importarCostosExcel(input) {
     const headers = rows[headerRow].map(h => String(h).trim().toLowerCase());
     const colMLA    = headers.findIndex(h => h.includes('mla'));
     const colTitle  = headers.findIndex(h => h.includes('descrip') || h.includes('título') || h.includes('titulo'));
-    const colCosto  = headers.findIndex(h => h.includes('costo'));
+    const colCosto  = headers.findIndex(h => h.includes('costo') && !h.includes('usd'));
+    const colUsd    = headers.findIndex(h => h.includes('usd'));
     const colAlic   = headers.findIndex(h => h.includes('alicuota') || h.includes('alícuota') || h.includes('iva'));
     const colNotas  = headers.findIndex(h => h.includes('nota'));
 
@@ -18338,18 +18442,20 @@ async function importarCostosExcel(input) {
       const mla_id = String(row[colMLA]||'').trim();
       const title  = colTitle >= 0 ? String(row[colTitle]||'').trim() : '';
       const costo  = colCosto >= 0 ? parseFloat(String(row[colCosto]||'').replace(/[,$\s]/g,''))||0 : 0;
+      const usd    = colUsd >= 0 ? usdDeCelda(row[colUsd]) : null;
       const alic   = colAlic >= 0 ? parseFloat(String(row[colAlic]||'').replace(/[%\s]/g,'').replace(',','.')) : undefined;
       const notas  = colNotas >= 0 ? String(row[colNotas]||'').trim() : '';
-      if (mla_id.startsWith('MLA') && costo > 0) {
-        costos.push({ mla_id, title, costo_unit: costo, alicuota_iva: alic, notas });
+      if (mla_id.startsWith('MLA') && (costo > 0 || usd > 0)) {
+        costos.push({ mla_id, title, costo_unit: costo, ...(colUsd >= 0 ? { costo_usd: usd || null } : {}), alicuota_iva: alic, notas });
       }
     });
 
     if (!costos.length) { showToast('❌ No se encontraron costos válidos'); input.value=''; return; }
 
     const r = await apiCall('POST', '/api/reporte/costos', { client_id: clientId, costos });
+    if (r?.aviso) showToast(`⚠ ${r.aviso}`);
     if (r?.ok) {
-      showToast(`✅ ${r.saved} costos importados`);
+      if (!r.aviso) showToast(`✅ ${r.saved} costos importados`);
       await loadReporteItems();
     } else {
       showToast(`❌ Error al guardar`);
@@ -19024,6 +19130,7 @@ function renderReporteCostos(data, clientId) {
         <input type="number" id="costo_${item.mla_id}" value="${item.costo_unit ?? ''}" placeholder="0"
           style="width:110px;padding:5px 8px;border-radius:6px;border:1px solid ${item.has_cost?'var(--border)':'#fca5a5'};background:${item.has_cost?'var(--surface2)':'#fef2f2'};color:var(--text);font-size:13px;text-align:right"
           oninput="updateCmvRow('${item.mla_id}',${item.units})">
+        ${item.costo_usd ? `<div style="font-size:10px;color:#16a34a;margin-top:2px" title="Costo en dólares: se pasa a pesos con la cotización del cliente (Rentabilidad → Costos en USD). Si escribís otro monto en pesos, pasa a pesos.">US$ ${Number(item.costo_usd).toLocaleString('es-AR')}</div>` : ''}
       </td>
       <td style="padding:8px 10px;border-bottom:1px solid var(--border);text-align:center">
         ${alicuotaSelect(item.mla_id, item.alicuota_iva)}
@@ -19126,13 +19233,20 @@ function updateCmvRow(mlaId, units) {
 }
 
 async function guardarCostos(clientId) {
-  const costos = _reporteItems.map(item => ({
-    mla_id: item.mla_id,
-    title: item.title,
-    costo_unit: parseFloat(document.getElementById(`costo_${item.mla_id}`)?.value)||0,
-    alicuota_iva: parseFloat(document.getElementById(`alic_${item.mla_id}`)?.value),
-    notas: document.getElementById(`notas_${item.mla_id}`)?.value||'',
-  })).filter(c => c.costo_unit > 0);
+  const costos = _reporteItems.map(item => {
+    const costo = parseFloat(document.getElementById(`costo_${item.mla_id}`)?.value)||0;
+    // Dolarizado y sin tocar: se manda en USD para que el server lo pase a pesos con la
+    // cotización de HOY (la pantalla puede tener el monto en pesos de un dólar viejo).
+    const sigueUsd = item.costo_usd && costo === parseFloat(item.costo_unit);
+    return {
+      mla_id: item.mla_id,
+      title: item.title,
+      costo_unit: costo,
+      ...(sigueUsd ? { costo_usd: item.costo_usd } : {}),
+      alicuota_iva: parseFloat(document.getElementById(`alic_${item.mla_id}`)?.value),
+      notas: document.getElementById(`notas_${item.mla_id}`)?.value||'',
+    };
+  }).filter(c => c.costo_unit > 0);
 
   if (!costos.length) { showToast('⚠ No hay costos para guardar'); return; }
   const r = await apiCall('POST', '/api/reporte/costos', { client_id: clientId, costos });
@@ -20500,7 +20614,7 @@ function loadTendencia() {
     const promoMap = {};
     results.forEach(r => {
       if (r.type === 'items') r.items.forEach(i => { pubMap[i.id] = i; });
-      if (r.type === 'costos') r.items.forEach(i => { if (i.costo_unit) costsMap[i.mla_id] = parseFloat(i.costo_unit); });
+      if (r.type === 'costos') r.items.forEach(i => { if (i.costo_unit) costsMap[i.mla_id] = costoPeriodo(i); });
       if (r.type === 'promo') Object.assign(promoMap, r.map);
     });
     window._tendPromoMap = promoMap;
@@ -21174,7 +21288,7 @@ function loadEscalabilidad(callback) {
   apiCall('GET', `/api/reporte/items-vendidos?client_id=${client?.id}&date_from=${date_from}&date_to=${date_to}`)
     .then(costsData => {
       const costsMap = {};
-      (costsData?.items || []).forEach(i => { if (i.costo_unit != null) costsMap[i.mla_id] = parseFloat(i.costo_unit) || 0; });
+      (costsData?.items || []).forEach(i => { if (i.costo_unit != null) costsMap[i.mla_id] = costoPeriodo(i) || 0; });
       // Stock disponible: cruzar con _pubsData si está cargado
       const stockMap = {};
       (window._pubsData || []).forEach(i => { if (i.available_quantity != null) stockMap[i.id] = i.available_quantity; });

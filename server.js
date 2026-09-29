@@ -567,6 +567,71 @@ async function initDB() {
     END $$;
   `);
 
+  // ── COSTOS CON FECHA + COSTOS EN DÓLARES ─────────────────────────────────
+  // product_costs.costo_unit es el costo VIGENTE en pesos. Cada cambio queda en
+  // product_costs_hist con el día desde el que rige, y las ventas se costean con el costo
+  // del día en que se vendieron (costosEnFecha). Así actualizar el dólar o un costo hoy
+  // no reescribe el P&L del mes pasado.
+  //
+  // El primer costo real de una publicación rige desde 2000-01-01: cargar costos por
+  // primera vez tiene que llenar los meses anteriores (si no, quedan estimados). Lo
+  // mismo vale para los costos que ya había antes de esta tabla.
+  //
+  // Dólar: la publicación con costo_usd cargado tiene costo_unit = costo_usd × la
+  // cotización del cliente. Cambiar la cotización recalcula esos costo_unit y el trigger
+  // deja el tramo nuevo desde hoy.
+  await pool.query(`
+    ALTER TABLE product_costs ADD COLUMN IF NOT EXISTS costo_usd NUMERIC(14,4);
+    ALTER TABLE clients ADD COLUMN IF NOT EXISTS cotizacion_usd NUMERIC(14,4);
+    ALTER TABLE clients ADD COLUMN IF NOT EXISTS cotizacion_usd_at TIMESTAMPTZ;
+    CREATE TABLE IF NOT EXISTS cotizacion_usd_hist (
+      id          SERIAL PRIMARY KEY,
+      client_id   INTEGER NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+      cotizacion  NUMERIC(14,4) NOT NULL,
+      productos   INTEGER DEFAULT 0,
+      usuario     VARCHAR(100),
+      created_at  TIMESTAMPTZ DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_cotizacion_usd_hist ON cotizacion_usd_hist(client_id, created_at DESC);
+    CREATE TABLE IF NOT EXISTS product_costs_hist (
+      client_id      INTEGER NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+      mla_id         VARCHAR(20) NOT NULL,
+      vigente_desde  DATE NOT NULL,
+      costo_unit     NUMERIC(14,2) NOT NULL,
+      costo_usd      NUMERIC(14,4),
+      cotizacion_usd NUMERIC(14,4),
+      created_at     TIMESTAMPTZ DEFAULT NOW(),
+      PRIMARY KEY (client_id, mla_id, vigente_desde)
+    );
+    INSERT INTO product_costs_hist (client_id, mla_id, vigente_desde, costo_unit)
+      SELECT pc.client_id, pc.mla_id, DATE '2000-01-01', pc.costo_unit FROM product_costs pc
+       WHERE NOT EXISTS (SELECT 1 FROM product_costs_hist h
+                          WHERE h.client_id = pc.client_id AND h.mla_id = pc.mla_id);
+    CREATE OR REPLACE FUNCTION product_costs_hist_fn() RETURNS trigger AS $$
+    DECLARE desde DATE := CURRENT_DATE;
+    BEGIN
+      IF TG_OP = 'UPDATE' AND OLD.costo_unit IS NOT DISTINCT FROM NEW.costo_unit
+         AND OLD.costo_usd IS NOT DISTINCT FROM NEW.costo_usd THEN
+        RETURN NEW;
+      END IF;
+      -- Sin un costo real anterior (nada o sólo el 0 que dejan Precios/TACOS), el primero rige para atrás.
+      IF NOT EXISTS (SELECT 1 FROM product_costs_hist h WHERE h.client_id = NEW.client_id
+                        AND h.mla_id = NEW.mla_id AND h.costo_unit > 0) THEN
+        desde := DATE '2000-01-01';
+      END IF;
+      INSERT INTO product_costs_hist (client_id, mla_id, vigente_desde, costo_unit, costo_usd, cotizacion_usd)
+      VALUES (NEW.client_id, NEW.mla_id, desde, NEW.costo_unit, NEW.costo_usd,
+              CASE WHEN NEW.costo_usd IS NOT NULL THEN (SELECT cotizacion_usd FROM clients WHERE id = NEW.client_id) END)
+      ON CONFLICT (client_id, mla_id, vigente_desde) DO UPDATE
+        SET costo_unit = EXCLUDED.costo_unit, costo_usd = EXCLUDED.costo_usd,
+            cotizacion_usd = EXCLUDED.cotizacion_usd, created_at = NOW();
+      RETURN NEW;
+    END $$ LANGUAGE plpgsql;
+    DROP TRIGGER IF EXISTS product_costs_hist_trg ON product_costs;
+    CREATE TRIGGER product_costs_hist_trg AFTER INSERT OR UPDATE ON product_costs
+      FOR EACH ROW EXECUTE FUNCTION product_costs_hist_fn();
+  `);
+
   // Tabla de informes mensuales
   await pool.query(`
     CREATE TABLE IF NOT EXISTS informes_mensuales (
@@ -4149,10 +4214,10 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
 
     // Calcular CMV desde product_costs
     let cmv_total_dash = 0, cmv_cubierto_dash = 0;
-    const costsResDash = await pool.query('SELECT mla_id, costo_unit, alicuota_iva FROM product_costs WHERE client_id=$1', [clientId]);
-    const costsMapDash = {};
-    const alicMapDash = {};
-    costsResDash.rows.forEach(r => { costsMapDash[r.mla_id] = parseFloat(r.costo_unit)||0; alicMapDash[r.mla_id] = parseFloat(r.alicuota_iva) || 21; });
+    // Cada venta al costo del día en que se vendió (costos en dólares / cambios de costo).
+    const costosDash = await cargarCostos(clientId);
+    const costsMapDash = costosDelPeriodo(costosDash, curData.orders);
+    const alicMapDash = costosDash.alic;
 
     const byProduct = byProductBase.map(i => {
       const prevRev   = prevRevenueByItem[i.id] || 0;
@@ -4222,8 +4287,9 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
       prevTaxesCalc += parseFloat((o.taxes||{}).amount)||0;
     });
     let prevCMVCalc = 0;
+    const costsMapPrev = costosDelPeriodo(costosDash, prevData.orders);
     Object.entries(prevByItemUnits).forEach(([id, units]) => {
-      const c = costsMapDash[id]; if (c != null && c > 0) prevCMVCalc += c * units;
+      const c = costsMapPrev[id]; if (c != null && c > 0) prevCMVCalc += c * units;
     });
     // Aproximación: sin costo de envío del período anterior (requeriría calls adicionales)
     const prevImporteRecibido = prevData.amount - prevSaleFeeCalc - prevTaxesCalc;
@@ -4342,7 +4408,7 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
         const id  = oi.item && oi.item.id;
         fac      += (parseFloat(oi.unit_price) || 0) * qty;
         comision += comisionLinea(oi);
-        const c = id ? costsMapDash[id] : null;
+        const c = id ? costosDash.en(id, diaDeOrden(o)) : null;
         if (c != null && c > 0) cmv += c * qty;
         // Mismo reparto de envío que orders_detail: sale de repartirEnvioPorItem, así un
         // carrito no le carga el envío entero a cada una de sus órdenes.
@@ -6211,13 +6277,15 @@ app.get('/api/reporte/items-vendidos', requireAuth, async (req, res) => {
       } catch(e) {}
     }
 
-    // Load saved costs
-    const costsRes = await pool.query(
-      'SELECT mla_id, costo_unit, alicuota_iva, notas FROM product_costs WHERE client_id=$1',
-      [client_id]
-    );
+    // Load saved costs. costo_unit es el VIGENTE (es el que se edita); el CMV del período
+    // sale de costo_unit_periodo, que costea cada venta con el costo del día en que se hizo.
+    const costos = await cargarCostos(client_id);
+    const costoPeriodo = costosDelPeriodo(costos, orders);
     const costsMap = {};
-    costsRes.rows.forEach(r => { costsMap[r.mla_id] = { costo_unit: parseFloat(r.costo_unit)||0, alicuota_iva: parseFloat(r.alicuota_iva) || 21, notas: r.notas }; });
+    Object.values(costos.filas).forEach(r => {
+      costsMap[r.mla_id] = { costo_unit: parseFloat(r.costo_unit)||0, alicuota_iva: parseFloat(r.alicuota_iva) || 21, notas: r.notas,
+                             costo_usd: r.costo_usd != null ? parseFloat(r.costo_usd) : null };
+    });
 
     // ── Envío vendedor REAL por MLA (opt-in) ──────────────────────────────────
     // Atribuye el senderCost de cada envío a sus ítems vía repartirEnvioPorItem (agrupa por
@@ -6254,10 +6322,13 @@ app.get('/api/reporte/items-vendidos', requireAuth, async (req, res) => {
         ...i,
         sku: skuMap[i.mla_id] || null,
         costo_unit: costsMap[i.mla_id]?.costo_unit ?? null,
+        costo_unit_periodo: costsMap[i.mla_id] ? costoPeriodo[i.mla_id] : null,
+        costo_usd: costsMap[i.mla_id]?.costo_usd ?? null,
+        costo_tramos: costos.tramos[i.mla_id] || null,
         alicuota_iva: costsMap[i.mla_id]?.alicuota_iva ?? 21,
         notas: costsMap[i.mla_id]?.notas || '',
         cmv_total: costsMap[i.mla_id]?.costo_unit != null
-          ? costsMap[i.mla_id].costo_unit * i.units : null,
+          ? costoPeriodo[i.mla_id] * i.units : null,
         has_cost: costsMap[i.mla_id] != null,
         ...(incluirEnvio ? {
           envio_vendedor: Math.round(i.envio_vendedor || 0),
@@ -6308,6 +6379,68 @@ function cmvRatioCubierto(filas, costsMap) {
     cmv += (costo || 0) * f.units; fac += f.revenue;
   });
   return fac > 0 ? cmv / fac : null;
+}
+
+// ── COSTOS CON FECHA ──────────────────────────────────────────────────────────
+// Todo lo que mira un período ya vendido (P&L, Dashboard, CM por publicación, ficha) costea
+// cada venta con el costo vigente el día en que se vendió, sacado de product_costs_hist.
+// Lo que mira para adelante (Precios, promos, simulador, stock) usa el vigente de siempre.
+// Sin esto, subir la cotización del dólar hoy reescribía el margen del mes pasado.
+async function cargarCostos(clientId) {
+  const [cur, hist] = await Promise.all([
+    pool.query('SELECT mla_id, costo_unit, costo_usd, alicuota_iva, notas FROM product_costs WHERE client_id=$1', [clientId]),
+    pool.query(`SELECT mla_id, to_char(vigente_desde,'YYYY-MM-DD') AS desde, costo_unit
+                  FROM product_costs_hist WHERE client_id=$1 ORDER BY mla_id, vigente_desde`, [clientId]),
+  ]);
+  const vigente = {}, alic = {}, filas = {};
+  cur.rows.forEach(r => {
+    vigente[r.mla_id] = parseFloat(r.costo_unit) || 0;
+    alic[r.mla_id] = parseFloat(r.alicuota_iva) || 21;
+    filas[r.mla_id] = r;
+  });
+  // Sólo se guardan los tramos de las publicaciones cuyo costo cambió alguna vez.
+  const todos = {};
+  hist.rows.forEach(r => {
+    if (!(r.mla_id in vigente)) return;   // costo borrado: no hay costo, como siempre
+    (todos[r.mla_id] ||= []).push({ desde: r.desde, costo: parseFloat(r.costo_unit) || 0 });
+  });
+  const tramos = {};
+  Object.entries(todos).forEach(([id, t]) => { if (t.length > 1) tramos[id] = t; });
+  // Costo de una publicación el día `dia` ('YYYY-MM-DD' argentino).
+  const en = (mla, dia) => {
+    const t = tramos[mla];
+    if (!t || !dia) return vigente[mla];
+    let c = t[0].costo;
+    for (const x of t) { if (x.desde <= dia) c = x.costo; else break; }
+    return c;
+  };
+  return { vigente, alic, filas, tramos, en };
+}
+
+// Día argentino de una orden: el mismo date_created por el que la busca fetchAllOrders.
+const diaDeOrden = o => { const f = o.date_created || o.date_closed; return f ? ymd(new Date(f)) : null; };
+
+// Costo unitario de cada MLA en un conjunto de órdenes, promediado por unidades con el
+// costo del día de cada venta. Multiplicado por las unidades del período da el CMV exacto,
+// así los cálculos que hacen costo × unidades siguen igual. Parte del vigente: si el costo
+// nunca cambió, es el mismo número de siempre.
+function costosDelPeriodo(costos, orders) {
+  const out = { ...costos.vigente };
+  if (!Object.keys(costos.tramos).length) return out;
+  const acc = {};
+  (orders || []).forEach(o => {
+    if (o.status === 'cancelled') return;
+    const dia = diaDeOrden(o);
+    (o.order_items || []).forEach(oi => {
+      const id = oi.item?.id;
+      if (!id || !costos.tramos[id]) return;
+      const q = oi.quantity || 0;
+      const a = acc[id] ||= { u: 0, c: 0 };
+      a.u += q; a.c += (costos.en(id, dia) || 0) * q;
+    });
+  });
+  Object.entries(acc).forEach(([id, a]) => { if (a.u > 0) out[id] = a.c / a.u; });
+  return out;
 }
 
 // Núcleo compartido del cálculo. Lo consumen /api/reporte/margen-real-producto (tabla de
@@ -6463,10 +6596,9 @@ async function calcularMargenRealPorMla(client_id, date_from, date_to) {
     } catch(e) {}
   }
 
-  // CMV por MLA + alícuota de IVA por producto
-  const costsRes = await pool.query('SELECT mla_id, costo_unit, alicuota_iva FROM product_costs WHERE client_id=$1', [client_id]);
-  const costsMap = {}, alicMap = {};
-  costsRes.rows.forEach(r => { costsMap[r.mla_id] = parseFloat(r.costo_unit)||0; alicMap[r.mla_id] = parseFloat(r.alicuota_iva) || 21; });
+  // CMV por MLA (cada venta al costo del día en que se hizo) + alícuota de IVA por producto
+  const costos = await cargarCostos(client_id);
+  const costsMap = costosDelPeriodo(costos, orders), alicMap = costos.alic;
 
   // Flex/FULL manual: sumar el de cada mes que toca el rango, escalado por los días
   // del rango que caen en ese mes (el bolo se carga mensual; si el rango es parcial,
@@ -6907,13 +7039,14 @@ async function traerItemsActivos(clientId, { withFees = false } = {}) {
   }
 
   // Costos guardados
-  const costsRes = await pool.query('SELECT mla_id, costo_unit, alicuota_iva, notas, cm_objetivo_pct, tacos_pct FROM product_costs WHERE client_id=$1', [client_id]);
+  const costsRes = await pool.query('SELECT mla_id, costo_unit, costo_usd, alicuota_iva, notas, cm_objetivo_pct, tacos_pct FROM product_costs WHERE client_id=$1', [client_id]);
   const costsMap = {};
-  costsRes.rows.forEach(r => { costsMap[r.mla_id] = { costo_unit: parseFloat(r.costo_unit)||0, alicuota_iva: parseFloat(r.alicuota_iva) || 21, notas: r.notas, cm_objetivo_pct: r.cm_objetivo_pct == null ? null : parseFloat(r.cm_objetivo_pct), tacos_pct: r.tacos_pct == null ? null : parseFloat(r.tacos_pct) }; });
+  costsRes.rows.forEach(r => { costsMap[r.mla_id] = { costo_unit: parseFloat(r.costo_unit)||0, costo_usd: r.costo_usd == null ? null : parseFloat(r.costo_usd), alicuota_iva: parseFloat(r.alicuota_iva) || 21, notas: r.notas, cm_objetivo_pct: r.cm_objetivo_pct == null ? null : parseFloat(r.cm_objetivo_pct), tacos_pct: r.tacos_pct == null ? null : parseFloat(r.tacos_pct) }; });
 
   const items = Object.values(itemsMap).map(i => ({
     ...i,
     costo_unit: costsMap[i.mla_id]?.costo_unit ?? null,
+    costo_usd: costsMap[i.mla_id]?.costo_usd ?? null,
     alicuota_iva: costsMap[i.mla_id]?.alicuota_iva ?? 21,
     notas: costsMap[i.mla_id]?.notas || '',
     // null = esta publicación no tiene objetivo propio y sigue al global del cliente
@@ -7523,28 +7656,104 @@ app.get('/api/reporte/salud-cmv/todos', requireAuth, async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
+// Número que puede venir como número o como texto argentino ("1.450,50" / "US$ 12,5"):
+// si trae coma, el punto es de miles. NaN si no hay número.
+function numeroAR(v) {
+  if (typeof v === 'number') return v;
+  const t = String(v ?? '').replace(/[^\d.,-]/g, '');
+  return parseFloat(t.includes(',') ? t.replace(/\./g, '').replace(',', '.') : t);
+}
+
 app.post('/api/reporte/costos', requireAuth, async (req, res) => {
   try {
-    const { client_id, costos } = req.body; // costos: [{mla_id, title, costo_unit, alicuota_iva, notas}]
+    const { client_id, costos } = req.body; // costos: [{mla_id, title, costo_unit, costo_usd?, alicuota_iva, notas}]
     if (!client_id || !costos?.length) return res.status(400).json({ error: 'Faltan datos' });
     const ALIC_VALIDAS = [10.5, 21];
+    const cotR = await pool.query('SELECT cotizacion_usd FROM clients WHERE id=$1', [client_id]);
+    const cot = parseFloat(cotR.rows[0]?.cotizacion_usd) || null;
+    let saved = 0, sinCotizacion = 0;
     for (const c of costos) {
       // Alícuota: si llega un valor estándar válido se usa; si no llega (import de Excel
       // sin columna) se manda NULL y el COALESCE preserva la alícuota ya guardada (o 21 en
       // un alta nueva). Así un import masivo de costos nunca pisa la alícuota cargada a mano.
       const alicRaw = parseFloat(c.alicuota_iva);
       const alic = ALIC_VALIDAS.includes(alicRaw) ? alicRaw : null;
+      // Dólar. Si viene costo_usd (aunque venga vacío: el Excel trae la columna) manda él:
+      // > 0 dolariza la publicación y el costo en pesos sale de la cotización del cliente;
+      // vacío la vuelve a pesos. Si no viene (edición a mano de un costo en pesos), la
+      // publicación sigue en dólares mientras el costo en pesos no cambie; si lo cambiaron,
+      // el último que cargaron manda y pasa a pesos.
+      const usdExplicito = Object.prototype.hasOwnProperty.call(c, 'costo_usd');
+      const usdNum = numeroAR(c.costo_usd);
+      const usd = usdNum > 0 ? usdNum : null;
+      let costoUnit = parseFloat(c.costo_unit) || 0;
+      if (usd) {
+        if (!cot) { sinCotizacion++; continue; }
+        costoUnit = Math.round(usd * cot * 100) / 100;
+      }
       await pool.query(`
-        INSERT INTO product_costs (client_id, mla_id, title, costo_unit, alicuota_iva, notas, updated_at)
-        VALUES ($1,$2,$3,$4,COALESCE($5::numeric,21),$6,NOW())
+        INSERT INTO product_costs (client_id, mla_id, title, costo_unit, costo_usd, alicuota_iva, notas, updated_at)
+        VALUES ($1,$2,$3,$4,$7::numeric,COALESCE($5::numeric,21),$6,NOW())
         ON CONFLICT (client_id, mla_id) DO UPDATE SET
           title=$3, costo_unit=$4,
+          costo_usd = CASE WHEN $8::boolean THEN $7::numeric
+                           WHEN product_costs.costo_unit = $4 THEN product_costs.costo_usd
+                           ELSE NULL END,
           alicuota_iva=COALESCE($5::numeric, product_costs.alicuota_iva, 21),
           notas=$6, updated_at=NOW()
-      `, [client_id, c.mla_id, c.title, c.costo_unit||0, alic, c.notas||'']);
+      `, [client_id, c.mla_id, c.title, costoUnit, alic, c.notas||'', usd, usdExplicito]);
+      saved++;
     }
-    res.json({ ok: true, saved: costos.length });
+    res.json({ ok: true, saved, sin_cotizacion: sinCotizacion,
+               ...(sinCotizacion ? { aviso: `${sinCotizacion} costos en dólares no se guardaron: falta cargar la cotización del dólar` } : {}) });
   } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── COSTOS EN DÓLARES ─────────────────────────────────────────────────────────
+// Para clientes con lista de precios en dólares. La cotización es manual y por cliente
+// (cada uno compra a su dólar). Cambiarla recalcula el costo en pesos de todas las
+// publicaciones dolarizadas; el trigger de product_costs deja el cambio vigente desde
+// HOY, así que el P&L de días anteriores no se mueve.
+app.get('/api/costos/dolar', requireAuth, async (req, res) => {
+  try {
+    const { client_id } = req.query;
+    if (!client_id) return res.status(400).json({ error: 'Falta client_id' });
+    const [c, n, h] = await Promise.all([
+      pool.query('SELECT cotizacion_usd, cotizacion_usd_at FROM clients WHERE id=$1', [client_id]),
+      pool.query('SELECT COUNT(*)::int AS n FROM product_costs WHERE client_id=$1 AND costo_usd IS NOT NULL', [client_id]),
+      pool.query(`SELECT cotizacion, productos, usuario, created_at FROM cotizacion_usd_hist
+                   WHERE client_id=$1 ORDER BY created_at DESC LIMIT 12`, [client_id]),
+    ]);
+    const r = c.rows[0] || {};
+    res.json({
+      cotizacion: r.cotizacion_usd != null ? parseFloat(r.cotizacion_usd) : null,
+      actualizada: r.cotizacion_usd_at || null,
+      productos_usd: n.rows[0]?.n || 0,
+      historial: h.rows.map(x => ({ cotizacion: parseFloat(x.cotizacion), productos: x.productos, usuario: x.usuario, fecha: x.created_at })),
+    });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+app.put('/api/costos/dolar', requireAuth, async (req, res) => {
+  const { client_id } = req.body || {};
+  const cot = numeroAR(req.body?.cotizacion);
+  if (!client_id) return res.status(400).json({ error: 'Falta client_id' });
+  if (!Number.isFinite(cot) || cot <= 0 || cot > 1e6) return res.status(400).json({ error: 'Cotización inválida' });
+  const db = await pool.connect();
+  try {
+    await db.query('BEGIN');
+    await db.query('UPDATE clients SET cotizacion_usd=$1, cotizacion_usd_at=NOW() WHERE id=$2', [cot, client_id]);
+    const up = await db.query(
+      `UPDATE product_costs SET costo_unit = ROUND(costo_usd * $1, 2), updated_at = NOW()
+        WHERE client_id=$2 AND costo_usd IS NOT NULL`, [cot, client_id]);
+    await db.query('INSERT INTO cotizacion_usd_hist (client_id, cotizacion, productos, usuario) VALUES ($1,$2,$3,$4)',
+      [client_id, cot, up.rowCount, req.user?.username || null]);
+    await db.query('COMMIT');
+    res.json({ ok: true, cotizacion: cot, productos_actualizados: up.rowCount, vigente_desde: ymd() });
+  } catch(e) {
+    await db.query('ROLLBACK').catch(() => {});
+    res.status(500).json({ error: e.message });
+  } finally { db.release(); }
 });
 
 // GET/POST /api/reporte/gastos — gastos fijos del mes
@@ -7676,9 +7885,12 @@ app.get('/api/reporte/pyl', requireAuth, async (req, res) => {
     } catch(e){}
 
     // ── CMV ───────────────────────────────────────────────────────────────────
-    const costsRes = await pool.query('SELECT mla_id, costo_unit, alicuota_iva FROM product_costs WHERE client_id=$1', [client_id]);
+    // Cada venta al costo del día en que se hizo: un cambio de costo o de cotización del
+    // dólar rige desde ese día, nunca para atrás.
+    const costos = await cargarCostos(client_id);
+    const costoPeriodo = costosDelPeriodo(costos, orders);
     const costsMap = {};
-    costsRes.rows.forEach(r => { costsMap[r.mla_id] = { costo_unit: parseFloat(r.costo_unit)||0, alicuota_iva: parseFloat(r.alicuota_iva) || 21 }; });
+    Object.keys(costos.vigente).forEach(id => { costsMap[id] = { costo_unit: costoPeriodo[id], alicuota_iva: costos.alic[id] }; });
 
     // IVA por producto: débito sobre la venta y crédito sobre el CMV, cada uno a la
     // alícuota del producto (10,5% / 21% / etc). Los servicios de ML van aparte a 21%.
