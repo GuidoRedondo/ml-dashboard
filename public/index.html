@@ -4906,27 +4906,33 @@ async function exportarCMV() {
   let costsMap = {};
   try {
     const r = await apiCall('GET', `/api/reporte/items-activos?client_id=${client.id}`);
-    if (r && r.items) r.items.forEach(i => { costsMap[i.mla_id] = i.costo_unit; });
+    if (r && r.items) r.items.forEach(i => { costsMap[i.mla_id] = i; });
   } catch(e) {}
 
-  const rows = items.map(i => ({
-    'MLA': i.id,
-    'SKU': i.sku || '',
-    'Título': i.title,
-    'Precio': (i._precioReal ?? i.price) || '',
-    'Facturación período': Math.round(i.revenue || 0),
-    'Unidades período': i.units || 0,
-    'Costo unitario (CMV)': costsMap[i.id] != null ? costsMap[i.id] : '',
-    'Notas': ''
-  }));
+  // Dos columnas de costo: "Costo USD" con número = la publicación está en dólares y el
+  // costo en pesos lo calcula el server con la cotización del cliente; vacía = pesos.
+  const rows = items.map(i => {
+    const c = costsMap[i.id];
+    return {
+      'MLA': i.id,
+      'SKU': i.sku || '',
+      'Título': i.title,
+      'Precio': (i._precioReal ?? i.price) || '',
+      'Facturación período': Math.round(i.revenue || 0),
+      'Unidades período': i.units || 0,
+      'Costo unitario ARS (CMV)': c?.costo_unit || '',
+      'Costo USD': c?.costo_usd ?? '',
+      'Notas': c?.notas || ''
+    };
+  });
 
   const ws = XLSX.utils.json_to_sheet(rows);
-  ws['!cols'] = [{ wch: 16 }, { wch: 12 }, { wch: 50 }, { wch: 12 }, { wch: 20 }, { wch: 18 }, { wch: 22 }, { wch: 25 }];
+  ws['!cols'] = [{ wch: 16 }, { wch: 12 }, { wch: 50 }, { wch: 12 }, { wch: 20 }, { wch: 18 }, { wch: 24 }, { wch: 12 }, { wch: 25 }];
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'CMV');
   const fecha = ymd(new Date());
   XLSX.writeFile(wb, `CMV_${client.name || 'cliente'}_${fecha}.xlsx`);
-  showToast('✅ CMV exportado — completá la columna "Costo unitario" y volvé a importar');
+  showToast('✅ CMV exportado — completá "Costo unitario ARS" o, si es en dólares, "Costo USD", y volvé a importar');
 }
 
 // ── CMV Import: lee Excel y guarda costos en DB ──
@@ -4960,30 +4966,37 @@ async function importarCMV(input) {
       // Filtrar solo filas con MLA y costo cargado — buscar columna de costo flexible
       const allRows = dataRows;
       // Detectar clave de costo (cualquier columna que incluya "costo")
-      const costKey = allRows.length ? Object.keys(allRows[0]).find(k => k.toLowerCase().includes('costo')) : null;
+      const costKey = allRows.length ? Object.keys(allRows[0]).find(k => k.toLowerCase().includes('costo') && !k.toLowerCase().includes('usd')) : null;
+      const usdKey  = allRows.length ? Object.keys(allRows[0]).find(k => k.toLowerCase().includes('usd')) : null;
       const mlaKey  = allRows.length ? Object.keys(allRows[0]).find(k => k.toLowerCase().includes('mla')) : 'MLA';
       const titKey  = allRows.length ? Object.keys(allRows[0]).find(k => k.toLowerCase().includes('títul') || k.toLowerCase().includes('title') || k.toLowerCase().includes('descrip')) : 'Título';
       const alicKey = allRows.length ? Object.keys(allRows[0]).find(k => { const l=k.toLowerCase(); return l.includes('alicuota')||l.includes('alícuota')||l.includes('iva'); }) : null;
       const notKey  = allRows.length ? Object.keys(allRows[0]).find(k => k.toLowerCase().includes('nota')) : 'Notas';
 
-      if (!costKey) { showToast('❌ No se encontró columna de costo en el archivo'); return; }
+      if (!costKey && !usdKey) { showToast('❌ No se encontró columna de costo en el archivo'); return; }
 
       const costos = allRows
-        .filter(r => r[mlaKey] && r[costKey] !== '' && r[costKey] != null)
-        .map(r => ({
-          mla_id: String(r[mlaKey]).trim(),
-          title: String(r[titKey] || '').trim(),
-          costo_unit: parseFloat(String(r[costKey]).replace(/[,$\s]/g,'')) || 0,
-          alicuota_iva: alicKey ? parseFloat(String(r[alicKey]||'').replace(/[%\s]/g,'').replace(',','.')) : undefined,
-          notas: String(r[notKey] || '').trim()
-        }))
-        .filter(r => r.mla_id.startsWith('MLA') && r.costo_unit > 0);
+        .filter(r => r[mlaKey])
+        .map(r => {
+          const usd = usdKey ? usdDeCelda(r[usdKey]) : null;
+          return {
+            mla_id: String(r[mlaKey]).trim(),
+            title: String(r[titKey] || '').trim(),
+            costo_unit: costKey ? parseFloat(String(r[costKey] ?? '').replace(/[,$\s]/g,'')) || 0 : 0,
+            // Con la columna USD en el archivo se manda siempre: vacía vuelve la publicación a pesos.
+            ...(usdKey ? { costo_usd: usd } : {}),
+            alicuota_iva: alicKey ? parseFloat(String(r[alicKey]||'').replace(/[%\s]/g,'').replace(',','.')) : undefined,
+            notas: String(r[notKey] || '').trim()
+          };
+        })
+        .filter(r => r.mla_id.startsWith('MLA') && (r.costo_unit > 0 || r.costo_usd > 0));
 
       if (!costos.length) { showToast('❌ No se encontraron costos válidos en el archivo'); return; }
 
       showToast(`⏳ Guardando ${costos.length} costos...`);
       const res = await apiCall('POST', '/api/reporte/costos', { client_id: client.id, costos });
-      if (res && res.ok) {
+      if (res?.aviso) showToast(`⚠ ${res.aviso}`);
+      else if (res && res.ok) {
         showToast(`✅ ${res.saved} costos guardados correctamente`);
       } else {
         showToast('❌ Error al guardar costos');
@@ -19195,13 +19208,13 @@ function descargarSinCosto(clientId) {
   const hoy = ymd(new Date());
   const wsData = [
     ['SIN COSTO — ' + clientName + ' | ' + sinCosto.length + ' productos'],
-    ['Completa la columna Costo Unitario (ARS). Guarda y sube el archivo al dashboard.'],
-    ['MLA', 'SKU', 'Descripcion', 'Unidades vendidas', 'Facturacion (ARS)', 'Costo Unitario (ARS)', 'Alicuota IVA (%)', 'Notas'],
-    ...sinCosto.map(i => [i.mla_id, i.sku || '', i.title, i.units, Math.round(i.revenue), '', i.alicuota_iva ?? 21, ''])
+    ['Completa Costo Unitario (ARS), o Costo USD si el proveedor cotiza en dolares. Guarda y sube el archivo al dashboard.'],
+    ['MLA', 'SKU', 'Descripcion', 'Unidades vendidas', 'Facturacion (ARS)', 'Costo Unitario (ARS)', 'Costo USD', 'Alicuota IVA (%)', 'Notas'],
+    ...sinCosto.map(i => [i.mla_id, i.sku || '', i.title, i.units, Math.round(i.revenue), '', '', i.alicuota_iva ?? 21, ''])
   ];
   const wb = XLSX.utils.book_new();
   const ws = XLSX.utils.aoa_to_sheet(wsData);
-  ws['!cols'] = [{wch:18},{wch:20},{wch:50},{wch:18},{wch:20},{wch:22},{wch:16},{wch:25}];
+  ws['!cols'] = [{wch:18},{wch:20},{wch:50},{wch:18},{wch:20},{wch:22},{wch:12},{wch:16},{wch:25}];
   XLSX.utils.book_append_sheet(wb, ws, 'Sin Costo');
   XLSX.writeFile(wb, 'SinCosto_' + clientName.replace(/\s+/g,'_') + '_' + hoy + '.xlsx');
   showToast('Excel con ' + sinCosto.length + ' productos sin costo descargado');
