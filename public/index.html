@@ -1365,6 +1365,7 @@ tbody td {
           <button id="promoTabActivas" onclick="switchPromoTab('activas')" class="sync-btn" style="background:var(--accent)">🏷️ Activas</button>
           <button id="promoTabQueMeter" onclick="switchPromoTab('quemeter')" class="sync-btn" title="Campañas abiertas, qué publicaciones podés meter y cuánto margen queda con cada una">🎯 Qué meter</button>
           <button id="promoTabRendimiento" onclick="switchPromoTab('rendimiento')" class="sync-btn" title="Cuánto se vendió con cada cupón y campaña, y cuánto de ese descuento lo pagó ML y cuánto vos">📊 Rendimiento</button>
+          <button id="promoTabPropia" onclick="switchPromoTab('propia')" class="sync-btn" title="Propuesta de campañas propias: qué publicaciones descontar, cuánto y cuánta CM queda, sin esperar a que ML invite">🛍️ Campaña propia</button>
         </div>
         <button onclick="exportarPromocionesExcel()" class="sync-btn" style="background:#16a34a;color:#fff;border:none">📥 Excel</button>
         <button class="sync-btn" onclick="loadPromociones()">🔄 Actualizar</button>
@@ -1413,6 +1414,10 @@ tbody td {
         </div>
         <div id="promoRendBody"></div>
       </div>
+
+      <!-- Campaña propia: la arma el vendedor, no la propone ML. Se carga a mano en el
+           Centro de Promociones (la API no deja crear campañas). -->
+      <div id="promoPropiaContent" style="display:none"></div>
     </div>
 
     <!-- PREGUNTAS -->
@@ -9550,7 +9555,14 @@ async function loadPrecios() {
   window._prcClientId = client.id;
   window._prcMeta = d;
   _prcInitSupuestos(d);
-  window._prcData = d.items.map(i => {
+  window._prcData = _prcMapItems(d);
+  renderPrecios();
+}
+
+// Publicación de /api/precios → la forma que consume _prcCM. La comparten Precios y
+// Promociones › Campaña propia, así la CM de las dos pantallas es la misma cuenta.
+function _prcMapItems(d) {
+  return (d.items || []).map(i => {
     const precio      = parseFloat(i.price) || 0;
     const precioLista = i.original_price ? parseFloat(i.original_price) : null;
     const cmv         = parseFloat(i.costo_unit) || 0;
@@ -9583,7 +9595,6 @@ async function loadPrecios() {
       tacosManual: i.tacos_pct != null ? parseFloat(i.tacos_pct) : null,
     };
   });
-  renderPrecios();
 }
 
 async function recargarPrecios(force) {
@@ -22698,10 +22709,12 @@ function switchPromoTab(tab) {
   const bA  = document.getElementById('promoTabActivas');
   const bQ  = document.getElementById('promoTabQueMeter');
   const bR  = document.getElementById('promoTabRendimiento');
+  const pro = document.getElementById('promoPropiaContent');
+  const bP  = document.getElementById('promoTabPropia');
   const on  = 'var(--accent)', off = '';
   const prep = document.getElementById('promoPrepararBox');
-  act.style.display = 'none'; que.style.display = 'none'; ren.style.display = 'none';
-  bA.style.background = off; bQ.style.background = off; bR.style.background = off;
+  act.style.display = 'none'; que.style.display = 'none'; ren.style.display = 'none'; pro.style.display = 'none';
+  bA.style.background = off; bQ.style.background = off; bR.style.background = off; bP.style.background = off;
   if (prep) prep.style.display = 'none';
   if (tab === 'quemeter') {
     que.style.display = ''; bQ.style.background = on;
@@ -22711,9 +22724,265 @@ function switchPromoTab(tab) {
     ren.style.display = ''; bR.style.background = on;
     poblarMesesRendimiento();
     if (!_promoRend) loadPromoRendimiento(false);
+  } else if (tab === 'propia') {
+    pro.style.display = ''; bP.style.background = on;
+    loadCampaniaPropia(false);
   } else {
     act.style.display = ''; bA.style.background = on;
   }
+}
+
+// ── Promociones › Campaña propia ─────────────────────────────────────────────
+// "Qué meter" responde a lo que ML invita. Esto es al revés: qué campañas le conviene
+// armar al vendedor por su cuenta. Dos propuestas, cada una con su lógica:
+//   🧊 Liquidar  — stock que no rota: plata parada que conviene convertir en caja aunque
+//                  sea con menos margen. Descuento hondo, hasta el tope que aguanta el piso.
+//   🚀 Empujar   — lo que ya vende, con CM holgada y stock para bancar más ventas: un
+//                  descuento chico para ganar volumen y posicionamiento.
+// La CM sale de la misma cuenta que la solapa Precios (_prcCM: comisión real, cargo fijo
+// por peso, envío, IVA, IIBB, TACOS), así los números cierran entre pantallas. ML no deja
+// crear campañas por API (403 PolicyAgent): la propuesta se carga a mano en el Centro de
+// Promociones, y el Excel sirve de guía.
+let _cpData = null;       // { clientId, meta, items }
+let _cpPiso = null;       // CM mínima que tiene que dejar la venta en promo (% s/precio)
+let _cpOverride = {};     // mla -> % de descuento escrito a mano
+const CP_PASO = 5;                 // los descuentos se proponen de a 5 puntos
+const CP_MAX = 50;                 // más que esto no es una promo, es un remate
+const CP_LIQ_COBERTURA = 120;      // días de stock al ritmo actual para decir "no rota"
+const CP_LIQ_TOPE = 30;            // descuento máximo que se propone para liquidar
+const CP_EMP_MIN_UNID = 4;         // ventas en 30 días para decir "ya vende" (~1 por semana)
+const CP_EMP_COBERTURA = 30;       // días de stock mínimos para bancar el volumen extra
+const CP_EMP_HOLGURA = 10;         // puntos de CM por encima del piso para poder resignar
+const CP_EMP_DESC = 10;            // descuento que se propone para empujar
+
+const CP_GRUPOS = {
+  liquidar: { icono: '🧊', titulo: 'Liquidar stock parado', color: '#0ea5e9',
+    desc: `Publicaciones sin ventas en 30 días o con más de ${CP_LIQ_COBERTURA} días de stock al ritmo actual. El objetivo es liberar la plata que está parada: descuento hondo (hasta ${CP_LIQ_TOPE}%) mientras la venta siga dejando la CM mínima.` },
+  empujar:  { icono: '🚀', titulo: 'Empujar lo que ya vende', color: '#16a34a',
+    desc: `Publicaciones que venden (${CP_EMP_MIN_UNID}+ en 30 días), con CM ${CP_EMP_HOLGURA} puntos arriba del piso y stock para más de ${CP_EMP_COBERTURA} días. Un descuento chico (${CP_EMP_DESC}%) para ganar volumen sin regalar margen.` },
+};
+
+// Mismos supuestos que la solapa Precios (IIBB, débitos y créditos, TACOS), leídos de la
+// respuesta y no de los globales de Precios, que pueden ser de otra cuenta.
+function _cpCtx(meta, it) {
+  const sup = meta.supuestos || {};
+  let tacos = sup.tacos_pct || 0;
+  if (meta.tacos_modo === 'item') {
+    if (it.tacosManual != null) tacos = it.tacosManual;
+    else { const r = _prcTacosReal(it); if (r != null) tacos = r; }
+  }
+  return { iibb: (sup.iibb_pct ?? 4) / 100, tacos: tacos / 100, debCred: (sup.deb_cred_pct ?? 1.2) / 100,
+           otros: sup.otros_unit || 0, esMono: meta.condicion_iva === 'monotributista' };
+}
+
+function _cpPrecioCon(it, pct) { return Math.round(it.precio * (1 - pct / 100)); }
+
+function _cpAnalizar(it, meta, piso) {
+  const ctx = _cpCtx(meta, it);
+  const units = it.units, stock = it.stock ?? 0;
+  const cobertura = units > 0 ? Math.round(stock / (units / 30)) : null;
+  const r = { it, ctx, units, stock, cobertura, grupo: null };
+  const excl = motivo => ({ ...r, motivo });
+  if (!(stock > 0))       return excl('Sin stock');
+  if (!it.hasCMV)         return excl('Sin costo cargado: no se sabe cuánto descuento aguanta');
+  if (it.tieneDescuento)  return excl('Ya tiene un descuento activo (de ML o propio)');
+  if (!(it.precio > 0))   return excl('Sin precio');
+  const hoy = _prcCM(it.precio, it, ctx);
+  // El descuento más hondo que sigue dejando el piso. Se prueban todos los escalones y
+  // no se corta en el primero que falla: la CM no baja parejo, porque abajo de $33.000
+  // el vendedor deja de pagar el envío y el cargo fijo cambia por tramo.
+  let max = 0;
+  for (let p = CP_PASO; p <= CP_MAX; p += CP_PASO) {
+    if (_prcCM(_cpPrecioCon(it, p), it, ctx).cmPct >= piso) max = p;
+  }
+  Object.assign(r, { hoy, max });
+  if (hoy.cmPct < piso)   return excl(`Hoy ya deja ${_prcPct(hoy.cmPct)}, debajo del piso: no hay margen para descontar`);
+  if (max < CP_PASO)      return excl(`Con ${CP_PASO}% de descuento la CM cae debajo del piso`);
+  if (units == null)      return excl('No se pudieron leer las ventas de 30 días');
+  if (units === 0 || cobertura > CP_LIQ_COBERTURA) {
+    return { ...r, grupo: 'liquidar', sugerido: Math.min(max, CP_LIQ_TOPE),
+      motivo: units === 0 ? `Sin ventas en 30 días con ${stock} en stock` : `${cobertura} días de stock al ritmo actual` };
+  }
+  if (units >= CP_EMP_MIN_UNID && cobertura >= CP_EMP_COBERTURA && hoy.cmPct >= piso + CP_EMP_HOLGURA) {
+    return { ...r, grupo: 'empujar', sugerido: Math.min(max, CP_EMP_DESC),
+      motivo: `Vende ${units} en 30 días, deja ${_prcPct(hoy.cmPct)} y tiene stock para ${cobertura} días` };
+  }
+  if (cobertura < CP_EMP_COBERTURA) return excl(`Stock justo (${cobertura} días): no hace falta descontar`);
+  if (units < CP_EMP_MIN_UNID)      return excl('Rota lento pero sin stock de sobra: mejor mirar la publicación que el precio');
+  return excl(`Deja ${_prcPct(hoy.cmPct)}: poca holgura sobre el piso para resignar margen`);
+}
+
+async function loadCampaniaPropia(force) {
+  const el = document.getElementById('promoPropiaContent');
+  const cli = getActiveClient();
+  if (!el) return;
+  if (!cli) { el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">Seleccioná una cuenta</div>'; return; }
+  if (!force && _cpData && _cpData.clientId === cli.id) { renderCampaniaPropia(); return; }
+  el.innerHTML = `<div style="color:var(--muted);padding:40px;text-align:center">
+    <div style="font-size:30px;margin-bottom:10px">🛍️</div>
+    <div>Armando la propuesta con los costos reales de Mercado Libre…</div>
+    <div style="font-size:11px;margin-top:8px">Usa la misma base que Precios: la primera vez del día puede tardar varios minutos en cuentas grandes.</div></div>`;
+  await _prcCargarTarifas();
+  const d = await apiCall('GET', `/api/precios?client_id=${cli.id}${force ? '&force_refresh=1' : ''}`).catch(() => null);
+  if (!d || d.error || !Array.isArray(d.items)) {
+    el.innerHTML = `<div style="color:var(--muted);padding:40px;text-align:center">No se pudieron traer las publicaciones${d && d.error ? ' — ' + d.error : ''}.
+      <div style="margin-top:12px"><button class="sync-btn" onclick="loadCampaniaPropia(true)">🔄 Reintentar</button></div></div>`;
+    return;
+  }
+  if (!_cpData || _cpData.clientId !== cli.id) {
+    _cpPiso = cli.piso_cm_promo_pct != null ? parseFloat(cli.piso_cm_promo_pct) : 10;
+    _cpOverride = {};
+  }
+  _cpData = { clientId: cli.id, meta: d, items: _prcMapItems(d) };
+  renderCampaniaPropia();
+}
+
+function _cpFilas() {
+  const filas = (_cpData?.items || []).map(it => _cpAnalizar(it, _cpData.meta, _cpPiso));
+  filas.forEach(f => {
+    if (!f.grupo) return;
+    f.pct = _cpOverride[f.it.id] != null ? _cpOverride[f.it.id] : f.sugerido;
+    f.precioPromo = _cpPrecioCon(f.it, f.pct);
+    f.promo = _prcCM(f.precioPromo, f.it, f.ctx);
+    f.cruzaUmbral = f.it.precio >= _prcUmbralEnvio && f.precioPromo < _prcUmbralEnvio;
+  });
+  return filas;
+}
+
+function renderCampaniaPropia() {
+  const el = document.getElementById('promoPropiaContent');
+  if (!el || !_cpData) return;
+  const filas = _cpFilas();
+  const cli = getActiveClient();
+  const kpi = (t, v, sub) => `<div style="flex:1;min-width:140px;padding:10px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:10px">
+    <div style="font-size:10px;color:var(--muted)">${t}</div>
+    <div style="font-size:16px;font-weight:700;font-family:var(--font-b)">${v}</div>
+    <div style="font-size:10px;color:var(--muted)">${sub}</div></div>`;
+  const th = (t, a) => `<th style="padding:7px 8px;font-size:10px;color:var(--muted);font-weight:600;text-align:${a || 'right'};white-space:nowrap">${t}</th>`;
+  const td = (v, a, extra) => `<td style="padding:7px 8px;font-size:12px;text-align:${a || 'right'};white-space:nowrap;${extra || ''}">${v}</td>`;
+  const colCm = pct => pct >= _cpPiso + CP_EMP_HOLGURA ? '#16a34a' : (pct >= _cpPiso ? '#f59e0b' : '#dc2626');
+
+  const bloque = key => {
+    const g = CP_GRUPOS[key];
+    const fs = filas.filter(f => f.grupo === key);
+    fs.sort(key === 'liquidar'
+      ? (a, b) => b.stock * b.it.cmv - a.stock * a.it.cmv
+      : (a, b) => (b.it.fact || 0) - (a.it.fact || 0));
+    if (!fs.length) {
+      return `<div class="kpi-card" style="padding:16px;margin-bottom:16px;border-left:3px solid ${g.color}">
+        <div class="kpi-label">${g.icono} ${g.titulo.toUpperCase()}</div>
+        <div style="font-size:12px;color:var(--muted);margin-top:6px">Ninguna publicación cumple las condiciones con un piso de ${_prcPct(_cpPiso)}.</div></div>`;
+    }
+    const stockCosto = fs.reduce((t, f) => t + f.stock * f.it.cmv, 0);
+    const stockPromo = fs.reduce((t, f) => t + f.stock * f.precioPromo, 0);
+    const resigna = fs.reduce((t, f) => t + (f.hoy.cm - f.promo.cm), 0) / fs.length;
+    const cmProm = fs.reduce((t, f) => t + f.promo.cmPct, 0) / fs.length;
+    const rows = fs.slice(0, 300).map(f => `<tr style="border-bottom:1px solid var(--border)">
+      <td style="padding:7px 8px;font-size:11px;max-width:280px">
+        <a href="https://articulo.mercadolibre.com.ar/${f.it.id.replace('MLA', 'MLA-')}" target="_blank" style="color:var(--accent);text-decoration:none">${f.it.id}</a>
+        <div style="font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtmlOpin(f.it.title)}</div>
+        <div style="font-size:10px;color:var(--muted)">${f.motivo}</div></td>
+      ${td(_prcFmt(f.it.precio))}
+      ${td(_prcPct(f.hoy.cmPct), 'right', 'color:' + colCm(f.hoy.cmPct))}
+      <td style="padding:7px 8px;text-align:right;white-space:nowrap">
+        <input type="number" min="${CP_PASO}" max="${CP_MAX}" step="1" value="${f.pct}" onchange="_cpSetDesc('${f.it.id}', this.value)"
+          style="width:52px;padding:3px 5px;border-radius:6px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:12px;text-align:right">%
+        ${f.pct > f.max ? `<div style="font-size:10px;color:#dc2626">máx. ${f.max}%</div>` : ''}</td>
+      ${td(_prcFmt(f.precioPromo) + (f.cruzaUmbral ? `<div style="font-size:10px;color:#f59e0b" title="Abajo de ${_prcFmt(_prcUmbralEnvio)} el envío deja de ser gratis: lo paga el comprador. A vos te ahorra el envío, pero puede bajar la conversión.">⚠ sin envío gratis</div>` : ''))}
+      ${td(_prcPct(f.promo.cmPct) + `<div style="font-size:10px;color:var(--muted)">${_prcFmt(f.promo.cm)} x u.</div>`, 'right', 'font-weight:600;color:' + colCm(f.promo.cmPct))}
+      ${td(f.max + '%', 'right', 'color:var(--muted)')}
+      ${td(f.units ?? '—')}
+      ${td(f.stock)}
+      ${td(f.cobertura != null ? f.cobertura + ' d' : 'sin ventas', 'right', 'color:var(--muted)')}
+    </tr>`).join('');
+    return `<div class="kpi-card" style="padding:16px 18px;margin-bottom:16px;border-left:3px solid ${g.color}">
+      <div class="kpi-label">${g.icono} ${g.titulo.toUpperCase()} · ${fs.length} publicaciones</div>
+      <div style="font-size:12px;color:var(--muted);margin:6px 0 12px;line-height:1.5">${g.desc}</div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px">
+        ${kpi('STOCK A COSTO', _prcFmt(stockCosto), `${fs.reduce((t, f) => t + f.stock, 0).toLocaleString('es-AR')} unidades`)}
+        ${kpi('STOCK A PRECIO PROMO', _prcFmt(stockPromo), 'lo que entra si se vende todo')}
+        ${kpi('CM PROMEDIO EN PROMO', _prcPct(cmProm), `piso ${_prcPct(_cpPiso)}`)}
+        ${kpi('RESIGNÁS POR UNIDAD', _prcFmt(resigna), 'promedio contra el precio de hoy')}
+      </div>
+      <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse">
+        <thead><tr style="border-bottom:2px solid var(--border)">${th('Publicación', 'left')}${th('Precio hoy')}${th('CM hoy')}${th('Descuento')}${th('Precio promo')}${th('CM en promo')}${th('Desc. máx.')}${th('Ventas 30d')}${th('Stock')}${th('Cobertura')}</tr></thead>
+        <tbody>${rows}</tbody></table></div>
+      ${fs.length > 300 ? `<div style="font-size:11px;color:var(--muted);margin-top:6px">Se muestran 300 de ${fs.length}. El Excel trae todas.</div>` : ''}
+    </div>`;
+  };
+
+  const excl = {};
+  filas.filter(f => !f.grupo).forEach(f => {
+    const k = f.motivo.replace(/\d[\d.,]*\s?%?/g, '#').replace(/\(#.*?\)/, '').trim();
+    (excl[k] = excl[k] || { n: 0, ejemplo: f.motivo }).n++;
+  });
+  const exclHtml = Object.values(excl).sort((a, b) => b.n - a.n)
+    .map(x => `<li style="margin:2px 0"><b>${x.n}</b> — ${x.ejemplo}</li>`).join('');
+
+  el.innerHTML = `
+    <div class="kpi-card" style="padding:16px 18px;margin-bottom:16px">
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <div style="flex:1;min-width:260px">
+          <div style="font-size:14px;font-weight:700">🛍️ Propuesta de campañas propias — ${escapeHtmlOpin(cli?.name || '')}</div>
+          <div style="font-size:12px;color:var(--muted);margin-top:4px;line-height:1.5">
+            No depende de que ML invite: cada publicación con el descuento que conviene y la CM que deja, con los costos reales
+            (comisión, cargo fijo, envío, IVA, IIBB y TACOS, igual que en Rentabilidad › Precios).
+            ML no deja crear campañas por API: se cargan a mano en el Centro de Promociones con el Excel como guía.</div>
+        </div>
+        <label style="font-size:12px">CM mínima en promo
+          <input type="number" min="0" max="80" step="1" value="${_cpPiso}" onchange="_cpSetPiso(this.value)"
+            style="width:56px;margin-left:4px;padding:5px 6px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px;text-align:right">%</label>
+        <button class="sync-btn" onclick="exportarCampaniaPropiaExcel()" style="background:#16a34a;color:#fff;border:none">📥 Excel</button>
+        <button class="sync-btn" onclick="loadCampaniaPropia(true)" title="Vuelve a pedirle a ML comisiones y ventas">🔄 Recalcular</button>
+      </div>
+    </div>
+    ${bloque('liquidar')}
+    ${bloque('empujar')}
+    ${exclHtml ? `<details class="kpi-card" style="padding:14px 18px"><summary style="cursor:pointer;font-size:12px;font-weight:600">Quedaron afuera ${filas.filter(f => !f.grupo).length} publicaciones — por qué</summary>
+      <ul style="font-size:12px;color:var(--muted);margin:8px 0 0 18px;padding:0">${exclHtml}</ul></details>` : ''}`;
+}
+
+function _cpSetPiso(v) {
+  const n = parseFloat(v);
+  if (!(n >= 0 && n < 80)) { showToast('⚠ Piso inválido'); return; }
+  _cpPiso = n; _cpOverride = {};
+  renderCampaniaPropia();
+}
+
+function _cpSetDesc(mla, v) {
+  const n = Math.round(parseFloat(v));
+  if (!(n >= 1 && n <= 80)) { showToast('⚠ Descuento entre 1 y 80%'); renderCampaniaPropia(); return; }
+  _cpOverride[mla] = n;
+  renderCampaniaPropia();
+}
+
+function exportarCampaniaPropiaExcel() {
+  if (!_cpData) { showToast('⚠ Cargá la propuesta primero'); return; }
+  const filas = _cpFilas().filter(f => f.grupo);
+  if (!filas.length) { showToast('⚠ No hay publicaciones en la propuesta'); return; }
+  const r1 = n => Math.round(n * 10) / 10;
+  const rows = filas.map(f => ({
+    'Campaña': CP_GRUPOS[f.grupo].titulo,
+    'MLA': f.it.id, 'SKU': f.it.sku || '', 'Título': f.it.title,
+    'Precio hoy': Math.round(f.it.precio),
+    'Descuento %': f.pct,
+    'Precio promo': f.precioPromo,
+    'CM hoy %': r1(f.hoy.cmPct), 'CM hoy $': Math.round(f.hoy.cm),
+    'CM promo %': r1(f.promo.cmPct), 'CM promo $': Math.round(f.promo.cm),
+    'Descuento máx. %': f.max,
+    'Ventas 30d': f.units ?? '', 'Stock': f.stock,
+    'Cobertura (días)': f.cobertura ?? 'sin ventas',
+    'Costo unit.': Math.round(f.it.cmv),
+    'Sin envío gratis en promo': f.cruzaUmbral ? 'Sí' : '',
+    'Motivo': f.motivo,
+  }));
+  const ws = XLSX.utils.json_to_sheet(rows);
+  ws['!cols'] = [24, 16, 14, 50, 11, 11, 12, 9, 10, 10, 10, 13, 10, 8, 14, 10, 16, 45].map(w => ({ wch: w }));
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Campaña propia');
+  const cli = getActiveClient();
+  XLSX.writeFile(wb, `CampañaPropia_${(cli?.name || 'cliente').replace(/\s+/g, '_')}_${ymd(new Date())}.xlsx`);
+  showToast('✅ Excel descargado');
 }
 
 // ── Promociones › Rendimiento ────────────────────────────────────────────────
