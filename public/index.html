@@ -27015,12 +27015,13 @@ const ADM_RESULTADOS = {
 };
 
 // MLA de la publicación como link, para encontrarla rápido. En pausas de anuncio AdMan no
-// manda el MLA: el backend lo busca por título exacto; si el título se repite, van todas.
+// manda el MLA: el backend lo busca por título; si el anuncio cubre varias publicaciones, van todas.
 const admLinkMla = id => `<a href="https://articulo.mercadolibre.com.ar/${admEsc(String(id).replace(/^([A-Z]{3})(\d+)$/, '$1-$2'))}-_JM" target="_blank" rel="noopener" style="color:inherit;font-weight:700">${admEsc(id)}</a>`;
 function admMla(a) {
   if (a.mla) return `<div class="sub">${admLinkMla(a.mla)}</div>`;
   const op = Array.isArray(a.mla_opciones) ? a.mla_opciones : [];
-  if (op.length) return `<div class="sub">Mismo título en: ${op.map(admLinkMla).join(', ')}</div>`;
+  // Varias: el anuncio de AdMan es por familia y cubre esas publicaciones (una por variante).
+  if (op.length) return `<div class="sub">Familia (${op.length} publicaciones): ${op.map(admLinkMla).join(', ')}</div>`;
   if (a.entity_type === 'item' || a.entity_type === 'promotion') return `<div class="sub">MLA sin identificar</div>`;
   return '';
 }

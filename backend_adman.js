@@ -122,6 +122,10 @@ async function crearTablas(pool) {
     ALTER TABLE adman_alertas ADD COLUMN IF NOT EXISTS promocion    JSONB;
     UPDATE adman_alertas SET mla = entity_id
       WHERE mla IS NULL AND entity_type='promotion' AND entity_id ~ '^[A-Z]{3}[0-9]+$';
+    -- Las que no encontraron MLA se reintentan en la próxima corrida (la regla de búsqueda
+    -- puede haber mejorado desde el último deploy). Solo cuesta llamadas a ML.
+    UPDATE adman_alertas SET mla_buscado = FALSE
+      WHERE entity_type='item' AND mla IS NULL AND mla_opciones IS NULL AND mla_buscado;
     CREATE INDEX IF NOT EXISTS idx_adman_alertas_estado ON adman_alertas (estado, adman_cust_id);
     CREATE INDEX IF NOT EXISTS idx_adman_alertas_client ON adman_alertas (client_id, estado);
 
@@ -300,12 +304,20 @@ module.exports = (app, { pool, requireAuth, requireAdmin, getClientToken, ML_API
         try {
           const s = await fetch(`${ML_API}/users/${cuenta.adman_cust_id}/items/search?q=${encodeURIComponent(row.entity_name)}&limit=50`, { headers }).then(r => r.json());
           const ids = (s && s.results) || [];
+          const exactos = [], prefijo = [];
           for (let i = 0; i < ids.length; i += 20) {
             const it = await fetch(`${ML_API}/items?ids=${ids.slice(i, i + 20).join(',')}&attributes=id,title`, { headers }).then(r => r.json());
             (Array.isArray(it) ? it : []).forEach(x => {
-              if (x && x.code === 200 && x.body && normTitulo(x.body.title) === clave) opciones.push(x.body.id);
+              if (!(x && x.code === 200 && x.body)) return;
+              const t = normTitulo(x.body.title);
+              if (t === clave) exactos.push(x.body.id);
+              else if (t.startsWith(clave + ' ')) prefijo.push(x.body.id);
             });
           }
+          // Los anuncios de AdMan son por familia: su título es el de la familia y el de ML
+          // suma la variante ("… 2,50 Mts. De Largo Negro"). Sin exacto, vale el prefijo;
+          // si hay varios (los colores), se muestran todos.
+          opciones = exactos.length ? exactos : prefijo;
         } catch (e) { opciones = null; }   // error de red: se reintenta en la próxima corrida
         cache[clave] = opciones;
       }
