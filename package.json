@@ -2,6 +2,9 @@
   "name": "ml-dashboard-server",
   "version": "1.0.0",
   "main": "server.js",
+  "engines": {
+    "node": "22.x"
+  },
   "scripts": {
     "start": "node server.js",
     "seed:plan": "node seed-plan-master.js"
