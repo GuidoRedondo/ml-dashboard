@@ -14141,11 +14141,6 @@ function initApp() {
   loadClients().then(() => applyPermissions());
   applyPermissions();
   showPage('dashboard', document.querySelector('.nav-item[data-page="dashboard"]'));
-  // Deep link de Alertas AdMan (/admin/alertas redirige acá). Solo admin.
-  if (new URLSearchParams(location.search).get('page') === 'adman-alertas' && getSessionRole() === 'admin') {
-    showPage('adman-alertas', document.getElementById('nav-adman-alertas'));
-    loadAdmanPanel();
-  }
 }
 
 async function exchangeCodeAuto(code) {
@@ -26938,6 +26933,17 @@ async function admCorrer() {
   if (b) { b.disabled = true; b.textContent = 'Corrida en curso…'; }
   admSeguirCorrida();
 }
+
+// Deep link (/admin/alertas redirige a /?page=adman-alertas). Va acá y no en initApp():
+// initApp() también corre mientras se carga el primer <script>, cuando este bloque todavía
+// no existe; llamar a loadAdmanPanel desde ahí cortaba el arranque y la app quedaba en
+// blanco. Este listener se registra después del de BOOT, así que corre con la app ya armada.
+window.addEventListener('DOMContentLoaded', () => {
+  if (new URLSearchParams(location.search).get('page') !== 'adman-alertas') return;
+  if (getSessionRole() !== 'admin') return;
+  showPage('adman-alertas', document.getElementById('nav-adman-alertas'));
+  loadAdmanPanel();
+});
 
 function admSeguirCorrida() {
   if (_adm.pollCorrida) return;
