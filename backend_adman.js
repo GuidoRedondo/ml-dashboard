@@ -289,7 +289,8 @@ module.exports = (app, { pool, requireAuth, requireAdmin }) => {
       let clave = { ok: true, cuentas: null, error: null };
       try { clave.cuentas = (await adman.todasLasCuentas()).length; }
       catch (e) { clave = { ok: false, cuentas: null, error: limpiar(e.message) }; }
-      res.json({ ok: true, clave, total: tools.length, herramientas: tools });
+      // node: para confirmar que Railway respeta el engines de package.json
+      res.json({ ok: true, node: process.version, clave, total: tools.length, herramientas: tools });
     } catch (e) { err(res, e); }
     finally { if (adman) await adman.cerrar(); }
   });
