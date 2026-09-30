@@ -1,6 +1,6 @@
 // backend_adman.js
 // ============================================================
-//  Alertas AdMan — Etapa 1: conexión y lectura  —  Negocio Redondo · ML Dashboard
+//  Alertas AdMan — Etapas 1 (lectura) y 2 (panel y decisiones)  —  Negocio Redondo · ML Dashboard
 // ============================================================
 //
 //  Se monta desde server.js (mismo patrón que backend_reclamos.js):
@@ -9,9 +9,9 @@
 //  QUÉ HACE (spec: docs/spec-alertas-adman.md)
 //  -------------------------------------------
 //  Trae las alertas pendientes de los agentes de AdMan de toda la cartera y las
-//  guarda. En esta etapa no clasifica ni ejecuta nada: toda alerta queda en la pila
-//  "revisar" y en estado "pendiente". La clasificación por pisos es la Etapa 3 y las
-//  decisiones (aceptar/rechazar vía MCP) la Etapa 2.
+//  guarda (Etapa 1). Guido las aprueba o desestima desde el panel y eso se manda a
+//  AdMan en lotes (Etapa 2, ver más abajo). Todavía no clasifica: toda alerta va a la
+//  pila "revisar" hasta la Etapa 3.
 //
 //  Solo admin: nada de esto lo ve un cliente ni un colaborador.
 //
@@ -103,12 +103,64 @@ async function crearTablas(pool) {
     ALTER TABLE adman_alertas ALTER COLUMN entity_type TYPE TEXT;
     ALTER TABLE adman_alertas ALTER COLUMN accion      TYPE TEXT;
     ALTER TABLE adman_alertas ALTER COLUMN operador    TYPE TEXT;
+    -- Etapa 2: estados de decisión. pendiente, enviando, aprobada, desestimada, fallida,
+    -- sin_confirmar (se mandó y no se sabe si AdMan la ejecutó), vencida.
+    ALTER TABLE adman_alertas ALTER COLUMN estado TYPE TEXT;
+    ALTER TABLE adman_alertas ADD COLUMN IF NOT EXISTS decision     TEXT;
+    ALTER TABLE adman_alertas ADD COLUMN IF NOT EXISTS lote_id      INTEGER;
+    ALTER TABLE adman_alertas ADD COLUMN IF NOT EXISTS motivo_fallo TEXT;
+    ALTER TABLE adman_alertas ADD COLUMN IF NOT EXISTS decidida_en  TIMESTAMPTZ;
     CREATE INDEX IF NOT EXISTS idx_adman_alertas_estado ON adman_alertas (estado, adman_cust_id);
     CREATE INDEX IF NOT EXISTS idx_adman_alertas_client ON adman_alertas (client_id, estado);
+
+    -- Un lote = un clic (una fila, un grupo o una selección). Lleva el progreso que muestra
+    -- la pantalla y sobrevive a que se recargue la página.
+    CREATE TABLE IF NOT EXISTS adman_lotes (
+      id            SERIAL PRIMARY KEY,
+      decision      TEXT NOT NULL,            -- aprobar, desestimar
+      estado        TEXT DEFAULT 'en_curso',  -- en_curso, terminado, interrumpido
+      total         INTEGER DEFAULT 0,
+      procesadas    INTEGER DEFAULT 0,
+      resueltas     INTEGER DEFAULT 0,
+      fallidas      INTEGER DEFAULT 0,
+      sin_confirmar INTEGER DEFAULT 0,
+      usuario       TEXT,
+      inicio        TIMESTAMPTZ DEFAULT NOW(),
+      fin           TIMESTAMPTZ,
+      error         TEXT
+    );
+
+    -- Registro de cada decisión (spec). origen: adman (Etapa 2) o margen (Etapa 4).
+    CREATE TABLE IF NOT EXISTS decisiones_log (
+      id              SERIAL PRIMARY KEY,
+      origen          TEXT NOT NULL,
+      ref_id          TEXT NOT NULL,
+      lote_id         INTEGER REFERENCES adman_lotes(id) ON DELETE SET NULL,
+      client_id       INTEGER REFERENCES clients(id) ON DELETE SET NULL,
+      decision        TEXT NOT NULL,
+      ejecutado       BOOLEAN,
+      -- resolved, not_found, already_resolved, execution_failed, sin_confirmar, error
+      resultado       TEXT,
+      motivo          TEXT,
+      respuesta_adman JSONB,
+      usuario         TEXT,
+      fecha           TIMESTAMPTZ DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_decisiones_log_ref ON decisiones_log (origen, ref_id);
+    CREATE INDEX IF NOT EXISTS idx_decisiones_log_client ON decisiones_log (client_id, fecha DESC);
   `);
   // Si el server se reinició a mitad de una corrida, esa corrida no va a terminar nunca.
   await pool.query(`
     UPDATE adman_corridas SET estado='fallida', fin=NOW(), error='El servidor se reinició durante la corrida'
+    WHERE estado='en_curso'`);
+  // Lo mismo con un lote. Lo que estaba "enviando" puede haberse ejecutado o no: queda
+  // sin confirmar y la corrida siguiente lo aclara. Lo que no se llegó a mandar sigue pendiente.
+  await pool.query(`
+    UPDATE adman_alertas SET estado='sin_confirmar',
+      motivo_fallo='El servidor se reinició mientras se enviaba a AdMan'
+    WHERE estado='enviando'`);
+  await pool.query(`
+    UPDATE adman_lotes SET estado='interrumpido', fin=NOW(), error='El servidor se reinició durante el lote'
     WHERE estado='en_curso'`);
 }
 
@@ -190,8 +242,13 @@ module.exports = (app, { pool, requireAuth, requireAdmin }) => {
         metricas    = EXCLUDED.metricas,
         errores     = EXCLUDED.errores,
         ultima_vez  = NOW(),
-        -- si AdMan la vuelve a mostrar como pendiente, deja de estar vencida
-        estado = CASE WHEN adman_alertas.estado='vencida' THEN 'pendiente' ELSE adman_alertas.estado END
+        -- Si AdMan la sigue mostrando como pendiente: una vencida vuelve a pendiente, y una
+        -- sin confirmar también (AdMan no la ejecutó). Aprobada/desestimada/fallida no se tocan.
+        estado = CASE WHEN adman_alertas.estado IN ('vencida','sin_confirmar') THEN 'pendiente'
+                      ELSE adman_alertas.estado END,
+        motivo_fallo = CASE WHEN adman_alertas.estado='sin_confirmar'
+                            THEN 'AdMan la sigue mostrando pendiente: no se ejecutó'
+                            ELSE adman_alertas.motivo_fallo END
       RETURNING (xmax = 0) AS nueva`,
       [f.alert_id, corridaId, cuenta.client_id || null, cuenta.adman_cust_id, flow.id, flow.name || null,
        flow.type || null, f.entity_type, f.entity_id, f.entity_name, f.accion, f.accion_cambio, f.accion_raw,
@@ -237,12 +294,21 @@ module.exports = (app, { pool, requireAuth, requireAdmin }) => {
             }
             deLaCuenta += ids.size;
           }
-          // La cuenta se leyó entera: lo pendiente que ya no aparece, venció.
+          // La cuenta se leyó entera: lo pendiente (o fallido) que ya no aparece, venció.
           const v = await pool.query(`
             UPDATE adman_alertas SET estado='vencida', ultima_corrida_id=$3
-            WHERE adman_cust_id=$1 AND estado='pendiente' AND NOT (alert_id = ANY($2::bigint[]))`,
+            WHERE adman_cust_id=$1 AND estado IN ('pendiente','fallida') AND NOT (alert_id = ANY($2::bigint[]))`,
             [c.custId, vistas, corridaId]);
           vencidas += v.rowCount;
+          // Lo que quedó sin confirmar y AdMan ya no muestra, se ejecutó: se cierra con la
+          // decisión que se había mandado.
+          await pool.query(`
+            UPDATE adman_alertas SET
+              estado = CASE WHEN decision='aprobar' THEN 'aprobada' ELSE 'desestimada' END,
+              motivo_fallo = 'Confirmada por la corrida: AdMan ya no la tiene pendiente',
+              ultima_corrida_id = $3
+            WHERE adman_cust_id=$1 AND estado='sin_confirmar' AND NOT (alert_id = ANY($2::bigint[]))`,
+            [c.custId, vistas, corridaId]);
           total += deLaCuenta;
           detalle.cuentas_leidas.push({ cuenta: nick, alertas: deLaCuenta });
         } catch (e) {
@@ -373,6 +439,185 @@ module.exports = (app, { pool, requireAuth, requireAdmin }) => {
       });
     } catch (e) { err(res, e); }
     finally { if (adman) await adman.cerrar(); }
+  });
+
+  // ══ Etapa 2: decisiones ═══════════════════════════════════════════════════
+  //
+  // Un clic = un lote. El lote corre en segundo plano porque AdMan deja 10 llamadas por
+  // minuto: una selección de varias cuentas y agentes puede tardar. La pantalla consulta
+  // el progreso en /api/adman/lotes/:id, que lee solo de la base.
+  //
+  // Nada se manda a AdMan sin este endpoint, y este endpoint solo lo llama un botón.
+
+  const ESTADOS_DECIDIBLES = ['pendiente', 'fallida'];
+
+  async function registrar(loteId, alerta, decision, usuario, { ejecutado, resultado, motivo, raw }) {
+    await pool.query(`
+      INSERT INTO decisiones_log (origen, ref_id, lote_id, client_id, decision, ejecutado, resultado, motivo, respuesta_adman, usuario)
+      VALUES ('adman', $1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+      [String(alerta.alert_id), loteId, alerta.client_id || null, decision, ejecutado, resultado, motivo || null,
+       raw == null ? null : JSON.stringify(raw), usuario]);
+  }
+
+  async function cerrarAlerta(alerta, loteId, decision, usuario, r) {
+    // r: { ok, resultado, motivo, raw, sinConfirmar }
+    const estado = r.ok ? (decision === 'aprobar' ? 'aprobada' : 'desestimada')
+                        : (r.sinConfirmar ? 'sin_confirmar' : 'fallida');
+    await pool.query(`
+      UPDATE adman_alertas SET estado=$2, motivo_fallo=$3, decidida_en = CASE WHEN $4 THEN NOW() ELSE decidida_en END
+      WHERE alert_id=$1`, [alerta.alert_id, estado, r.ok ? null : (r.motivo || r.resultado), r.ok]);
+    await registrar(loteId, alerta, decision, usuario, {
+      ejecutado: r.ok ? true : (r.sinConfirmar ? null : false),
+      resultado: r.resultado, motivo: r.motivo, raw: r.raw,
+    });
+    const col = r.ok ? 'resueltas' : (r.sinConfirmar ? 'sin_confirmar' : 'fallidas');
+    await pool.query(`UPDATE adman_lotes SET procesadas=procesadas+1, ${col}=${col}+1 WHERE id=$1`, [loteId]);
+  }
+
+  async function ejecutarLote(loteId, decision, alertas, usuario) {
+    const action = decision === 'aprobar' ? 'accept' : 'reject';
+    // AdMan resuelve por cuenta y agente, de a 50.
+    const grupos = {};
+    alertas.forEach(a => { (grupos[`${a.adman_cust_id}|${a.flow_id}`] ||= []).push(a); });
+    let adman = null;
+    try {
+      try { adman = await abrirSesion({ log }); }
+      catch (e) {
+        // No se llegó a mandar nada: fallan todas, sin ambigüedad.
+        for (const a of alertas) {
+          await cerrarAlerta(a, loteId, decision, usuario,
+            { ok: false, resultado: 'error', motivo: `Sin conexión con AdMan: ${limpiar(e.message)}` });
+        }
+        throw e;
+      }
+      for (const lista of Object.values(grupos)) {
+        for (let i = 0; i < lista.length; i += 50) {
+          const tanda = lista.slice(i, i + 50);
+          const ids = tanda.map(a => a.alert_id);
+          await pool.query(`UPDATE adman_alertas SET estado='enviando' WHERE alert_id = ANY($1::bigint[])`, [ids]);
+          try {
+            const { raw, porId } = await adman.resolverAlertas(tanda[0].adman_cust_id, tanda[0].flow_id, action, ids);
+            log(`[ADMAN] Lote ${loteId} ${action} ${ids.length} alerta(s): ${limpiar(JSON.stringify(raw)).slice(0, 500)}`);
+            for (const a of tanda) {
+              const r = porId[String(a.alert_id)];
+              await cerrarAlerta(a, loteId, decision, usuario, {
+                ok: r.ok, resultado: r.resultado, raw,
+                sinConfirmar: r.resultado === 'sin_confirmar',
+                motivo: r.resultado === 'sin_confirmar' ? 'AdMan no la nombró en la respuesta' : null,
+              });
+            }
+          } catch (e) {
+            const sinConfirmar = e.noEjecutada !== true;
+            for (const a of tanda) {
+              await cerrarAlerta(a, loteId, decision, usuario, {
+                ok: false, sinConfirmar, raw: e.raw,
+                resultado: sinConfirmar ? 'sin_confirmar' : 'error',
+                motivo: limpiar(e.message),
+              });
+            }
+          }
+        }
+      }
+      await pool.query(`UPDATE adman_lotes SET estado='terminado', fin=NOW() WHERE id=$1`, [loteId]);
+    } catch (e) {
+      await pool.query(`UPDATE adman_lotes SET estado='terminado', fin=NOW(), error=$2 WHERE id=$1`, [loteId, limpiar(e.message)]);
+    } finally {
+      if (adman) await adman.cerrar();
+    }
+  }
+
+  // Deep link de la spec (y del futuro aviso de Slack). Redirige en vez de servir el
+  // HTML acá para no romper los paths relativos de index.html.
+  app.get('/admin/alertas', (req, res) => res.redirect('/?page=adman-alertas'));
+
+  // Todo lo que muestra la pantalla, leído de la base. NUNCA consulta AdMan: el panel se
+  // abre muchas veces y AdMan deja 10 llamadas por minuto.
+  app.get('/api/adman/panel', requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const [corrida, lotes, alertas, decididas] = await Promise.all([
+        pool.query('SELECT * FROM adman_corridas ORDER BY id DESC LIMIT 1'),
+        pool.query(`SELECT * FROM adman_lotes WHERE estado='en_curso' ORDER BY id`),
+        pool.query(`
+          SELECT a.alert_id::text AS alert_id, a.client_id, a.adman_cust_id::text AS adman_cust_id, a.flow_id,
+                 a.flow_nombre, a.flow_tipo, a.entity_type, a.entity_name, a.accion, a.accion_cambio, a.operador,
+                 a.valor_previo, a.valor_nuevo, a.metricas, a.pila, a.motivo, a.piso_usado, a.estado, a.decision,
+                 a.lote_id, a.motivo_fallo, a.created_at_adman, a.primera_vez,
+                 c.nickname, cl.name AS client_name
+          FROM adman_alertas a
+          LEFT JOIN adman_cuentas c ON c.adman_cust_id=a.adman_cust_id
+          LEFT JOIN clients cl ON cl.id=a.client_id
+          WHERE a.estado IN ('pendiente','enviando','fallida','sin_confirmar')
+          ORDER BY c.nickname, a.flow_nombre, a.entity_name`),
+        pool.query(`
+          SELECT a.alert_id::text AS alert_id, a.entity_name, a.accion, a.operador, a.valor_previo, a.valor_nuevo,
+                 a.estado, a.decision, a.motivo_fallo, a.decidida_en, c.nickname
+          FROM adman_alertas a LEFT JOIN adman_cuentas c ON c.adman_cust_id=a.adman_cust_id
+          WHERE a.estado IN ('aprobada','desestimada') AND a.decidida_en > NOW() - INTERVAL '24 hours'
+          ORDER BY a.decidida_en DESC LIMIT 200`),
+      ]);
+      res.json({
+        corrida: corrida.rows[0] || null,
+        corrida_en_curso: corridaEnCurso,
+        lotes_en_curso: lotes.rows,
+        alertas: alertas.rows,
+        decididas_24h: decididas.rows,
+      });
+    } catch (e) { err(res, e); }
+  });
+
+  // Aprobar o desestimar: { decision: 'aprobar'|'desestimar', alert_ids: [...] }
+  app.post('/api/adman/decisiones', requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const { decision } = req.body || {};
+      const ids = [...new Set(((req.body || {}).alert_ids || []).map(String))].filter(x => /^\d+$/.test(x));
+      if (!['aprobar', 'desestimar'].includes(decision)) return res.status(400).json({ error: 'decision tiene que ser aprobar o desestimar' });
+      if (!ids.length) return res.status(400).json({ error: 'No hay alertas' });
+      if (ids.length > 500) return res.status(400).json({ error: 'Máximo 500 alertas por lote' });
+
+      const usuario = req.user.username || req.user.email || String(req.user.id);
+      const lote = await pool.query(`INSERT INTO adman_lotes (decision, usuario) VALUES ($1, $2) RETURNING id`, [decision, usuario]);
+      const loteId = lote.rows[0].id;
+      // Tomar las alertas es atómico: una alerta que ya está en otro lote en curso (doble
+      // clic, dos pestañas) no se toma dos veces.
+      const tomadas = await pool.query(`
+        UPDATE adman_alertas SET lote_id=$1, decision=$2, motivo_fallo=NULL
+        WHERE alert_id = ANY($3::bigint[]) AND estado = ANY($4::text[])
+          AND (lote_id IS NULL OR lote_id NOT IN (SELECT id FROM adman_lotes WHERE estado='en_curso' AND id<>$1))
+        RETURNING alert_id::text AS alert_id, adman_cust_id::text AS adman_cust_id, flow_id, client_id`,
+        [loteId, decision, ids, ESTADOS_DECIDIBLES]);
+      const tomadasIds = new Set(tomadas.rows.map(r => r.alert_id));
+      const omitidas = ids.filter(id => !tomadasIds.has(id));
+      let motivos = {};
+      if (omitidas.length) {
+        const r = await pool.query(`SELECT alert_id::text AS id, estado FROM adman_alertas WHERE alert_id = ANY($1::bigint[])`, [omitidas]);
+        r.rows.forEach(x => { motivos[x.id] = ESTADOS_DECIDIBLES.includes(x.estado) ? 'ya está en otro lote en curso' : `está ${x.estado}`; });
+      }
+      const omitidasDet = omitidas.map(id => ({ alert_id: id, motivo: motivos[id] || 'no existe' }));
+      if (!tomadas.rows.length) {
+        await pool.query('DELETE FROM adman_lotes WHERE id=$1', [loteId]);
+        return res.status(409).json({ error: 'Ninguna de las alertas se puede decidir ahora', omitidas: omitidasDet });
+      }
+      await pool.query('UPDATE adman_lotes SET total=$2 WHERE id=$1', [loteId, tomadas.rows.length]);
+      ejecutarLote(loteId, decision, tomadas.rows, usuario)
+        .catch(e => log(`[ADMAN] Lote ${loteId} error inesperado: ${limpiar(e.message)}`));
+      res.status(202).json({ lote_id: loteId, total: tomadas.rows.length, omitidas: omitidasDet });
+    } catch (e) { err(res, e); }
+  });
+
+  // Progreso y resultado alerta por alerta de un lote.
+  app.get('/api/adman/lotes/:id', requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      const lote = await pool.query('SELECT * FROM adman_lotes WHERE id=$1', [id]);
+      if (!lote.rows.length) return res.status(404).json({ error: 'Lote inexistente' });
+      const alertas = await pool.query(`
+        SELECT a.alert_id::text AS alert_id, a.entity_name, a.estado, a.motivo_fallo, c.nickname,
+               (SELECT d.resultado FROM decisiones_log d WHERE d.origen='adman' AND d.ref_id=a.alert_id::text AND d.lote_id=$1
+                ORDER BY d.id DESC LIMIT 1) AS resultado
+        FROM adman_alertas a LEFT JOIN adman_cuentas c ON c.adman_cust_id=a.adman_cust_id
+        WHERE a.lote_id=$1 ORDER BY c.nickname, a.entity_name`, [id]);
+      res.json({ lote: lote.rows[0], alertas: alertas.rows });
+    } catch (e) { err(res, e); }
   });
 
   crearTablas(pool)

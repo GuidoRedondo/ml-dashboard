@@ -7,6 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800&display=swap" rel="stylesheet">
 <style>
 /* ── RESET & FONTS ── */
 @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700;800&display=swap');
@@ -692,6 +693,50 @@ tbody td {
 .plan-btn-secondary:hover { background: #f5f5f5; }
 .plan-btn-danger   { background: #fff; color: #C04828; border-color: #C04828; }
 .plan-btn-danger:hover { background: #C04828; color: #fff; }
+
+/* ── Alertas AdMan (backend_adman.js) — paleta de marca de la spec ───────────── */
+#page-adman-alertas { --adm-crema:#f4f1e8; --adm-tinta:#292929; --adm-amarillo:#fff952;
+  --adm-verde:#0f6b5c; --adm-naranja:#c2410c; --adm-rojo:#b42318; --adm-gris:#6b7280;
+  font-family:'Plus Jakarta Sans',var(--font); background:var(--adm-crema); color:var(--adm-tinta); }
+#page-adman-alertas h2 { font-family:'Plus Jakarta Sans',var(--font); font-weight:800; margin:0; }
+.adm-btn { font-family:inherit; font-weight:700; font-size:12px; padding:7px 12px; border-radius:8px;
+  border:2px solid var(--adm-tinta); background:#fff; color:var(--adm-tinta); cursor:pointer; white-space:nowrap; }
+.adm-btn:disabled { opacity:.45; cursor:not-allowed; }
+.adm-btn.ok { background:var(--adm-verde); border-color:var(--adm-verde); color:#fff; }
+.adm-btn.no { background:#fff; border-color:var(--adm-gris); color:var(--adm-gris); }
+.adm-btn.prim { background:var(--adm-amarillo); }
+.adm-cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:12px; margin:16px 0; }
+.adm-card { background:#fff; border:2px solid var(--adm-tinta); border-radius:12px; padding:12px 14px; box-shadow:4px 4px 0 var(--adm-tinta); }
+.adm-card .n { font-size:28px; font-weight:800; line-height:1.1; }
+.adm-card .t { font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:.04em; }
+.adm-card .d { font-size:11px; color:var(--adm-gris); margin-top:4px; }
+.adm-bar { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin:10px 0; }
+.adm-bar select { font-family:inherit; font-size:12px; padding:6px 8px; border-radius:8px; border:2px solid var(--adm-tinta); background:#fff; }
+.adm-block { margin-top:22px; }
+.adm-block h3 { font-size:14px; font-weight:800; margin:0 0 8px; display:flex; gap:8px; align-items:center; }
+.adm-vacio { font-size:12px; color:var(--adm-gris); background:#fff; border:1px dashed #c9c4b5; border-radius:10px; padding:12px; }
+.adm-tabla { width:100%; border-collapse:collapse; background:#fff; border:2px solid var(--adm-tinta); border-radius:10px; overflow:hidden; font-size:12px; }
+.adm-tabla th { text-align:left; font-size:11px; text-transform:uppercase; letter-spacing:.03em; padding:8px; background:var(--adm-tinta); color:#fff; }
+.adm-tabla td { padding:8px; border-top:1px solid #e7e2d3; vertical-align:top; }
+.adm-tabla tr.sel td { background:#fffde0; }
+.adm-tabla .sub { color:var(--adm-gris); font-size:11px; }
+.adm-tag { display:inline-block; font-size:10px; font-weight:800; padding:2px 7px; border-radius:999px; text-transform:uppercase; letter-spacing:.03em; }
+.adm-tag.aceptar, .adm-tag.ok { background:var(--adm-verde); color:#fff; }
+.adm-tag.desestimar { background:#e5e7eb; color:#374151; }
+.adm-tag.revisar, .adm-tag.sinconf { background:var(--adm-naranja); color:#fff; }
+.adm-tag.fallida { background:var(--adm-rojo); color:#fff; }
+.adm-tag.riesgo { background:var(--adm-amarillo); color:var(--adm-tinta); border:1px solid var(--adm-tinta); }
+.adm-tag.env { background:#e5e7eb; color:#374151; }
+.adm-det { background:#faf8f1; font-size:11px; }
+.adm-det pre { white-space:pre-wrap; margin:4px 0 0; font-family:ui-monospace,monospace; font-size:11px; }
+.adm-selbar { position:sticky; top:0; z-index:5; background:var(--adm-amarillo); border:2px solid var(--adm-tinta); border-radius:10px; padding:8px 12px; }
+.adm-lote { background:#fff; border:2px solid var(--adm-tinta); border-radius:10px; padding:10px 12px; margin:10px 0; }
+.adm-prog { height:10px; background:#e7e2d3; border-radius:999px; overflow:hidden; margin:6px 0; }
+.adm-prog > div { height:100%; background:var(--adm-verde); transition:width .3s; }
+.adm-modal-bg { position:fixed; inset:0; background:rgba(0,0,0,.45); z-index:9999; display:flex; align-items:center; justify-content:center; padding:16px; }
+.adm-modal { background:var(--adm-crema,#f4f1e8); color:#292929; font-family:'Plus Jakarta Sans',var(--font); border:3px solid #292929; border-radius:14px; box-shadow:6px 6px 0 #292929; max-width:560px; width:100%; max-height:80vh; overflow:auto; padding:18px 20px; }
+.adm-modal h3 { margin:0 0 10px; font-weight:800; }
+.adm-aviso { background:#fff4e5; border:2px solid #c2410c; border-radius:10px; padding:8px 10px; font-size:12px; font-weight:700; color:#7c2d12; margin:10px 0; }
 </style>
 </head>
 <body>
@@ -824,6 +869,9 @@ tbody td {
       </div>
       <div class="nav-item" data-page="decisiones-publi" onclick="showPage('decisiones-publi',this);loadDecisionesPubli()">
         <span class="nav-icon">⚡</span> Motor de Publicidad
+      </div>
+      <div class="nav-item" id="nav-adman-alertas" data-page="adman-alertas" style="display:none" onclick="showPage('adman-alertas',this);loadAdmanPanel()">
+        <span class="nav-icon">🎯</span> Alertas AdMan
       </div>
       <div class="nav-item" data-page="hotsale-report" onclick="showPage('hotsale-report',this);loadHotsaleReport()">
         <span class="nav-icon">🔥</span> Reporte Hotsale
@@ -1964,6 +2012,10 @@ tbody td {
     </div>
 
     <!-- MOTOR DE PUBLICIDAD -->
+    <div class="page" id="page-adman-alertas">
+      <div id="adm-root"><div style="padding:20px;color:#6b7280">Cargando…</div></div>
+    </div>
+
     <div class="page" id="page-decisiones-publi">
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px;flex-wrap:wrap">
         <h2 style="margin:0;font-family:var(--font-b);flex:1">⚡ Motor de Decisiones — Publicidad</h2>
@@ -14025,6 +14077,9 @@ function applyPermissions() {
   const btnCmvEl = document.getElementById('btnSaludCmv');
   if (btnCmvEl) btnCmvEl.style.display = soloConsultores ? '' : 'none';
   // Centro de Inteligencia: admins/consultores siempre; clientes solo si tienen el permiso habilitado
+  // Alertas AdMan: solo admin (ni consultores ni colaboradores). El backend igual da 403.
+  const admanNavEl = document.getElementById('nav-adman-alertas');
+  if (admanNavEl) admanNavEl.style.display = role === 'admin' ? '' : 'none';
   const alertasNavEl = document.querySelector('[data-page="alertas"]');
   if (alertasNavEl) alertasNavEl.style.display = (soloConsultores || canSeeSection('alertas')) ? '' : 'none';
 }
@@ -14086,6 +14141,11 @@ function initApp() {
   loadClients().then(() => applyPermissions());
   applyPermissions();
   showPage('dashboard', document.querySelector('.nav-item[data-page="dashboard"]'));
+  // Deep link de Alertas AdMan (/admin/alertas redirige acá). Solo admin.
+  if (new URLSearchParams(location.search).get('page') === 'adman-alertas' && getSessionRole() === 'admin') {
+    showPage('adman-alertas', document.getElementById('nav-adman-alertas'));
+    loadAdmanPanel();
+  }
 }
 
 async function exchangeCodeAuto(code) {
@@ -26499,6 +26559,398 @@ function renderImpactoCostos(r) {
 
   el.innerHTML = kpis + bloqueCuenta + bloqueZona + bloqueNeg + bloqueSubir +
                  bloqueTop + opor + bloqueNotas;
+}
+</script>
+<script>
+// ════════════════════════════════════════════════════════════════════════════
+//  ALERTAS AdMan — panel interno (solo admin). Backend: backend_adman.js
+//  Spec: docs/spec-alertas-adman.md, Etapa 2.
+//
+//  Todo lo que se ve sale de /api/adman/panel, que lee de la base: la pantalla NUNCA
+//  consulta AdMan al cargar (AdMan deja 10 llamadas por minuto). Lo único que toca
+//  AdMan es un clic en Aprobar/Desestimar (lote) o en "Correr ahora".
+// ════════════════════════════════════════════════════════════════════════════
+
+const _adm = {
+  data: null,
+  filtroCliente: '',
+  filtroTipo: '',
+  sel: new Set(),          // alert_ids seleccionados
+  abiertas: new Set(),     // filas con "Más info" desplegado
+  gruposAbiertos: new Set(), // grupos de pausa por stock desplegados
+  lotes: {},               // lote_id → { lote, alertas } de los lotes que se siguen en pantalla
+  pollLotes: null,
+  pollCorrida: null,
+};
+
+const admEsc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const admPesos = v => { const n = parseFloat(v); return isNaN(n) ? admEsc(v) : '$' + Math.round(n).toLocaleString('es-AR'); };
+const admNum = (v, d = 1) => { const n = parseFloat(v); return isNaN(n) ? '—' : n.toLocaleString('es-AR', { maximumFractionDigits: d }); };
+const admFecha = v => v ? new Date(v).toLocaleString('es-AR', { timeZone: ART_TZ, day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '—';
+
+const ADM_ACCIONES = {
+  changeCampaignBudget: 'Presupuesto de campaña',
+  changeCampaignObjectiveROAS: 'ROAS objetivo',
+  pauseProductAd: 'Pausar anuncio',
+  participateInCandidatePromotions: 'Participar en promoción',
+};
+const ADM_METRICAS_REGLA = { STOCK: 'stock', DAYS_WITHOUT_SALE: 'días sin venta', PROFIT_SHARE: 'margen %', HAS_FULL: 'en FULL' };
+const ADM_OPS = { greater_than: '>', less_than: '<', equal: '=', greater_or_equal: '≥', less_or_equal: '≤' };
+const ADM_RESULTADOS = {
+  resolved: 'Resuelta en AdMan',
+  not_found: 'AdMan no la encuentra (¿venció?)',
+  already_resolved: 'Ya estaba resuelta en AdMan',
+  execution_failed: 'AdMan no pudo ejecutar la acción',
+  sin_confirmar: 'Sin confirmar: la próxima corrida lo aclara',
+  error: 'No se llegó a enviar',
+};
+
+// En alertas de publicación y promoción, `operador` es la regla del agente en JSON.
+function admRegla(operador) {
+  let r; try { r = JSON.parse(operador); } catch (e) { return null; }
+  if (!r || typeof r !== 'object') return null;
+  const cond = c => {
+    const m = ADM_METRICAS_REGLA[c.metric] || c.metric;
+    if (c.operator === 'true') return m;
+    if (c.operator === 'false') return 'no ' + m;
+    return `${m} ${ADM_OPS[c.operator] || c.operator} ${c.value}`;
+  };
+  const partes = [];
+  if ((r.and || []).length) partes.push(r.and.map(cond).join(' y '));
+  if ((r.or || []).length) partes.push('(' + r.or.map(cond).join(' o ') + ')');
+  if ((r.withoutConnectors || []).length) partes.push(r.withoutConnectors.map(cond).join(' y '));
+  return partes.join(' y ') || null;
+}
+
+function admAccionTexto(a) {
+  const nombre = ADM_ACCIONES[a.accion] || a.accion || 'Acción';
+  const signo = a.operador === 'increase' ? '+' : a.operador === 'decrease' ? '−' : '';
+  const pct = a.accion_cambio != null ? ` (${signo}${admNum(a.accion_cambio)}%)` : '';
+  if (a.accion === 'changeCampaignBudget')
+    return `${nombre}: ${admPesos(a.valor_previo)} → <b>${admPesos(a.valor_nuevo)}</b>${pct}`;
+  if (a.accion === 'changeCampaignObjectiveROAS')
+    return `${nombre}: ${admNum(a.valor_previo, 2)} → <b>${admNum(a.valor_nuevo, 2)}</b>${pct}`;
+  const regla = admRegla(a.operador);
+  const cambio = (a.valor_previo != null || a.valor_nuevo != null) && a.accion !== 'pauseProductAd'
+    ? ` ${admEsc(a.valor_previo ?? '—')} → ${admEsc(a.valor_nuevo ?? '—')}` : '';
+  return `${admEsc(nombre)}${cambio}${regla ? `<div class="sub">Regla del agente: ${admEsc(regla)}</div>` : ''}`;
+}
+
+function admMetricas(a) {
+  const m = a.metricas || {};
+  const v = k => (m[k] && typeof m[k] === 'object') ? m[k].value : m[k];
+  const out = [];
+  if (v('roas') != null) out.push(`ROAS <b>${admNum(v('roas'), 2)}</b> · piso —`);
+  if (v('lisb') != null) out.push(`Imp. perdidas: presup. ${admNum(v('lisb'), 0)}% · ranking ${admNum(v('lisar'), 0)}%`);
+  if (v('acos') != null) out.push(`ACOS ${admNum(v('acos'))}%`);
+  if (v('investment') != null) out.push(`Inversión ${admPesos(v('investment'))}`);
+  return out.join('<br>') || '<span class="sub">—</span>';
+}
+
+function admEstadoTag(a) {
+  if (a.estado === 'fallida') return `<span class="adm-tag fallida">Fallida</span><div class="sub" style="color:#b42318">${admEsc(ADM_RESULTADOS[a.motivo_fallo] || a.motivo_fallo || '')}</div>`;
+  if (a.estado === 'sin_confirmar') return `<span class="adm-tag sinconf">Sin confirmar</span><div class="sub">${admEsc(a.motivo_fallo || '')}</div>`;
+  if (a.estado === 'enviando') return `<span class="adm-tag env">Enviando…</span>`;
+  return '';
+}
+
+const admDecidible = a => a.estado === 'pendiente' || a.estado === 'fallida';
+
+function admFiltradas() {
+  return ((_adm.data && _adm.data.alertas) || []).filter(a =>
+    (!_adm.filtroCliente || a.nickname === _adm.filtroCliente) &&
+    (!_adm.filtroTipo || a.accion === _adm.filtroTipo));
+}
+
+async function loadAdmanPanel() {
+  const r = await apiCall('GET', '/api/adman/panel');
+  const root = document.getElementById('adm-root');
+  if (!r || r.error) { root.innerHTML = `<div class="adm-vacio">No se pudo cargar el panel: ${admEsc(r && r.error || 'sin permiso')}</div>`; return; }
+  _adm.data = r;
+  // Una alerta que ya no se puede decidir sale de la selección.
+  const vivas = new Set(r.alertas.filter(admDecidible).map(a => a.alert_id));
+  [..._adm.sel].forEach(id => { if (!vivas.has(id)) _adm.sel.delete(id); });
+  // Retomar el seguimiento de lotes que siguen corriendo (por ejemplo, tras recargar).
+  (r.lotes_en_curso || []).forEach(l => { if (!_adm.lotes[l.id]) _adm.lotes[l.id] = { lote: l, alertas: [] }; });
+  admRender();
+  if (Object.values(_adm.lotes).some(x => x.lote.estado === 'en_curso')) admSeguirLotes();
+  if (r.corrida_en_curso) admSeguirCorrida();
+}
+
+function admRender() {
+  const d = _adm.data; if (!d) return;
+  const root = document.getElementById('adm-root');
+  const c = d.corrida;
+  const todas = d.alertas;
+  const porPila = p => todas.filter(a => a.pila === p && a.estado !== 'enviando');
+  const recomendadas = todas.filter(a => (a.pila === 'aceptar' || a.pila === 'desestimar') && admDecidible(a));
+  const cuentas = [...new Set(todas.map(a => a.nickname).filter(Boolean))].sort();
+  const tipos = [...new Set(todas.map(a => a.accion).filter(Boolean))];
+  const estadoCorrida = !c ? '<span class="adm-tag revisar">Sin corridas</span>'
+    : c.estado === 'ok' ? '<span class="adm-tag ok">OK</span>'
+    : c.estado === 'parcial' ? '<span class="adm-tag revisar">Parcial</span>'
+    : c.estado === 'en_curso' ? '<span class="adm-tag env">En curso</span>'
+    : '<span class="adm-tag fallida">Fallida</span>';
+
+  const filtradas = admFiltradas();
+  const bloque = (titulo, tag, lista, vacio) => `
+    <div class="adm-block">
+      <h3>${titulo} <span class="adm-tag ${tag}">${lista.length}</span></h3>
+      ${lista.length ? admTabla(lista) : `<div class="adm-vacio">${vacio}</div>`}
+    </div>`;
+
+  root.innerHTML = `
+    <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+      <h2 style="flex:1">🎯 Alertas AdMan</h2>
+      <button class="adm-btn" onclick="loadAdmanPanel()">Actualizar</button>
+      <button class="adm-btn prim" id="adm-correr" onclick="admCorrer()" ${d.corrida_en_curso ? 'disabled' : ''}>
+        ${d.corrida_en_curso ? 'Corrida en curso…' : 'Correr ahora'}</button>
+    </div>
+    <div style="font-size:12px;margin-top:6px">
+      ${new Date().toLocaleDateString('es-AR', { timeZone: ART_TZ, weekday: 'long', day: 'numeric', month: 'long' })} ·
+      Última corrida: <b>${c ? admFecha(c.fin || c.inicio) : '—'}</b> ${estadoCorrida}
+      ${c ? `· ${c.total_alertas} alertas` : ''}
+      ${c && c.error ? `<div style="color:#b42318;margin-top:4px">${admEsc(c.error)}</div>` : ''}
+      <span id="adm-corrida-prog" class="sub"></span>
+    </div>
+
+    <div class="adm-cards">
+      <div class="adm-card" style="border-color:#0f6b5c"><div class="t" style="color:#0f6b5c">Aceptar</div><div class="n">${porPila('aceptar').length}</div><div class="d">La clasificación llega en la Etapa 3</div></div>
+      <div class="adm-card"><div class="t" style="color:#6b7280">Desestimar</div><div class="n">${porPila('desestimar').length}</div><div class="d">La clasificación llega en la Etapa 3</div></div>
+      <div class="adm-card" style="border-color:#c2410c"><div class="t" style="color:#c2410c">Revisar</div><div class="n">${porPila('revisar').length}</div><div class="d">${cuentas.length} cuenta(s) con alertas</div></div>
+      <div class="adm-card"><div class="t" style="color:#b42318">Margen</div><div class="n">—</div><div class="d">Alertas propias: Etapa 4</div></div>
+    </div>
+
+    <div id="adm-lotes">${admLotesHtml()}</div>
+
+    <div class="adm-bar">
+      <button class="adm-btn ok" disabled title="Se activa con la clasificación por pisos (Etapa 3)">Aprobar todo lo recomendado (${recomendadas.length})</button>
+      <select onchange="_adm.filtroCliente=this.value;admRender()">
+        <option value="">Todas las cuentas</option>
+        ${cuentas.map(n => `<option ${n === _adm.filtroCliente ? 'selected' : ''}>${admEsc(n)}</option>`).join('')}
+      </select>
+      <select onchange="_adm.filtroTipo=this.value;admRender()">
+        <option value="">Todos los tipos</option>
+        ${tipos.map(t => `<option value="${admEsc(t)}" ${t === _adm.filtroTipo ? 'selected' : ''}>${admEsc(ADM_ACCIONES[t] || t)}</option>`).join('')}
+      </select>
+      <select disabled title="La gravedad sale de los pisos (Etapa 3)"><option>Gravedad: Etapa 3</option></select>
+    </div>
+
+    ${_adm.sel.size ? `
+      <div class="adm-selbar adm-bar">
+        <b>${_adm.sel.size} seleccionada(s)</b>
+        <button class="adm-btn ok" onclick="admConfirmar('aprobar',[..._adm.sel])">Aprobar selección</button>
+        <button class="adm-btn no" onclick="admConfirmar('desestimar',[..._adm.sel])">Desestimar selección</button>
+        <button class="adm-btn" onclick="_adm.sel.clear();admRender()">Limpiar</button>
+      </div>` : ''}
+
+    ${bloque('Recomendado aceptar', 'aceptar', filtradas.filter(a => a.pila === 'aceptar'), 'Se activa con la clasificación por pisos (Etapa 3).')}
+    ${bloque('Recomendado desestimar', 'desestimar', filtradas.filter(a => a.pila === 'desestimar'), 'Se activa con la clasificación por pisos (Etapa 3).')}
+    ${bloque('Para revisar', 'revisar', filtradas.filter(a => a.pila === 'revisar'), 'No hay alertas pendientes con estos filtros.')}
+    <div class="adm-block"><h3>Alertas de margen <span class="adm-tag riesgo">—</span></h3>
+      <div class="adm-vacio">Las alertas propias de margen (ROAS real contra la CM de cada publicación) llegan en la Etapa 4.</div></div>
+
+    ${admDecididasHtml()}
+  `;
+}
+
+// Tabla de un bloque. Las pausas por stock van en una fila por cuenta que se despliega.
+function admTabla(lista) {
+  const stock = {}, sueltas = [];
+  lista.forEach(a => { if (a.accion === 'pauseProductAd') (stock[a.adman_cust_id] ||= []).push(a); else sueltas.push(a); });
+  const decidiblesVista = lista.filter(admDecidible).map(a => a.alert_id);
+  const todasSel = decidiblesVista.length && decidiblesVista.every(id => _adm.sel.has(id));
+  const filas = [];
+  Object.values(stock).forEach(g => filas.push(admFilaGrupo(g)));
+  sueltas.forEach(a => filas.push(admFila(a)));
+  return `<div style="overflow-x:auto"><table class="adm-tabla">
+    <thead><tr>
+      <th style="width:28px"><input type="checkbox" ${todasSel ? 'checked' : ''} ${decidiblesVista.length ? '' : 'disabled'}
+        onchange='admSelVarias(${JSON.stringify(decidiblesVista)}, this.checked)' title="Seleccionar todas las de este bloque"></th>
+      <th>Cuenta</th><th>Campaña / publicación</th><th>Acción sugerida</th><th>Métricas</th><th>Motivo</th><th style="width:220px"></th>
+    </tr></thead><tbody>${filas.join('')}</tbody></table></div>`;
+}
+
+function admFila(a) {
+  const id = a.alert_id, dec = admDecidible(a), abierta = _adm.abiertas.has(id);
+  return `<tr class="${_adm.sel.has(id) ? 'sel' : ''}">
+      <td><input type="checkbox" ${_adm.sel.has(id) ? 'checked' : ''} ${dec ? '' : 'disabled'} onchange="admSel('${id}', this.checked)"></td>
+      <td><b>${admEsc(a.nickname || '—')}</b><div class="sub">${admEsc(a.flow_nombre || '')}</div></td>
+      <td>${admEsc(a.entity_name || '—')}<div class="sub">${a.entity_type === 'campaign' ? 'Campaña' : a.entity_type === 'item' ? 'Publicación' : a.entity_type === 'promotion' ? 'Promoción' : admEsc(a.entity_type)}</div></td>
+      <td>${admAccionTexto(a)}</td>
+      <td>${admMetricas(a)}</td>
+      <td><span class="adm-tag revisar">Revisar</span><div class="sub">${admEsc(a.motivo || '')}</div>${admEstadoTag(a)}</td>
+      <td style="white-space:nowrap">
+        <button class="adm-btn ok" ${dec ? '' : 'disabled'} onclick="admConfirmar('aprobar',['${id}'])">Aprobar</button>
+        <button class="adm-btn no" ${dec ? '' : 'disabled'} onclick="admConfirmar('desestimar',['${id}'])">Desestimar</button>
+        <button class="adm-btn" onclick="admToggleInfo('${id}')">${abierta ? 'Menos' : 'Más info'}</button>
+      </td>
+    </tr>
+    ${abierta ? `<tr class="adm-det"><td></td><td colspan="6">
+      Creada por AdMan: <b>${admFecha(a.created_at_adman)}</b> · vista por primera vez: ${admFecha(a.primera_vez)} · agente: ${admEsc(a.flow_nombre)} (${admEsc(a.flow_tipo || '')})
+      <pre>${admEsc(JSON.stringify(a.metricas, null, 1))}</pre></td></tr>` : ''}`;
+}
+
+function admFilaGrupo(g) {
+  const key = 'stock-' + g[0].adman_cust_id;
+  const ids = g.filter(admDecidible).map(a => a.alert_id);
+  const abierta = _adm.gruposAbiertos.has(key);
+  const todasSel = ids.length && ids.every(id => _adm.sel.has(id));
+  const regla = admRegla(g[0].operador);
+  const conProblema = g.filter(a => a.estado !== 'pendiente');
+  return `<tr class="${todasSel ? 'sel' : ''}">
+      <td><input type="checkbox" ${todasSel ? 'checked' : ''} ${ids.length ? '' : 'disabled'} onchange='admSelVarias(${JSON.stringify(ids)}, this.checked)'></td>
+      <td><b>${admEsc(g[0].nickname || '—')}</b><div class="sub">${admEsc(g[0].flow_nombre || '')}</div></td>
+      <td><b>${g.length} publicaciones</b><div class="sub">Pausa por stock</div></td>
+      <td>Pausar anuncios${regla ? `<div class="sub">Regla del agente: ${admEsc(regla)}</div>` : ''}</td>
+      <td><span class="sub">—</span></td>
+      <td><span class="adm-tag revisar">Revisar</span>${conProblema.length ? `<div class="sub" style="color:#b42318">${conProblema.length} con problema: desplegá</div>` : ''}</td>
+      <td style="white-space:nowrap">
+        <button class="adm-btn ok" ${ids.length ? '' : 'disabled'} onclick='admConfirmar("aprobar", ${JSON.stringify(ids)})'>Aprobar ${ids.length}</button>
+        <button class="adm-btn no" ${ids.length ? '' : 'disabled'} onclick='admConfirmar("desestimar", ${JSON.stringify(ids)})'>Desestimar</button>
+        <button class="adm-btn" onclick="admToggleGrupo('${key}')">${abierta ? 'Cerrar' : 'Ver listado'}</button>
+      </td>
+    </tr>
+    ${abierta ? g.map(a => `<tr class="adm-det ${_adm.sel.has(a.alert_id) ? 'sel' : ''}">
+      <td><input type="checkbox" ${_adm.sel.has(a.alert_id) ? 'checked' : ''} ${admDecidible(a) ? '' : 'disabled'} onchange="admSel('${a.alert_id}', this.checked)"></td>
+      <td></td><td colspan="3">${admEsc(a.entity_name)}</td><td colspan="2">${admEstadoTag(a)}</td></tr>`).join('') : ''}`;
+}
+
+function admSel(id, on) { on ? _adm.sel.add(id) : _adm.sel.delete(id); admRender(); }
+function admSelVarias(ids, on) { ids.forEach(id => on ? _adm.sel.add(id) : _adm.sel.delete(id)); admRender(); }
+function admToggleInfo(id) { _adm.abiertas.has(id) ? _adm.abiertas.delete(id) : _adm.abiertas.add(id); admRender(); }
+function admToggleGrupo(k) { _adm.gruposAbiertos.has(k) ? _adm.gruposAbiertos.delete(k) : _adm.gruposAbiertos.add(k); admRender(); }
+
+function admDecididasHtml() {
+  const l = (_adm.data && _adm.data.decididas_24h) || [];
+  if (!l.length) return '';
+  return `<details class="adm-block"><summary style="cursor:pointer;font-weight:800;font-size:14px">Decididas en las últimas 24 h (${l.length})</summary>
+    <table class="adm-tabla" style="margin-top:8px"><thead><tr><th>Cuándo</th><th>Cuenta</th><th>Campaña / publicación</th><th>Acción</th><th>Decisión</th></tr></thead><tbody>
+    ${l.map(a => `<tr><td>${admFecha(a.decidida_en)}</td><td>${admEsc(a.nickname)}</td><td>${admEsc(a.entity_name)}</td><td>${admAccionTexto(a)}</td>
+      <td>${a.estado === 'aprobada' ? '<span class="adm-tag ok">Aprobada</span>' : '<span class="adm-tag desestimar">Desestimada</span>'}
+      ${a.motivo_fallo ? `<div class="sub">${admEsc(a.motivo_fallo)}</div>` : ''}</td></tr>`).join('')}
+    </tbody></table></details>`;
+}
+
+// ── Confirmación (modal propio: nada de confirm() del navegador) ─────────────
+function admConfirmar(decision, ids) {
+  const porId = {}; (_adm.data.alertas || []).forEach(a => { porId[a.alert_id] = a; });
+  const lista = ids.map(id => porId[id]).filter(a => a && admDecidible(a));
+  if (!lista.length) { showToast('Esas alertas ya no se pueden decidir'); return; }
+  const porCuenta = {};
+  lista.forEach(a => { porCuenta[a.nickname || '—'] = (porCuenta[a.nickname || '—'] || 0) + 1; });
+  const aprobar = decision === 'aprobar';
+  const bg = document.createElement('div');
+  bg.className = 'adm-modal-bg';
+  bg.innerHTML = `<div class="adm-modal">
+    <h3>${aprobar ? 'Aprobar' : 'Desestimar'} ${lista.length} alerta(s)</h3>
+    ${aprobar
+      ? `<div class="adm-aviso">Aprobar EJECUTA la acción en la campaña o publicación real de Mercado Libre (presupuesto, ROAS, pausa o promoción). No se deshace desde acá.</div>`
+      : `<div style="font-size:12px;margin-bottom:8px">Desestimar descarta la sugerencia en AdMan sin ejecutar nada.</div>`}
+    <div style="font-size:12px;margin-bottom:6px">${Object.entries(porCuenta).map(([n, k]) => `<b>${admEsc(n)}</b>: ${k}`).join(' · ')}</div>
+    <table class="adm-tabla"><tbody>
+      ${lista.slice(0, 15).map(a => `<tr><td><b>${admEsc(a.entity_name)}</b><div class="sub">${admEsc(a.nickname)}</div></td><td>${admAccionTexto(a)}</td></tr>`).join('')}
+      ${lista.length > 15 ? `<tr><td colspan="2" class="sub">… y ${lista.length - 15} más</td></tr>` : ''}
+    </tbody></table>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
+      <button class="adm-btn" data-x="cancelar">Cancelar</button>
+      <button class="adm-btn ${aprobar ? 'ok' : 'prim'}" data-x="ok">${aprobar ? 'Sí, aprobar y ejecutar' : 'Sí, desestimar'}</button>
+    </div></div>`;
+  document.body.appendChild(bg);
+  bg.addEventListener('click', ev => {
+    const x = ev.target.getAttribute('data-x');
+    if (ev.target === bg || x === 'cancelar') bg.remove();
+    if (x === 'ok') { bg.remove(); admEnviar(decision, lista.map(a => a.alert_id)); }
+  });
+}
+
+async function admEnviar(decision, ids) {
+  const r = await apiCall('POST', '/api/adman/decisiones', { decision, alert_ids: ids });
+  if (!r || r.error) {
+    showToast('No se envió: ' + ((r && r.error) || 'sin permiso'));
+    if (r && r.omitidas && r.omitidas.length) console.warn('[ADMAN] omitidas', r.omitidas);
+    loadAdmanPanel();
+    return;
+  }
+  ids.forEach(id => _adm.sel.delete(id));
+  _adm.lotes[r.lote_id] = { lote: { id: r.lote_id, decision, estado: 'en_curso', total: r.total, procesadas: 0 }, alertas: [], omitidas: r.omitidas };
+  await loadAdmanPanel();
+  admSeguirLotes();
+}
+
+// ── Progreso de lotes ───────────────────────────────────────────────────────
+function admLotesHtml() {
+  return Object.values(_adm.lotes).sort((a, b) => b.lote.id - a.lote.id).map(({ lote: l, alertas, omitidas }) => {
+    const pct = l.total ? Math.round((l.procesadas || 0) / l.total * 100) : 0;
+    const enCurso = l.estado === 'en_curso';
+    return `<div class="adm-lote">
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <b>Lote #${l.id} · ${l.decision === 'aprobar' ? 'Aprobar' : 'Desestimar'}</b>
+        <span>${l.procesadas || 0}/${l.total}</span>
+        ${enCurso ? '<span class="adm-tag env">Enviando a AdMan…</span>'
+          : `<span class="adm-tag ok">${l.resueltas || 0} resueltas</span>
+             ${l.fallidas ? `<span class="adm-tag fallida">${l.fallidas} fallidas</span>` : ''}
+             ${l.sin_confirmar ? `<span class="adm-tag sinconf">${l.sin_confirmar} sin confirmar</span>` : ''}
+             ${l.estado === 'interrumpido' ? '<span class="adm-tag fallida">Interrumpido</span>' : ''}`}
+        <span style="flex:1"></span>
+        ${enCurso ? '' : `<button class="adm-btn" onclick="delete _adm.lotes[${l.id}];admRender()">Cerrar</button>`}
+      </div>
+      <div class="adm-prog"><div style="width:${pct}%"></div></div>
+      ${l.error ? `<div class="sub" style="color:#b42318">${admEsc(l.error)}</div>` : ''}
+      ${(omitidas || []).length ? `<div class="sub">No se incluyeron ${omitidas.length}: ${omitidas.map(o => admEsc(o.motivo)).join(', ')}</div>` : ''}
+      ${alertas.length ? `<table class="adm-tabla" style="margin-top:6px"><tbody>${alertas.map(a => {
+        const ok = a.estado === 'aprobada' || a.estado === 'desestimada';
+        const tag = ok ? '<span class="adm-tag ok">Resuelta</span>'
+          : a.estado === 'fallida' ? '<span class="adm-tag fallida">Fallida</span>'
+          : a.estado === 'sin_confirmar' ? '<span class="adm-tag sinconf">Sin confirmar</span>'
+          : '<span class="adm-tag env">En cola</span>';
+        const motivo = ok ? '' : (ADM_RESULTADOS[a.resultado] || '') + (a.motivo_fallo && a.motivo_fallo !== a.resultado ? ' — ' + a.motivo_fallo : '');
+        return `<tr><td>${admEsc(a.nickname)}</td><td>${admEsc(a.entity_name)}</td><td>${tag}<div class="sub">${admEsc(motivo)}</div></td></tr>`;
+      }).join('')}</tbody></table>` : ''}
+    </div>`;
+  }).join('');
+}
+
+function admSeguirLotes() {
+  if (_adm.pollLotes) return;
+  _adm.pollLotes = setInterval(async () => {
+    const vivos = Object.values(_adm.lotes).filter(x => x.lote.estado === 'en_curso');
+    for (const x of Object.values(_adm.lotes)) {
+      if (x.lote.estado !== 'en_curso' && x.alertas.length) continue;
+      const r = await apiCall('GET', `/api/adman/lotes/${x.lote.id}`);
+      if (r && r.lote) { x.lote = r.lote; x.alertas = r.alertas; }
+    }
+    const el = document.getElementById('adm-lotes');
+    if (el) el.innerHTML = admLotesHtml();
+    if (!Object.values(_adm.lotes).some(x => x.lote.estado === 'en_curso')) {
+      clearInterval(_adm.pollLotes); _adm.pollLotes = null;
+      if (vivos.length) loadAdmanPanel();   // refrescar las pilas con el resultado
+    }
+  }, 2000);
+}
+
+// ── Corrida manual ─────────────────────────────────────────────────────────
+async function admCorrer() {
+  const r = await apiCall('POST', '/api/adman/corrida');
+  if (!r || r.error) { showToast('No se pudo lanzar la corrida'); return; }
+  showToast(r.ya_en_curso ? 'Ya hay una corrida en curso' : 'Corrida lanzada: tarda unos 3–4 minutos');
+  const b = document.getElementById('adm-correr');
+  if (b) { b.disabled = true; b.textContent = 'Corrida en curso…'; }
+  admSeguirCorrida();
+}
+
+function admSeguirCorrida() {
+  if (_adm.pollCorrida) return;
+  const t0 = Date.now();
+  _adm.pollCorrida = setInterval(async () => {
+    const r = await apiCall('GET', '/api/adman/corridas?limit=1');
+    const el = document.getElementById('adm-corrida-prog');
+    if (el) el.textContent = ` · corrida en curso (${Math.round((Date.now() - t0) / 1000)} s)`;
+    if (r && !r.en_curso) {
+      clearInterval(_adm.pollCorrida); _adm.pollCorrida = null;
+      loadAdmanPanel();
+    }
+  }, 5000);
 }
 </script>
 </body>
