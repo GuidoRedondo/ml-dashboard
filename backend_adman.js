@@ -110,6 +110,18 @@ async function crearTablas(pool) {
     ALTER TABLE adman_alertas ADD COLUMN IF NOT EXISTS lote_id      INTEGER;
     ALTER TABLE adman_alertas ADD COLUMN IF NOT EXISTS motivo_fallo TEXT;
     ALTER TABLE adman_alertas ADD COLUMN IF NOT EXISTS decidida_en  TIMESTAMPTZ;
+    -- MLA de la publicación, para poder buscarla (pedido de Guido 30/9/2026). En promociones
+    -- viene en entityId; en pausas de anuncio entityId es un id interno de AdMan (verificado:
+    -- "MLA"+entityId no existe o es de otro vendedor) y se busca por título exacto.
+    ALTER TABLE adman_alertas ADD COLUMN IF NOT EXISTS mla          TEXT;
+    -- varias publicaciones del vendedor con el mismo título: se muestran todas, no se adivina
+    ALTER TABLE adman_alertas ADD COLUMN IF NOT EXISTS mla_opciones JSONB;
+    ALTER TABLE adman_alertas ADD COLUMN IF NOT EXISTS mla_buscado  BOOLEAN DEFAULT FALSE;
+    -- bloque "promotion" de la alerta: tipo, % de descuento y precio promocional (Etapa 3
+    -- lo necesita para recalcular la CM con el precio de la promo)
+    ALTER TABLE adman_alertas ADD COLUMN IF NOT EXISTS promocion    JSONB;
+    UPDATE adman_alertas SET mla = entity_id
+      WHERE mla IS NULL AND entity_type='promotion' AND entity_id ~ '^[A-Z]{3}[0-9]+$';
     CREATE INDEX IF NOT EXISTS idx_adman_alertas_estado ON adman_alertas (estado, adman_cust_id);
     CREATE INDEX IF NOT EXISTS idx_adman_alertas_client ON adman_alertas (client_id, estado);
 
@@ -192,12 +204,14 @@ function filaAlerta(a) {
     errores: jsonTexto(a.errors),
     created_at_adman: creada && !isNaN(creada) ? creada.toISOString() : null,
     created_at_raw: a.createdAt != null ? String(a.createdAt) : null,
+    mla: a.entityType === 'promotion' && /^[A-Z]{3}\d+$/.test(String(a.entityId || '')) ? String(a.entityId) : null,
+    promocion: a.promotion && typeof a.promotion === 'object' ? a.promotion : null,
   };
 }
 
 // ════════════════════════════════════════════════════════════════════
 
-module.exports = (app, { pool, requireAuth, requireAdmin }) => {
+module.exports = (app, { pool, requireAuth, requireAdmin, getClientToken, ML_API }) => {
 
   let corridaEnCurso = null;
   const log = m => console.log(m);
@@ -229,9 +243,9 @@ module.exports = (app, { pool, requireAuth, requireAdmin }) => {
       INSERT INTO adman_alertas (alert_id, corrida_id, ultima_corrida_id, client_id, adman_cust_id,
         flow_id, flow_nombre, flow_tipo, entity_type, entity_id, entity_name, accion, accion_cambio,
         accion_raw, operador, valor_previo, valor_nuevo, metricas, errores, pila, motivo,
-        created_at_adman, created_at_raw)
+        created_at_adman, created_at_raw, mla, promocion)
       VALUES ($1,$2,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,'revisar',
-        'Sin clasificar (Etapa 1)',$19,$20)
+        'Sin clasificar (Etapa 1)',$19,$20,$21,$22)
       ON CONFLICT (alert_id) DO UPDATE SET
         ultima_corrida_id = EXCLUDED.ultima_corrida_id,
         client_id   = COALESCE(adman_alertas.client_id, EXCLUDED.client_id),
@@ -241,6 +255,8 @@ module.exports = (app, { pool, requireAuth, requireAdmin }) => {
         valor_nuevo = EXCLUDED.valor_nuevo,
         metricas    = EXCLUDED.metricas,
         errores     = EXCLUDED.errores,
+        mla         = COALESCE(EXCLUDED.mla, adman_alertas.mla),
+        promocion   = COALESCE(EXCLUDED.promocion, adman_alertas.promocion),
         ultima_vez  = NOW(),
         -- Si AdMan la sigue mostrando como pendiente: una vencida vuelve a pendiente, y una
         -- sin confirmar también (AdMan no la ejecutó). Aprobada/desestimada/fallida no se tocan.
@@ -255,8 +271,51 @@ module.exports = (app, { pool, requireAuth, requireAdmin }) => {
        f.operador, f.valor_previo, f.valor_nuevo,
        f.metricas == null ? null : JSON.stringify(f.metricas),
        f.errores == null ? null : JSON.stringify(f.errores),
-       f.created_at_adman, f.created_at_raw]);
+       f.created_at_adman, f.created_at_raw, f.mla,
+       f.promocion == null ? null : JSON.stringify(f.promocion)]);
     return r.rows[0] && r.rows[0].nueva;
+  }
+
+  // Pausas de anuncio: AdMan manda el título pero no el MLA (su entityId es interno). Se
+  // busca el título EXACTO entre las publicaciones del vendedor con su token de ML. Usa
+  // cupo de ML, no de AdMan. Se intenta una sola vez por alerta (mla_buscado).
+  // \p{M} = marcas de acento que deja NFD: "Artísticos" y "Artisticos" cuentan igual.
+  const normTitulo = t => String(t || '').toLowerCase().normalize('NFD').replace(/\p{M}/gu, '').replace(/\s+/g, ' ').trim();
+  async function resolverMlas(cuenta) {
+    if (!cuenta.client_id || !getClientToken) return { resueltas: 0, sin_mla: 0 };
+    const pend = await pool.query(`
+      SELECT alert_id, entity_name FROM adman_alertas
+      WHERE adman_cust_id=$1 AND entity_type='item' AND mla IS NULL AND NOT mla_buscado
+        AND estado IN ('pendiente','fallida','sin_confirmar')`, [cuenta.adman_cust_id]);
+    if (!pend.rows.length) return { resueltas: 0, sin_mla: 0 };
+    const token = await getClientToken(cuenta.client_id).catch(() => null);
+    if (!token) return { resueltas: 0, sin_mla: pend.rows.length };
+    const headers = { Authorization: `Bearer ${token}` };
+    const cache = {};
+    let resueltas = 0, sinMla = 0;
+    for (const row of pend.rows) {
+      const clave = normTitulo(row.entity_name);
+      if (!(clave in cache)) {
+        let opciones = [];
+        try {
+          const s = await fetch(`${ML_API}/users/${cuenta.adman_cust_id}/items/search?q=${encodeURIComponent(row.entity_name)}&limit=50`, { headers }).then(r => r.json());
+          const ids = (s && s.results) || [];
+          for (let i = 0; i < ids.length; i += 20) {
+            const it = await fetch(`${ML_API}/items?ids=${ids.slice(i, i + 20).join(',')}&attributes=id,title`, { headers }).then(r => r.json());
+            (Array.isArray(it) ? it : []).forEach(x => {
+              if (x && x.code === 200 && x.body && normTitulo(x.body.title) === clave) opciones.push(x.body.id);
+            });
+          }
+        } catch (e) { opciones = null; }   // error de red: se reintenta en la próxima corrida
+        cache[clave] = opciones;
+      }
+      const op = cache[clave];
+      if (op === null) { sinMla++; continue; }
+      await pool.query(`UPDATE adman_alertas SET mla=$2, mla_opciones=$3, mla_buscado=TRUE WHERE alert_id=$1`,
+        [row.alert_id, op.length === 1 ? op[0] : null, op.length > 1 ? JSON.stringify(op) : null]);
+      if (op.length === 1) resueltas++; else sinMla++;
+    }
+    return { resueltas, sin_mla: sinMla };
   }
 
   async function correr(corridaId) {
@@ -311,6 +370,11 @@ module.exports = (app, { pool, requireAuth, requireAdmin }) => {
             [c.custId, vistas, corridaId]);
           total += deLaCuenta;
           detalle.cuentas_leidas.push({ cuenta: nick, alertas: deLaCuenta });
+          // Buscar el MLA de las pausas de anuncio no frena la corrida si falla.
+          try {
+            const m = await resolverMlas(cuenta);
+            if (m.sin_mla) detalle.mla_sin_resolver = (detalle.mla_sin_resolver || 0) + m.sin_mla;
+          } catch (e) { log(`[ADMAN] MLA por título de ${nick}: ${limpiar(e.message)}`); }
         } catch (e) {
           detalle.cuentas_fallidas.push({ cuenta: nick, error: limpiar(e.message) });
           log(`[ADMAN] Corrida ${corridaId}: falló ${nick}: ${limpiar(e.message)}`);
@@ -541,7 +605,7 @@ module.exports = (app, { pool, requireAuth, requireAdmin }) => {
           SELECT a.alert_id::text AS alert_id, a.client_id, a.adman_cust_id::text AS adman_cust_id, a.flow_id,
                  a.flow_nombre, a.flow_tipo, a.entity_type, a.entity_name, a.accion, a.accion_cambio, a.operador,
                  a.valor_previo, a.valor_nuevo, a.metricas, a.pila, a.motivo, a.piso_usado, a.estado, a.decision,
-                 a.lote_id, a.motivo_fallo, a.created_at_adman, a.primera_vez,
+                 a.lote_id, a.motivo_fallo, a.created_at_adman, a.primera_vez, a.mla, a.mla_opciones, a.promocion,
                  c.nickname, cl.name AS client_name
           FROM adman_alertas a
           LEFT JOIN adman_cuentas c ON c.adman_cust_id=a.adman_cust_id
@@ -550,7 +614,7 @@ module.exports = (app, { pool, requireAuth, requireAdmin }) => {
           ORDER BY c.nickname, a.flow_nombre, a.entity_name`),
         pool.query(`
           SELECT a.alert_id::text AS alert_id, a.entity_name, a.accion, a.operador, a.valor_previo, a.valor_nuevo,
-                 a.estado, a.decision, a.motivo_fallo, a.decidida_en, c.nickname
+                 a.estado, a.decision, a.motivo_fallo, a.decidida_en, a.mla, a.mla_opciones, a.promocion, a.entity_type, c.nickname
           FROM adman_alertas a LEFT JOIN adman_cuentas c ON c.adman_cust_id=a.adman_cust_id
           WHERE a.estado IN ('aprobada','desestimada') AND a.decidida_en > NOW() - INTERVAL '24 hours'
           ORDER BY a.decidida_en DESC LIMIT 200`),
@@ -611,7 +675,7 @@ module.exports = (app, { pool, requireAuth, requireAdmin }) => {
       const lote = await pool.query('SELECT * FROM adman_lotes WHERE id=$1', [id]);
       if (!lote.rows.length) return res.status(404).json({ error: 'Lote inexistente' });
       const alertas = await pool.query(`
-        SELECT a.alert_id::text AS alert_id, a.entity_name, a.estado, a.motivo_fallo, c.nickname,
+        SELECT a.alert_id::text AS alert_id, a.entity_name, a.estado, a.motivo_fallo, a.mla, a.mla_opciones, c.nickname,
                (SELECT d.resultado FROM decisiones_log d WHERE d.origen='adman' AND d.ref_id=a.alert_id::text AND d.lote_id=$1
                 ORDER BY d.id DESC LIMIT 1) AS resultado
         FROM adman_alertas a LEFT JOIN adman_cuentas c ON c.adman_cust_id=a.adman_cust_id

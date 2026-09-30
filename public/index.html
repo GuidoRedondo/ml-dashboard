@@ -27014,6 +27014,18 @@ const ADM_RESULTADOS = {
   error: 'No se llegó a enviar',
 };
 
+// MLA de la publicación como link, para encontrarla rápido. En pausas de anuncio AdMan no
+// manda el MLA: el backend lo busca por título exacto; si el título se repite, van todas.
+const admLinkMla = id => `<a href="https://articulo.mercadolibre.com.ar/${admEsc(String(id).replace(/^([A-Z]{3})(\d+)$/, '$1-$2'))}-_JM" target="_blank" rel="noopener" style="color:inherit;font-weight:700">${admEsc(id)}</a>`;
+function admMla(a) {
+  if (a.mla) return `<div class="sub">${admLinkMla(a.mla)}</div>`;
+  const op = Array.isArray(a.mla_opciones) ? a.mla_opciones : [];
+  if (op.length) return `<div class="sub">Mismo título en: ${op.map(admLinkMla).join(', ')}</div>`;
+  if (a.entity_type === 'item' || a.entity_type === 'promotion') return `<div class="sub">MLA sin identificar</div>`;
+  return '';
+}
+const ADM_PROMOS = { LIGHTNING: 'relámpago', DEAL: 'de campaña', DOD: 'oferta del día', PRICE_DISCOUNT: 'descuento', MARKETPLACE_CAMPAIGN: 'campaña de ML', SMART: 'automatizada', PRE_NEGOTIATED: 'pre-negociada' };
+
 // En alertas de publicación y promoción, `operador` es la regla del agente en JSON.
 function admRegla(operador) {
   let r; try { r = JSON.parse(operador); } catch (e) { return null; }
@@ -27040,6 +27052,12 @@ function admAccionTexto(a) {
   if (a.accion === 'changeCampaignObjectiveROAS')
     return `${nombre}: ${admNum(a.valor_previo, 2)} → <b>${admNum(a.valor_nuevo, 2)}</b>${pct}`;
   const regla = admRegla(a.operador);
+  const pr = a.promocion;
+  if (a.accion === 'participateInCandidatePromotions' && pr) {
+    const tipo = ADM_PROMOS[pr.promotionType] || pr.promotionType || '';
+    return `Participar en promoción ${admEsc(tipo)}: <b>−${admNum(pr.discountPercentage)}%</b> → precio <b>${admPesos(pr.dealPrice)}</b>`
+      + (regla ? `<div class="sub">Regla del agente: ${admEsc(regla)}</div>` : '');
+  }
   const cambio = (a.valor_previo != null || a.valor_nuevo != null) && a.accion !== 'pauseProductAd'
     ? ` ${admEsc(a.valor_previo ?? '—')} → ${admEsc(a.valor_nuevo ?? '—')}` : '';
   return `${admEsc(nombre)}${cambio}${regla ? `<div class="sub">Regla del agente: ${admEsc(regla)}</div>` : ''}`;
@@ -27185,7 +27203,7 @@ function admFila(a) {
   return `<tr class="${_adm.sel.has(id) ? 'sel' : ''}">
       <td><input type="checkbox" ${_adm.sel.has(id) ? 'checked' : ''} ${dec ? '' : 'disabled'} onchange="admSel('${id}', this.checked)"></td>
       <td><b>${admEsc(a.nickname || '—')}</b><div class="sub">${admEsc(a.flow_nombre || '')}</div></td>
-      <td>${admEsc(a.entity_name || '—')}<div class="sub">${a.entity_type === 'campaign' ? 'Campaña' : a.entity_type === 'item' ? 'Publicación' : a.entity_type === 'promotion' ? 'Promoción' : admEsc(a.entity_type)}</div></td>
+      <td>${admEsc(a.entity_name || '—')}${admMla(a)}<div class="sub">${a.entity_type === 'campaign' ? 'Campaña' : a.entity_type === 'item' ? 'Publicación' : a.entity_type === 'promotion' ? 'Promoción' : admEsc(a.entity_type)}</div></td>
       <td>${admAccionTexto(a)}</td>
       <td>${admMetricas(a)}</td>
       <td><span class="adm-tag revisar">Revisar</span><div class="sub">${admEsc(a.motivo || '')}</div>${admEstadoTag(a)}</td>
@@ -27222,7 +27240,7 @@ function admFilaGrupo(g) {
     </tr>
     ${abierta ? g.map(a => `<tr class="adm-det ${_adm.sel.has(a.alert_id) ? 'sel' : ''}">
       <td><input type="checkbox" ${_adm.sel.has(a.alert_id) ? 'checked' : ''} ${admDecidible(a) ? '' : 'disabled'} onchange="admSel('${a.alert_id}', this.checked)"></td>
-      <td></td><td colspan="3">${admEsc(a.entity_name)}</td><td colspan="2">${admEstadoTag(a)}</td></tr>`).join('') : ''}`;
+      <td></td><td colspan="3">${admEsc(a.entity_name)}${admMla(a)}</td><td colspan="2">${admEstadoTag(a)}</td></tr>`).join('') : ''}`;
 }
 
 function admSel(id, on) { on ? _adm.sel.add(id) : _adm.sel.delete(id); admRender(); }
@@ -27235,7 +27253,7 @@ function admDecididasHtml() {
   if (!l.length) return '';
   return `<details class="adm-block"><summary style="cursor:pointer;font-weight:800;font-size:14px">Decididas en las últimas 24 h (${l.length})</summary>
     <table class="adm-tabla" style="margin-top:8px"><thead><tr><th>Cuándo</th><th>Cuenta</th><th>Campaña / publicación</th><th>Acción</th><th>Decisión</th></tr></thead><tbody>
-    ${l.map(a => `<tr><td>${admFecha(a.decidida_en)}</td><td>${admEsc(a.nickname)}</td><td>${admEsc(a.entity_name)}</td><td>${admAccionTexto(a)}</td>
+    ${l.map(a => `<tr><td>${admFecha(a.decidida_en)}</td><td>${admEsc(a.nickname)}</td><td>${admEsc(a.entity_name)}${admMla(a)}</td><td>${admAccionTexto(a)}</td>
       <td>${a.estado === 'aprobada' ? '<span class="adm-tag ok">Aprobada</span>' : '<span class="adm-tag desestimar">Desestimada</span>'}
       ${a.motivo_fallo ? `<div class="sub">${admEsc(a.motivo_fallo)}</div>` : ''}</td></tr>`).join('')}
     </tbody></table></details>`;
@@ -27258,7 +27276,7 @@ function admConfirmar(decision, ids) {
       : `<div style="font-size:12px;margin-bottom:8px">Desestimar descarta la sugerencia en AdMan sin ejecutar nada.</div>`}
     <div style="font-size:12px;margin-bottom:6px">${Object.entries(porCuenta).map(([n, k]) => `<b>${admEsc(n)}</b>: ${k}`).join(' · ')}</div>
     <table class="adm-tabla"><tbody>
-      ${lista.slice(0, 15).map(a => `<tr><td><b>${admEsc(a.entity_name)}</b><div class="sub">${admEsc(a.nickname)}</div></td><td>${admAccionTexto(a)}</td></tr>`).join('')}
+      ${lista.slice(0, 15).map(a => `<tr><td><b>${admEsc(a.entity_name)}</b>${admMla(a)}<div class="sub">${admEsc(a.nickname)}</div></td><td>${admAccionTexto(a)}</td></tr>`).join('')}
       ${lista.length > 15 ? `<tr><td colspan="2" class="sub">… y ${lista.length - 15} más</td></tr>` : ''}
     </tbody></table>
     <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
@@ -27314,7 +27332,7 @@ function admLotesHtml() {
           : a.estado === 'sin_confirmar' ? '<span class="adm-tag sinconf">Sin confirmar</span>'
           : '<span class="adm-tag env">En cola</span>';
         const motivo = ok ? '' : (ADM_RESULTADOS[a.resultado] || '') + (a.motivo_fallo && a.motivo_fallo !== a.resultado ? ' — ' + a.motivo_fallo : '');
-        return `<tr><td>${admEsc(a.nickname)}</td><td>${admEsc(a.entity_name)}</td><td>${tag}<div class="sub">${admEsc(motivo)}</div></td></tr>`;
+        return `<tr><td>${admEsc(a.nickname)}</td><td>${admEsc(a.entity_name)}${admMla(a)}</td><td>${tag}<div class="sub">${admEsc(motivo)}</div></td></tr>`;
       }).join('')}</tbody></table>` : ''}
     </div>`;
   }).join('');

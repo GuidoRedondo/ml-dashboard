@@ -10543,7 +10543,7 @@ const reclamos = require('./backend_reclamos')(app, {
 // Alertas de los agentes de AdMan — módulo aparte (backend_adman.js), solo admin.
 // Etapa 1 de docs/spec-alertas-adman.md: lee las alertas pendientes de toda la
 // cartera vía el MCP de AdMan y las guarda. No clasifica ni ejecuta nada todavía.
-const adman = require('./backend_adman')(app, { pool, requireAuth, requireAdmin });
+const adman = require('./backend_adman')(app, { pool, requireAuth, requireAdmin, getClientToken, ML_API });
 
 // Ficha de una publicación (Performance → Publicaciones) — módulo aparte
 // (backend_publicacion_detalle.js). Serie diaria, envío, cuotas, publi, zonas,
