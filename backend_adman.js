@@ -71,16 +71,16 @@ async function crearTablas(pool) {
       adman_cust_id     BIGINT NOT NULL,
       flow_id           BIGINT NOT NULL,
       flow_nombre       TEXT,
-      flow_tipo         VARCHAR(40),
-      entity_type       VARCHAR(20),
+      flow_tipo         TEXT,
+      entity_type       TEXT,
       -- interno de AdMan / ML: nunca se muestra en pantalla
       entity_id         TEXT,
       entity_name       TEXT,
       -- AdMan manda action como JSON en texto: {"action":"changeCampaignBudget","change":5}
-      accion            VARCHAR(80),
+      accion            TEXT,
       accion_cambio     NUMERIC,
       accion_raw        TEXT,
-      operador          VARCHAR(20),
+      operador          TEXT,
       -- TEXT y no NUMERIC: el MCP no tiene contrato y una promoción puede traer otra cosa
       valor_previo      TEXT,
       valor_nuevo       TEXT,
@@ -97,6 +97,12 @@ async function crearTablas(pool) {
       primera_vez       TIMESTAMPTZ DEFAULT NOW(),
       ultima_vez        TIMESTAMPTZ DEFAULT NOW()
     );
+    -- Todo lo que viene de AdMan es TEXT: el MCP no tiene contrato y el 30/9/2026 un
+    -- campo de VALE DOBLE y ABFITNESS no entró en VARCHAR(20). Idempotente.
+    ALTER TABLE adman_alertas ALTER COLUMN flow_tipo   TYPE TEXT;
+    ALTER TABLE adman_alertas ALTER COLUMN entity_type TYPE TEXT;
+    ALTER TABLE adman_alertas ALTER COLUMN accion      TYPE TEXT;
+    ALTER TABLE adman_alertas ALTER COLUMN operador    TYPE TEXT;
     CREATE INDEX IF NOT EXISTS idx_adman_alertas_estado ON adman_alertas (estado, adman_cust_id);
     CREATE INDEX IF NOT EXISTS idx_adman_alertas_client ON adman_alertas (client_id, estado);
   `);
@@ -124,7 +130,7 @@ function filaAlerta(a) {
     entity_type: a.entityType || null,
     entity_id: a.entityId != null ? String(a.entityId) : null,
     entity_name: a.entityName || null,
-    accion: accionNombre.slice(0, 80) || null,
+    accion: accionNombre || null,
     accion_cambio: cambio,
     accion_raw: typeof a.action === 'string' ? a.action : JSON.stringify(a.action),
     operador: a.operator || null,
