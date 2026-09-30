@@ -737,6 +737,12 @@ tbody td {
 .adm-modal { background:var(--adm-crema,#f4f1e8); color:#292929; font-family:'Plus Jakarta Sans',var(--font); border:3px solid #292929; border-radius:14px; box-shadow:6px 6px 0 #292929; max-width:560px; width:100%; max-height:80vh; overflow:auto; padding:18px 20px; }
 .adm-modal h3 { margin:0 0 10px; font-weight:800; }
 .adm-aviso { background:#fff4e5; border:2px solid #c2410c; border-radius:10px; padding:8px 10px; font-size:12px; font-weight:700; color:#7c2d12; margin:10px 0; }
+/* Familias de publicaciones (famAgrupar): fila madre clickeable y variantes con filete */
+tr.fam-madre { cursor: pointer; }
+tr.fam-madre > td { background: rgba(99,102,241,.08); }
+tr.fam-madre:hover > td { background: rgba(99,102,241,.15); }
+tr.fam-hijo > td:first-child { box-shadow: inset 3px 0 0 #6366f1; }
+tr.fam-hijo > td { background: rgba(99,102,241,.025); }
 </style>
 </head>
 <body>
@@ -6245,6 +6251,124 @@ async function clearSkuManual() {
   } catch(e) { showToast('Error: ' + e.message); }
 }
 
+// ── FAMILIAS DE PUBLICACIONES ────────────────────────────────────────────────
+// Con el modelo User Products de ML cada talle/color es un MLA propio y los hermanos
+// comparten family_id. Las tablas de publicaciones se ven agrupadas: una fila madre por
+// familia con los totales y un ▸ que abre las variantes. Las publicaciones del modelo viejo
+// (variantes adentro del mismo MLA) agrupan por MLA — así en Stock FULL, que tiene una fila
+// por variación, también quedan juntas.
+window._famMap = window._famMap || {};    // `${clientId}:${MLA}` → { fid, nombre } | null
+const _famPedidos  = new Set();
+const _famAbiertas = new Set();
+const _famRender   = {};                  // tabla → función que la vuelve a dibujar
+const _famRenderPanel = {};               // si el selector vive fuera de la tabla: redibuja el panel entero
+let _famModo = true;
+try { _famModo = localStorage.getItem('famModo') !== '0'; } catch (e) {}
+
+function famSetModo(on, tabla) {
+  _famModo = !!on;
+  try { localStorage.setItem('famModo', _famModo ? '1' : '0'); } catch (e) {}
+  const f = _famRenderPanel[tabla] || _famRender[tabla];
+  if (f) f();
+}
+
+function famToggle(key, tabla) {
+  if (_famAbiertas.has(key)) _famAbiertas.delete(key); else _famAbiertas.add(key);
+  if (_famRender[tabla]) _famRender[tabla]();
+}
+
+// Selector "Por familia / Por publicación" para la barra de cada tabla.
+function famSwitchHtml(tabla) {
+  const b = (on, label, title) => `<button onclick="famSetModo(${on},'${tabla}')" title="${title}"
+    style="padding:5px 10px;border-radius:6px;border:none;cursor:pointer;font-size:11px;font-weight:700;white-space:nowrap;background:${_famModo === on ? 'var(--accent)' : 'transparent'};color:${_famModo === on ? '#000' : 'var(--muted)'}">${label}</button>`;
+  return `<div style="display:inline-flex;background:var(--surface2);border-radius:8px;padding:2px;flex-shrink:0">`
+    + b(true, '👪 Por familia', 'Una fila por producto: talles y colores juntos, con ▸ para abrirlos')
+    + b(false, 'Por publicación', 'Una fila por MLA') + `</div>`;
+}
+
+// Pide las familias que todavía no se conocen y, si alguna agrupa, vuelve a dibujar la
+// tabla. Mientras tanto la tabla sale por publicación y se reagrupa sola al llegar.
+function famCargar(clientId, ids, tabla) {
+  if (!_famModo || !clientId) return;
+  const faltan = [...new Set(ids)].filter(id => /^MLA\d+$/.test(id) && !_famPedidos.has(`${clientId}:${id}`));
+  if (!faltan.length) return;
+  faltan.forEach(id => _famPedidos.add(`${clientId}:${id}`));
+  const olvidar = () => faltan.forEach(id => _famPedidos.delete(`${clientId}:${id}`));
+  apiCall('POST', '/api/familias', { client_id: clientId, ids: faltan }).then(r => {
+    if (!r || !r.familias) { olvidar(); return; }
+    let agrupa = false;
+    faltan.forEach(id => {
+      const f = r.familias[id] || null;
+      window._famMap[`${clientId}:${id}`] = f;
+      if (f && f.fid) agrupa = true;
+    });
+    if (agrupa && _famModo && _famRender[tabla]) _famRender[tabla]();
+  }).catch(olvidar);
+}
+
+// Agrupa filas ya filtradas. idDe(fila) → MLA, clientDe(fila) → cliente, agg(miembros) →
+// una fila con la MISMA forma que las demás, así la ordena el mismo comparador. Devuelve
+// { fila } sueltas y { fila, fam: { key, nombre, miembros } } para familias de 2 o más.
+// Sin cmp respeta el orden de entrada (cada familia queda donde aparece su primer miembro).
+function famAgrupar(filas, { idDe, clientDe, agg, cmp }) {
+  if (!_famModo) return filas.map(fila => ({ fila }));
+  const grupos = new Map();
+  filas.forEach(fila => {
+    const id = idDe(fila), c = clientDe(fila);
+    const f = window._famMap[`${c}:${id}`];
+    const key = f && f.fid ? `F${c}_${f.fid}` : `I${c}_${id}`;
+    let g = grupos.get(key);
+    if (!g) grupos.set(key, g = { key, nombre: f && f.nombre, miembros: [] });
+    g.miembros.push(fila);
+  });
+  const out = [...grupos.values()].map(g => {
+    if (g.miembros.length < 2) return { fila: g.miembros[0] };
+    if (cmp) g.miembros.sort(cmp);
+    return { fila: agg(g.miembros), fam: g };
+  });
+  if (cmp) out.sort((a, b) => cmp(a.fila, b.fila));
+  return out;
+}
+
+// Arma el <tbody>: las familias con su fila madre y, si están abiertas, las variantes.
+function famFilas(entradas, madre, hija) {
+  return entradas.map((e, i) => !e.fam ? hija(e.fila, i)
+    : madre(e, i) + (_famAbiertas.has(e.fam.key)
+        ? e.fam.miembros.map(m => hija(m, i).replace(/<tr\b/, '<tr class="fam-hijo"')).join('') : '')
+  ).join('');
+}
+
+// Atributos de la fila madre: se abre/cierra con un click en cualquier parte.
+function famMadreAttrs(e, tabla) {
+  return `class="fam-madre" onclick="famToggle('${e.fam.key}','${tabla}')" title="Click para ver las ${e.fam.miembros.length} variantes"`;
+}
+
+// Parte común más larga de varios textos (el SKU base de "1002 XS" y "1002 M" es "1002").
+function famPrefijo(textos) {
+  const t = textos.filter(Boolean).map(String);
+  if (!t.length) return '';
+  let p = t[0];
+  t.forEach(s => { while (p && !s.startsWith(p)) p = p.slice(0, -1); });
+  return p.replace(/[\s\-_/.|,]+$/, '');
+}
+
+// Título de la fila madre: ▸/▾, el nombre de la familia (el de ML; si no vino, la parte
+// común de los títulos) y cuántas variantes tiene.
+function famTituloHtml(e, titulos) {
+  const esc = s => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  const nombre = e.fam.nombre || famPrefijo(titulos) || titulos[0] || '';
+  return `<span style="display:inline-block;width:14px;color:var(--accent)">${_famAbiertas.has(e.fam.key) ? '▾' : '▸'}</span>`
+    + `<b title="${esc(nombre)}">${esc(nombre)}</b> <span style="font-size:10px;color:var(--muted);font-weight:600;white-space:nowrap">· ${e.fam.miembros.length} variantes</span>`;
+}
+
+// "$1.000 – $1.500" o "$1.000" si son todos iguales.
+function famRango(vals, fmt) {
+  const v = vals.filter(x => x != null && Number.isFinite(x));
+  if (!v.length) return '—';
+  const mn = Math.min(...v), mx = Math.max(...v);
+  return Math.round(mn) === Math.round(mx) ? fmt(mn) : `${fmt(mn)} – ${fmt(mx)}`;
+}
+
 function copyMLA(el, id) {
   navigator.clipboard.writeText(id).then(() => {
     const orig = el.textContent;
@@ -7103,6 +7227,7 @@ async function cargarPreciosPerfPub(porCliente) {
   if ((await Promise.all(pedidos)).some(Boolean) && _perfActiveTab === 'publicaciones') renderPerfPublicaciones();
 }
 
+_famRender.perfPub = () => { if (_perfActiveTab === 'publicaciones') renderPerfPublicaciones(); };
 function renderPerfPublicaciones() {
   const el = document.getElementById('perfPubContent');
   if (!el) return;
@@ -7228,7 +7353,7 @@ function renderPerfPublicaciones() {
          + `<div style="font-weight:700">${fmt(p.precio)} <span style="font-size:10px;color:#00e676">${off}% OFF</span></div>`;
   };
 
-  const rows = allProducts.map((p, idx) => {
+  const fila = (p, idx) => {
     const stock = stockMap[p.id];
     const stockStr = stock == null ? '—' : stock.toLocaleString('es-AR');
     const stockColor = stock == null ? 'var(--muted)' : stock === 0 ? '#ff5252' : stock <= 5 ? '#ff9100' : '#00e676';
@@ -7257,7 +7382,63 @@ function renderPerfPublicaciones() {
       <td style="padding:7px 10px;text-align:right;font-size:12px;font-weight:700;color:${convColor}">${p.conversion > 0 ? fmtP(p.conversion) : '—'}</td>
       <td style="padding:7px 10px;text-align:right;font-size:12px;font-weight:700;color:${stockColor}">${stockStr}</td>
     </tr>`;
-  }).join('');
+  };
+
+  // Por familia: facturación, unidades, visitas y stock suman; la conversión se recalcula
+  // (unidades / visitas) y la tendencia sale de la facturación anterior sumada.
+  const cmpPerf = (a, b) => {
+    let va, vb;
+    if (col === 'pct_total') { va = a.revenue || 0; vb = b.revenue || 0; }
+    else if (col === 'stock') { va = a._stock ?? stockMap[a.id] ?? -1; vb = b._stock ?? stockMap[b.id] ?? -1; }
+    else { va = a[col] ?? -Infinity; vb = b[col] ?? -Infinity; }
+    return asc ? va - vb : vb - va;
+  };
+  const porClienteFam = {};
+  allProducts.forEach(p => (porClienteFam[p.client_id] = porClienteFam[p.client_id] || []).push(p.id));
+  Object.entries(porClienteFam).forEach(([c, ids]) => famCargar(parseInt(c), ids, 'perfPub'));
+  const entradas = famAgrupar(allProducts, {
+    idDe: p => p.id, clientDe: p => p.client_id, cmp: cmpPerf,
+    agg: ms => {
+      const s = k => ms.reduce((t, m) => t + (m[k] || 0), 0);
+      const revenue = s('revenue'), units = s('units'), visits = s('visits');
+      // revenue_prev no siempre viene: se despeja de la tendencia de cada variante.
+      const prev = ms.reduce((t, m) => t + (m.revenue_prev != null ? m.revenue_prev
+        : (m.trend_pct != null && m.trend_pct > -100 ? (m.revenue || 0) / (1 + m.trend_pct / 100) : 0)), 0);
+      const conStock = ms.filter(m => stockMap[m.id] != null);
+      const precios = ms.map(m => m.precio).filter(v => v != null);
+      return {
+        id: ms[0].id, title: ms[0].title, client_id: ms[0].client_id, cuenta: ms[0].cuenta,
+        revenue, units, visits,
+        conversion: visits > 0 ? units / visits * 100 : 0,
+        trend_pct: prev > 0 ? (revenue - prev) / prev * 100 : null,
+        precio: precios.length ? Math.min(...precios) : null,
+        _stock: conStock.length ? conStock.reduce((t, m) => t + stockMap[m.id], 0) : null,
+      };
+    },
+  });
+  const madre = e => {
+    const p = e.fila, ms = e.fam.miembros;
+    const stock = p._stock;
+    const stockColor = stock == null ? 'var(--muted)' : stock === 0 ? '#ff5252' : stock <= 5 ? '#ff9100' : '#00e676';
+    const trendColor = p.trend_pct == null ? 'var(--muted)' : p.trend_pct >= 0 ? '#00e676' : '#ff5252';
+    const convColor = !p.conversion ? 'var(--muted)' : p.conversion >= 3 ? '#00e676' : p.conversion >= 1 ? '#ff9100' : '#ff5252';
+    const precios = ms.filter(m => `${m.client_id}:${m.id}` in window._perfPrecios).map(m => m.precio);
+    return `<tr ${famMadreAttrs(e, 'perfPub')} style="border-bottom:1px solid var(--border)">
+      <td></td>
+      <td style="padding:7px 10px;font-size:11px;color:var(--muted);white-space:nowrap">${ms.length} MLA</td>
+      <td style="padding:7px 10px;font-size:12px;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${famTituloHtml(e, ms.map(m => m.title))}</td>
+      <td style="padding:7px 10px;text-align:right;font-size:12px;white-space:nowrap;font-weight:700">${precios.length ? famRango(precios, fmt) : '<span style="color:var(--muted)">…</span>'}</td>
+      <td style="padding:7px 10px;text-align:right;font-size:12px;font-weight:700;color:#00e676">${(p.units||0).toLocaleString('es-AR')}</td>
+      <td style="padding:7px 10px;text-align:right;font-size:12px;font-weight:700;color:var(--accent)">${fmt(p.revenue||0)}</td>
+      <td style="padding:7px 10px;text-align:right;font-size:12px;font-weight:700;color:${trendColor}">${p.trend_pct == null ? '—' : (p.trend_pct >= 0 ? '+' : '') + p.trend_pct.toFixed(1) + '%'}</td>
+      <td style="padding:7px 10px;text-align:right;font-size:12px;color:var(--muted)">${(p.revenue / totalRevenue * 100).toFixed(1)}%</td>
+      <td style="padding:7px 10px;text-align:right;font-size:12px">${p.visits > 0 ? p.visits.toLocaleString('es-AR') : '—'}</td>
+      <td style="padding:7px 10px;text-align:right;font-size:12px;font-weight:700;color:${convColor}">${p.conversion > 0 ? fmtP(p.conversion) : '—'}</td>
+      <td style="padding:7px 10px;text-align:right;font-size:12px;font-weight:700;color:${stockColor}">${stock == null ? '—' : stock.toLocaleString('es-AR')}</td>
+    </tr>`;
+  };
+  const rows = famFilas(entradas, madre, fila);
+  const nFam = entradas.filter(e => e.fam).length;
 
   el.innerHTML = `
     <!-- Filtros por forma de entrega + buscador -->
@@ -7270,6 +7451,7 @@ function renderPerfPublicaciones() {
         </button>
         ${modeFilters}
         <div style="margin-left:auto;display:flex;align-items:center;gap:8px">
+          ${famSwitchHtml('perfPub')}
           <input type="text" placeholder="Buscar MLA o título..." value="${window._perfPubSearch||''}"
             oninput="window._perfPubSearch=this.value;renderPerfPublicaciones()"
             style="padding:7px 12px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:12px;width:200px;outline:none">
@@ -7279,7 +7461,7 @@ function renderPerfPublicaciones() {
       </div>
     </div>
     <!-- Tabla -->
-    <div style="font-size:12px;color:var(--muted);margin-bottom:8px">${allProducts.length} publicaciones</div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:8px">${allProducts.length} publicaciones${nFam ? ` · ${nFam} familias agrupadas` : ''}</div>
     <div style="overflow-x:auto;max-height:600px;overflow-y:auto;border-radius:10px;border:1px solid var(--border)">
       <table style="width:100%;border-collapse:collapse">
         <thead>
@@ -9874,6 +10056,7 @@ function renderPrecios() {
         <div style="flex:1"></div>
 
         <div style="display:flex;gap:6px;align-items:center">
+          ${famSwitchHtml('prc')}
           <input id="prcBuscar" type="text" placeholder="MLA, SKU o título…" value="${(window._prcSearch || '').replace(/"/g, '&quot;')}"
             oninput="_prcBuscar(this.value)"
             style="padding:7px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:12px;width:190px;outline:none">
@@ -10020,7 +10203,10 @@ function _prcFiltrar(filas) {
   if (modo === 'sincmv')   out = out.filter(f => !f.it.hasCMV);
   if (modo === 'propio')   out = out.filter(f => f.it.objetivoItem != null);
   if (modo === 'manual')   out = out.filter(f => f.esManual);
+  return out.sort(_prcCmp());
+}
 
+function _prcCmp() {
   const { col, asc } = window._prcSort;
   const val = f => {
     if (col === 'mla')      return f.it.id;
@@ -10037,17 +10223,80 @@ function _prcFiltrar(filas) {
     if (col === 'tacos')    return f.tacos.pct;
     return f.gap ?? -1e12;   // 'gap'
   };
-  return out.sort((a, b) => {
+  return (a, b) => {
     const va = val(a), vb = val(b);
     if (typeof va === 'string') return asc ? va.localeCompare(vb) : vb.localeCompare(va);
     return asc ? va - vb : vb - va;
-  });
+  };
 }
 
+// Fila madre de una familia en Precios: sumas donde se suma (facturación, participación,
+// pauta) y rangos donde cada variante tiene su número (CMV, precio, CM). Para ordenar se
+// toma la variante con PEOR CM: es la que define si la familia tiene un problema.
+function _prcAggFam(ms) {
+  const nums = arr => arr.filter(x => x != null && Number.isFinite(x));
+  const min = arr => { const v = nums(arr); return v.length ? Math.min(...v) : null; };
+  const max = arr => { const v = nums(arr); return v.length ? Math.max(...v) : null; };
+  const sum = arr => nums(arr).reduce((a, b) => a + b, 0);
+  const facts = nums(ms.map(f => f.it.fact));
+  const fact = facts.length ? sum(facts) : null;
+  const ads = sum(ms.map(f => f.it.ads || 0));
+  const parts = nums(ms.map(f => f.part));
+  const hasCMV = ms.every(f => f.it.hasCMV);
+  const cmOf = f => _prcCMValor(f.actual, f.it);
+  const peor = ms.filter(f => f.it.hasCMV).sort((a, b) => (cmOf(a) ?? 1e9) - (cmOf(b) ?? 1e9))[0] || ms[0];
+  return {
+    it: { id: ms[0].it.id, title: ms[0].it.title, sku: famPrefijo(ms.map(f => f.it.sku)),
+          cmv: min(ms.map(f => f.it.cmv)) ?? 0, precio: min(ms.map(f => f.it.precio)) ?? 0,
+          fact, units: sum(ms.map(f => f.it.units || 0)), ads, hasCMV },
+    actual: peor.actual,
+    obj: { pct: min(ms.map(f => f.obj.pct)) },
+    sugerido: max(ms.map(f => f.sugerido)),
+    part: parts.length ? sum(parts) : null,
+    tacos: { pct: fact > 0 ? ads / fact * 100 : 0 },
+    gap: max(ms.map(f => f.gap)),
+  };
+}
+
+function _prcFilaFam(e) {
+  const f = e.fila, ms = e.fam.miembros, it = f.it;
+  const cms = ms.filter(m => m.it.hasCMV).map(m => _prcCMValor(m.actual, m.it)).filter(v => v != null);
+  const cmMin = cms.length ? Math.min(...cms) : null;
+  const objMin = f.obj.pct;
+  const cmColor = cmMin == null ? 'var(--muted)' : ms.some(m => m.it.hasCMV && m.actual.cm < 0) ? '#ff5252' : cmMin >= objMin ? '#00e676' : '#ff9100';
+  const sinCMV = ms.filter(m => !m.it.hasCMV).length;
+  const suben = ms.filter(m => m.gap != null && m.gap > 0).length;
+  const bajan = ms.filter(m => m.gap != null && m.gap < 0).length;
+  const pct = v => _prcPct(v);
+  const td = 'padding:6px 8px;text-align:right;white-space:nowrap';
+  return `<tr ${famMadreAttrs(e, 'prc')} style="border-bottom:1px solid var(--border)">
+    <td style="padding:6px 8px;font-size:11px;color:var(--muted);white-space:nowrap">${ms.length} MLA</td>
+    <td style="padding:6px 8px;font-size:12px;max-width:230px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${famTituloHtml(e, ms.map(m => m.it.title))}</td>
+    <td style="padding:6px 8px;font-size:11px;color:var(--muted);max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${it.sku || '—'}</td>
+    <td style="${td}">${it.fact == null ? '<span style="color:var(--muted)">—</span>'
+      : `<span style="font-size:12px;font-weight:700">${_prcFmt(it.fact)}</span><div style="font-size:10px;color:var(--muted)">${it.units.toLocaleString('es-AR')} u.</div>`}</td>
+    <td style="${td};font-size:12px;font-weight:700;color:${f.part >= 5 ? 'var(--accent)' : 'var(--text)'}">${f.part == null ? '—' : pct(f.part)}</td>
+    <td style="${td};font-size:12px">${famRango(ms.filter(m => m.it.hasCMV).map(m => m.it.cmv), _prcFmt)}${sinCMV ? `<div style="font-size:10px;color:#ff9100">${sinCMV} sin CMV</div>` : ''}</td>
+    <td style="${td};font-size:12px;color:var(--muted)">${it.fact > 0 ? pct(f.tacos.pct) : '—'}<div style="font-size:10px">${it.ads > 0 ? _prcFmt(it.ads) + ' de pauta' : 'sin pauta'}</div></td>
+    <td style="${td};font-size:12px">${famRango(ms.map(m => m.actual.total), _prcFmt)}</td>
+    <td style="${td};font-size:12px;font-weight:600">${famRango(ms.map(m => m.it.precio), _prcFmt)}</td>
+    <td style="${td}"><span style="font-size:13px;font-weight:800;color:${cmColor}">${cms.length ? famRango(cms, pct) : '—'}</span></td>
+    <td style="${td};font-size:12px;color:var(--muted)">${famRango(ms.map(m => m.obj.pct), pct)}</td>
+    <td style="${td};font-size:12px;font-weight:700">${famRango(ms.map(m => m.sugerido), _prcFmt)}</td>
+    <td style="${td};font-size:11px">${suben ? `<span style="color:#ff5252;font-weight:700">${suben} suben</span>` : ''}${suben && bajan ? ' · ' : ''}${bajan ? `<span style="color:#00e676;font-weight:700">${bajan} bajan</span>` : ''}${!suben && !bajan ? '<span style="color:var(--muted)">—</span>' : ''}</td>
+  </tr>`;
+}
+
+_famRender.prc = () => { if (window._prcData) _prcRerenderTabla(); };
+_famRenderPanel.prc = () => { if (window._prcData) renderPrecios(); };
 function _prcTabla(filas, sufijo) {
   const vis = _prcFiltrar(filas);
+  const clientIdPrc = window._prcClientId;
+  famCargar(clientIdPrc, filas.map(f => f.it.id), 'prc');
+  const entradas = famAgrupar(vis, { idDe: f => f.it.id, clientDe: () => clientIdPrc, cmp: _prcCmp(), agg: _prcAggFam });
+  const nFam = entradas.filter(e => e.fam).length;
   const limite = window._prcLimite || 200;
-  const muestra = vis.slice(0, limite);
+  const muestra = entradas.slice(0, limite);
 
   const head = `<thead><tr>
     ${_prcTh('mla', 'MLA', 'left')}
@@ -10065,7 +10314,7 @@ function _prcTabla(filas, sufijo) {
     ${_prcTh('gap', 'Diferencia', 'right')}
   </tr></thead>`;
 
-  const rows = muestra.map((f, idx) => {
+  const fila = (f, idx) => {
     const it = f.it;
     const bg = idx % 2 === 0 ? 'background:rgba(255,255,255,.015)' : '';
     const cmVal = _prcCMValor(f.actual, it);
@@ -10161,15 +10410,16 @@ function _prcTabla(filas, sufijo) {
 
     if (abierto) html += _prcDetalle(f);
     return html;
-  }).join('');
+  };
+  const rows = famFilas(muestra, _prcFilaFam, fila);
 
-  const pie = vis.length > muestra.length
+  const pie = entradas.length > muestra.length
     ? `<div style="padding:12px;text-align:center;border-top:1px solid var(--border)">
-         <span style="font-size:12px;color:var(--muted)">Mostrando ${muestra.length.toLocaleString('es-AR')} de ${vis.length.toLocaleString('es-AR')} publicaciones</span>
+         <span style="font-size:12px;color:var(--muted)">Mostrando ${muestra.length.toLocaleString('es-AR')} de ${entradas.length.toLocaleString('es-AR')} ${nFam ? 'filas' : 'publicaciones'}</span>
          <button class="sync-btn" style="margin-left:10px" onclick="verMasPrecios()">Ver 200 más</button>
          <span style="font-size:11px;color:var(--muted);margin-left:8px">(el Excel baja las ${vis.length.toLocaleString('es-AR')})</span>
        </div>`
-    : `<div style="padding:10px;text-align:center;font-size:11px;color:var(--muted);border-top:1px solid var(--border)">${vis.length.toLocaleString('es-AR')} publicaciones · CM ${sufijo}</div>`;
+    : `<div style="padding:10px;text-align:center;font-size:11px;color:var(--muted);border-top:1px solid var(--border)">${vis.length.toLocaleString('es-AR')} publicaciones${nFam ? ` · ${nFam} familias agrupadas` : ''} · CM ${sufijo}</div>`;
 
   return `<table style="width:100%;border-collapse:collapse">${head}<tbody>${rows}</tbody></table>${pie}`;
 }
@@ -11387,11 +11637,37 @@ function renderRentabilidad(R, allProducts, costsMap) {
     if (sc === 'pct_total') return p.revenue / base;
     return parseFloat(p[sc]) || 0;
   };
-  products.sort((a, b) => {
+  const cmpRent = (a, b) => {
     const va = colVal(a), vb = colVal(b);
     if (typeof va === 'string') return sa ? va.localeCompare(vb) : vb.localeCompare(va);
     return sa ? va - vb : vb - va;
+  };
+  products.sort(cmpRent);
+
+  // Por familia: todo suma; la CM sólo se da si todas las variantes tienen costo (si no,
+  // queda el % recaudado, igual que una publicación sin CMV).
+  const clientIdRent = getActiveClient()?.id;
+  window._rentArgs = [R, allProducts, costsMap];
+  famCargar(clientIdRent, products.map(p => p.id), 'rent');
+  const entradas = famAgrupar(products, {
+    idDe: p => p.id, clientDe: () => clientIdRent, cmp: cmpRent,
+    agg: ms => {
+      const s = k => ms.reduce((t, m) => t + (m[k] || 0), 0);
+      const revenue = s('revenue'), neto = s('neto');
+      const hasCMV = ms.every(m => m.cmv != null);
+      const cmv = ms.some(m => m.cmv != null) ? s('cmv') : null;
+      const utilidad = hasCMV ? s('utilidad') : null;
+      const margen = revenue > 0 ? (utilidad != null ? utilidad : neto) / revenue * 100 : 0;
+      return {
+        id: ms[0].id, title: ms[0].title, sku: famPrefijo(ms.map(m => m.sku)) || null,
+        revenue, units: s('units'), comision: s('comision'), impuestos: s('impuestos'),
+        ads: s('ads'), _ads: s('ads'), resultado_envio: s('resultado_envio'), neto, cmv, utilidad, hasCMV,
+        margen: parseFloat(margen.toFixed(1)),
+        rentabilidad: hasCMV && cmv > 0 ? parseFloat((utilidad / cmv * 100).toFixed(1)) : null,
+      };
+    },
   });
+  const nFam = entradas.filter(e => e.fam).length;
 
   const th = (col, label, align='right', title='') => {
     const active = window._rentSort.col === col;
@@ -11427,7 +11703,8 @@ function renderRentabilidad(R, allProducts, costsMap) {
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:8px">
         <div class="kpi-label">📋 DESGLOSE POR PRODUCTO</div>
         <div style="display:flex;align-items:center;gap:8px">
-          <span style="font-size:11px;color:var(--muted)">${products.length} productos · ${Object.keys(costsMap).length} con CMV</span>
+          <span style="font-size:11px;color:var(--muted)">${products.length} productos${nFam ? ` (${nFam} familias)` : ''} · ${Object.keys(costsMap).length} con CMV</span>
+          ${famSwitchHtml('rent')}
           <button onclick="calcularMargenReal()" title="Recalcula la Contribución Marginal VERÍDICA: envío vendedor REAL por producto (no prorrateado) + Flex sobre FULL/FLEX + publicidad + IVA neto + IIBB. Es lento: hace llamadas extra a ML." style="padding:5px 12px;border:none;border-radius:6px;background:#f59e0b;color:#fff;font-size:12px;font-weight:600;cursor:pointer">🚚 CM verídica (envío real)</button>
           <button onclick="descargarTablaRentabilidad()" style="padding:5px 12px;border:none;border-radius:6px;background:#0ea5e9;color:#fff;font-size:12px;font-weight:600;cursor:pointer">📊 Excel tabla</button>
           <button onclick="descargarCMVRentabilidad()" style="padding:5px 12px;border:none;border-radius:6px;background:#6366f1;color:#fff;font-size:12px;font-weight:600;cursor:pointer">📥 Excel CMV</button>
@@ -11459,15 +11736,26 @@ function renderRentabilidad(R, allProducts, costsMap) {
             </tr>
           </thead>
           <tbody>
-            ${products.map((p, i) => {
+            ${famFilas(entradas, (e, i) => {
+              const ms = e.fam.miembros;
+              return rentFila(e.fila, i, `<tr ${famMadreAttrs(e, 'rent')} style="border-bottom:1px solid rgba(255,255,255,.05)">`,
+                `<div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${famTituloHtml(e, ms.map(m => m.title))}</div>
+                 <div style="font-size:10px;color:var(--muted)">${ms.length} MLA</div>`);
+            }, (p, i) => rentFila(p, i))}
+          </tbody>
+        </table>
+      </div>
+    </div>`;
+
+  function rentFila(p, i, trAbre, tituloHtml) {
               const resEnvioColor = (p.resultado_envio||0) >= 0 ? '#00e676' : '#ff5252';
               const hasCmv = p.cmv != null;
               return `
-              <tr style="border-bottom:1px solid rgba(255,255,255,.05);${i%2===0?'background:rgba(255,255,255,.02)':''}">
+              ${trAbre || `<tr style="border-bottom:1px solid rgba(255,255,255,.05);${i%2===0?'background:rgba(255,255,255,.02)':''}">`}
                 <td style="padding:7px 6px;color:var(--muted)">${i+1}</td>
                 <td style="padding:7px 6px;max-width:200px">
-                  <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${p.title}">${p.title}</div>
-                  <div style="font-size:10px;color:var(--muted);cursor:pointer" onclick="copyMLA(this,'${p.id}')">${p.id}</div>
+                  ${tituloHtml || `<div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${p.title}">${p.title}</div>
+                  <div style="font-size:10px;color:var(--muted);cursor:pointer" onclick="copyMLA(this,'${p.id}')">${p.id}</div>`}
                 </td>
                 <td style="padding:7px 6px;font-size:11px;color:var(--muted);white-space:nowrap">${p.sku || '—'}</td>
                 <td style="padding:7px 6px;text-align:right;font-weight:700">${fmtM(p.revenue)}</td>
@@ -11488,12 +11776,9 @@ function renderRentabilidad(R, allProducts, costsMap) {
                 </td>
                 <td style="padding:7px 6px;text-align:right;color:var(--muted)">${pct(p.revenue, base)}</td>
               </tr>`;
-            }).join('')}
-          </tbody>
-        </table>
-      </div>
-    </div>`;
+  }
 }
+_famRender.rent = () => { if (window._rentArgs) renderRentabilidad(...window._rentArgs); };
 
 
 async function loadVentas() {
@@ -14661,7 +14946,8 @@ function filterAdsAnuncios(val) {
   let count = 0;
   document.querySelectorAll('#adsAnunciosContent tr[data-search]').forEach(row => {
     const matchQ = !q || row.dataset.search.includes(q);
-    const matchC = !camp || (row.dataset.campaign && row.dataset.campaign.toLowerCase() === camp);
+    const matchC = !camp || (row.dataset.campaign && row.dataset.campaign.toLowerCase() === camp)
+      || (row.dataset.campaigns != null && row.dataset.campaigns.split('|').includes(camp));
     const show = matchQ && matchC;
     row.style.display = show ? '' : 'none';
     if (show) count++;
@@ -14676,6 +14962,7 @@ function sortAdsAnuncios(col) {
   if (_adsAnunciosData) renderAdsAnuncios(_adsAnunciosData);
 }
 
+_famRender.ads = () => { if (_adsAnunciosData) renderAdsAnuncios(_adsAnunciosData); };
 function renderAdsAnuncios(data) {
   const el = document.getElementById('adsAnunciosContent');
   const { items, from, to } = data;
@@ -14714,7 +15001,7 @@ function renderAdsAnuncios(data) {
   const cobColor = v => v == null ? 'var(--muted)' : v <= 7 ? '#ff5252' : v <= 21 ? '#ff9100' : '#00e676';
   const stockColor = v => v == null ? 'var(--muted)' : v === 0 ? '#ff5252' : v <= 5 ? '#ff9100' : '#00e676';
 
-  const rows = sorted.map((i, idx) => {
+  const fila = (i, idx) => {
     const stockStr = i.stock == null ? '—' : i.stock.toLocaleString('es-AR');
     const cobStr   = i.cobertura_dias == null ? '—' : i.cobertura_dias + 'd';
     const segA = window._seguimientoMap?.[i.item_id];
@@ -14745,7 +15032,72 @@ function renderAdsAnuncios(data) {
       <td style="padding:7px 10px;text-align:right;font-size:12px;font-weight:700;color:${stockColor(i.stock)}">${stockStr}</td>
       <td style="padding:7px 10px;text-align:right;font-size:12px;font-weight:700;color:${cobColor(i.cobertura_dias)}">${cobStr}</td>
     </tr>`;
-  }).join('');
+  };
+
+  // Por familia: la fila madre suma inversión, ingresos, ventas, clics e impresiones de
+  // las variantes y recalcula los ratios sobre esos totales (no promedia porcentajes).
+  const cmpAds = (a, b) => {
+    const va = typeof a[col] === 'string' ? a[col].toLowerCase() : (a[col] || 0);
+    const vb = typeof b[col] === 'string' ? b[col].toLowerCase() : (b[col] || 0);
+    if (typeof va === 'string') return asc ? va.localeCompare(vb) : vb.localeCompare(va);
+    return asc ? va - vb : vb - va;
+  };
+  const clientIdAds = getActiveClient()?.id;
+  famCargar(clientIdAds, items.map(i => i.item_id), 'ads');
+  const entradas = famAgrupar(sorted, {
+    idDe: i => i.item_id, clientDe: () => clientIdAds, cmp: cmpAds,
+    agg: ms => {
+      const s = k => ms.reduce((t, m) => t + (m[k] || 0), 0);
+      const inversion = s('inversion'), ingresos = s('ingresos'), ventas = s('ventas');
+      const clics = s('clics'), impresiones = s('impresiones'), fact = s('facturacion_total');
+      const conStock = ms.filter(m => m.stock != null);
+      const stock = conStock.length ? conStock.reduce((t, m) => t + m.stock, 0) : null;
+      // Ritmo de cada variante = stock / cobertura; la cobertura de la familia sale del total.
+      const ritmo = ms.reduce((t, m) => t + (m.stock > 0 && m.cobertura_dias > 0 ? m.stock / m.cobertura_dias : 0), 0);
+      const camps = [...new Set(ms.map(m => m.campaign).filter(Boolean))];
+      return {
+        item_id: ms[0].item_id, title: ms[0].title,
+        status: ms.some(m => m.status === 'active') ? 'active' : 'paused',
+        campaign: camps.length === 1 ? camps[0] : `${camps.length} campañas`,
+        inversion, ingresos, ventas, clics, impresiones, facturacion_total: fact,
+        tacos: inversion > 0 && fact > 0 ? inversion / fact * 100 : null,
+        roas:  inversion > 0 ? ingresos / inversion : 0,
+        ctr:   impresiones > 0 ? clics / impresiones * 100 : 0,
+        cvr:   clics > 0 ? ventas / clics * 100 : 0,
+        cpc:   clics > 0 ? inversion / clics : 0,
+        stock, cobertura_dias: stock != null && ritmo > 0 ? Math.round(stock / ritmo) : null,
+      };
+    },
+  });
+  const madre = e => {
+    const i = e.fila, ms = e.fam.miembros;
+    const sw = i.facturacion_total > 0 ? (i.ingresos / i.facturacion_total * 100) : null;
+    const swColor = !sw ? 'var(--muted)' : sw >= 50 ? '#ff5252' : sw >= 30 ? '#ff9100' : '#00e676';
+    const search = (ms.map(m => m.item_id + ' ' + m.title).join(' ') + ' ' + (e.fam.nombre || '')).toLowerCase();
+    const camps = [...new Set(ms.map(m => (m.campaign || '').toLowerCase()))].join('|');
+    return `
+    <tr ${famMadreAttrs(e, 'ads')} data-search="${search.replace(/"/g, '&quot;')}" data-campaigns="${camps.replace(/"/g, '&quot;')}" style="border-bottom:1px solid var(--border)">
+      <td></td>
+      <td style="padding:7px 10px;font-size:11px;color:var(--muted);white-space:nowrap">${ms.length} MLA</td>
+      <td style="padding:7px 10px;font-size:12px;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${famTituloHtml(e, ms.map(m => m.title))}</td>
+      <td style="padding:7px 10px;text-align:center;white-space:nowrap">${statusBadge(i.status)}<div style="font-size:10px;color:var(--muted);margin-top:2px;max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${i.campaign}">${i.campaign}</div></td>
+      <td style="padding:7px 10px;text-align:right;font-size:12px;font-weight:700;color:${acosColor(i.tacos)}">${i.tacos != null ? fmtP(i.tacos) : '—'}</td>
+      <td style="padding:7px 10px;text-align:right;font-size:12px;font-weight:700;color:${roasColor(i.roas)}">${fmtX(i.roas)}</td>
+      <td style="padding:7px 10px;text-align:right;font-size:12px;font-weight:700;color:#ff9100">${fmt(i.inversion)}</td>
+      <td style="padding:7px 10px;text-align:right;font-size:12px;font-weight:700;color:#00e676">${fmt(i.ingresos)}</td>
+      <td style="padding:7px 10px;text-align:right;font-size:12px;font-weight:700;color:${swColor}">${sw != null ? sw.toFixed(1)+'%' : '—'}</td>
+      <td style="padding:7px 10px;text-align:right;font-size:12px;font-weight:700">${fmtN(i.ventas)}</td>
+      <td style="padding:7px 10px;text-align:right;font-size:12px;font-weight:700;color:${ctrColor(i.ctr)}">${fmtP(i.ctr)}</td>
+      <td style="padding:7px 10px;text-align:right;font-size:12px">${fmtP(i.cvr)}</td>
+      <td style="padding:7px 10px;text-align:right;font-size:12px;color:var(--muted)">${(i.impresiones||0).toLocaleString('es-AR')}</td>
+      <td style="padding:7px 10px;text-align:right;font-size:12px">${fmtN(i.clics)}</td>
+      <td style="padding:7px 10px;text-align:right;font-size:12px;color:var(--muted)">${fmt(i.cpc)}</td>
+      <td style="padding:7px 10px;text-align:right;font-size:12px;font-weight:700;color:${stockColor(i.stock)}">${i.stock == null ? '—' : i.stock.toLocaleString('es-AR')}</td>
+      <td style="padding:7px 10px;text-align:right;font-size:12px;font-weight:700;color:${cobColor(i.cobertura_dias)}">${i.cobertura_dias == null ? '—' : i.cobertura_dias + 'd'}</td>
+    </tr>`;
+  };
+  const rows = famFilas(entradas, madre, fila);
+  const nFam = entradas.filter(e => e.fam).length;
 
   // Armar opciones de campañas únicas
   const campaigns = [...new Set(items.map(i => i.campaign).filter(Boolean))].sort();
@@ -14760,7 +15112,8 @@ function renderAdsAnuncios(data) {
         <option value="">Todas las campañas</option>
         ${campaigns.map(c => `<option value="${c}">${c}</option>`).join('')}
       </select>
-      <div style="font-size:12px;color:var(--muted)" id="adsAnunciosCount">${items.length} anuncios · ${from} → ${to}</div>
+      <div style="font-size:12px;color:var(--muted)" id="adsAnunciosCount">${items.length} anuncios${nFam ? ` · ${nFam} familias` : ''} · ${from} → ${to}</div>
+      ${famSwitchHtml('ads')}
       <button onclick="exportAdsAnunciosExcel()" style="padding:6px 14px;border:none;border-radius:8px;background:#16a34a;color:#fff;font-size:12px;font-weight:600;cursor:pointer">📥 Exportar Excel</button>
     </div>
     <div style="overflow-x:auto;max-height:520px;overflow-y:auto">
@@ -18191,6 +18544,7 @@ function fsSortBy(col) {
   renderFsTable();
 }
 
+_famRender.fs = () => renderFsTable();
 function renderFsTable() {
   const wrap = document.getElementById('fsTableWrap');
   if (!wrap || !_fullStockData) return;
@@ -18259,7 +18613,7 @@ function renderFsTable() {
   const liveTarget = parseInt(document.getElementById('fsGlobalDays')?.value) || _fullStockData?.global_target_days || 30;
   const pd = _fullStockData?.period_days || _fsDays || 30;
 
-  const rows = filtered.map(item => {
+  const fila = item => {
     const rowKey    = `${item.id}${item.variation_id ? '-'+item.variation_id : ''}`;
     const cov       = item.coverage_days;
     const covColor  = coverageColor(cov);
@@ -18322,9 +18676,69 @@ function renderFsTable() {
         ${autoSug}
       </td>
     </tr>`;
-  }).join('');
+  };
 
-  wrap.innerHTML = `<div style="overflow-x:auto">
+  // Por familia: stock, ventas, ritmo, exceso y sugerido suman (el sugerido de cada
+  // variante se calcula aparte: una con sobrestock no compensa a otra que se queda sin
+  // nada). Agrupa también las variaciones de un mismo MLA del modelo viejo.
+  const sugDe = i => (i.daily_rate || 0) > 0 ? Math.max(0, Math.round(i.daily_rate * liveTarget - (i.stock_full || 0))) : 0;
+  const cmpFs = (_fsSort.col && colMap[_fsSort.col]) ? (a, b) => {
+    const va = colMap[_fsSort.col](a), vb = colMap[_fsSort.col](b);
+    return va < vb ? -_fsSort.dir : va > vb ? _fsSort.dir : 0;
+  } : null;
+  const clientIdFs = getActiveClient()?.id;
+  famCargar(clientIdFs, items.map(i => i.id), 'fs');
+  const entradas = famAgrupar(filtered, {
+    idDe: i => i.id, clientDe: () => clientIdFs, cmp: cmpFs,
+    agg: ms => {
+      const s = k => ms.reduce((t, m) => t + (m[k] || 0), 0);
+      const stock_full = s('stock_full'), daily_rate = s('daily_rate');
+      const dsv = ms.map(m => m.dias_sin_venta).filter(v => v != null);
+      const precios = ms.map(m => m.price).filter(v => v != null);
+      return {
+        id: ms[0].id, title: ms[0].title, is_full: ms.some(m => m.is_full),
+        price: precios.length ? Math.min(...precios) : null,
+        stock_full, stock_reserved: s('stock_reserved'), stock_in_transit: s('stock_in_transit'),
+        units_sold_period: s('units_sold_period'), daily_rate,
+        coverage_days: daily_rate > 0 ? Math.round(stock_full / daily_rate) : null,
+        dias_sin_venta: dsv.length ? Math.min(...dsv) : null,
+        exceso_unidades: s('exceso_unidades'),
+        suggested_quantity: ms.reduce((t, m) => t + sugDe(m), 0),
+        antiguedad_ventana: ms[0].antiguedad_ventana,
+      };
+    },
+  });
+  const madre = e => {
+    const it = e.fila, ms = e.fam.miembros;
+    const titulos = ms.map(m => m.variation_id && m.title.includes(' — ') ? m.title.split(' — ')[0] : m.title);
+    const dsv = it.dias_sin_venta, ventana = it.antiguedad_ventana || 120;
+    const td = 'padding:8px 10px;border-bottom:1px solid var(--border)';
+    return `<tr ${famMadreAttrs(e, 'fs')}>
+      <td style="${td};font-size:11px;color:var(--muted);white-space:nowrap">${new Set(ms.map(m => m.id)).size > 1 ? ms.length + ' MLA' : it.id}
+        <span style="display:inline-block;margin-left:5px;padding:1px 6px;border-radius:4px;font-size:10px;font-weight:600;background:${it.is_full ? '#e0e7ff' : '#fef3c7'};color:${it.is_full ? '#4338ca' : '#92400e'}">${it.is_full ? 'FULL' : 'SIN FULL'}</span></td>
+      <td style="${td};font-size:12px;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${famTituloHtml(e, titulos)}</td>
+      <td style="${td};font-size:11px;color:var(--muted)">${famPrefijo(ms.map(m => m.sku)) || '—'}</td>
+      <td style="${td};text-align:right;white-space:nowrap;font-size:13px;font-weight:600">${famRango(ms.map(m => m.price), fmt$)}</td>
+      <td style="${td};text-align:center">
+        <div style="font-size:13px;font-weight:700;color:#6366f1">${it.stock_full}</div>
+        <div style="font-size:10px;color:var(--muted);margin-top:2px">${[it.stock_reserved ? it.stock_reserved+'res' : '', it.stock_in_transit ? it.stock_in_transit+'trán' : ''].filter(Boolean).join(' · ')}</div>
+      </td>
+      <td style="${td};font-size:12px;text-align:center;font-weight:700">${it.units_sold_period}</td>
+      <td style="${td};font-size:13px;text-align:center;font-weight:600">${it.daily_rate > 0 ? it.daily_rate.toFixed(2) : '—'}</td>
+      <td style="${td};font-size:13px;text-align:center;font-weight:700;color:${coverageColor(it.coverage_days)}">${it.coverage_days != null ? it.coverage_days+'d' : '—'}</td>
+      <td style="${td};font-size:12px;text-align:center;font-weight:600;color:${!it.is_full ? 'var(--muted)' : (dsv == null || dsv >= 60) ? '#b45309' : (dsv >= 30 ? '#d97706' : 'var(--muted)')}">${!it.is_full ? '—' : (dsv == null ? `+${ventana}d` : (dsv === 0 ? 'hoy' : `${dsv}d`))}</td>
+      <td style="${td};font-size:13px;text-align:center;font-weight:700;color:${it.exceso_unidades > 0 ? '#7c3aed' : 'var(--muted)'}">${it.exceso_unidades > 0 ? it.exceso_unidades : '—'}</td>
+      <td style="${td};font-size:14px;text-align:center;font-weight:700;color:${it.suggested_quantity > 0 ? 'var(--accent)' : 'var(--muted)'}">${it.suggested_quantity}</td>
+    </tr>`;
+  };
+  const rows = famFilas(entradas, madre, fila);
+
+  const nFam = entradas.filter(e => e.fam).length;
+  wrap.innerHTML = `<div style="display:flex;align-items:center;justify-content:flex-end;gap:10px;margin-bottom:8px">
+    <span style="font-size:11px;color:var(--muted)">${filtered.length} filas${nFam ? ` · ${nFam} familias` : ''}</span>
+    ${famSwitchHtml('fs')}
+  </div>
+  <div style="overflow-x:auto">
     <table style="width:100%;border-collapse:collapse">
       <thead><tr style="background:var(--surface2)">
         ${thLabel('mla',       'MLA',            'left')}

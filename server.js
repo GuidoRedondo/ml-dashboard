@@ -810,6 +810,18 @@ async function initDB() {
       data       JSONB NOT NULL,
       fetched_at TIMESTAMPTZ DEFAULT NOW()
     );
+    -- Familia de cada publicación (modelo User Products de ML: cada talle/color es un MLA
+    -- aparte y los hermanos comparten family_id). family_id NULL = publicación del modelo
+    -- viejo, con las variantes adentro del mismo MLA. La familia no cambia: se guarda y
+    -- sólo se vuelve a preguntar pasados 30 días.
+    CREATE TABLE IF NOT EXISTS item_familias (
+      client_id   INTEGER NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+      item_id     TEXT NOT NULL,
+      family_id   TEXT,
+      family_name TEXT,
+      updated_at  TIMESTAMPTZ DEFAULT NOW(),
+      PRIMARY KEY (client_id, item_id)
+    );
   `);
 
   // ── Migración: FKs hacia clients(id) que quedaron sin ON DELETE CASCADE ──
@@ -6802,6 +6814,65 @@ app.post('/api/performance/precios', requireAuth, async (req, res) => {
       }
     }
     res.json({ precios: out });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── Familias de publicaciones ────────────────────────────────────────────────
+// Con el modelo User Products cada variante (talle, color) es un MLA propio y las tablas
+// muestran una fila por talle. ML los ata con family_id / family_name en /items; con eso
+// el front agrupa. Devuelve { familias: { MLA: { fid, nombre } } } — fid null = sin familia
+// (publicación del modelo viejo: sus variantes ya viven adentro del mismo MLA).
+app.post('/api/familias', requireAuth, async (req, res) => {
+  try {
+    const clientId = parseInt(req.body?.client_id);
+    const ids = [...new Set((req.body?.ids || []).filter(id => /^MLA\d+$/.test(id)))].slice(0, 5000);
+    if (!clientId) return res.status(400).json({ error: 'client_id requerido' });
+    if (req.user.role === 'cliente' && parseInt(req.user.client_id) !== clientId)
+      return res.status(403).json({ error: 'Sin acceso' });
+    if (!ids.length) return res.json({ familias: {} });
+
+    const out = {};
+    const { rows } = await pool.query(
+      `SELECT item_id, family_id, family_name FROM item_familias
+        WHERE client_id = $1 AND item_id = ANY($2) AND updated_at > NOW() - INTERVAL '30 days'`,
+      [clientId, ids]);
+    rows.forEach(r => { out[r.item_id] = { fid: r.family_id, nombre: r.family_name }; });
+
+    const faltan = ids.filter(id => !out[id]);
+    if (faltan.length) {
+      const token = await getClientToken(clientId);
+      if (!token) return res.json({ familias: out, parcial: true });
+      const headers = { Authorization: `Bearer ${token}` };
+      const lotes = [];
+      for (let i = 0; i < faltan.length; i += 20) lotes.push(faltan.slice(i, i + 20));
+      const nuevos = [];
+      // Multiget de a 20, 4 lotes en paralelo: 80 publicaciones por vuelta.
+      for (let i = 0; i < lotes.length; i += 4) {
+        await Promise.all(lotes.slice(i, i + 4).map(async lote => {
+          const r = await getJsonML(`${ML_API}/items?ids=${lote.join(',')}&attributes=id,family_id,family_name`, headers).catch(() => null);
+          if (!Array.isArray(r)) return;
+          r.forEach(x => {
+            const b = x && x.code === 200 ? x.body : null;
+            if (!b || !b.id) return;
+            const fid = b.family_id != null ? String(b.family_id) : null;
+            out[b.id] = { fid, nombre: b.family_name || null };
+            nuevos.push([b.id, fid, b.family_name || null]);
+          });
+        }));
+      }
+      if (nuevos.length) {
+        await pool.query(
+          `INSERT INTO item_familias (client_id, item_id, family_id, family_name, updated_at)
+           SELECT $1, t.item_id, t.family_id, t.family_name, NOW()
+             FROM UNNEST($2::text[], $3::text[], $4::text[]) AS t(item_id, family_id, family_name)
+           ON CONFLICT (client_id, item_id) DO UPDATE
+             SET family_id = EXCLUDED.family_id, family_name = EXCLUDED.family_name, updated_at = NOW()`,
+          [clientId, nuevos.map(n => n[0]), nuevos.map(n => n[1]), nuevos.map(n => n[2])]);
+      }
+    }
+    res.json({ familias: out });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
