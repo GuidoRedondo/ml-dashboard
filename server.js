@@ -5398,8 +5398,8 @@ async function nombresCategorias(ids, headers) {
 // cuando entra un usuario cliente, la app llegaba a lanzarlo 3-4 veces a la vez. Cada pedido
 // son cientos de llamadas a ML: en paralelo ML devuelve 429, los reintentos se apilan y la
 // pantalla quedaba "cargando" para siempre (Tandil SL, 1/10/2026). Los pedidos iguales que
-// llegan juntos comparten una sola corrida, y el resultado se reusa unos minutos.
-const ITEMS_FULL_TTL_MS = 5 * 60 * 1000;
+// llegan juntos comparten una sola corrida, y el resultado se reusa 15 minutos.
+const ITEMS_FULL_TTL_MS = 15 * 60 * 1000;
 const _itemsFullVuelo = new Map();   // clave -> promesa en curso
 const _itemsFullCache = new Map();   // clave -> { at, body }
 
@@ -5484,17 +5484,20 @@ async function calcItemsFull(query) {
     }
 
     // ── 2. ALL items (active + inactive) ────────────────────────────────────
+    // Con scan: la paginación por offset corta en 1000 y en Tandil SL (1472 activas)
+    // dejaba 412 publicaciones afuera sin avisar.
     async function fetchAllItems(status) {
-      const base = `${ML_API}/users/${uid}/items/search?status=${status}&limit=100`;
-      const first = await fetch(base, { headers }).then(r => r.json());
-      const total = (first.paging && first.paging.total) || 0;
-      let ids = first.results || [];
-      if (total > 100) {
-        const pages = Math.min(Math.ceil(total / 100), 20);
-        for (let p = 1; p < pages; p++) {
-          const r = await fetch(`${base}&offset=${p*100}`, { headers }).then(r => r.json()).catch(() => ({}));
-          ids = ids.concat(r.results || []);
-        }
+      const ids = [];
+      let scrollId = null;
+      for (let guard = 0; guard < 300; guard++) {   // tope de seguridad: 30.000 ítems
+        const url = `${ML_API}/users/${uid}/items/search?search_type=scan&status=${status}&limit=100`
+          + (scrollId ? `&scroll_id=${encodeURIComponent(scrollId)}` : '');
+        const r = await fetch(url, { headers }).then(r => r.json()).catch(() => ({}));
+        const results = r.results || [];
+        if (r.scroll_id) scrollId = r.scroll_id;
+        if (!results.length) break;
+        ids.push(...results);
+        if (!scrollId) break;
       }
       return ids;
     }
@@ -5514,30 +5517,27 @@ async function calcItemsFull(query) {
 
     console.log(`[ITEMS] active=${activeIds.length} paused=${pausedIds.length} inactive=${inactiveIds.length} total_unique=${allIds.length} active_unique=${Object.values(statusMap).filter(s=>s==='active').length}`);
 
-    // ── 3. Fetch item details in batches of 20 ──────────────────────────────
+    // ── 3. Fetch item details in batches of 20 (ML no acepta más ids por llamada) ──
+    // De a 4 lotes en paralelo: uno por vez eran ~120 idas y vueltas en una cuenta de 2400.
     const itemDetailsMap = {};
-    for (let i = 0; i < allIds.length; i += 20) {
-      const batch = allIds.slice(i, i+20);
-      try {
-        const data = await fetch(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,title,price,status,sub_status,available_quantity,listing_type_id,category_id,shipping,pictures,condition,catalog_listing,catalog_product_id,sale_terms,video_id,health,seller_custom_field,attributes,variations,user_product_id,inventory_id,last_updated&include_attributes=all`, { headers }).then(r => r.json());
-        (Array.isArray(data) ? data : []).forEach(r => {
-          if (r.code === 200 && r.body) itemDetailsMap[r.body.id] = r.body;
-        });
-      } catch(e) {}
-    }
-
-    // ── 4. Fetch problems for ALL items (batches of 20) ─────────────────────
-    const problemsMap = {};
-    for (let i = 0; i < allIds.length; i += 20) {
-      const batch = allIds.slice(i, i+20);
-      await Promise.all(batch.map(async id => {
+    const lotes = [];
+    for (let i = 0; i < allIds.length; i += 20) lotes.push(allIds.slice(i, i+20));
+    for (let i = 0; i < lotes.length; i += 4) {
+      await Promise.all(lotes.slice(i, i+4).map(async batch => {
         try {
-          const data = await fetch(`${ML_API}/items/${id}/problems`, { headers }).then(r => r.json());
-          const problems = Array.isArray(data) ? data : (data.results || []);
-          if (problems.length > 0) problemsMap[id] = problems;
+          const data = await getJsonML(`${ML_API}/items?ids=${batch.join(',')}&attributes=id,title,price,status,sub_status,available_quantity,listing_type_id,category_id,shipping,pictures,condition,catalog_listing,catalog_product_id,sale_terms,video_id,health,seller_custom_field,attributes,variations,user_product_id,inventory_id,last_updated&include_attributes=all`, headers);
+          (Array.isArray(data) ? data : []).forEach(r => {
+            if (r.code === 200 && r.body) itemDetailsMap[r.body.id] = r.body;
+          });
         } catch(e) {}
       }));
     }
+
+    // ── 4. Problemas por publicación ─────────────────────────────────────────
+    // /items/{id}/problems devuelve 404 "resource not found" para todas (verificado 1/10/2026
+    // en Tandil SL): eran ~2000 llamadas que no traían nada y se comían más de un minuto.
+    // El mapa queda vacío para no romper la forma de la respuesta.
+    const problemsMap = {};
 
     const soldItemIds = Object.keys(salesByItem);
     const totalRevenue = Object.values(salesByItem).reduce((s, i) => s + i.revenue, 0);
@@ -5592,9 +5592,11 @@ async function calcItemsFull(query) {
     }
     console.log(`[ADS] Found ${Object.keys(adsByItem).length} items with ads out of ${allIds.length} total`);
 
-    // ── 6. Visits (todos los ítems, con y sin ventas) ───────────────────────
+    // ── 6. Visits (activas, con y sin ventas, + las que vendieron) ───────────
+    // ML no deja pedir visitas de varios ítems juntos ("maximum amount of items to query is 1"):
+    // es una llamada por publicación. Las pausadas no se muestran en ML, así que no se piden.
     const visitsMap = {};
-    const allVisitIds = allIds.length > 0 ? allIds : soldItemIds;
+    const allVisitIds = [...new Set([...activeIds, ...soldItemIds])];
     for (let i = 0; i < allVisitIds.length; i += 20) {
       Object.assign(visitsMap, await fetchVisits(allVisitIds.slice(i, i+20), effectiveDays, headers));
     }
