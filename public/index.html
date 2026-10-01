@@ -5717,7 +5717,7 @@ async function loadPublicaciones() {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), PUBS_TIMEOUT_MS);
     try {
-      const res = await fetch(SERVER_URL + '/api/items-full?client_id=' + acc.id + dateParams + '&session_id=' + (getSession()||''),
+      const res = await fetch(SERVER_URL + '/api/items-full?client_id=' + acc.id + dateParams + '&sin_visitas=1&session_id=' + (getSession()||''),
         { signal: ctrl.signal, headers: { 'x-session-id': getSession() || '' } });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || ('error ' + res.status));
@@ -5912,6 +5912,7 @@ async function loadPublicaciones() {
       <label style="padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:#292929;color:#fff952;font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap" title="Excel con columnas MLA y SKU: pisa el SKU que devuelve ML">🏷️ Cargar SKU<input type="file" accept=".xlsx,.xls,.csv" onchange="importSkuManual(this)" style="display:none"></label>
       <button onclick="clearSkuManual()" title="Borrar el mapa de SKU manual" style="padding:8px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--muted);font-size:12px;cursor:pointer">🗑</button>
       <div id="pubCount" style="font-size:12px;color:var(--muted)">${allItems.length} publicaciones</div>
+      <div id="pubVisitasHint" style="font-size:11px;color:var(--muted)">⏳ cargando visitas…</div>
     </div>
     <div id="pvpHint" style="font-size:11px;color:var(--muted);margin:-6px 0 12px">${Object.keys(window._pvpMap||{}).length ? Object.keys(window._pvpMap).length + ' PVP cargados · Excel con columna MLA o SKU + columna PVP/precio sugerido' : 'Sin PVP cargados. Subí un Excel con una columna MLA o SKU y otra con el PVP (precio sugerido).'}</div>
     <div style="overflow-x:auto">
@@ -5945,6 +5946,37 @@ async function loadPublicaciones() {
         <tbody id="pubsBody">${buildPubRows(allItems, fmt, Math.max(1, Math.round((new Date(range2.date_to) - new Date(range2.date_from)) / (1000*60*60*24))))}</tbody>
       </table>
     </div>`;
+
+  cargarVisitasPubs(seq, connected, range2, fmt);
+}
+
+// Las visitas son una llamada a ML por publicación y ML limita fuerte: en cuentas grandes
+// (Tandil SL, 1472 activas) tardaban 4 minutos y la tabla entera esperaba. Ahora la tabla
+// sale sin ellas y esto rellena visitas y conversión cuando llegan (el server las cachea).
+async function cargarVisitasPubs(seq, connected, range, fmt) {
+  const hint = () => document.getElementById('pubVisitasHint');
+  let fallo = false;
+  await Promise.all(connected.map(async acc => {
+    const items = (window._pubsData || []).filter(i => i.cuenta === acc.name && (i.status === 'active' || i.units > 0));
+    if (!items.length) return;
+    const d = await apiCall('POST', '/api/items-full/visitas', {
+      client_id: acc.id, date_from: range.date_from, date_to: range.date_to, ids: items.map(i => i.id),
+    }).catch(() => null);
+    if (seq !== _pubsSeq) return;
+    if (!d?.map) { fallo = true; return; }
+    items.forEach(i => {
+      const v = d.map[i.id];
+      if (v == null) return;   // sin dato de ML: queda "—", no "0 visitas"
+      i.visits = v;
+      i.conversion = v > 0 ? parseFloat(((i.units / v) * 100).toFixed(1)) : 0;
+    });
+  }));
+  if (seq !== _pubsSeq) return;
+  const body = document.getElementById('pubsBody');
+  if (body) body.innerHTML = buildPubRows(window._pubsData, fmt, Math.max(1, Math.round((new Date(range.date_to) - new Date(range.date_from)) / 86400000)));
+  applyPubsFilter();
+  const h = hint();
+  if (h) h.textContent = fallo ? '⚠️ no se pudieron cargar las visitas' : '';
 }
 
 // Nombre legible de la campaña de cuotas que devuelve ML en sale_terms.

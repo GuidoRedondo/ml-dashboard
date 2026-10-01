@@ -762,6 +762,15 @@ async function initDB() {
       data       JSONB NOT NULL,
       fetched_at TIMESTAMP DEFAULT NOW()
     );
+    -- Visitas por publicación (últimos N días). ML las da de a una publicación y limita
+    -- fuerte: en Tandil SL (1472 activas) eran 250 s por carga. Se guardan unas horas.
+    CREATE TABLE IF NOT EXISTS visitas_items_cache (
+      client_id  INTEGER NOT NULL,
+      dias       INTEGER NOT NULL,
+      data       JSONB NOT NULL,
+      fetched_at TIMESTAMPTZ DEFAULT NOW(),
+      PRIMARY KEY (client_id, dias)
+    );
     -- Estado de segmento por publicación (1 fila por ítem) para detectar
     -- movimientos de segmento (dormida/naciente/negocio) en el tiempo.
     CREATE TABLE IF NOT EXISTS ciclo_vida_estado (
@@ -1946,6 +1955,37 @@ async function fetchVisits(itemIds, days, headers) {
     });
     return map;
   } catch(e) { return {}; }
+}
+
+// Visitas de varias publicaciones pasando por visitas_items_cache. Sólo se le piden a ML
+// las que no están en la caché vigente; dos pedidos de la misma cuenta y ventana se
+// esperan en vez de duplicar las llamadas (ML responde 429 enseguida).
+const VISITAS_CACHE_HORAS = 6;
+const _visitasVuelo = new Map();
+async function visitasItemsCacheadas(clientId, ids, dias, headers) {
+  const clave = clientId + '|' + dias;
+  while (_visitasVuelo.has(clave)) { try { await _visitasVuelo.get(clave); } catch(_) {} }
+  const vuelo = (async () => {
+    const { rows } = await pool.query(
+      `SELECT data, fetched_at > NOW() - INTERVAL '${VISITAS_CACHE_HORAS} hours' AS fresca
+         FROM visitas_items_cache WHERE client_id=$1 AND dias=$2`, [clientId, dias]);
+    const fresca = !!rows[0]?.fresca;
+    const previo = fresca ? rows[0].data : {};
+    const faltan = [...new Set(ids)].filter(id => !(id in previo));
+    if (!faltan.length) return previo;
+    const nuevos = {};
+    for (let i = 0; i < faltan.length; i += 20) Object.assign(nuevos, await fetchVisits(faltan.slice(i, i + 20), dias, headers));
+    const data = { ...previo, ...nuevos };
+    // Completar una caché vigente no la "rejuvenece": vence cuando vencía la original.
+    await pool.query(
+      `INSERT INTO visitas_items_cache (client_id, dias, data, fetched_at) VALUES ($1,$2,$3,NOW())
+       ON CONFLICT (client_id, dias) DO UPDATE SET data=$3,
+         fetched_at = CASE WHEN $4 THEN visitas_items_cache.fetched_at ELSE NOW() END`,
+      [clientId, dias, JSON.stringify(data), fresca]);
+    return data;
+  })();
+  _visitasVuelo.set(clave, vuelo);
+  try { return await vuelo; } finally { _visitasVuelo.delete(clave); }
 }
 
 async function fetchVisitsRange(itemIds, dateFrom, dateTo, headers) {
@@ -5405,7 +5445,7 @@ const _itemsFullCache = new Map();   // clave -> { at, body }
 
 app.get('/api/items-full', requireAuth, async (req, res) => {
   const q = req.query;
-  const clave = [parseInt(q.client_id), q.date_from || '', q.date_to || '', q.days || ''].join('|');
+  const clave = [parseInt(q.client_id), q.date_from || '', q.date_to || '', q.days || '', q.sin_visitas === '1' ? 'sv' : ''].join('|');
   const ahora = Date.now();
   for (const [k, v] of _itemsFullCache) if (ahora - v.at > ITEMS_FULL_TTL_MS) _itemsFullCache.delete(k);
   const hit = _itemsFullCache.get(clave);
@@ -5423,6 +5463,25 @@ app.get('/api/items-full', requireAuth, async (req, res) => {
   } catch(e) {
     res.status(e.status || 500).json({ error: e.message });
   }
+});
+
+// Visitas de las publicaciones que Publicaciones ya dibujó sin ellas. La ventana se calcula
+// igual que en items-full para que la conversión dé lo mismo que antes.
+app.post('/api/items-full/visitas', requireAuth, async (req, res) => {
+  try {
+    const { client_id, date_from, date_to, ids } = req.body || {};
+    const clientId = parseInt(client_id);
+    if (!clientId || !Array.isArray(ids)) return res.status(400).json({ error: 'client_id e ids requeridos' });
+    const dias = (date_from && date_to)
+      ? Math.max(1, Math.round((new Date(date_to + 'T23:59:59') - new Date(date_from + 'T00:00:00')) / 86400000))
+      : 30;
+    const token = await getClientToken(clientId);
+    if (!token) return res.status(403).json({ error: 'Cliente no conectado' });
+    const todas = await visitasItemsCacheadas(clientId, ids.slice(0, 5000), dias, { Authorization: `Bearer ${token}` });
+    const map = {};
+    ids.forEach(id => { if (id in todas) map[id] = todas[id]; });
+    res.json({ map, dias });
+  } catch(e) { console.error('[ITEMS-VISITAS]', e.message); res.status(500).json({ error: e.message }); }
 });
 
 async function calcItemsFull(query) {
@@ -5604,11 +5663,11 @@ async function calcItemsFull(query) {
     // ── 6. Visits (activas, con y sin ventas, + las que vendieron) ───────────
     // ML no deja pedir visitas de varios ítems juntos ("maximum amount of items to query is 1"):
     // es una llamada por publicación. Las pausadas no se muestran en ML, así que no se piden.
-    const visitsMap = {};
-    const allVisitIds = [...new Set([...activeIds, ...soldItemIds])];
-    for (let i = 0; i < allVisitIds.length; i += 20) {
-      Object.assign(visitsMap, await fetchVisits(allVisitIds.slice(i, i+20), effectiveDays, headers));
-    }
+    // Con sin_visitas=1 (Publicaciones) no se esperan: la tabla se dibuja ya y las pide
+    // aparte a /api/items-full/visitas.
+    const sinVisitas = req.query.sin_visitas === '1';
+    const visitsMap = sinVisitas ? {} : await visitasItemsCacheadas(clientId,
+      [...new Set([...activeIds, ...soldItemIds])], effectiveDays, headers);
 
     marca('visitas');
     // ── 6b. Clips — detectar via video_id en item detail (ya cargado en itemDetailsMap)
@@ -5741,6 +5800,7 @@ async function calcItemsFull(query) {
     console.log(`[ITEMS-FULL] client=${clientId} items=${items.length} tiempos=${JSON.stringify(tiempos)}`);
     return {
       items, total_revenue: totalRevenue, days: effectiveDays, summary, escaleras, tiempos,
+      visitas_pendientes: sinVisitas,
       // Para que la UI pueda avisar que el desglose no cubre todo el catálogo
       stock_ubicacion: {
         en_full: stockLoc.en_full, consultadas: stockLoc.consultadas,
