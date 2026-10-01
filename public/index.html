@@ -5688,27 +5688,39 @@ function exportFullSinStockExcel() {
   showToast('✅ Excel descargado');
 }
 
+// Cada carga de cuenta, cambio de fechas o entrada a la sección vuelve a llamar acá. Sólo
+// dibuja la última: una corrida vieja que termina tarde no pisa a la nueva.
+let _pubsSeq = 0;
+const PUBS_TIMEOUT_MS = 4 * 60 * 1000;
 async function loadPublicaciones() {
   const el = document.getElementById('publicacionesContent');
   if (!el) return;
+  const seq = ++_pubsSeq;
   const connected = state.accounts.filter(a => a.data);
   if (!connected.length) {
     el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:20px;text-align:center">Sincronizá primero para ver datos</div>';
     return;
   }
   await loadSeguimientoMap(); // esperar antes de renderizar las filas
+  if (seq !== _pubsSeq) return;
   const range2 = getDateRange();
   const dateParams = '&date_from=' + range2.date_from + '&date_to=' + range2.date_to;
   el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:20px;text-align:center">⏳ Cargando publicaciones... puede tardar 30-60 segundos</div>';
 
   let allItems = [];
   let allEscaleras = [];
+  let errores = [];
   let totalSummary = { total: 0, active: 0, inactive: 0, withSales: 0, withProblems: 0, fueraCatalogo: 0 };
 
   await Promise.all(connected.map(async acc => {
+    // Sin tope, si ML se traba la pantalla quedaba en "Cargando..." para siempre.
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), PUBS_TIMEOUT_MS);
     try {
-      const res = await fetch(SERVER_URL + '/api/items-full?client_id=' + acc.id + dateParams + '&session_id=' + (getSession()||''));
-      const data = await res.json();
+      const res = await fetch(SERVER_URL + '/api/items-full?client_id=' + acc.id + dateParams + '&session_id=' + (getSession()||''),
+        { signal: ctrl.signal, headers: { 'x-session-id': getSession() || '' } });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || ('error ' + res.status));
       (data.items || []).forEach(item => allItems.push({ ...item, cuenta: acc.name, color: acc.color, totalRevenue: data.total_revenue }));
       if (data.summary) {
         totalSummary.total        += data.summary.total;
@@ -5719,11 +5731,17 @@ async function loadPublicaciones() {
         totalSummary.fueraCatalogo += (data.summary.fueraCatalogo || 0);
       }
       (data.escaleras || []).forEach(e => allEscaleras.push({ ...e, cuenta: acc.name }));
-    } catch(e) { console.error('Pubs error:', e); }
+    } catch(e) {
+      console.error('Pubs error:', e);
+      errores.push(acc.name + ': ' + (e.name === 'AbortError' ? 'Mercado Libre tardó demasiado en responder' : e.message));
+    } finally { clearTimeout(timer); }
   }));
+  if (seq !== _pubsSeq) return;
 
   if (!allItems.length) {
-    el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:20px;text-align:center">No hay datos para mostrar</div>';
+    el.innerHTML = errores.length
+      ? `<div style="color:var(--muted);font-size:13px;padding:20px;text-align:center">⚠️ No se pudieron cargar las publicaciones.<br><span style="font-size:12px">${errores.map(escapeHtmlOpin).join('<br>')}</span><br><button class="sync-btn" style="margin-top:12px" onclick="loadPublicaciones()">⟳ Reintentar</button></div>`
+      : '<div style="color:var(--muted);font-size:13px;padding:20px;text-align:center">No hay datos para mostrar</div>';
     return;
   }
 
@@ -5757,6 +5775,7 @@ async function loadPublicaciones() {
       if (d?.map) Object.assign(window._promoPriceMap, d.map);
     } catch(_){}
   }));
+  if (seq !== _pubsSeq) return;
   const _promoM = window._promoPriceMap || {};
 
   const _pvpM = window._pvpMap || {};
@@ -14426,15 +14445,13 @@ function initApp() {
       localStorage.setItem('ml_permissions', JSON.stringify(me.permissions));
     }
     if (me?.client_id) {
+      const antes = parseInt(getCookie('ml_session_client')) || 0;
       setCookie('ml_session_client', me.client_id, 7);
-      // Para clientes: forzar limpieza y auto-selección correcta
-      const role = getSessionRole();
-      if (role === 'cliente') {
-        state.accounts = [];
-        _escData = null;
-        activeClientId = me.client_id;
-        loadDashboardData();
-      }
+      // La cuenta del cliente la carga una sola vía: renderClientSelector (corre al llegar
+      // /api/clients). Antes esto también llamaba a loadDashboardData y, según qué respuesta
+      // llegaba primero, la cuenta se cargaba dos veces (y Publicaciones quedaba "cargando"
+      // con dos corridas pesadas en paralelo) o no se cargaba nunca.
+      if (getSessionRole() === 'cliente' && antes !== me.client_id && allClients.length) renderClientSelector();
     }
     applyPermissions();
   });

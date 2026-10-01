@@ -5394,11 +5394,43 @@ async function nombresCategorias(ids, headers) {
   return out;
 }
 
+// Publicaciones, Stock, Ciclo de vida y Performance piden /api/items-full por su cuenta y,
+// cuando entra un usuario cliente, la app llegaba a lanzarlo 3-4 veces a la vez. Cada pedido
+// son cientos de llamadas a ML: en paralelo ML devuelve 429, los reintentos se apilan y la
+// pantalla quedaba "cargando" para siempre (Tandil SL, 1/10/2026). Los pedidos iguales que
+// llegan juntos comparten una sola corrida, y el resultado se reusa unos minutos.
+const ITEMS_FULL_TTL_MS = 5 * 60 * 1000;
+const _itemsFullVuelo = new Map();   // clave -> promesa en curso
+const _itemsFullCache = new Map();   // clave -> { at, body }
+
 app.get('/api/items-full', requireAuth, async (req, res) => {
+  const q = req.query;
+  const clave = [parseInt(q.client_id), q.date_from || '', q.date_to || '', q.days || ''].join('|');
+  const ahora = Date.now();
+  for (const [k, v] of _itemsFullCache) if (ahora - v.at > ITEMS_FULL_TTL_MS) _itemsFullCache.delete(k);
+  const hit = _itemsFullCache.get(clave);
+  if (hit && q.refresh !== '1') return res.json(hit.body);
+
+  let vuelo = _itemsFullVuelo.get(clave);
+  if (!vuelo) {
+    vuelo = calcItemsFull(q)
+      .then(body => { _itemsFullCache.set(clave, { at: Date.now(), body }); return body; })
+      .finally(() => _itemsFullVuelo.delete(clave));
+    _itemsFullVuelo.set(clave, vuelo);
+  }
+  try {
+    res.json(await vuelo);
+  } catch(e) {
+    res.status(e.status || 500).json({ error: e.message });
+  }
+});
+
+async function calcItemsFull(query) {
+  const req = { query };
   try {
     const clientId = parseInt(req.query.client_id);
     const token = await getClientToken(clientId);
-    if (!token) return res.status(403).json({ error: 'Cliente no conectado' });
+    if (!token) throw Object.assign(new Error('Cliente no conectado'), { status: 403 });
 
     const headers = { 'Authorization': `Bearer ${token}` };
     const h1 = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'Api-Version': '1' };
@@ -5693,16 +5725,19 @@ app.get('/api/items-full', requireAuth, async (req, res) => {
 
     const escaleras = armarEscaleras(items);
 
-    res.json({
+    return {
       items, total_revenue: totalRevenue, days: effectiveDays, summary, escaleras,
       // Para que la UI pueda avisar que el desglose no cubre todo el catálogo
       stock_ubicacion: {
         en_full: stockLoc.en_full, consultadas: stockLoc.consultadas,
         truncado: stockLoc.truncado, error: stockLoc.error || null,
       },
-    });
-  } catch(e) { console.error('[ITEMS-FULL ERROR]', e.message, e.stack); res.status(500).json({ error: e.message }); }
-});
+    };
+  } catch(e) {
+    if (!e.status) console.error('[ITEMS-FULL ERROR]', e.message, e.stack);
+    throw e;
+  }
+}
 
 // ── DIAGNÓSTICO MENSUAL ───────────────────────────────────────────────────────
 
