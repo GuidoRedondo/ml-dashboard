@@ -491,6 +491,9 @@ async function initDB() {
       -- no es lo mismo un catálogo de bajo ticket que uno de alto.
       ALTER TABLE clients ADD COLUMN IF NOT EXISTS piso_cm_promo_pct DECIMAL(5,2) DEFAULT 10.00;
       UPDATE clients SET piso_cm_promo_pct = 10.00 WHERE piso_cm_promo_pct IS NULL;
+      -- Cuentas sin CMV (LT Repuestos): en vez de un piso de CM, un descuento máximo por
+      -- rango de precio. { modo: 'cm'|'topes', rangos: [{ hasta, max_pct }] }
+      ALTER TABLE clients ADD COLUMN IF NOT EXISTS promo_topes JSONB;
       ALTER TABLE clients ADD COLUMN IF NOT EXISTS condicion_iva VARCHAR(30) DEFAULT 'responsable_inscripto';
       UPDATE clients SET condicion_iva = 'responsable_inscripto' WHERE condicion_iva IS NULL;
       -- Alícuota de IVA por producto (10.5 / 21 / 27 / etc). El producto factura y compra
@@ -1152,7 +1155,7 @@ app.get('/api/clients', requireAuth, async (req, res) => {
     if (req.user.role === 'cliente' && req.user.client_id) {
       // Cliente solo ve su propia cuenta
       query = `SELECT id, name, ml_user_id, site_id, active, token_expires_at, updated_at,
-               roas_target, tasa_iibb_pct, condicion_iva, publi_activa, tipo_cuenta, piso_cm_promo_pct,
+               roas_target, tasa_iibb_pct, condicion_iva, publi_activa, tipo_cuenta, piso_cm_promo_pct, promo_topes,
                (refresh_token IS NOT NULL AND refresh_token != '') AS has_refresh_token
                FROM clients WHERE id = $1`;
       params = [req.user.client_id];
@@ -1161,7 +1164,7 @@ app.get('/api/clients', requireAuth, async (req, res) => {
       // sobre cuentas activas, así nadie pierde tiempo en una cuenta que no está vigente.
       const soloClientes = req.user.role === 'admin' ? '' : `WHERE tipo_cuenta = 'cliente'`;
       query = `SELECT id, name, ml_user_id, site_id, active, token_expires_at, updated_at,
-               roas_target, tasa_iibb_pct, condicion_iva, publi_activa, tipo_cuenta, piso_cm_promo_pct,
+               roas_target, tasa_iibb_pct, condicion_iva, publi_activa, tipo_cuenta, piso_cm_promo_pct, promo_topes,
                (refresh_token IS NOT NULL AND refresh_token != '') AS has_refresh_token
                FROM clients ${soloClientes} ORDER BY name`;
     }
@@ -13429,6 +13432,24 @@ async function obtenerCandidatosPromo(clientId, { refresh = false } = {}) {
 // dependencia de uploads: un archivo de 1200 filas pesa ~250 KB (330 KB en base64) y el
 // límite global del server es 10 MB, así que entra holgado. Es una acción manual, no un
 // flujo caliente.
+// Rangos de tope de descuento por precio: se limpian y ordenan; el último queda sin
+// techo (hasta null) para que ninguna publicación caiga fuera. null si no hay ninguno válido.
+function normalizarRangosPromo(rangos) {
+  if (!Array.isArray(rangos)) return null;
+  const out = rangos
+    .map(r => ({
+      hasta: r && r.hasta !== '' && r.hasta != null ? parseFloat(r.hasta) : null,
+      max_pct: parseFloat(r && r.max_pct),
+    }))
+    .filter(r => !isNaN(r.max_pct) && r.max_pct >= 0 && r.max_pct <= 80 && (r.hasta == null || r.hasta > 0));
+  if (!out.length) return null;
+  const conTecho = out.filter(r => r.hasta != null).sort((a, b) => a.hasta - b.hasta);
+  const sinTecho = out.find(r => r.hasta == null);
+  const res = conTecho.filter((r, i) => i === 0 || r.hasta !== conTecho[i - 1].hasta);
+  res.push(sinTecho || { hasta: null, max_pct: res[res.length - 1].max_pct });
+  return res;
+}
+
 app.post('/api/promociones/preparar-excel', requireAuth, async (req, res) => {
   try {
     const { client_id, archivo, nombre, piso_pct } = req.body || {};
@@ -13436,7 +13457,7 @@ app.post('/api/promociones/preparar-excel', requireAuth, async (req, res) => {
     if (!clientId || !archivo) return res.status(400).json({ error: 'Faltan client_id o archivo' });
 
     const cRes = await pool.query(
-      'SELECT name, tasa_iibb_pct, condicion_iva, piso_cm_promo_pct FROM clients WHERE id=$1', [clientId]);
+      'SELECT name, tasa_iibb_pct, condicion_iva, piso_cm_promo_pct, promo_topes FROM clients WHERE id=$1', [clientId]);
     if (!cRes.rows.length) return res.status(404).json({ error: 'Cliente no encontrado' });
     const cli = cRes.rows[0];
     const tasaIibb   = parseFloat(cli.tasa_iibb_pct) || 0;
@@ -13478,6 +13499,32 @@ app.post('/api/promociones/preparar-excel', requireAuth, async (req, res) => {
           });
         }
       } catch (_) { /* si el chequeo falla se sigue: no vale frenar por eso */ }
+    }
+
+    // Modo tope por rango de precio: para cuentas sin CMV. No hace falta costo ni comisión,
+    // la regla es cuánto descuento se banca según lo que vale la publicación.
+    const cfgTopes = cli.promo_topes || {};
+    const modo = req.body.modo || cfgTopes.modo || 'cm';
+    if (modo === 'topes') {
+      const rangos = normalizarRangosPromo(req.body.rangos || cfgTopes.rangos);
+      if (!rangos) return res.status(400).json({ error: 'Configurá al menos un rango de precio con su descuento máximo' });
+      const r = await prepararExcelPromos(buffer, { rangos });
+      const detalle = r.detalle.map(d => ({
+        item_id: d.item_id, titulo: String(d.titulo || '').slice(0, 70), sku: d.sku || '',
+        estado: d.estado, motivo: d.motivo, accion: d.accion_escrita || null,
+        precio_original: d.precio_original ?? null,
+        precio_ml: d.precio_ml ?? d.precio ?? null, precio_final: d.precio ?? null,
+        descuento: d.descuento ?? null, descuento_ml_real: d.descuento_ml_real ?? null,
+        tope_pct: d.tope_pct ?? null,
+      }));
+      console.log(`[PROMO EXCEL] cliente=${cli.name} modo=topes archivo="${nombre || 's/n'}" filas=${r.resumen.total} ` +
+                  `aplicar=${r.resumen.aplicar} no=${r.resumen.no_aplicar} ajustadas=${r.resumen.ajustadas}`);
+      return res.json({
+        ok: true, modo: 'topes', cliente: cli.name, campania: r.campania || '',
+        rangos, resumen: r.resumen, detalle,
+        archivo: r.buffer.toString('base64'),
+        nombre: (nombre || 'promociones.xlsx').replace(/.xlsx$/i, '') + '_preparado.xlsx',
+      });
     }
 
     // Costos del cliente
@@ -13618,6 +13665,23 @@ app.post('/api/promociones/preparar-excel', requireAuth, async (req, res) => {
     console.error('[PROMO EXCEL]', e);
     res.status(500).json({ error: e.message });
   }
+});
+
+// Modo del preparador y topes de descuento por rango de precio (cuentas sin CMV).
+app.put('/api/clients/:id/promo-topes', requireAuth, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin' && req.user.role !== 'colaborador') {
+      return res.status(403).json({ error: 'Sin permiso' });
+    }
+    const modo = req.body?.modo === 'topes' ? 'topes' : 'cm';
+    const rangos = normalizarRangosPromo(req.body?.rangos);
+    if (modo === 'topes' && !rangos) {
+      return res.status(400).json({ error: 'Cada rango necesita un descuento máximo entre 0 y 80%' });
+    }
+    const valor = { modo, rangos: rangos || [] };
+    await pool.query('UPDATE clients SET promo_topes=$1 WHERE id=$2', [JSON.stringify(valor), parseInt(req.params.id)]);
+    res.json({ ok: true, promo_topes: valor });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // Piso de contribución marginal por cliente, el que usa el preparador del Excel.

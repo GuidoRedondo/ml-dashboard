@@ -340,6 +340,66 @@ function decidirFila(f, margenA, pisoPct) {
            margen_pct: mProp.margen_pct };
 }
 
+// ── Decisión por tope de descuento según rango de precio ────────────────────
+// Para cuentas sin CMV: no se puede medir margen, así que la regla es comercial —
+// hasta cuánto se banca descontar según lo que vale la publicación. El rango se elige
+// por el precio ORIGINAL (el de lista, antes del descuento), que es el que el usuario
+// reconoce como "esta publicación vale tanto".
+// rangos: [{ hasta, max_pct }] ordenados de menor a mayor; hasta null = sin techo.
+function topeParaPrecio(precio, rangos) {
+  for (const r of rangos) {
+    if (r.hasta == null || precio <= r.hasta) return r;
+  }
+  return null;
+}
+
+function decidirFilaTopes(f, rangos) {
+  const P0 = f.precio_original;
+  const propuesto = f.precio_final_ml != null ? f.precio_final_ml
+                  : (P0 != null && f.descuento_ml != null ? P0 * (1 - f.descuento_ml / 100) : null);
+  if (propuesto == null || P0 == null || P0 <= 0) {
+    return { accion: null, motivo: 'La fila no trae precio: se deja como vino', estado: 'sin_precio' };
+  }
+  const $ = n => '$' + Math.round(n).toLocaleString('es-AR');
+  const rango = topeParaPrecio(P0, rangos);
+  if (!rango) {
+    return { accion: 'no', estado: 'supera_tope', motivo: `${$(P0)} no cae en ningún rango configurado` };
+  }
+  const tope = rango.max_pct;
+  // Mismo criterio que con CM: manda el precio, no la columna de descuento (no siempre coinciden).
+  const descReal = +((1 - propuesto / P0) * 100).toFixed(1);
+  const base = { tope_pct: tope, descuento_ml_real: descReal };
+
+  const cofinanciada = (f.meli_pct != null && f.meli_pct > 0)
+                    || (f.meli_amount != null && f.meli_amount > 0)
+                    || (f.seller_pct != null && f.descuento_ml != null && f.seller_pct < f.descuento_ml - 0.01);
+  if (cofinanciada) {
+    // Lo que se compara contra el tope es la parte que pone el vendedor: lo que pone ML
+    // no le sale de su bolsillo. Y no se ajusta el precio: movería el aporte de ML.
+    const delVendedor = f.seller_pct != null ? f.seller_pct
+      : (f.meli_pct != null ? Math.max(0, descReal - f.meli_pct) : descReal);
+    if (delVendedor <= tope + 0.01) {
+      return { ...base, accion: 'si', estado: 'ok_como_viene', precio: propuesto, descuento: f.descuento_ml,
+               motivo: `Descuento ${descReal}%, vos ponés ${+delVendedor.toFixed(1)}% (tope ${tope}%) y el resto ML` };
+    }
+    return { ...base, accion: 'no', estado: 'supera_tope_cofinanciada',
+             motivo: `Vos ponés ${+delVendedor.toFixed(1)}% y el tope es ${tope}%. ML co-financia: no se toca el precio` };
+  }
+
+  if (descReal <= tope + 0.01) {
+    return { ...base, accion: 'si', estado: 'ok_como_viene', precio: propuesto, descuento: f.descuento_ml,
+             motivo: `Descuento ${descReal}% dentro del tope de ${tope}%` };
+  }
+  const d = Math.floor(Math.min(tope, DESC_MAX_ML));
+  if (d < DESC_MIN_ML) {
+    return { ...base, accion: 'no', estado: 'supera_tope',
+             motivo: `ML pide ${descReal}% y el tope de este rango es ${tope}% (ML no acepta menos de ${DESC_MIN_ML}%)` };
+  }
+  const precio = Math.round(P0 * (1 - d / 100) * 100) / 100;
+  return { ...base, accion: 'si', estado: 'ajustado', descuento: d, precio, precio_ml: propuesto,
+           motivo: `ML proponía ${descReal}% (${$(propuesto)}): se baja al tope de ${d}% → ${$(precio)}` };
+}
+
 // Texto exacto que hay que escribir en ACTION. No es el mismo en todas las filas:
 // depende de la lista desplegable que ML puso en esa celda.
 function textoAccion(f, si) {
@@ -357,7 +417,8 @@ function textoAccion(f, si) {
 
 // ── Punto de entrada ─────────────────────────────────────────────────────────
 // margenA(item_id, precio) -> { margen_pesos, margen_pct } | null
-async function prepararExcelPromos(buffer, { margenA, pisoPct = 10 }) {
+// Con `rangos` (modo tope por precio) no se usa margenA: no hace falta CMV.
+async function prepararExcelPromos(buffer, { margenA, pisoPct = 10, rangos = null }) {
   const doc = await leerExcelPromos(buffer);
   const { celdas, colDe } = doc;
 
@@ -371,7 +432,7 @@ async function prepararExcelPromos(buffer, { margenA, pisoPct = 10 }) {
   const ediciones = [];
 
   for (const f of doc.filas) {
-    const d = decidirFila(f, margenA, pisoPct);
+    const d = rangos ? decidirFilaTopes(f, rangos) : decidirFila(f, margenA, pisoPct);
 
     if (d.accion === null) { resumen.sin_precio++; resumen.intactas++; detalle.push({ ...f, ...d }); continue; }
 
@@ -424,4 +485,4 @@ async function prepararExcelPromos(buffer, { margenA, pisoPct = 10 }) {
   return { buffer: salida, resumen, detalle, campania: doc.campania, celdas_escritas: ediciones.length };
 }
 
-module.exports = { prepararExcelPromos, leerExcelPromos, decidirFila, textoAccion };
+module.exports = { prepararExcelPromos, leerExcelPromos, decidirFila, decidirFilaTopes, topeParaPrecio, textoAccion };

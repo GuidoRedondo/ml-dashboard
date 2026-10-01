@@ -1432,12 +1432,29 @@ tr.fam-hijo > td { background: rgba(99,102,241,.025); }
         <div class="kpi-card" style="padding:18px;margin-bottom:16px;border-left:3px solid #16a34a">
           <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px">
             <div class="kpi-label" style="flex:1">📄 PREPARAR EL EXCEL DE CARGA MASIVA</div>
-            <div style="display:flex;align-items:center;gap:6px">
+            <select id="promoModo" onchange="cambiarModoPromo()" title="Cómo decide qué entra: por margen (necesita CMV) o por un descuento máximo según el precio"
+              style="padding:4px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:12px">
+              <option value="cm">Decidir por piso de CM</option>
+              <option value="topes">Decidir por tope de descuento según precio (sin CMV)</option>
+            </select>
+            <div id="promoPisoWrap" style="display:flex;align-items:center;gap:6px">
               <span style="font-size:11px;color:var(--muted)">Piso de CM</span>
               <input id="promoPiso" type="number" min="0" max="90" step="1" value="10"
                 onchange="guardarPisoCm()" title="Debajo de este margen la publicación no entra a la campaña"
                 style="width:64px;padding:4px 6px;border-radius:6px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:12px;text-align:right">
               <span style="font-size:11px;color:var(--muted)">%</span>
+            </div>
+          </div>
+          <div id="promoTopesBox" style="display:none;margin-bottom:12px;padding:12px;background:var(--surface2);border:1px solid var(--border);border-radius:10px">
+            <div style="font-size:12px;color:var(--muted);margin-bottom:8px;line-height:1.5">
+              Descuento máximo que se banca la cuenta según el <strong>precio de lista</strong> de la publicación.
+              Si ML pide más, se baja al tope; si el tope es menor a 5% (mínimo de ML), queda afuera.
+              En las co-financiadas se mira sólo la parte que pone el vendedor.
+            </div>
+            <div id="promoTopesRangos"></div>
+            <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
+              <button class="sync-btn" onclick="agregarRangoPromo()">+ Rango</button>
+              <button class="sync-btn" onclick="guardarTopesPromo()" style="background:#16a34a;color:#fff;border:none">💾 Guardar topes</button>
             </div>
           </div>
           <div style="font-size:12px;color:var(--muted);margin-bottom:12px;line-height:1.6">
@@ -23187,7 +23204,7 @@ function switchPromoTab(tab) {
   if (prep) prep.style.display = 'none';
   if (tab === 'quemeter') {
     que.style.display = ''; bQ.style.background = on;
-    if (prep) { prep.style.display = ''; sincronizarPisoCm(); }
+    if (prep) { prep.style.display = ''; sincronizarPisoCm(); sincronizarTopesPromo(); }
     if (!_promoCand) loadPromoCandidatos(false);
   } else if (tab === 'rendimiento') {
     ren.style.display = ''; bR.style.background = on;
@@ -23691,6 +23708,92 @@ async function guardarPisoCm() {
   }
 }
 
+// ── Modo "tope de descuento por rango de precio" (cuentas sin CMV) ──────────
+let _promoRangos = [];
+const PROMO_RANGOS_DEFAULT = [
+  { hasta: 15000, max_pct: 10 }, { hasta: 50000, max_pct: 15 }, { hasta: null, max_pct: 20 },
+];
+
+function sincronizarTopesPromo() {
+  const cli = getActiveClient();
+  const cfg = (cli && cli.promo_topes) || {};
+  const sel = document.getElementById('promoModo');
+  if (sel) sel.value = cfg.modo === 'topes' ? 'topes' : 'cm';
+  _promoRangos = (cfg.rangos && cfg.rangos.length ? cfg.rangos : PROMO_RANGOS_DEFAULT).map(r => ({ ...r }));
+  pintarModoPromo();
+}
+
+function pintarModoPromo() {
+  const modo = document.getElementById('promoModo')?.value || 'cm';
+  const box = document.getElementById('promoTopesBox');
+  const piso = document.getElementById('promoPisoWrap');
+  if (box) box.style.display = modo === 'topes' ? '' : 'none';
+  if (piso) piso.style.display = modo === 'topes' ? 'none' : 'flex';
+  if (modo === 'topes') renderRangosPromo();
+}
+
+function cambiarModoPromo() {
+  pintarModoPromo();
+  guardarTopesPromo(true);
+}
+
+function rangosPromoParaEnviar() {
+  return _promoRangos.map((r, i) => ({ hasta: i === _promoRangos.length - 1 ? null : r.hasta, max_pct: r.max_pct }));
+}
+
+function renderRangosPromo() {
+  const cont = document.getElementById('promoTopesRangos');
+  if (!cont) return;
+  const inp = 'padding:4px 6px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:12px;text-align:right';
+  const fmt = n => '$' + Math.round(n).toLocaleString('es-AR');
+  cont.innerHTML = _promoRangos.map((r, i) => {
+    const desde = i === 0 ? 0 : (_promoRangos[i - 1].hasta || 0);
+    const ultimo = i === _promoRangos.length - 1;
+    return `<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;font-size:12px;flex-wrap:wrap">
+      <span style="min-width:110px;color:var(--muted)">${i === 0 ? (ultimo ? 'Todos los precios' : 'Hasta') : (ultimo ? 'Más de ' + fmt(desde) : 'De ' + fmt(desde) + ' a')}</span>
+      ${ultimo ? '' : `$ <input type="number" min="1" step="100" value="${r.hasta ?? ''}" onchange="_promoRangos[${i}].hasta=parseFloat(this.value)||null;renderRangosPromo()" style="width:100px;${inp}">`}
+      <span style="color:var(--muted)">→ descuento máx.</span>
+      <input type="number" min="0" max="80" step="1" value="${r.max_pct}" onchange="_promoRangos[${i}].max_pct=parseFloat(this.value)||0" style="width:56px;${inp}"> %
+      ${_promoRangos.length > 1 ? `<button class="sync-btn" style="padding:2px 8px" onclick="quitarRangoPromo(${i})" title="Quitar rango">✕</button>` : ''}
+    </div>`;
+  }).join('');
+}
+
+function agregarRangoPromo() {
+  // Se inserta antes del último (el "en adelante"), con techo por encima del anterior.
+  const n = _promoRangos.length;
+  const previo = n >= 2 ? (_promoRangos[n - 2].hasta || 0) : 0;
+  _promoRangos.splice(n - 1, 0, { hasta: previo ? previo * 2 : 20000, max_pct: _promoRangos[n - 1]?.max_pct ?? 10 });
+  renderRangosPromo();
+}
+
+function quitarRangoPromo(i) {
+  _promoRangos.splice(i, 1);
+  if (_promoRangos.length) _promoRangos[_promoRangos.length - 1].hasta = null;
+  renderRangosPromo();
+}
+
+async function guardarTopesPromo(silencioso) {
+  const cli = getActiveClient();
+  if (!cli) return;
+  const modo = document.getElementById('promoModo')?.value || 'cm';
+  const rangos = rangosPromoParaEnviar();
+  for (let i = 1; i < rangos.length - 1; i++) {
+    if (rangos[i].hasta <= rangos[i - 1].hasta) {
+      showToast('Los techos de los rangos tienen que ir de menor a mayor'); return;
+    }
+  }
+  try {
+    const r = await apiCall('PUT', `/api/clients/${cli.id}/promo-topes`, { modo, rangos });
+    cli.promo_topes = r.promo_topes;   // para que no haya que recargar la lista de clientes
+    if (r.promo_topes.rangos.length) _promoRangos = r.promo_topes.rangos.map(x => ({ ...x }));
+    if (modo === 'topes') renderRangosPromo();
+    if (!silencioso) showToast(`✅ Topes de ${cli.name} guardados`);
+  } catch (e) {
+    showToast('No se pudo guardar: ' + e.message);
+  }
+}
+
 async function prepararExcelPromo() {
   const input  = document.getElementById('promoArchivo');
   const estado = document.getElementById('promoPrepararEstado');
@@ -23717,9 +23820,11 @@ async function prepararExcelPromo() {
     });
 
     const piso = parseFloat(document.getElementById('promoPiso')?.value);
+    const modo = document.getElementById('promoModo')?.value || 'cm';
     const r = await apiCall('POST', '/api/promociones/preparar-excel', {
       client_id: cli.id, archivo: base64, nombre: file.name,
       piso_pct: isNaN(piso) ? null : piso,
+      modo, rangos: modo === 'topes' ? rangosPromoParaEnviar() : undefined,
     });
 
     _promoPrepArchivo = { nombre: r.nombre, base64: r.archivo };
@@ -23753,11 +23858,69 @@ const PREP_ESTADOS = {
   no_llega_cofinanciada: { icono: '⛔', label: 'No llega (la banca ML)', color: '#dc2626' },
   sin_cmv:               { icono: '❓', label: 'Sin CMV cargado',        color: '#f59e0b' },
   sin_precio:            { icono: '—',  label: 'Sin precio en el archivo', color: 'var(--muted)' },
+  supera_tope:           { icono: '⛔', label: 'Supera el tope',         color: '#dc2626' },
+  supera_tope_cofinanciada: { icono: '⛔', label: 'Supera el tope (co-financiada)', color: '#dc2626' },
 };
+
+function renderPrepararResultadoTopes(r, cont) {
+  const s = r.resumen;
+  const m = n => '$' + Math.round(n || 0).toLocaleString('es-AR');
+  const tarjeta = (val, txt, color) => `
+    <div style="flex:1;min-width:120px;padding:10px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:10px">
+      <div style="font-size:22px;font-weight:700;color:${color};font-family:var(--font-b)">${val}</div>
+      <div style="font-size:11px;color:var(--muted);margin-top:2px">${txt}</div>
+    </div>`;
+  const rangosTxt = (r.rangos || []).map((x, i, a) =>
+    (x.hasta == null ? (i ? 'más de ' + m(a[i - 1].hasta) : 'todo') : 'hasta ' + m(x.hasta)) + ' → ' + x.max_pct + '%').join(' · ');
+  const orden = { ajustado: 0, ok_como_viene: 1, supera_tope: 2, supera_tope_cofinanciada: 3, sin_precio: 4 };
+  const th = t => `<th style="padding:6px 8px;text-align:left;font-size:11px;color:var(--muted)">${t}</th>`;
+  const td = (v, st = '') => `<td style="padding:6px 8px;font-size:11px;${st}">${v}</td>`;
+  const filas = (r.detalle || []).slice()
+    .sort((a, b) => (orden[a.estado] ?? 9) - (orden[b.estado] ?? 9))
+    .slice(0, 400)
+    .map(d => {
+      const e = PREP_ESTADOS[d.estado] || { icono: '', label: d.estado, color: 'var(--muted)' };
+      const ajust = d.estado === 'ajustado';
+      return `<tr style="border-bottom:1px solid var(--border)" title="${(d.motivo || '').replace(/"/g, '&quot;')}">
+        ${td(`${e.icono} ${e.label}`, `white-space:nowrap;color:${e.color};font-weight:600`)}
+        ${td(`<a href="https://articulo.mercadolibre.com.ar/${String(d.item_id).replace('MLA','MLA-')}" target="_blank" style="color:var(--accent);text-decoration:none">${d.item_id}</a>`, 'white-space:nowrap')}
+        ${td(d.titulo || '')}
+        ${td(d.precio_original != null ? m(d.precio_original) : '—', 'white-space:nowrap')}
+        ${td(d.descuento_ml_real != null ? d.descuento_ml_real + '%' : '—', 'white-space:nowrap')}
+        ${td(d.tope_pct != null ? d.tope_pct + '%' : '—', 'white-space:nowrap;color:var(--muted)')}
+        ${td(ajust ? m(d.precio_final) + ` <span style="font-size:10px;color:var(--muted)">-${d.descuento}%</span>` : (d.estado === 'ok_como_viene' ? m(d.precio_ml) : '—'), `white-space:nowrap;font-weight:${ajust ? 700 : 400};color:${ajust ? '#0ea5e9' : 'inherit'}`)}
+        ${td(d.accion || '—', 'white-space:nowrap;font-weight:600')}
+      </tr>`;
+    }).join('');
+  cont.innerHTML = `
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
+      ${tarjeta(s.aplicar, 'entran a la campaña', '#16a34a')}
+      ${tarjeta(s.ajustadas, 'entran con el descuento bajado al tope', '#0ea5e9')}
+      ${tarjeta(s.no_aplicar, 'quedan afuera', '#dc2626')}
+    </div>
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px">
+      <button onclick="descargarExcelPreparado()" class="sync-btn" style="background:#16a34a;color:#fff;border:none;padding:8px 16px">
+        📥 Descargar el Excel para subir a ML</button>
+      <span style="font-size:11px;color:var(--muted)">
+        ${r.campania ? `Campaña <strong>${r.campania}</strong> · ` : ''}topes: ${rangosTxt} · cliente ${r.cliente}
+      </span>
+    </div>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:10px;line-height:1.6">
+      Sin CMV esto <strong>no mide margen</strong>: sólo respeta el descuento máximo que definiste por rango de precio.
+      Al subirlo, revisá <strong>Observaciones y errores</strong> de ML: en campañas por tramos puede rechazar un descuento menor al del tramo.
+    </div>
+    ${filas ? `<div style="overflow-x:auto;max-height:520px;overflow-y:auto"><table style="width:100%;border-collapse:collapse">
+      <thead><tr style="border-bottom:2px solid var(--border);position:sticky;top:0;background:var(--surface)">
+        ${th('Qué pasa')}${th('MLA')}${th('Publicación')}${th('Precio lista')}${th('Desc. ML')}${th('Tope')}${th('Precio final')}${th('Se escribe')}
+      </tr></thead><tbody>${filas}</tbody></table>
+      ${(r.detalle || []).length > 400 ? `<div style="font-size:11px;color:var(--muted);padding:8px">Se listan 400 de ${r.detalle.length}. El archivo las lleva todas.</div>` : ''}
+      </div>` : ''}`;
+}
 
 function renderPrepararResultado(r) {
   const cont = document.getElementById('promoPrepararResultado');
   if (!cont) return;
+  if (r.modo === 'topes') return renderPrepararResultadoTopes(r, cont);
   const s = r.resumen;
   const m = n => '$' + Math.round(n || 0).toLocaleString('es-AR');
 
