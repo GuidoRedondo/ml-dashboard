@@ -5427,6 +5427,9 @@ app.get('/api/items-full', requireAuth, async (req, res) => {
 
 async function calcItemsFull(query) {
   const req = { query };
+  // Cuánto tarda cada etapa: viaja en la respuesta y al log, para saber qué la frena.
+  const tiempos = {}; let _t = Date.now();
+  const marca = n => { const a = Date.now(); tiempos[n] = +((a - _t) / 1000).toFixed(1); _t = a; };
   try {
     const clientId = parseInt(req.query.client_id);
     const token = await getClientToken(clientId);
@@ -5468,6 +5471,7 @@ async function calcItemsFull(query) {
       });
     });
 
+    marca('ventas');
     // ── 1b. Ventas últimos 30 días fijos (para tarjeta "Activas sin ventas") ─
     const cutoff30 = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
     const soldLast30 = new Set();
@@ -5483,6 +5487,7 @@ async function calcItemsFull(query) {
       o30.forEach(order => (order.order_items || []).forEach(oi => { if (oi.item?.id) soldLast30.add(oi.item.id); }));
     }
 
+    marca('ventas_30d');
     // ── 2. ALL items (active + inactive) ────────────────────────────────────
     // Con scan: la paginación por offset corta en 1000 y en Tandil SL (1472 activas)
     // dejaba 412 publicaciones afuera sin avisar.
@@ -5517,6 +5522,7 @@ async function calcItemsFull(query) {
 
     console.log(`[ITEMS] active=${activeIds.length} paused=${pausedIds.length} inactive=${inactiveIds.length} total_unique=${allIds.length} active_unique=${Object.values(statusMap).filter(s=>s==='active').length}`);
 
+    marca('listado');
     // ── 3. Fetch item details in batches of 20 (ML no acepta más ids por llamada) ──
     // De a 4 lotes en paralelo: uno por vez eran ~120 idas y vueltas en una cuenta de 2400.
     const itemDetailsMap = {};
@@ -5533,6 +5539,7 @@ async function calcItemsFull(query) {
       }));
     }
 
+    marca('detalle');
     // ── 4. Problemas por publicación ─────────────────────────────────────────
     // /items/{id}/problems devuelve 404 "resource not found" para todas (verificado 1/10/2026
     // en Tandil SL): eran ~2000 llamadas que no traían nada y se comían más de un minuto.
@@ -5559,6 +5566,7 @@ async function calcItemsFull(query) {
       console.error('[STOCK-UBICACION] falló, sigo sin desglose:', e.message);
     }
 
+    marca('stock_ubicacion');
     // ── 5. Ads data — ALL items ──────────────────────────────────────────────
     let advId = null;
     try {
@@ -5592,6 +5600,7 @@ async function calcItemsFull(query) {
     }
     console.log(`[ADS] Found ${Object.keys(adsByItem).length} items with ads out of ${allIds.length} total`);
 
+    marca('publicidad');
     // ── 6. Visits (activas, con y sin ventas, + las que vendieron) ───────────
     // ML no deja pedir visitas de varios ítems juntos ("maximum amount of items to query is 1"):
     // es una llamada por publicación. Las pausadas no se muestran en ML, así que no se piden.
@@ -5601,6 +5610,7 @@ async function calcItemsFull(query) {
       Object.assign(visitsMap, await fetchVisits(allVisitIds.slice(i, i+20), effectiveDays, headers));
     }
 
+    marca('visitas');
     // ── 6b. Clips — detectar via video_id en item detail (ya cargado en itemDetailsMap)
     // El endpoint /marketplace/items/$id/clips requiere app certificada (403)
     // Alternativa: el item detail incluye `video_id` si tiene clip/video
@@ -5727,8 +5737,10 @@ async function calcItemsFull(query) {
 
     const escaleras = armarEscaleras(items);
 
+    marca('armado');
+    console.log(`[ITEMS-FULL] client=${clientId} items=${items.length} tiempos=${JSON.stringify(tiempos)}`);
     return {
-      items, total_revenue: totalRevenue, days: effectiveDays, summary, escaleras,
+      items, total_revenue: totalRevenue, days: effectiveDays, summary, escaleras, tiempos,
       // Para que la UI pueda avisar que el desglose no cubre todo el catálogo
       stock_ubicacion: {
         en_full: stockLoc.en_full, consultadas: stockLoc.consultadas,
