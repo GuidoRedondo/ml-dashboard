@@ -6563,6 +6563,9 @@ function renderFormasPago(d) {
     barRow(m.key, m.ordenes, m.monto, '#8ea2ff')).join('');
 
   el.innerHTML = `
+    ${renderPlanPublicacion(d)}
+
+    <div class="kpi-label" style="margin:4px 0 10px">🧾 CÓMO PAGÓ EL COMPRADOR</div>
     <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px">
       ${kpi('💰','FACTURACIÓN', _fpMoney(d.total_monto), '#00e676', d.total_ordenes.toLocaleString('es-AR') + ' órdenes')}
       ${kpi('💳','% EN CUOTAS ($)', d.pct_monto_cuotas + '%', '#22d3ee', _fpMoney(d.monto_cuotas) + ' pagado en cuotas')}
@@ -6616,6 +6619,82 @@ function renderFormasPago(d) {
   renderFormasPagoItems('');
 }
 
+// Ventas según el plan de cuotas que tenía la PUBLICACIÓN (no según cómo pagó el
+// comprador). El plan sale de lo que ML cobra por ofrecer cuotas (CVFN en la factura,
+// o sale_fee contra la comisión pura cuando la venta todavía no se facturó).
+function _fpPlanColor(g) {
+  if (g.con_cuotas == null) return '#9aa0a6';
+  if (!g.con_cuotas) return '#34e89e';
+  return g.tipo === 'premium' ? '#ffb84d' : '#5ea9ff';
+}
+function renderPlanPublicacion(d) {
+  const r = d.plan_resumen;
+  const grupos = d.por_plan_publicacion || [];
+  if (!r || !grupos.length) return '';
+  const num = n => Math.round(n || 0).toLocaleString('es-AR');
+
+  const card = (label, x, color, sub) => `
+    <div class="kpi-card" style="border-top:3px solid ${color};padding:16px">
+      <div class="kpi-label" style="margin-bottom:6px">${label}</div>
+      <div style="font-size:22px;font-weight:800;color:${color};font-family:var(--font-b)">${x.pct_monto}%<span style="font-size:12px;color:var(--muted);font-weight:600"> de la facturación</span></div>
+      <div style="font-size:12px;color:var(--text);margin-top:4px">${_fpMoney(x.monto)} · ${num(x.unidades)} u (${x.pct_unidades}% de las unidades)</div>
+      ${sub ? `<div style="font-size:11px;color:var(--muted);margin-top:4px">${sub}</div>` : ''}
+    </div>`;
+
+  const filas = grupos.map(g => {
+    const color = _fpPlanColor(g);
+    const cuotas = g.cuotas_sin_interes_max
+      ? `hasta ${g.cuotas_sin_interes_max} cuotas s/interés usadas`
+      : (g.con_cuotas ? '<span style="color:var(--muted)">sin ventas en cuotas s/interés</span>' : '—');
+    return `<tr style="border-bottom:1px solid rgba(255,255,255,.05)">
+      <td style="padding:8px"><span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:${color};margin-right:7px"></span>${g.label}</td>
+      <td style="padding:8px;text-align:right">${num(g.publicaciones)}</td>
+      <td style="padding:8px;text-align:right">${num(g.ordenes)}</td>
+      <td style="padding:8px;text-align:right">${num(g.unidades)} <span style="color:var(--muted);font-size:10px">${g.pct_unidades}%</span></td>
+      <td style="padding:8px;text-align:right;font-weight:700">${_fpMoney(g.monto)}</td>
+      <td style="padding:8px;text-align:right;font-weight:700;color:${color}">${g.pct_monto}%</td>
+      <td style="padding:8px;font-size:11px">${cuotas}</td>
+    </tr>`;
+  }).join('');
+
+  const f = r.fuentes || {};
+  const totLineas = (f.factura || 0) + (f.estimado || 0) + (f.heredado || 0) + (f.sin_dato || 0);
+  const fuenteTxt = `Plan leído de la factura de ML en ${num(f.factura)} de ${num(totLineas)} ventas`
+    + (f.estimado ? `, estimado por comisión en ${num(f.estimado)}` : '')
+    + (f.heredado ? `, tomado de otras ventas de la misma publicación en ${num(f.heredado)}` : '')
+    + (f.sin_dato ? `, <b>sin dato en ${num(f.sin_dato)}</b>` : '') + '.';
+
+  return `
+    <div class="kpi-card" style="padding:18px;margin-bottom:22px">
+      <div class="kpi-label" style="margin-bottom:4px">🏷️ VENTAS SEGÚN LA PUBLICACIÓN — ¿la publicación ofrecía cuotas?</div>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:14px">
+        Qué plan tenía la publicación al momento de la venta, sin importar cómo terminó pagando el comprador.
+        El recargo es lo que ML cobra por ofrecer cuotas sin interés en una Clásica (cargo CVFN de la factura), sobre el precio.
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(${r.sin_dato.monto > 0 ? 3 : 2},1fr);gap:12px;margin-bottom:16px">
+        ${card('💳 EN PUBLICACIONES CON CUOTAS', r.con_cuotas, '#5ea9ff', 'Premium + Clásicas con cuotas sin interés')}
+        ${card('1️⃣ EN PUBLICACIONES SIN CUOTAS', r.sin_cuotas, '#34e89e', 'Clásicas sin plan de cuotas')}
+        ${r.sin_dato.monto > 0 ? card('❔ SIN VERIFICAR', r.sin_dato, '#9aa0a6', 'Clásicas que todavía no llegaron a la factura') : ''}
+      </div>
+      <div style="overflow-x:auto;border-radius:8px;border:1px solid var(--border)">
+        <table style="width:100%;border-collapse:collapse;font-size:12px">
+          <thead><tr style="background:var(--surface2);color:var(--muted)">
+            <th style="text-align:left;padding:8px">Tipo de publicación</th>
+            <th style="text-align:right;padding:8px">Publ.</th>
+            <th style="text-align:right;padding:8px">Órdenes</th>
+            <th style="text-align:right;padding:8px">Unidades</th>
+            <th style="text-align:right;padding:8px">Facturación</th>
+            <th style="text-align:right;padding:8px">% $</th>
+            <th style="text-align:left;padding:8px">Cuotas</th>
+          </tr></thead>
+          <tbody>${filas}</tbody>
+        </table>
+      </div>
+      <div style="font-size:11px;color:var(--muted);margin-top:8px">${fuenteTxt}
+        "Hasta N cuotas" = la mayor cantidad de cuotas sin interés que usó un comprador en ese grupo (ML no expone el plan exacto de la publicación).</div>
+    </div>`;
+}
+
 // Estado de orden de la tabla por publicación
 window._fpItemSort = window._fpItemSort || { col: 'monto', asc: false };
 function sortFormasPagoItems(col) {
@@ -6660,6 +6739,11 @@ function renderFormasPagoItems(q) {
     `<th onclick="sortFormasPagoItems('${col}')" style="text-align:${align};padding:8px 8px;color:${s.col===col?'var(--text)':'var(--muted)'};font-weight:600;cursor:pointer;user-select:none;white-space:nowrap;position:sticky;top:0;background:var(--surface2)">${label}${arrow(col)}</th>`;
 
   const tipoPubBadge = it => {
+    if (it.plan_cuotas) {
+      const k = it.plan_key || '';
+      const color = k.endsWith('|sd') ? '#9aa0a6' : k.startsWith('premium') ? '#ffb84d' : /\|0$/.test(k) || k.startsWith('gratuita') ? '#34e89e' : '#5ea9ff';
+      return `<span style="font-size:10px;font-weight:700;color:${color};background:var(--surface2);padding:2px 7px;border-radius:5px;white-space:nowrap">${it.plan_cuotas}</span>`;
+    }
     if (it.es_premium) return '<span style="font-size:10px;font-weight:700;color:#ffb84d;background:rgba(255,184,77,.14);padding:2px 7px;border-radius:5px">Premium</span>';
     if (it.listing_type_id) return '<span style="font-size:10px;color:var(--muted);background:var(--surface2);padding:2px 7px;border-radius:5px">Clásica</span>';
     return '<span style="font-size:10px;color:var(--muted)">—</span>';
@@ -14262,6 +14346,12 @@ function exportFormasPagoExcel() {
     ['Órdenes en cuotas',        _xR(d.ordenes_cuotas)],
     ['Cuotas promedio',          _xD(d.promedio_cuotas)],
     ['Órdenes sin dato de pago', _xR(d.sin_dato)],
+    ['% $ en publicaciones con cuotas',  _xD(d.plan_resumen?.con_cuotas?.pct_monto)],
+    ['$ en publicaciones con cuotas',    _xR(d.plan_resumen?.con_cuotas?.monto)],
+    ['Unidades en publ. con cuotas',     _xR(d.plan_resumen?.con_cuotas?.unidades)],
+    ['% $ en publicaciones sin cuotas',  _xD(d.plan_resumen?.sin_cuotas?.pct_monto)],
+    ['$ en publicaciones sin cuotas',    _xR(d.plan_resumen?.sin_cuotas?.monto)],
+    ['Unidades en publ. sin cuotas',     _xR(d.plan_resumen?.sin_cuotas?.unidades)],
   ].map(([k, v]) => ({ 'Métrica': k, 'Valor': v }));
 
   const corte = (arr, label, fmtKey) => (arr || []).map(x => {
@@ -14278,6 +14368,7 @@ function exportFormasPagoExcel() {
     'MLA': it.mla_id,
     'Título': it.title || '',
     'Tipo de publicación': it.es_premium ? 'Premium' : (it.listing_type_id ? 'Clásica' : ''),
+    'Plan de cuotas': it.plan_cuotas || '',
     'Candidato a revisar': fpEsCandidato(it) ? 'Sí' : 'No',
     'Órdenes': _xR(it.ordenes),
     'Unidades': _xR(it.unidades),
@@ -14288,12 +14379,26 @@ function exportFormasPagoExcel() {
     '$ en cuotas': _xR(it.monto_cuotas),
   }));
 
+  const planes = (d.por_plan_publicacion || []).map(g => ({
+    'Tipo de publicación': g.label,
+    'Con cuotas': g.con_cuotas == null ? 'Sin verificar' : (g.con_cuotas ? 'Sí' : 'No'),
+    'Recargo cuotas %': g.recargo_pct == null ? '' : _xD(g.recargo_pct),
+    'Publicaciones': _xR(g.publicaciones),
+    'Órdenes': _xR(g.ordenes),
+    'Unidades': _xR(g.unidades),
+    '% unidades': _xD(g.pct_unidades),
+    'Facturación': _xR(g.monto),
+    '% facturación': _xD(g.pct_monto),
+    'Máx. cuotas s/interés usadas': g.cuotas_sin_interes_max || '',
+  }));
+
   _xlsxSave([
     { name: 'Resumen',         rows: resumen,                                          cols: [28, 22] },
+    { name: 'Por tipo de publ.', rows: planes,                                         cols: [44, 13, 15, 13, 11, 11, 12, 15, 14, 26] },
     { name: 'Por cuotas',      rows: corte(d.por_cuotas, 'Cuotas', _fpCuotasLabel),     cols: [24, 11, 15, 20] },
     { name: 'Por forma pago',  rows: corte(d.por_tipo, 'Forma de pago', _fpTipoLabel),  cols: [34, 11, 15, 20] },
     { name: 'Por medio pago',  rows: corte(d.por_metodo, 'Medio de pago'),              cols: [26, 11, 15, 20] },
-    { name: 'Por publicación', rows: items,                                            cols: [16, 46, 20, 20, 11, 11, 15, 17, 20, 16, 15] },
+    { name: 'Por publicación', rows: items,                                            cols: [16, 46, 20, 40, 20, 11, 11, 15, 17, 20, 16, 15] },
   ], _perfFileName('Formas_de_pago'));
 }
 

@@ -4816,6 +4816,188 @@ app.get('/api/facturacion-rango', requireAuth, async (req, res) => {
   }
 });
 
+// Qué plan de cuotas tenía la PUBLICACIÓN en cada venta — no cómo pagó el comprador.
+//
+// ML no expone `installments` del ítem para esta app, así que el plan se lee de lo
+// que ML cobra por él:
+//   1. La factura (billing_detalle): una venta con CVFN ("Costo por ofrecer cuotas")
+//      salió de una publicación con cuotas sin interés, y CVFN / monto de la línea es
+//      el recargo del plan. Si la venta ya está facturada (tiene su CVFV) y no tiene
+//      CVFN, la publicación no ofrecía cuotas: es un "no" confirmado, no un hueco.
+//      Se mira el cargo bruto: una devolución anula el CVFN pero el plan existía.
+//   2. Ventas que todavía no llegaron a la factura (las del día, las del período
+//      abierto): sale_fee de la orden contra la comisión pura de la categoría
+//      (meli_percentage_fee de listing_prices). Sólo arriba de $33.000, donde no hay
+//      cargo fijo — abajo el cargo fijo depende del peso y ensucia la resta.
+//   3. Lo que queda sin dato hereda el plan de las otras ventas de la misma publicación.
+// Las cuotas sin interés que usaron los compradores (pago sin recargo) dicen hasta
+// cuántas cuotas ofrecía el plan; sólo se miran en ventas que ya tienen plan, porque
+// una promo bancaria también da cuotas sin interés.
+async function planesCuotasPorPublicacion(clientId, lineas, headers) {
+  const out = { grupos: [], resumen: null, por_item: {} };
+  if (!lineas.length) return out;
+
+  // 1. Factura
+  const orderIds = [...new Set(lineas.map(l => l.order_id).filter(Boolean))];
+  const facturadas = new Set();
+  const cvfn = new Map();            // `${order}|${item}` (item vacío si la línea no lo trae) → $
+  try {
+    const r = await pool.query(`
+      SELECT order_id::text AS order_id, COALESCE(item_id,'') AS item_id, detail_sub_type AS sub,
+             SUM(CASE WHEN detail_type='BONUS' THEN 0 ELSE monto END) AS bruto
+        FROM billing_detalle
+       WHERE client_id=$1 AND order_id = ANY($2::bigint[]) AND detail_sub_type IN ('CVFV','CVFN')
+       GROUP BY 1,2,3`, [clientId, orderIds]);
+    r.rows.forEach(row => {
+      if (row.sub === 'CVFV') facturadas.add(row.order_id);
+      else {
+        const k = `${row.order_id}|${row.item_id}`;
+        cvfn.set(k, (cvfn.get(k) || 0) + Math.abs(parseFloat(row.bruto) || 0));
+      }
+    });
+  } catch (e) { console.error('[FORMAS-PAGO] billing:', e.message); }
+
+  // Un CVFN sin item_id en una orden de varios ítems se reparte por monto.
+  const montoOrden = {};
+  lineas.forEach(l => { montoOrden[l.order_id] = (montoOrden[l.order_id] || 0) + l.monto; });
+  const cvfnLinea = l => {
+    const exacto = cvfn.get(`${l.order_id}|${l.item_id}`) || 0;
+    const suelto = cvfn.get(`${l.order_id}|`) || 0;
+    const tot = montoOrden[l.order_id] || 0;
+    return exacto + (suelto && tot > 0 ? suelto * l.monto / tot : 0);
+  };
+
+  // 2. Comisión pura por categoría × tipo, sólo para lo que hace falta estimar.
+  const SIN_CARGO_FIJO = 33000;
+  const faltan = lineas.filter(l => !facturadas.has(String(l.order_id))
+    && l.unit_price >= SIN_CARGO_FIJO && l.category_id && l.listing_type && l.sale_fee_unit > 0);
+  const combos = [...new Map(faltan.map(l => [`${l.listing_type}|${l.category_id}`, l])).values()].slice(0, 40);
+  const pctPura = new Map();
+  for (let i = 0; i < combos.length; i += 5) {
+    await Promise.all(combos.slice(i, i + 5).map(async l => {
+      try {
+        const qs = new URLSearchParams({ price: Math.round(l.unit_price), currency_id: 'ARS',
+          listing_type_id: l.listing_type, category_id: l.category_id });
+        const d = await fetch(`${ML_API}/sites/MLA/listing_prices?${qs}`, { headers }).then(r => r.json());
+        const sfd = d?.sale_fee_details || {};
+        const pura = sfd.meli_percentage_fee != null ? parseFloat(sfd.meli_percentage_fee)
+          : sfd.percentage_fee != null ? parseFloat(sfd.percentage_fee) - (parseFloat(sfd.financing_add_on_fee) || 0)
+          : null;
+        if (pura != null && !isNaN(pura)) pctPura.set(`${l.listing_type}|${l.category_id}`, pura);
+      } catch (_) { /* sin dato: la línea hereda el plan de la publicación */ }
+    }));
+  }
+
+  lineas.forEach(l => {
+    if (facturadas.has(String(l.order_id))) {
+      l.recargo = l.monto > 0 ? cvfnLinea(l) / l.monto * 100 : 0;
+      l.fuente = 'factura';
+      return;
+    }
+    const pura = pctPura.get(`${l.listing_type}|${l.category_id}`);
+    if (l.unit_price >= SIN_CARGO_FIJO && pura != null && l.sale_fee_unit > 0) {
+      const extra = l.sale_fee_unit / l.unit_price * 100 - pura;
+      l.recargo = extra >= 1 ? extra : 0;
+      l.fuente = 'estimado';
+      return;
+    }
+    l.recargo = null;
+    l.fuente = null;
+  });
+
+  // 3. Herencia: mediana del recargo de la misma publicación y tipo.
+  const conocidos = {};
+  lineas.forEach(l => {
+    if (l.recargo == null) return;
+    const k = `${l.item_id}|${l.listing_type}`;
+    (conocidos[k] = conocidos[k] || []).push(l.recargo);
+  });
+  const mediana = arr => { const s = [...arr].sort((a, b) => a - b); const m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
+  lineas.forEach(l => {
+    if (l.recargo != null) return;
+    const arr = conocidos[`${l.item_id}|${l.listing_type}`];
+    if (arr && arr.length) { l.recargo = mediana(arr); l.fuente = 'heredado'; }
+  });
+
+  // Agrupar: tipo de publicación × recargo (redondeado a 0,5 punto: el mismo plan
+  // no siempre da el mismo decimal por redondeos de la factura).
+  const tipoDe = lt => ['gold_pro', 'gold_premium'].includes(lt) ? 'premium'
+    : lt === 'gold_special' ? 'clasica' : lt === 'free' ? 'gratuita' : (lt || 'otro');
+  const fmtPct = n => n.toLocaleString('es-AR', { maximumFractionDigits: 1 });
+  const grupos = {};
+  const totMonto = lineas.reduce((s, l) => s + l.monto, 0);
+  const totUnid  = lineas.reduce((s, l) => s + l.unidades, 0);
+  const fuentes = { factura: 0, estimado: 0, heredado: 0, sin_dato: 0 };
+  const itemGrupos = {};
+
+  lineas.forEach(l => {
+    fuentes[l.fuente || 'sin_dato'] += 1;
+    const tipo = tipoDe(l.listing_type);
+    const rec = l.recargo == null ? null : (l.recargo < 1 ? 0 : Math.round(l.recargo * 2) / 2);
+    const key = `${tipo}|${rec == null ? 'sd' : rec}`;
+    if (!grupos[key]) {
+      let label, conCuotas;
+      if (tipo === 'premium') {
+        conCuotas = true;
+        label = rec ? `Premium + recargo por cuotas ${fmtPct(rec)}%` : 'Premium (cuotas sin interés incluidas)';
+      } else if (tipo === 'clasica') {
+        conCuotas = rec == null ? null : rec > 0;
+        label = rec == null ? 'Clásica — cuotas sin verificar'
+          : rec > 0 ? `Clásica + cuotas sin interés (recargo ${fmtPct(rec)}%)` : 'Clásica sin cuotas';
+      } else if (tipo === 'gratuita') {
+        conCuotas = false; label = 'Gratuita';
+      } else {
+        conCuotas = rec == null ? null : rec > 0; label = tipo + (rec ? ` + recargo ${fmtPct(rec)}%` : '');
+      }
+      grupos[key] = { key, tipo, recargo_pct: rec, con_cuotas: conCuotas, label,
+        _ordenes: new Set(), _items: new Set(), unidades: 0, monto: 0, cuotas_max: 0, _cuotas: {} };
+    }
+    const g = grupos[key];
+    g._ordenes.add(l.order_id);
+    g._items.add(l.item_id);
+    g.unidades += l.unidades;
+    g.monto    += l.monto;
+    if (g.con_cuotas && l.cuotas_sin_interes > 1) {
+      g.cuotas_max = Math.max(g.cuotas_max, l.cuotas_sin_interes);
+      g._cuotas[l.cuotas_sin_interes] = (g._cuotas[l.cuotas_sin_interes] || 0) + 1;
+    }
+    const ig = (itemGrupos[l.item_id] = itemGrupos[l.item_id] || {});
+    ig[key] = (ig[key] || 0) + l.monto;
+  });
+
+  out.grupos = Object.values(grupos).map(g => ({
+    key: g.key, tipo: g.tipo, recargo_pct: g.recargo_pct, con_cuotas: g.con_cuotas, label: g.label,
+    ordenes: g._ordenes.size, publicaciones: g._items.size,
+    unidades: g.unidades, monto: Math.round(g.monto),
+    pct_monto: totMonto > 0 ? +(g.monto / totMonto * 100).toFixed(1) : 0,
+    pct_unidades: totUnid > 0 ? +(g.unidades / totUnid * 100).toFixed(1) : 0,
+    cuotas_sin_interes_max: g.cuotas_max || null,
+    cuotas_sin_interes_usadas: Object.entries(g._cuotas).map(([c, n]) => ({ cuotas: +c, ventas: n })).sort((a, b) => a.cuotas - b.cuotas),
+  })).sort((a, b) => b.monto - a.monto);
+
+  const suma = filtro => {
+    const gs = out.grupos.filter(filtro);
+    const monto = gs.reduce((s, g) => s + g.monto, 0), unidades = gs.reduce((s, g) => s + g.unidades, 0);
+    return { monto, unidades,
+      pct_monto: totMonto > 0 ? +(monto / totMonto * 100).toFixed(1) : 0,
+      pct_unidades: totUnid > 0 ? +(unidades / totUnid * 100).toFixed(1) : 0 };
+  };
+  out.resumen = {
+    total_monto: Math.round(totMonto), total_unidades: totUnid,
+    con_cuotas: suma(g => g.con_cuotas === true),
+    sin_cuotas: suma(g => g.con_cuotas === false),
+    sin_dato:   suma(g => g.con_cuotas == null),
+    fuentes,    // líneas de venta según de dónde salió el plan
+  };
+
+  // Plan de cada publicación = el grupo donde facturó más en el período.
+  Object.entries(itemGrupos).forEach(([id, m]) => {
+    const key = Object.entries(m).sort((a, b) => b[1] - a[1])[0][0];
+    out.por_item[id] = { key, label: grupos[key].label };
+  });
+  return out;
+}
+
 // GET /api/formas-pago — cómo pagó el comprador (forma de pago + cuotas), NO el
 // listing_type. Sale del array order.payments[] que ya trae cada orden:
 //   installments (cuotas elegidas), payment_type (credit/debit/account_money/ticket),
@@ -4849,6 +5031,7 @@ app.get('/api/formas-pago', requireAuth, async (req, res) => {
     let ordenesCuotas = 0, montoCuotas = 0;   // installments > 1
     let sinDato = 0;
     let sumaCuotasPonderada = 0;              // para promedio de cuotas (solo con dato)
+    const lineas = [];                        // una por order_item, para el corte por publicación
 
     orders.forEach(o => {
       const monto = (o.order_items || []).reduce(
@@ -4888,6 +5071,23 @@ app.get('/api/formas-pago', requireAuth, async (req, res) => {
         it.ordenes  += 1;
         it.unidades += (oi.quantity || 0);
         it.monto    += lineMonto;
+        // Sin interés para el comprador: pagó en cuotas y lo pagado es lo mismo que el
+        // monto de la operación. Sólo sirve para decir cuántas cuotas ofrecía la
+        // publicación — una promo bancaria también da cuotas sin interés, así que
+        // nunca alcanza por sí solo para decir que la publicación las ofrecía.
+        const ta = parseFloat(pmt?.transaction_amount) || 0;
+        const tp = parseFloat(pmt?.total_paid_amount) || 0;
+        const sinInteres = cuotas > 1 && ta > 0 && Math.abs(tp - ta) <= Math.max(1, ta * 0.005);
+        lineas.push({
+          order_id: o.id, item_id: id,
+          listing_type: oi.listing_type_id || '',
+          category_id: oi.item?.category_id || null,
+          unit_price: parseFloat(oi.unit_price) || 0,
+          unidades: oi.quantity || 0,
+          monto: lineMonto,
+          sale_fee_unit: parseFloat(oi.sale_fee) || 0,
+          cuotas_sin_interes: sinInteres ? cuotas : 0,
+        });
         if (cuotas != null) {
           it.con_dato    += 1;
           it.suma_cuotas += cuotas;
@@ -4923,10 +5123,15 @@ app.get('/api/formas-pago', requireAuth, async (req, res) => {
       } catch (_) { /* tipo de publicación es best-effort */ }
     }
 
+    const planes = await planesCuotasPorPublicacion(parseInt(client_id), lineas, headers);
+
     // Por publicación: % de su facturación pagada en cuotas + cuotas promedio + tipo pub.
     const porItemArr = Object.values(porItem).map(it => {
       const lt = ltMap[it.mla_id] || '';
+      const plan = planes.por_item[it.mla_id] || null;
       return {
+        plan_cuotas: plan ? plan.label : null,
+        plan_key: plan ? plan.key : null,
         mla_id: it.mla_id, title: it.title,
         listing_type_id: lt,
         es_premium: ['gold_pro', 'gold_premium'].includes(lt),
@@ -4955,6 +5160,8 @@ app.get('/api/formas-pago', requireAuth, async (req, res) => {
       por_tipo: toArr(porTipo),
       por_metodo: toArr(porMetodo),
       por_item: porItemArr,
+      por_plan_publicacion: planes.grupos,
+      plan_resumen: planes.resumen,
       generated_at: new Date().toISOString(),
     });
   } catch (e) {
