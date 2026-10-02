@@ -1630,7 +1630,15 @@ async function fetchShippingCosts(orders, headers) {
         mode = s.logistic_type || s.shipping_mode || 'Otro';
       }
 
-      costMap[batch[idx]] = { sellerCost, province, city, mode, buyerCost };
+      // Flex: /costs informa senders.cost en las ventas con envío gratis (Noveg, $8.091 en
+      // ventas de $33.000 o más), pero ML no lo factura: cruzado contra la factura de
+      // sep-2026, 0 de 40 envíos Flex tenían línea CXD/CFF, mientras Correo y FULL
+      // coincidían al peso (43 de 43). Restarlo contaba la entrega dos veces: este cargo
+      // teórico más el Flex manual del cadete. Se guarda aparte por si se quiere mostrar.
+      const sellerCostInformado = sellerCost;
+      const sellerCostReal = mode === 'FLEX' ? 0 : sellerCost;
+
+      costMap[batch[idx]] = { sellerCost: sellerCostReal, sellerCostInformado, province, city, mode, buyerCost };
     });
   }
   return costMap;
@@ -6344,8 +6352,12 @@ app.post('/api/diagnostico/calcular', requireAuth, async (req, res) => {
         const batch = finShipIds.slice(i, i+10);
         await Promise.all(batch.map(async sid => {
           try {
-            const costs = await fetch(`${ML_API}/shipments/${sid}/costs`, {headers}).then(r=>r.json());
-            const senderCost = parseFloat(costs.senders?.[0]?.cost) || 0;
+            const [costs, ship] = await Promise.all([
+              fetch(`${ML_API}/shipments/${sid}/costs`, {headers}).then(r=>r.json()),
+              fetch(`${ML_API}/shipments/${sid}`, {headers}).then(r=>r.json()).catch(()=>null),
+            ]);
+            // Flex: el costo que informa /costs no se factura (ver fetchShippingCosts).
+            const senderCost = ship?.logistic_type === 'self_service' ? 0 : (parseFloat(costs.senders?.[0]?.cost) || 0);
             sampledSender += senderCost; sampledOk++;
           } catch(e){}
         }));
@@ -14297,8 +14309,13 @@ app.get('/api/promociones/desglose', requireAuth, async (req, res) => {
           const shipId = o.shipping?.id;
           if (!shipId || seen.has(shipId)) continue;
           seen.add(shipId);
-          const costs = await fetch(`${ML_API}/shipments/${shipId}/costs`, { headers }).then(r => r.json()).catch(() => null);
-          const c = costs?.senders?.[0]?.cost ?? costs?.sender?.cost ?? null;
+          const [costs, ship] = await Promise.all([
+            fetch(`${ML_API}/shipments/${shipId}/costs`, { headers }).then(r => r.json()).catch(() => null),
+            fetch(`${ML_API}/shipments/${shipId}`, { headers }).then(r => r.json()).catch(() => null),
+          ]);
+          // Flex: el costo que informa /costs no se factura (ver fetchShippingCosts).
+          const c = ship?.logistic_type === 'self_service' ? 0
+                  : (costs?.senders?.[0]?.cost ?? costs?.sender?.cost ?? null);
           if (c != null) {
             const v = parseFloat(c);
             if (v > 0) { envioSeller = v; envioFuente = 'shipment real'; break; }
