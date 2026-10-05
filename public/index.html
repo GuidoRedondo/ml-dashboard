@@ -6608,6 +6608,7 @@ async function loadNoConcretadas(force) {
 }
 
 const _ncM = n => '$' + Math.round(n || 0).toLocaleString('es-AR');
+const _ncHoras = h => h < 1 ? Math.max(1, Math.round(h * 60)) + ' min' : h.toLocaleString('es-AR', { maximumFractionDigits: 1 }) + ' h';
 const _ncP = n => (n == null ? '—' : (+n).toLocaleString('es-AR', { maximumFractionDigits: 1 }) + '%');
 const _ncEsc = s => String(s ?? '').replace(/[<>&"]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' }[c]));
 const _NC_MOMENTO_COLOR = {
@@ -6648,14 +6649,24 @@ function renderNoConcretadas() {
   const kpis = `<div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:18px">
     ${kpi('No concretadas', _ncP(d.pct_ordenes), `${d.canceladas.toLocaleString('es-AR')} de ${d.ordenes.toLocaleString('es-AR')} órdenes${ant ? ` · mes anterior ${_ncP(ant.pct_ordenes)}` : ''}`, chip(d.pct_ordenes, ant?.pct_ordenes, true))}
     ${kpi('Plata que no entró', _ncM(d.monto_cancelado), `${_ncP(d.pct_monto)} de lo vendido en el mes${ant ? ` · mes anterior ${_ncM(ant.monto_cancelado)}` : ''}`, chip(d.monto_cancelado, ant?.monto_cancelado, false))}
-    ${kpi('Antes del despacho', antesDesp ? antesDesp.ordenes.toLocaleString('es-AR') : '0', antesDesp ? `${pctDe(antesDesp.ordenes).toFixed(0)}% de las caídas${d.horas_mediana_antes_despacho != null ? ` · a las ${d.horas_mediana_antes_despacho.toLocaleString('es-AR')} h de la compra (mediana)` : ''}` : 'ninguna se cayó antes de salir')}
+    ${kpi('Antes del despacho', antesDesp ? antesDesp.ordenes.toLocaleString('es-AR') : '0', antesDesp ? `${pctDe(antesDesp.ordenes).toFixed(0)}% de las caídas${d.horas_mediana_antes_despacho != null ? ` · la mitad se anula antes de los ${_ncHoras(d.horas_mediana_antes_despacho)}` : ''}` : 'ninguna se cayó antes de salir')}
     ${kpi('Bajan la reputación', d.afectan_reputacion.toLocaleString('es-AR'), d.afectan_reputacion ? 'canceladas por el vendedor' : 'ninguna la canceló el vendedor')}
   </div>`;
 
   // Lectura: dónde está el problema
   const lect = [];
-  if (antesDesp && pctDe(antesDesp.ordenes) >= 35)
-    lect.push(`<b>${pctDe(antesDesp.ordenes).toFixed(0)}% se cae antes de que salga el paquete</b>${d.horas_mediana_antes_despacho != null ? `, a las ${d.horas_mediana_antes_despacho.toLocaleString('es-AR')} h de la compra (mediana)` : ''}: el comprador se arrepiente o encuentra algo mejor mientras espera. La palanca es despachar más rápido (FULL, Flex, despacho en el día).`);
+  // La mediana dice qué tipo de arrepentimiento es: en REDFISHOK y AB Fitness (sep-2026) fue de
+  // 42 y 12 minutos — no es la espera del envío, es una compra que se deshace enseguida
+  const hMed = d.horas_mediana_antes_despacho;
+  if (antesDesp && pctDe(antesDesp.ordenes) >= 35) {
+    const base = `<b>${pctDe(antesDesp.ordenes).toFixed(0)}% se cae antes de que salga el paquete</b>`;
+    if (hMed != null && hMed < 3)
+      lect.push(`${base}, y la mitad se anula en menos de ${_ncHoras(hMed)} desde la compra. No es la espera del envío: es una compra que se deshace enseguida (eligió mal la variante, no entendió el precio final o las cuotas, encontró otra publicación). Lo que la baja es una publicación sin dudas: variantes, medidas y precio claros en las fotos y el título.`);
+    else if (hMed != null && hMed >= 12)
+      lect.push(`${base}, a las ${hMed.toLocaleString('es-AR')} h de la compra (mediana): el comprador se cansa de esperar. La palanca es despachar más rápido (FULL, Flex, despacho en el día).`);
+    else
+      lect.push(`${base}${hMed != null ? `, a las ${hMed.toLocaleString('es-AR')} h de la compra (mediana)` : ''}.`);
+  }
   if (entregada && pctDe(entregada.ordenes) >= 25)
     lect.push(`<b>${pctDe(entregada.ordenes).toFixed(0)}% se cae con el producto ya entregado</b>: son devoluciones por reclamo. Mirá los productos de abajo: lo que muestra la publicación no es lo que recibe el comprador (medidas, calidad, compatibilidad).`);
   const canalesComp = d.por_canal.filter(c => c.ordenes >= 30 && !['Sin dato', 'Sin envío'].includes(c.canal));
@@ -6716,7 +6727,7 @@ function renderNoConcretadas() {
   const det = d.canceladas_detalle || [];
   const detalle = det.length ? `<details style="${card};margin-bottom:18px"><summary style="cursor:pointer;font-size:13px;font-weight:800;font-family:var(--font-b)">📋 Las ${det.length} órdenes una por una</summary>
     <div style="overflow:auto;margin-top:12px;max-height:520px"><table style="width:100%;border-collapse:collapse">
-      <thead><tr>${_ncTh('Fecha')}${_ncTh('Orden')}${_ncTh('Producto')}${_ncTh('$', 'right')}${_ncTh('Motivo')}${_ncTh('Momento')}${_ncTh('Medio')}${_ncTh('Horas', 'right')}</tr></thead>
+      <thead><tr>${_ncTh('Fecha')}${_ncTh('Orden')}${_ncTh('Producto')}${_ncTh('$', 'right')}${_ncTh('Motivo')}${_ncTh('Momento')}${_ncTh('Medio')}${_ncTh('Se cayó a', 'right')}</tr></thead>
       <tbody>${det.slice(0, 500).map(r => `<tr>
         ${_ncTd(dART(r.fecha).toLocaleDateString('es-AR', { timeZone: ART_TZ, day: '2-digit', month: '2-digit' }))}
         ${_ncTd(`<a href="https://www.mercadolibre.com.ar/ventas/${r.order_id}/detalle" target="_blank" style="color:var(--accent);text-decoration:none;font-size:11.5px;white-space:nowrap">${r.order_id} ↗</a>`)}
@@ -6725,7 +6736,7 @@ function renderNoConcretadas() {
         ${_ncTd(_ncEsc(r.motivo) + (r.afecta_reputacion ? ' <span title="Baja la reputación" style="color:#dc2626;font-weight:800">●</span>' : ''))}
         ${_ncTd(_ncMomentoChip(r.momento))}
         ${_ncTd(_ncEsc(r.canal))}
-        ${_ncTd(r.horas != null ? r.horas.toLocaleString('es-AR') : '—', 'right')}
+        ${_ncTd(r.horas != null ? _ncHoras(r.horas) : '—', 'right', 'white-space:nowrap')}
       </tr>`).join('')}</tbody>
     </table>${det.length > 500 ? '<div style="font-size:11px;color:var(--muted);padding:8px">Se muestran las 500 de mayor monto.</div>' : ''}</div></details>` : '';
 
