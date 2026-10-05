@@ -6555,12 +6555,15 @@ app.post('/api/diagnostico/manuales', requireAuth, async (req, res) => {
     if (!client_id || !mes) return res.status(400).json({ error: 'Faltan parámetros' });
     const mesStr = `${mes.slice(0,7)}-01`;
 
-    // Upsert: si no existe el mes, lo crea con solo manuales
+    // Upsert: si no existe el mes, lo crea con solo manuales.
+    // Merge (||), nunca reemplazo: en manuales también viven el financiero, la logística
+    // y las preguntas que escribe /calcular; pisarlo entero los borraba.
     await pool.query(`
       INSERT INTO diagnostico_mensual (client_id, mes, manuales)
-      VALUES ($1, $2, $3)
-      ON CONFLICT (client_id, mes) DO UPDATE SET manuales = $3
-    `, [client_id, mesStr, JSON.stringify(manuales)]);
+      VALUES ($1, $2, $3::jsonb)
+      ON CONFLICT (client_id, mes) DO UPDATE
+        SET manuales = COALESCE(diagnostico_mensual.manuales, '{}'::jsonb) || $3::jsonb
+    `, [client_id, mesStr, JSON.stringify(manuales || {})]);
 
     res.json({ ok: true });
   } catch(e) { res.status(500).json({ error: e.message }); }

@@ -1390,24 +1390,8 @@ tr.fam-hijo > td { background: rgba(99,102,241,.025); }
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px;flex-wrap:wrap">
         <h2 style="margin:0;font-family:var(--font-b);flex:1">🩺 Diagnóstico</h2>
         <select id="diagClientSel" onchange="diagCargarDatos()" style="padding:6px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px"></select>
-        <select id="diagMesSel" style="padding:6px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px">
-          <option value="2025-01-01">Ene 2025</option>
-          <option value="2025-02-01">Feb 2025</option>
-          <option value="2025-03-01">Mar 2025</option>
-          <option value="2025-04-01">Abr 2025</option>
-          <option value="2025-05-01">May 2025</option>
-          <option value="2025-06-01">Jun 2025</option>
-          <option value="2025-07-01">Jul 2025</option>
-          <option value="2025-08-01">Ago 2025</option>
-          <option value="2025-09-01">Sep 2025</option>
-          <option value="2025-10-01">Oct 2025</option>
-          <option value="2025-11-01">Nov 2025</option>
-          <option value="2025-12-01">Dic 2025</option>
-          <option value="2026-01-01">Ene 2026</option>
-          <option value="2026-02-01">Feb 2026</option>
-          <option value="2026-03-01" selected>Mar 2026</option>
-        </select>
-        <button class="sync-btn" id="diagCalcBtn" onclick="diagCalcularTodo()" style="background:var(--accent);color:#fff;border:none">⚡ Calcular 3 meses</button>
+        <select id="diagMesSel" onchange="diagCargarDatos()" title="Último mes de la ventana de 3 meses" style="padding:6px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px"></select>
+        <button class="sync-btn" id="diagCalcBtn" onclick="diagCalcularTodo()" style="background:var(--accent);color:#292929;border:none;font-weight:700">⚡ Calcular 3 meses</button>
         <button class="sync-btn" id="diagPdfBtn" onclick="diagExportPDF()" style="background:#fff952;color:#292929;border:none;font-weight:700">📄 PDF</button>
       </div>
       <div id="diagContent"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Seleccioná un cliente y calculá el diagnóstico del mes</div></div>
@@ -15914,9 +15898,11 @@ async function loadAdsAnalysis(dateParam) {
 
 // ── DIAGNÓSTICO MENSUAL ───────────────────────────────────────────────────────
 
+// Ventana de 3 meses que termina en el mes elegido en #diagMesSel (1 = último mes cerrado)
 function diagGetLast3Months() {
+  const fin = parseInt(document.getElementById('diagMesSel')?.value) || 1;
   const months = [];
-  for (let i = 3; i >= 1; i--) {
+  for (let i = fin + 2; i >= fin; i--) {
     const mes = mesART(i);
     months.push({
       label: mes.label,
@@ -15949,7 +15935,24 @@ function initDiagnosticoMensual() {
       sel.appendChild(o);
     });
   }
+  const mesSel = document.getElementById('diagMesSel');
+  if (mesSel && !mesSel.options.length) {
+    for (let i = 1; i <= 12; i++) {
+      const o = document.createElement('option');
+      o.value = i;
+      o.textContent = mesART(i).label;
+      mesSel.appendChild(o);
+    }
+  }
   if (sel.value) diagCargarDatos();
+}
+
+// Mueve la ventana para que termine en el mes 'YYYY-MM' y recarga
+function diagIrAMes(ym) {
+  const mesSel = document.getElementById('diagMesSel');
+  if (!mesSel) return;
+  for (let i = 1; i <= 12; i++) if (mesART(i).val === ym) { mesSel.value = i; break; }
+  diagCargarDatos();
 }
 
 async function diagCargarDatos() {
@@ -15966,17 +15969,18 @@ async function diagCargarDatos() {
   }
 }
 
-async function diagCalcularTodo() {
+// soloMeses: lista de 'YYYY-MM-01' a calcular (el aviso de meses faltantes); sin ella, los 3 de la ventana
+async function diagCalcularTodo(soloMeses) {
   const clientId = document.getElementById('diagClientSel')?.value;
   if (!clientId) return;
   const btn = document.getElementById('diagCalcBtn');
-  btn.disabled = true; btn.textContent = '⏳ Calculando 3 meses...';
-  const meses = diagGetLast3Months();
+  const meses = diagGetLast3Months().filter(m => !Array.isArray(soloMeses) || soloMeses.includes(m.mes));
+  if (!meses.length) return;
+  btn.disabled = true; btn.textContent = `⏳ Calculando ${meses.length} ${meses.length===1?'mes':'meses'}...`;
   const el = document.getElementById('diagContent');
-  el.innerHTML = `<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">⏳ Calculando ${meses.map(m=>m.label).join(', ')}...<br><span style="font-size:11px;margin-top:8px;display:block">Esto puede tardar 1-2 minutos</span></div>`;
   try {
-    for (const mes of meses) {
-      el.innerHTML = `<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">⏳ Calculando ${mes.label}...</div>`;
+    for (const [i, mes] of meses.entries()) {
+      el.innerHTML = `<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">⏳ Calculando ${mes.label} (${i+1} de ${meses.length})...<br><span style="font-size:11px;margin-top:8px;display:block">Cada mes tarda entre 20 y 40 segundos</span></div>`;
       await apiCall('POST', '/api/diagnostico/calcular', { client_id: clientId, mes: mes.mes });
     }
     await diagCargarDatos();
@@ -15988,13 +15992,12 @@ async function diagCalcularTodo() {
 }
 
 async function diagGuardarManuales(clientId, mes) {
-  const get = id => document.getElementById(id)?.value || '';
-  const manuales = {
-    rep_resp_lv: get('dm_resp_lv'), rep_resp_noche: get('dm_resp_noche'), rep_resp_finde: get('dm_resp_finde'),
-    mkt_difusiones: get('dm_difusiones'),
-    mkt_notas: get('dm_mkt_notas'),
-    notas: get('dm_notas_generales'),
-  };
+  // Sólo los campos que existen en el formulario: el server mergea, lo que no se manda queda como está
+  const manuales = {};
+  [['dm_difusiones','mkt_difusiones'], ['dm_notas_generales','notas']].forEach(([id, k]) => {
+    const inp = document.getElementById(id);
+    if (inp) manuales[k] = inp.value || '';
+  });
   const btn = document.getElementById('diagSaveManBtn');
   if (btn) { btn.disabled = true; btn.textContent = '⏳ Guardando...'; }
   try {
@@ -16014,6 +16017,13 @@ const _diagFmt = {
   p: v => (v==null||v===''||isNaN(v))?'—':parseFloat(v).toFixed(1)+'%',
   x: v => (v==null||v===''||isNaN(v))?'—':parseFloat(v).toFixed(1)+'x',
 };
+// Eje de montos compacto: $45M, $1,5M, $800k
+function _diagEje(v) {
+  const a = Math.abs(v);
+  if (a >= 1e6) return '$' + (v/1e6).toLocaleString('es-AR', { maximumFractionDigits: a >= 1e7 ? 0 : 1 }) + 'M';
+  if (a >= 1e3) return '$' + Math.round(v/1e3) + 'k';
+  return '$' + v;
+}
 function _diagNum(v){ return (v==null||v===''||isNaN(v)) ? null : parseFloat(v); }
 // delta entre dos valores → {abs, pct, dir:'up'|'down'|'flat'} o null
 function diagDelta(prev, curr) {
@@ -16039,11 +16049,12 @@ function diagStory(cols) {
   const last = wd[wd.length-1], prev = wd.length>1 ? wd[wd.length-2] : null;
   const G = (c,k)=> (c&&c.data) ? (k.slice(0,2)==='m.'?(c.data.manuales||{})[k.slice(2)]:c.data[k]) : null;
   const dl = k => diagDelta(G(prev,k), G(last,k));
-  const mov = (k, hib=true) => {
+  // pl = sujeto en plural ("las visitas subieron")
+  const mov = (k, hib=true, pl=false) => {
     const d = dl(k);
-    if (!d || d.dir==='flat') return 'se mantuvo estable';
+    if (!d || d.dir==='flat') return pl ? 'se mantuvieron estables' : 'se mantuvo estable';
     const good = hib ? d.dir==='up' : d.dir==='down';
-    const verb = d.dir==='up' ? 'subió' : 'cayó';
+    const verb = d.dir==='up' ? (pl?'subieron':'subió') : (pl?'cayeron':'cayó');
     return `${verb} ${Math.abs(d.pct).toFixed(0)}% ${good?'✅':'🔻'}`;
   };
   const f = _diagFmt;
@@ -16076,7 +16087,10 @@ function diagStory(cols) {
     else if (vD.dir==='up'&&cD.dir==='up') demandaTake = 'Tráfico y conversión suben juntos: el combo ideal, hay que sostenerlo.';
     else if (vD.dir==='down'&&cD.dir==='down') demandaTake = 'Caen tráfico y conversión a la vez: señal de alerta, revisar posicionamiento y competitividad de precio.';
   }
-  const demanda = `Las visitas ${mov('visitas')}, la conversión ${mov('conversion')} y el ticket promedio ${mov('ticket_promedio')}.` + (demandaTake?` ${demandaTake}`:'');
+  // Sin mes anterior no hay movimiento que contar: se describe el mes
+  const demanda = prev
+    ? `Frente a ${prev.label}, las visitas ${mov('visitas',true,true)}, la conversión ${mov('conversion')} y el ticket promedio ${mov('ticket_promedio')}.` + (demandaTake?` ${demandaTake}`:'')
+    : `En ${last.label} entraron ${f.n(G(last,'visitas'))} visitas, convirtió el ${f.p(G(last,'conversion'))} y el ticket promedio fue ${f.m(G(last,'ticket_promedio'))}. Calculá los meses anteriores para ver la tendencia.`;
 
   // Financiero
   let finTake = '';
@@ -16122,7 +16136,11 @@ function diagStory(cols) {
     logistica = `El ${(top.f/totF*100).toFixed(0)}% de la facturación se despacha por <b>${top.k}</b>. El mix de canales define costo de envío y velocidad de entrega — dos palancas directas sobre la reputación.`;
   }
 
-  return { monthLabel:last.label, prevLabel:prev?prev.label:'', hero, kpis, demanda, financiero, publicidad, logistica };
+  const facturacion = prev
+    ? `La facturación ${mov('facturacion')} frente a ${prev.label}.`
+    : `En ${last.label} la cuenta facturó ${f.m(fact)}.`;
+
+  return { monthLabel:last.label, prevLabel:prev?prev.label:'', hero, kpis, facturacion, demanda, financiero, publicidad, logistica };
 }
 
 // Configs de los gráficos del diagnóstico (canvas IDs fijos para poder exportarlos al PDF)
@@ -16134,7 +16152,7 @@ function diagChartConfigs(cols) {
   configs.push({ id:'diagChartFact', type:'bar',
     data:{ labels, datasets:[{ label:'Facturación', data:cols.map(c=>val(c,'facturacion')), backgroundColor:'#8b5cf6', borderRadius:6, maxBarThickness:70 }] },
     options:{ responsive:true, maintainAspectRatio:false, plugins:{ legend:{display:false}, tooltip:{callbacks:{label:ctx=>'$'+Math.round(ctx.parsed.y||0).toLocaleString('es-AR')}} },
-      scales:{ y:{ ticks:{ callback:v=>'$'+(v/1000).toFixed(0)+'k' } } } } });
+      scales:{ y:{ beginAtZero:true, ticks:{ callback:_diagEje } } } } });
   // 2) Ventas (barras) + Conversión (línea)
   configs.push({ id:'diagChartConv', type:'bar',
     data:{ labels, datasets:[
@@ -16174,7 +16192,7 @@ function diagChartConfigs(cols) {
         { label:'Facturación generada', data:cols.map(c=>val(c,'pads_ingresos')), backgroundColor:'#16a34a', borderRadius:6, maxBarThickness:44 },
       ] },
       options:{ responsive:true, maintainAspectRatio:false, plugins:{ legend:{position:'bottom',labels:{boxWidth:12,font:{size:11}}}, tooltip:{callbacks:{label:ctx=>ctx.dataset.label+': $'+Math.round(ctx.parsed.y||0).toLocaleString('es-AR')}} },
-        scales:{ y:{ ticks:{ callback:v=>'$'+(v/1000).toFixed(0)+'k' } } } } });
+        scales:{ y:{ beginAtZero:true, ticks:{ callback:_diagEje } } } } });
   }
   // 5) Preguntas del último mes (torta que parte las recibidas en pedazos que suman)
   if (ref) {
@@ -16204,15 +16222,34 @@ function diagChartConfigs(cols) {
 function diagRender(meses, clientId) {
   const el = document.getElementById('diagContent');
   const last3 = diagGetLast3Months();
-  const cols = last3.map(m => {
+  const ventana = last3.map(m => {
     const found = meses.find(d => d.mes && d.mes.slice(0,7) === m.mes.slice(0,7));
     return { ...m, data: found || null };
   });
-  const hasAny = cols.some(c => c.data);
-  if (!hasAny) {
-    el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">No hay datos calculados aún.<br>Hacé click en <strong>⚡ Calcular 3 meses</strong> para empezar.</div>';
+  const faltan = ventana.filter(c => !c.data);
+  const btnFaltan = faltan.length
+    ? `<button onclick='diagCalcularTodo(${JSON.stringify(faltan.map(c => c.mes))})' style="padding:7px 14px;background:#292929;color:#fff952;border:none;border-radius:8px;font-size:12.5px;font-weight:700;cursor:pointer;white-space:nowrap">⚡ Calcular ${faltan.map(c => c.label.split(' ')[0]).join(', ')}</button>`
+    : '';
+  // Último mes que el cliente tiene calculado, para ofrecer ir ahí si la ventana está vacía
+  const ultimoCalc = meses.map(d => (d.mes || '').slice(0,7)).filter(Boolean).sort().pop();
+  if (faltan.length === ventana.length) {
+    const ultLabel = ultimoCalc ? dART(ultimoCalc + '-15').toLocaleDateString('es-AR', { timeZone: ART_TZ, month: 'long', year: 'numeric' }) : '';
+    el.innerHTML = `<div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:36px 24px;text-align:center">
+      <div style="font-size:15px;font-weight:800;font-family:var(--font-b);margin-bottom:6px">No hay diagnóstico calculado para ${ventana[0].label} – ${ventana[2].label}</div>
+      <div style="font-size:13px;color:var(--muted);margin-bottom:18px">Cada mes tarda entre 20 y 40 segundos en calcularse.</div>
+      <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">
+        ${btnFaltan}
+        ${ultimoCalc ? `<button onclick="diagIrAMes('${ultimoCalc}')" style="padding:7px 14px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:8px;font-size:12.5px;cursor:pointer">Ver el último calculado (${ultLabel})</button>` : ''}
+      </div>
+    </div>`;
     return;
   }
+  // De acá en adelante sólo los meses con datos: un mes vacío en la tabla o en los gráficos no dice nada
+  const cols = ventana.filter(c => c.data);
+  const avisoFaltan = faltan.length ? `<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;background:#fff8db;border:1px solid #f5d76e;border-radius:12px;padding:12px 16px;margin-bottom:20px;font-size:13px;color:#292929">
+      <span style="flex:1;min-width:220px">⚠️ Falta calcular <b>${faltan.map(c => c.label).join(' y ')}</b>. ${cols.length === 1 ? 'Sin esos meses no hay tendencia: se muestra sólo ' + cols[0].label + '.' : 'Las comparaciones son entre los meses que sí están.'}</span>
+      ${btnFaltan}
+    </div>` : '';
   const fmtM = v => v != null ? '$' + parseFloat(v).toLocaleString('es-AR', {maximumFractionDigits:0}) : '—';
   const fmtN = v => v != null ? parseFloat(v).toLocaleString('es-AR') : '—';
   const fmtP = v => v != null ? parseFloat(v).toFixed(1) + '%' : '—';
@@ -16220,6 +16257,7 @@ function diagRender(meses, clientId) {
   const trend = (prev, curr, hib=true) => {
     if (prev==null||curr==null) return '';
     const d = parseFloat(curr)-parseFloat(prev);
+    if (isNaN(d)) return '';  // textos (SI/NO, "2.1hs"): no hay flecha que valga
     if (Math.abs(d)<0.01) return '<span style="color:#888;font-size:11px"> →</span>';
     const up=d>0; const good=hib?up:!up;
     return `<span style="color:${good?'#16a34a':'#dc2626'};font-size:11px"> ${up?'↑':'↓'}</span>`;
@@ -16227,7 +16265,7 @@ function diagRender(meses, clientId) {
   const thS = 'padding:10px 14px;font-size:12px;font-weight:700;text-align:center;border:1px solid var(--border);background:var(--surface2)';
   const tdL = 'padding:8px 12px;font-size:12px;color:var(--muted);border:1px solid var(--border);white-space:nowrap;background:var(--surface)';
   const tdV = (hi) => `padding:8px 14px;font-size:13px;font-weight:600;text-align:center;border:1px solid var(--border);${hi?'background:#f8f7ff':''}`;
-  const sec = (lbl,col) => `<tr><td colspan="4" style="padding:8px 12px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;background:${col};border:1px solid var(--border);color:#444">${lbl}</td></tr>`;
+  const sec = (lbl,col) => `<tr><td colspan="${cols.length+1}" style="padding:8px 12px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;background:${col};border:1px solid var(--border);color:#444">${lbl}</td></tr>`;
   const row = (lbl, getter, fmt, hib=true) => {
     const vals = cols.map(c => c.data ? getter(c.data) : null);
     return `<tr><td style="${tdL}">${lbl}</td>${cols.map((c,i)=>{
@@ -16240,7 +16278,7 @@ function diagRender(meses, clientId) {
   const tableHTML = `<div style="overflow-x:auto;margin-bottom:24px"><table style="border-collapse:collapse;width:100%;min-width:600px">
     <thead><tr>
       <th style="${thS};text-align:left;min-width:220px">Métrica</th>
-      ${cols.map(c=>`<th style="${thS};min-width:190px">${c.label}${c.data?'':' <span style="color:#aaa;font-size:10px;font-weight:400">(sin datos)</span>'}</th>`).join('')}
+      ${cols.map(c=>`<th style="${thS};min-width:190px">${c.label}</th>`).join('')}
     </tr></thead><tbody>
     ${sec('📊 Métricas Generales','#ede9fe')}
     ${row('Facturación', d=>d.facturacion, fmtM)}
@@ -16284,16 +16322,16 @@ function diagRender(meses, clientId) {
     </tbody></table></div>`;
   const siNo = (id,val) => `<select id="${id}" style="padding:5px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px"><option value="SI" ${val==='SI'?'selected':''}>SI</option><option value="NO" ${(!val||val==='NO')?'selected':''}>NO</option></select>`;
   const formHTML = `<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px 18px;margin-bottom:20px;display:flex;align-items:center;gap:16px;flex-wrap:wrap">
-    <span style="font-size:13px;font-weight:600;font-family:var(--font-b)">📝 ${lastCol.label}</span>
+    <span style="font-size:13px;font-weight:600;font-family:var(--font-b)">📝 Notas de ${lastCol.label}</span>
     <div style="display:flex;align-items:center;gap:10px;flex:1;flex-wrap:wrap">
       <div style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)">
         Difusiones: ${siNo('dm_difusiones', man.mkt_difusiones)}
       </div>
       <div style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);flex:1">
-        Notas: <input id="dm_notas_generales" value="${man.notas||''}" placeholder="Observaciones del mes..." style="flex:1;min-width:200px;padding:5px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:12px">
+        Notas: <input id="dm_notas_generales" value="${String(man.notas||'').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;')}" placeholder="Observaciones del mes..." style="flex:1;min-width:200px;padding:5px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:12px">
       </div>
     </div>
-    <button id="diagSaveManBtn" onclick="diagGuardarManuales('${clientId}','${lastCol.mes}')" style="padding:6px 16px;background:var(--accent);color:#fff;border:none;border-radius:8px;font-size:13px;cursor:pointer;white-space:nowrap">💾 Guardar</button>
+    <button id="diagSaveManBtn" onclick="diagGuardarManuales('${clientId}','${lastCol.mes}')" style="padding:6px 16px;background:var(--accent);color:#292929;font-weight:700;border:none;border-radius:8px;font-size:13px;cursor:pointer;white-space:nowrap">💾 Guardar</button>
   </div>`;
   // Card estado actual — reputación y publicaciones (datos del mes más reciente calculado)
   const refCol = cols.slice().reverse().find(c => c.data) || cols[cols.length-1];
@@ -16359,7 +16397,7 @@ function diagRender(meses, clientId) {
         <span style="min-width:40px;text-align:right;font-weight:700;color:${x.color}" title="% de facturación">${x.fact>0?pf.toFixed(0)+'%':'—'}</span>
       </div>`;
     }).join('');
-    return `<div style="flex:1;min-width:230px;background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:14px">
+    return `<div style="flex:1;min-width:230px;max-width:420px;background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:14px">
       <div style="font-size:12px;font-weight:700;text-align:center;margin-bottom:8px">${c.label}${c.data?'':' <span style="color:#aaa;font-size:10px;font-weight:400">(sin datos)</span>'}</div>
       ${c.data && totalFact>0
         ? `<div style="position:relative;height:150px;margin-bottom:10px"><canvas id="${canvasId}"></canvas></div>`
@@ -16397,10 +16435,12 @@ function diagRender(meses, clientId) {
   }
 
   // Fila 1 de gráficos: facturación + ventas/conversión
-  const chartsRow1 = `<div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:20px">
-    ${chartBox('diagChartFact', '💰 Evolución de facturación', story?story.demanda.split('.')[0]+'.':'' )}
+  const chartsRow1 = cols.length > 1
+    ? `<div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:20px">
+    ${chartBox('diagChartFact', '💰 Evolución de facturación', story?story.facturacion:'')}
     ${chartBox('diagChartConv', '🛒 Ventas y conversión', story?story.demanda:'')}
-  </div>`;
+  </div>`
+    : (story ? `<div style="margin:-8px 0 20px">${note('🛒 ' + story.demanda)}</div>` : '');
 
   // Fila 2: a dónde va cada peso + retorno de publicidad
   const quedaLegend = cfgById['diagChartQueda'] ? cfgById['diagChartQueda'].legend.map(x =>
@@ -16458,9 +16498,9 @@ function diagRender(meses, clientId) {
     ${story?note(story.logistica):''}
   </div>`;
 
-  const detalleHTML = `<details style="margin-top:8px"><summary style="cursor:pointer;font-size:13px;font-weight:700;font-family:var(--font-b);color:var(--muted);padding:8px 0">📋 Ver tabla comparativa completa (3 meses)</summary>${tableHTML}</details>`;
+  const detalleHTML = `<details style="margin-top:8px"><summary style="cursor:pointer;font-size:13px;font-weight:700;font-family:var(--font-b);color:var(--muted);padding:8px 0">📋 Ver tabla comparativa completa (${cols.length} ${cols.length===1?'mes':'meses'})</summary>${tableHTML}</details>`;
 
-  el.innerHTML = formHTML + heroHTML + chartsRow1 + chartsRow2 + chartsRow3 + repCard + logisticaHTML + detalleHTML;
+  el.innerHTML = avisoFaltan + heroHTML + chartsRow1 + chartsRow2 + chartsRow3 + repCard + logisticaHTML + formHTML + detalleHTML;
 
   // Guardar estado para el export a PDF
   const _diagCliente = (document.getElementById('diagClientSel')?.selectedOptions?.[0]?.textContent) || (getActiveClient()?.name) || '';
