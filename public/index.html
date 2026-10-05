@@ -28191,11 +28191,14 @@ function admCriteriosHtml() {
     </div>
     <div class="adm-bar"><button class="adm-btn prim" onclick="admGuardarCfg()">Guardar criterios y reclasificar</button>
       <button class="adm-btn" onclick="admReclasificar()">Reclasificar ahora</button></div>
-    <table class="adm-tabla" style="margin-top:8px"><thead><tr><th>Cuenta</th><th>Cliente</th><th>Margen a conservar (pts)</th><th></th></tr></thead><tbody>
-      ${c.cuentas.map(x => `<tr><td><b>${admEsc(x.nickname)}</b></td><td>${admEsc(x.client_name)}</td>
-        <td><input type="number" step="any" min="0" max="99" id="adm-m-${x.client_id}" value="${x.margen_conservar_pts == null ? '' : admEsc(x.margen_conservar_pts)}"
+    <table class="adm-tabla" style="margin-top:8px"><thead><tr><th>Sincronizar</th><th>Cuenta</th><th>Cliente</th><th>Margen a conservar (pts)</th><th></th></tr></thead><tbody>
+      ${c.cuentas.map(x => `<tr style="${x.activo ? '' : 'opacity:.55'}">
+        <td><label style="display:flex;gap:6px;align-items:center;cursor:pointer"><input type="checkbox" ${x.activo ? 'checked' : ''}
+          onchange="admToggleCuenta('${admEsc(x.adman_cust_id)}', this.checked)">${x.activo ? 'Sí' : 'No'}</label></td>
+        <td><b>${admEsc(x.nickname)}</b></td><td>${admEsc(x.client_name || 'sin cliente en el dashboard')}</td>
+        <td>${!x.client_id ? '<span class="sub">—</span></td><td></td></tr>' : `<input type="number" step="any" min="0" max="99" id="adm-m-${x.client_id}" value="${x.margen_conservar_pts == null ? '' : admEsc(x.margen_conservar_pts)}"
           placeholder="global (${admEsc(c.config.margen_conservar_pts)})" style="width:130px;font-family:inherit;padding:4px 8px;border:2px solid #292929;border-radius:8px"></td>
-        <td><button class="adm-btn" onclick="admGuardarMargen(${x.client_id})">Guardar</button></td></tr>`).join('')}
+        <td><button class="adm-btn" onclick="admGuardarMargen(${x.client_id})">Guardar</button></td></tr>`}`).join('')}
     </tbody></table>`;
   return `<details class="adm-block" ${c ? 'open' : ''} ontoggle="if(this.open&&!_adm.cfg)admCargarCfg()">
     <summary style="cursor:pointer;font-weight:800;font-size:14px">⚙️ Criterios de clasificación</summary>${cuerpo}</details>`;
@@ -28215,6 +28218,14 @@ async function admGuardarCfg() {
   _adm.cfg.config = r.config;
   showToast('Criterios guardados: reclasificando');
   admSeguirClasif();
+}
+
+async function admToggleCuenta(custId, activo) {
+  const r = await apiCall('PUT', `/api/adman/cuentas/${custId}`, { activo });
+  if (!r || r.error) { showToast('No se guardó: ' + ((r && r.error) || 'error')); return; }
+  const x = _adm.cfg.cuentas.find(c => c.adman_cust_id === custId); if (x) x.activo = activo;
+  showToast(activo ? `${r.nickname}: se sincroniza desde la próxima corrida` : `${r.nickname}: apagada, sus alertas dejan de aparecer`);
+  loadAdmanPanel();
 }
 
 async function admGuardarMargen(clientId) {

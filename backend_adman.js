@@ -683,6 +683,7 @@ module.exports = (app, { pool, requireAuth, requireAdmin, getClientToken, ML_API
           LEFT JOIN adman_cuentas c ON c.adman_cust_id=a.adman_cust_id
           LEFT JOIN clients cl ON cl.id=a.client_id
           WHERE a.estado IN ('pendiente','enviando','fallida','sin_confirmar')
+            AND c.activo IS NOT FALSE   -- cuenta apagada en Criterios: no se muestra
           ORDER BY c.nickname, a.flow_nombre, a.entity_name`),
         pool.query(`
           SELECT a.alert_id::text AS alert_id, a.entity_name, a.accion, a.operador, a.valor_previo, a.valor_nuevo,
@@ -834,6 +835,7 @@ module.exports = (app, { pool, requireAuth, requireAdmin, getClientToken, ML_API
              a.entity_type, a.entity_id, a.entity_name, a.accion, a.operador, a.valor_previo, a.valor_nuevo,
              a.metricas, a.mla, a.promocion, a.created_at_adman, cl.margen_conservar_pts
       FROM adman_alertas a LEFT JOIN clients cl ON cl.id=a.client_id
+      JOIN adman_cuentas ac ON ac.adman_cust_id=a.adman_cust_id AND ac.activo IS NOT FALSE
       WHERE a.estado IN ('pendiente','fallida') ${cond}`, clientId ? [clientId] : []);
     const conflictos = detectarConflictos(r.rows);
     const porCliente = {};
@@ -904,7 +906,9 @@ module.exports = (app, { pool, requireAuth, requireAdmin, getClientToken, ML_API
     // El repaso de las 04:30 solo avisa si trajo alertas nuevas (o si falló).
     if (origen === 'repaso' && c.estado === 'ok' && !(c.nuevas > 0)) return;
     const p = (await pool.query(`
-      SELECT pila, COUNT(*)::int AS n FROM adman_alertas WHERE estado IN ('pendiente','fallida') GROUP BY pila`)).rows;
+      SELECT a.pila, COUNT(*)::int AS n FROM adman_alertas a
+      JOIN adman_cuentas c ON c.adman_cust_id=a.adman_cust_id AND c.activo IS NOT FALSE
+      WHERE a.estado IN ('pendiente','fallida') GROUP BY a.pila`)).rows;
     const n = k => (p.find(x => x.pila === k) || {}).n || 0;
     const total = n('aceptar') + n('desestimar') + n('revisar');
     let txt = `🎯 Alertas AdMan${origen === 'repaso' ? ' (repaso)' : ''}: ${total} pendientes — ${n('aceptar')} aceptar, ${n('desestimar')} desestimar, ${n('revisar')} revisar`;
@@ -931,9 +935,10 @@ module.exports = (app, { pool, requireAuth, requireAdmin, getClientToken, ML_API
     try {
       const cfg = await cargarConfig();
       const cuentas = await pool.query(`
-        SELECT a.client_id, cl.name AS client_name, a.nickname, cl.margen_conservar_pts
-        FROM adman_cuentas a JOIN clients cl ON cl.id=a.client_id
-        WHERE a.activo IS NOT FALSE ORDER BY a.nickname`);
+        SELECT a.adman_cust_id::text AS adman_cust_id, a.client_id, cl.name AS client_name, a.nickname,
+               cl.margen_conservar_pts, a.activo IS NOT FALSE AS activo
+        FROM adman_cuentas a LEFT JOIN clients cl ON cl.id=a.client_id
+        ORDER BY a.activo IS FALSE, a.nickname`);
       res.json({ config: cfg, defaults: CONFIG_DEFAULT, cuentas: cuentas.rows, clasificacion_en_curso: clasificacionEnCurso });
     } catch (e) { err(res, e); }
   });
@@ -966,6 +971,20 @@ module.exports = (app, { pool, requireAuth, requireAdmin, getClientToken, ML_API
       await pool.query('UPDATE clients SET margen_conservar_pts=$2 WHERE id=$1', [clientId, v]);
       await lanzarClasificacion({ clientId });
       res.json({ ok: true, client_id: clientId, margen_conservar_pts: v });
+    } catch (e) { err(res, e); }
+  });
+
+  // Sincronizar o no una cuenta de AdMan. Apagada: la corrida no la lee, y sus alertas no
+  // salen en el panel, en la clasificación ni en Slack. Sigue conectada en AdMan.
+  app.put('/api/adman/cuentas/:custId', requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const activo = (req.body || {}).activo;
+      if (typeof activo !== 'boolean') return res.status(400).json({ error: 'activo tiene que ser true o false' });
+      const r = await pool.query('UPDATE adman_cuentas SET activo=$2 WHERE adman_cust_id=$1 RETURNING nickname, activo',
+        [req.params.custId, activo]);
+      if (!r.rows.length) return res.status(404).json({ error: 'Cuenta inexistente' });
+      log(`[ADMAN] Cuenta ${r.rows[0].nickname} ${activo ? 'prendida' : 'apagada'} por ${req.user.username || req.user.id}`);
+      res.json({ ok: true, ...r.rows[0] });
     } catch (e) { err(res, e); }
   });
 
