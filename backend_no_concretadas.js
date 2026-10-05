@@ -50,6 +50,9 @@ const canalDeEnvio = s => {
   return lt || s.mode || 'Otro';
 };
 
+// Sube cuando cambia la forma de la respuesta: la caché de otra versión se recalcula
+const VERSION = 2;
+
 const MOMENTOS = ['Antes del despacho', 'Despachada, no entregada', 'Después de entregada', 'Sin envío', 'Sin dato'];
 
 module.exports = (app, deps) => {
@@ -232,7 +235,7 @@ module.exports = (app, deps) => {
         const id = oi.item?.id; if (!id) return;
         const it = bump(porItem, id, () => ({
           item_id: id, titulo: oi.item?.title || id, ordenes: 0, monto: 0,
-          canceladas: 0, monto_cancelado: 0, motivos: {}, canales: {}, momentos: {},
+          canceladas: 0, monto_cancelado: 0, motivos: {}, canales: {}, momentos: {}, combos: {},
         }));
         const ml = montoLinea(oi);
         it.ordenes++; it.monto += ml;
@@ -241,6 +244,10 @@ module.exports = (app, deps) => {
           it.canceladas++; it.monto_cancelado += ml;
           it.motivos[det.motivo] = (it.motivos[det.motivo] || 0) + 1;
           it.momentos[det.momento] = (it.momentos[det.momento] || 0) + 1;
+          // Motivo × momento, para que el front filtre la tabla por cualquiera de los dos
+          const ck = det.motivo + ' ' + det.momento;
+          const cb = it.combos[ck] = it.combos[ck] || { motivo: det.motivo, momento: det.momento, canceladas: 0, monto: 0 };
+          cb.canceladas++; cb.monto += ml;
         }
       });
     });
@@ -276,9 +283,11 @@ module.exports = (app, deps) => {
         canceladas: it.canceladas, monto_cancelado: Math.round(it.monto_cancelado),
         pct_ordenes: pct(it.canceladas, it.ordenes),
         motivo_principal: top(it.motivos), momento_principal: top(it.momentos), canal_principal: top(it.canales),
+        combos: Object.values(it.combos).map(cb => ({ ...cb, monto: Math.round(cb.monto) })),
       })).sort((a, b) => b.monto_cancelado - a.monto_cancelado),
       items_con_ventas: Object.keys(porItem).length,
       canceladas_detalle: listado.sort((a, b) => b.monto - a.monto),
+      version: VERSION,
       generated_at: new Date().toISOString(),
     };
   }
@@ -314,7 +323,7 @@ module.exports = (app, deps) => {
       if (req.query.solo_cache === '1') return res.json((await leerCache(clientId, mes, false)) || { sin_cache: true });
       if (req.query.force !== '1') {
         const c = await leerCache(clientId, mes);
-        if (c) return res.json(c);
+        if (c && c.version === VERSION) return res.json(c);
       }
       const token = await getClientToken(clientId);
       if (!token) return res.status(403).json({ error: 'Cliente no conectado o token expirado' });

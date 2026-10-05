@@ -1273,6 +1273,7 @@ tr.fam-hijo > td { background: rgba(99,102,241,.025); }
           <div style="font-size:12px;color:var(--muted);max-width:640px">Órdenes canceladas del mes contra todas las del mes: quién la cortó, por qué, en qué momento, por qué medio de envío y de qué producto.</div>
           <select id="ncMesSel" onchange="loadNoConcretadas(false)" style="margin-left:auto;padding:6px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px"></select>
           <button onclick="loadNoConcretadas(true)" class="sync-btn">🔄 Actualizar</button>
+          <button onclick="exportNoConcretadasExcel()" class="sync-btn" title="Resumen, productos (con los filtros puestos), producto × motivo, órdenes una por una, motivos y medios de envío">📥 Excel</button>
         </div>
         <div id="noConcretadasContent"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Seleccioná la pestaña No concretadas para cargar.</div></div>
       </div>
@@ -6715,10 +6716,17 @@ function renderNoConcretadas() {
     </table></div>
     <div style="font-size:11px;color:var(--muted);margin-top:8px">Tasa = canceladas sobre las órdenes de ese medio. En rojo: más de 1,3 veces la tasa de la cuenta (${_ncP(d.pct_ordenes)}).${d.envios_sin_dato ? ` ${d.envios_sin_dato} envíos no se pudieron leer y van como "Sin dato".` : ''}</div></div>`;
 
+  const selSt = 'padding:6px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:12px';
   const productos = `<div style="${card};margin-bottom:18px">
     <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px">
       <div style="font-size:13px;font-weight:800;font-family:var(--font-b)">Por producto <span style="font-weight:400;color:var(--muted);font-size:12px">· ${d.por_item.length} de ${d.items_con_ventas} publicaciones con ventas tuvieron alguna caída</span></div>
-      <input id="ncItemSearch" placeholder="Buscar MLA o título…" oninput="renderNcItems()" style="margin-left:auto;padding:6px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:12px;min-width:220px">
+    </div>
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px">
+      <select id="ncFiltroMotivo" onchange="renderNcItems()" style="${selSt}"><option value="">Todos los motivos</option>${d.por_motivo.map(r => `<option value="${_ncEsc(r.motivo)}">${_ncEsc(r.motivo)} (${r.ordenes})</option>`).join('')}</select>
+      <select id="ncFiltroMomento" onchange="renderNcItems()" style="${selSt}"><option value="">Todos los momentos</option>${d.por_momento.map(r => `<option value="${_ncEsc(r.momento)}">${_ncEsc(r.momento)} (${r.ordenes})</option>`).join('')}</select>
+      <input id="ncItemSearch" placeholder="Buscar MLA o título…" oninput="renderNcItems()" style="${selSt};min-width:200px">
+      <button onclick="ncLimpiarFiltros()" style="padding:6px 12px;border:1px solid var(--border);border-radius:8px;background:none;color:var(--muted);font-size:12px;cursor:pointer">✕ Limpiar</button>
+      <span id="ncItemsResumen" style="margin-left:auto;font-size:12px;color:var(--muted)"></span>
     </div>
     <div id="ncItemsTabla"></div>
     <div style="font-size:11px;color:var(--muted);margin-top:8px">⚠️ = al menos 10 órdenes y una tasa de más de 1,5 veces la de la cuenta. Con pocas ventas una sola caída da un % alto: por eso el aviso pide volumen.</div>
@@ -6755,19 +6763,48 @@ function sortNcItems(col) {
   renderNcItems();
 }
 
+// Filas de la tabla por producto con los filtros de motivo y momento aplicados.
+// Con filtro, "canceladas", "$" y "tasa" cuentan sólo las caídas de ese motivo/momento.
+function _ncItemsFiltrados() {
+  const d = window._ncData;
+  if (!d) return [];
+  const fMot = document.getElementById('ncFiltroMotivo')?.value || '';
+  const fMom = document.getElementById('ncFiltroMomento')?.value || '';
+  const q = (document.getElementById('ncItemSearch')?.value || '').trim().toLowerCase();
+  const top = obj => Object.entries(obj).sort((a, b) => b[1] - a[1])[0]?.[0] || null;
+  return d.por_item
+    .filter(r => !q || r.item_id.toLowerCase().includes(q) || (r.titulo || '').toLowerCase().includes(q))
+    .map(r => {
+      if (!fMot && !fMom) return r;
+      const cbs = (r.combos || []).filter(c => (!fMot || c.motivo === fMot) && (!fMom || c.momento === fMom));
+      const canceladas = cbs.reduce((s, c) => s + c.canceladas, 0);
+      if (!canceladas) return null;
+      const mot = {}, mom = {};
+      cbs.forEach(c => { mot[c.motivo] = (mot[c.motivo] || 0) + c.canceladas; mom[c.momento] = (mom[c.momento] || 0) + c.canceladas; });
+      return {
+        ...r, canceladas,
+        monto_cancelado: cbs.reduce((s, c) => s + c.monto, 0),
+        pct_ordenes: r.ordenes ? +(canceladas / r.ordenes * 100).toFixed(2) : 0,
+        motivo_principal: top(mot), momento_principal: top(mom),
+      };
+    })
+    .filter(Boolean);
+}
+
 function renderNcItems() {
   const box = document.getElementById('ncItemsTabla');
   const d = window._ncData;
   if (!box || !d) return;
-  const q = (document.getElementById('ncItemSearch')?.value || '').trim().toLowerCase();
   const col = window._ncItemSort || 'monto_cancelado';
-  const filas = d.por_item
-    .filter(r => !q || r.item_id.toLowerCase().includes(q) || (r.titulo || '').toLowerCase().includes(q))
-    .sort((a, b) => (b[col] || 0) - (a[col] || 0));
+  const filas = _ncItemsFiltrados().sort((a, b) => (b[col] || 0) - (a[col] || 0));
+  const filtrando = !!(document.getElementById('ncFiltroMotivo')?.value || document.getElementById('ncFiltroMomento')?.value);
+  const totC = filas.reduce((s, r) => s + r.canceladas, 0), totM = filas.reduce((s, r) => s + r.monto_cancelado, 0);
+  const resumen = document.getElementById('ncItemsResumen');
+  if (resumen) resumen.innerHTML = `${filas.length} publicaci${filas.length === 1 ? 'ón' : 'ones'} · ${totC} caída${totC === 1 ? '' : 's'} · ${_ncM(totM)}${filtrando && d.canceladas ? ` · ${(totC / d.canceladas * 100).toFixed(0)}% de todas las caídas del mes` : ''}`;
   const th = (t, c, al) => `<th${c ? ` onclick="sortNcItems('${c}')"` : ''} style="text-align:${al || 'left'};padding:8px;font-size:11px;color:${col === c ? 'var(--text)' : 'var(--muted)'};font-weight:700;text-transform:uppercase;letter-spacing:.04em;border-bottom:1px solid var(--border);white-space:nowrap;${c ? 'cursor:pointer;user-select:none' : ''}">${t}${col === c ? ' ▼' : ''}</th>`;
   const mostrar = window._ncItemsTodos ? filas : filas.slice(0, 50);
   box.innerHTML = `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse">
-    <thead><tr>${th('Producto')}${th('Órdenes', 'ordenes', 'right')}${th('Canceladas', 'canceladas', 'right')}${th('Tasa', 'pct_ordenes', 'right')}${th('$ que no entró', 'monto_cancelado', 'right')}${th('Motivo principal')}${th('Momento')}${th('Medio')}</tr></thead>
+    <thead><tr>${th('Producto')}${th('Órdenes', 'ordenes', 'right')}${th('Canceladas', 'canceladas', 'right')}${th('Tasa', 'pct_ordenes', 'right')}${th('$ que no entró', 'monto_cancelado', 'right')}${th(filtrando ? 'Motivo' : 'Motivo principal')}${th('Momento')}${th('Medio')}</tr></thead>
     <tbody>${mostrar.map(r => {
       const alerta = r.ordenes >= 10 && r.pct_ordenes > d.pct_ordenes * 1.5;
       return `<tr>
@@ -6780,9 +6817,105 @@ function renderNcItems() {
         ${_ncTd(r.momento_principal ? _ncMomentoChip(r.momento_principal) : '—')}
         ${_ncTd(_ncEsc(r.canal_principal || '—'), 'left', 'font-size:12px;color:var(--muted)')}
       </tr>`;
-    }).join('') || `<tr>${_ncTd('Sin resultados', 'left', 'color:var(--muted)')}</tr>`}</tbody>
+    }).join('') || `<tr><td colspan="8" style="padding:16px;font-size:12.5px;color:var(--muted)">Ninguna publicación tuvo caídas con ese filtro.</td></tr>`}</tbody>
   </table></div>
   ${filas.length > 50 ? `<button onclick="window._ncItemsTodos=!window._ncItemsTodos;renderNcItems()" style="margin-top:10px;padding:6px 12px;border:1px solid var(--border);border-radius:8px;background:var(--surface2);color:var(--text);font-size:12px;cursor:pointer">${window._ncItemsTodos ? 'Ver sólo las 50 primeras' : `Ver las ${filas.length}`}</button>` : ''}`;
+}
+
+function ncLimpiarFiltros() {
+  ['ncFiltroMotivo', 'ncFiltroMomento', 'ncItemSearch'].forEach(id => { const e = document.getElementById(id); if (e) e.value = ''; });
+  renderNcItems();
+}
+
+// Excel para trabajarlo: resumen, productos (con los filtros que estén puestos),
+// producto × motivo × momento y las órdenes una por una. Todas las hojas con autofiltro.
+function exportNoConcretadasExcel() {
+  const d = window._ncData;
+  if (!d || !d.ordenes) { showToast('No hay datos. Cargá la pestaña primero.'); return; }
+  const mesLbl = document.getElementById('ncMesSel')?.selectedOptions?.[0]?.textContent || d.mes;
+  const fMot = document.getElementById('ncFiltroMotivo')?.value || '';
+  const fMom = document.getElementById('ncFiltroMomento')?.value || '';
+  const fTxt = (document.getElementById('ncItemSearch')?.value || '').trim();
+  const filtros = [fMot && `motivo: ${fMot}`, fMom && `momento: ${fMom}`, fTxt && `búsqueda: ${fTxt}`].filter(Boolean).join(' · ');
+  const pctC = n => d.canceladas ? _xD(n / d.canceladas * 100) : 0;
+
+  const resumen = [
+    ['Mes', mesLbl],
+    ['Órdenes del mes', _xR(d.ordenes)],
+    ['Órdenes no concretadas', _xR(d.canceladas)],
+    ['% no concretado (órdenes)', _xD(d.pct_ordenes)],
+    ['$ vendido en el mes', _xR(d.monto)],
+    ['$ que no entró', _xR(d.monto_cancelado)],
+    ['% no concretado ($)', _xD(d.pct_monto)],
+    ['Canceladas por el vendedor (bajan reputación)', _xR(d.afectan_reputacion)],
+    ['Mediana hasta anularse, antes del despacho (horas)', d.horas_mediana_antes_despacho != null ? _xD(d.horas_mediana_antes_despacho) : ''],
+    ['Carritos separados (no cuentan)', _xR(d.packs_separados)],
+    ['Filtros de la hoja "Por producto"', filtros || 'ninguno'],
+  ].map(([k, v]) => ({ 'Métrica': k, 'Valor': v }));
+
+  const productos = _ncItemsFiltrados().sort((a, b) => b.monto_cancelado - a.monto_cancelado).map(r => ({
+    'MLA': r.item_id,
+    'Título': r.titulo,
+    'Órdenes': _xR(r.ordenes),
+    'Canceladas': _xR(r.canceladas),
+    'Tasa %': _xD(r.pct_ordenes),
+    '$ que no entró': _xR(r.monto_cancelado),
+    'Motivo principal': r.motivo_principal || '',
+    'Momento principal': r.momento_principal || '',
+    'Medio principal': r.canal_principal || '',
+    'Por encima del promedio': r.ordenes >= 10 && r.pct_ordenes > d.pct_ordenes * 1.5 ? 'Sí' : 'No',
+  }));
+
+  const cruce = [];
+  d.por_item.forEach(r => (r.combos || []).forEach(c => cruce.push({
+    'MLA': r.item_id,
+    'Título': r.titulo,
+    'Órdenes del producto': _xR(r.ordenes),
+    'Motivo': c.motivo,
+    'Momento': c.momento,
+    'Canceladas': _xR(c.canceladas),
+    '$ que no entró': _xR(c.monto),
+    'Medio principal': r.canal_principal || '',
+  })));
+  cruce.sort((a, b) => b['$ que no entró'] - a['$ que no entró']);
+
+  const ordenes = (d.canceladas_detalle || []).map(r => ({
+    'Fecha': r.fecha,
+    'Orden': String(r.order_id),
+    'Pack': r.pack_id ? String(r.pack_id) : '',
+    'MLA': r.item_id || '',
+    'Producto': r.titulo || '',
+    'Productos en la orden': _xR(r.items),
+    'Unidades': _xR(r.unidades),
+    '$': _xR(r.monto),
+    'Quién la cortó': r.quien,
+    'Motivo': r.motivo,
+    'Momento': r.momento,
+    'Medio de envío': r.canal,
+    'Horas hasta anularse': r.horas != null ? _xD(r.horas) : '',
+    'Baja reputación': r.afecta_reputacion ? 'Sí' : 'No',
+    'Link': `https://www.mercadolibre.com.ar/ventas/${r.order_id}/detalle`,
+  }));
+
+  const motivos = d.por_motivo.map(r => {
+    const row = { 'Motivo': r.motivo, 'Quién': r.quien, 'Órdenes': _xR(r.ordenes), '% de las caídas': pctC(r.ordenes), '$': _xR(r.monto) };
+    d.por_momento.forEach(m => { row[m.momento] = _xR((r.momentos || {})[m.momento] || 0); });
+    return row;
+  });
+
+  const canales = d.por_canal.map(r => ({
+    'Medio de envío': r.canal, 'Órdenes': _xR(r.ordenes), 'Canceladas': _xR(r.canceladas),
+    'Tasa %': _xD(r.pct_ordenes), '$ vendido': _xR(r.monto), '$ que no entró': _xR(r.monto_cancelado),
+  }));
+
+  _xlsxSave([
+    { name: 'Resumen',               rows: resumen,   cols: [50, 30] },
+    { name: 'Por producto',          rows: productos, cols: [16, 50, 10, 11, 9, 15, 34, 24, 16, 14], autofiltro: true },
+    { name: 'Producto x motivo',     rows: cruce,     cols: [16, 50, 12, 34, 24, 11, 15, 16], autofiltro: true },
+    { name: 'Órdenes',               rows: ordenes,   cols: [11, 16, 16, 16, 46, 10, 9, 12, 20, 34, 24, 16, 12, 10, 52], autofiltro: true },
+    { name: 'Motivos',               rows: motivos,   cols: [34, 22, 10, 14, 14, 18, 22, 20, 10, 10], autofiltro: true },
+    { name: 'Medios de envío',       rows: canales,   cols: [24, 10, 11, 9, 15, 15], autofiltro: true },
+  ], _perfFileName('No_concretadas_' + d.mes));
 }
 
 // ── TAB FORMAS DE PAGO ───────────────────────────────────────────────────────
@@ -14460,6 +14593,7 @@ function _xlsxSave(sheets, filename) {
     if (!sh || !sh.rows || !sh.rows.length) return;
     const ws = XLSX.utils.json_to_sheet(sh.rows);
     if (sh.cols) ws['!cols'] = sh.cols.map(w => ({ wch: w }));
+    if (sh.autofiltro && ws['!ref']) ws['!autofilter'] = { ref: ws['!ref'] };
     XLSX.utils.book_append_sheet(wb, ws, sh.name.slice(0, 31));
   });
   if (!wb.SheetNames.length) { showToast('No hay datos para exportar'); return false; }
