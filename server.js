@@ -6052,9 +6052,9 @@ app.post('/api/diagnostico/calcular', requireAuth, async (req, res) => {
     if (!token) return res.status(403).json({ error: 'Cliente no conectado' });
 
     const headers = { 'Authorization': `Bearer ${token}` };
-    const mesDate = new Date(mes);
-    const year = mesDate.getFullYear();
-    const month = mesDate.getMonth();
+    // Año y mes leídos del string: new Date('2026-09-01') es medianoche UTC = 31/8 21:00 ART,
+    // y getMonth() devolvía agosto (cada "calcular" corría un mes para atrás)
+    const [year, month] = String(mes).slice(0, 7).split('-').map((n, i) => parseInt(n) - i);
     const dateFrom = new Date(year, month, 1);
     const dateTo   = new Date(year, month + 1, 0, 23, 59, 59);
     const fmt = d => d.toISOString().slice(0,19) + '.000-00:00';
