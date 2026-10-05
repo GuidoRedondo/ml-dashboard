@@ -921,11 +921,13 @@ tr.fam-hijo > td { background: rgba(99,102,241,.025); }
         </div>
       </div>
       <div class="header-user" style="display:flex;align-items:center;gap:10px">
-        <div id="accountSelectorWrap" style="display:none">
-          <select id="accountSelectorDropdown" onchange="onAccountSelect(this.value)"
-            style="font-family:var(--font);font-size:13px;font-weight:600;padding:7px 12px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text);cursor:pointer;min-width:180px">
-            <option value="">— Seleccioná una cuenta —</option>
-          </select>
+        <div id="accountSelectorWrap" style="display:none;position:relative">
+          <input id="accountSelectorInput" type="text" autocomplete="off" spellcheck="false"
+            placeholder="🔎 Buscá una cuenta…"
+            onfocus="acsAbrir()" oninput="acsFiltrar()" onkeydown="acsTecla(event)" onblur="acsCerrar()"
+            style="font-family:var(--font);font-size:13px;font-weight:600;padding:7px 12px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text);min-width:220px">
+          <div id="accountSelectorList"
+            style="display:none;position:absolute;top:calc(100% + 4px);right:0;min-width:100%;width:280px;max-height:60vh;overflow-y:auto;background:var(--surface);border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.15);z-index:2000;padding:4px 0"></div>
         </div>
         <span id="sessionUser">Usuario</span>
         <button class="logout-btn" onclick="logout()">Salir</button>
@@ -2836,6 +2838,85 @@ async function quickReconnect(clientId, name) {
   showToast(`🔗 Abrí la ventana y autorizá ${name}`);
 }
 
+// ── Selector de cuentas del topbar: buscador por nombre ──
+let _acsCuentas = [];   // [{id, name, grupo}] en el orden en que se muestran
+let _acsVisibles = [];  // las que pasan el filtro actual
+let _acsIdx = -1;       // fila resaltada con el teclado
+
+const _acsNorm = s => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+const _acsEsc = s => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+// El input muestra el nombre de la cuenta activa cuando no se está buscando
+function acsMostrarActiva() {
+  const inp = document.getElementById('accountSelectorInput');
+  if (!inp) return;
+  const c = _acsCuentas.find(x => x.id === activeClientId);
+  inp.value = c ? c.name : '';
+}
+
+function acsAbrir() {
+  const inp = document.getElementById('accountSelectorInput');
+  if (inp) inp.select();
+  acsRender(_acsCuentas);
+}
+
+function acsFiltrar() {
+  const q = _acsNorm(document.getElementById('accountSelectorInput').value.trim());
+  acsRender(q ? _acsCuentas.filter(c => _acsNorm(c.name).includes(q)) : _acsCuentas);
+}
+
+function acsRender(lista) {
+  const box = document.getElementById('accountSelectorList');
+  if (!box) return;
+  _acsVisibles = lista;
+  _acsIdx = lista.length ? 0 : -1;
+  let html = '', grupo = null;
+  lista.forEach((c, i) => {
+    if (c.grupo !== grupo) {
+      grupo = c.grupo;
+      html += `<div style="padding:6px 12px 2px;font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.03em">${grupo}</div>`;
+    }
+    const activa = c.id === activeClientId;
+    html += `<div class="acs-item" data-i="${i}" onmousedown="event.preventDefault();acsElegir(${i})" onmouseover="acsResaltar(${i})"
+      style="padding:7px 12px;font-size:13px;cursor:pointer;color:var(--text);${activa ? 'font-weight:700;' : ''}">${_acsEsc(c.name)}${activa ? ' ✓' : ''}</div>`;
+  });
+  box.innerHTML = html || `<div style="padding:10px 12px;font-size:12px;color:var(--muted)">Ninguna cuenta coincide</div>`;
+  box.style.display = 'block';
+  acsResaltar(_acsIdx);
+}
+
+function acsResaltar(i) {
+  _acsIdx = i;
+  document.querySelectorAll('#accountSelectorList .acs-item').forEach(el => {
+    const on = Number(el.dataset.i) === i;
+    el.style.background = on ? 'var(--border)' : '';
+    if (on) el.scrollIntoView({ block: 'nearest' });
+  });
+}
+
+function acsTecla(e) {
+  const n = _acsVisibles.length;
+  if (e.key === 'ArrowDown' && n) { e.preventDefault(); acsResaltar((_acsIdx + 1) % n); }
+  else if (e.key === 'ArrowUp' && n) { e.preventDefault(); acsResaltar((_acsIdx - 1 + n) % n); }
+  else if (e.key === 'Enter') { e.preventDefault(); if (_acsIdx >= 0) acsElegir(_acsIdx); }
+  else if (e.key === 'Escape') { e.target.blur(); }
+}
+
+function acsElegir(i) {
+  const c = _acsVisibles[i];
+  if (!c) return;
+  const inp = document.getElementById('accountSelectorInput');
+  document.getElementById('accountSelectorList').style.display = 'none';
+  if (inp) { inp.value = c.name; inp.blur(); }
+  if (c.id !== activeClientId) onAccountSelect(String(c.id));
+}
+
+function acsCerrar() {
+  const box = document.getElementById('accountSelectorList');
+  if (box) box.style.display = 'none';
+  acsMostrarActiva();
+}
+
 function renderClientSelector() {
   const role = getSessionRole();
   const isAdmin = role === 'admin' || role === 'consultant' || role === 'colaborador';
@@ -2843,30 +2924,22 @@ function renderClientSelector() {
   if (isAdmin) {
     // Show dropdown in topbar
     const wrap = document.getElementById('accountSelectorWrap');
-    const dropdown = document.getElementById('accountSelectorDropdown');
     const syncBtn = document.getElementById('syncBtn');
     if (wrap) wrap.style.display = 'block';
     if (syncBtn) syncBtn.style.display = '';
-    if (dropdown) {
-      const activeClients = allClients.filter(c => c.active && c.ml_user_id);
-      const opt = c => `<option value="${c.id}">${c.name}${!c.ml_user_id ? ' ⚠' : ''}</option>`;
-      const clientes    = activeClients.filter(c => !c.tipo_cuenta || c.tipo_cuenta === 'cliente');
-      const prospectos  = activeClients.filter(c => c.tipo_cuenta === 'prospecto');
-      const exClientes  = activeClients.filter(c => c.tipo_cuenta === 'ex_cliente');
-      let html = '<option value="">— Seleccioná una cuenta —</option>';
-      if (prospectos.length || exClientes.length) {
-        // Prospectos arriba (foco pre-reunión de conversión), clientes activos al medio,
-        // ex clientes al fondo: se pueden consultar, pero no compiten por la atención.
-        if (prospectos.length) html += `<optgroup label="🔍 Prospectos (diagnóstico)">${prospectos.map(opt).join('')}</optgroup>`;
-        html += `<optgroup label="👥 Clientes activos">${clientes.map(opt).join('')}</optgroup>`;
-        if (exClientes.length) html += `<optgroup label="📦 Ex clientes (solo histórico)">${exClientes.map(opt).join('')}</optgroup>`;
-      } else {
-        html += clientes.map(opt).join('');
-      }
-      dropdown.innerHTML = html;
-      // Restore selected if exists
-      if (activeClientId) dropdown.value = activeClientId;
-    }
+    const activeClients = allClients.filter(c => c.active && c.ml_user_id);
+    // Clientes activos arriba, prospectos debajo, ex clientes al fondo:
+    // se pueden consultar, pero no compiten por la atención.
+    const grupos = [
+      ['👥 Clientes activos',           c => !c.tipo_cuenta || c.tipo_cuenta === 'cliente'],
+      ['🔍 Prospectos (diagnóstico)',   c => c.tipo_cuenta === 'prospecto'],
+      ['📦 Ex clientes (solo histórico)', c => c.tipo_cuenta === 'ex_cliente'],
+    ];
+    _acsCuentas = [];
+    grupos.forEach(([grupo, f]) => activeClients.filter(f)
+      .sort((a, b) => String(a.name).localeCompare(String(b.name), 'es'))
+      .forEach(c => _acsCuentas.push({ id: c.id, name: c.name, grupo })));
+    acsMostrarActiva();
   } else {
     // Cliente/colaborador: usar el client_id del cookie (puesto por /api/me)
     const myClientId = parseInt(getCookie('ml_session_client')) || 0;
@@ -2928,6 +3001,7 @@ async function selectClient(clientId, el) {
   resetPrecios();
   document.querySelectorAll('#clientSelector .nav-item').forEach(n => n.classList.remove('active'));
   if (el) el.classList.add('active');
+  acsMostrarActiva();
   syncCondicionIvaSelectores();
   await loadDashboardData();
   if (_repTabActiva === 'reclamos') loadReclamos();
