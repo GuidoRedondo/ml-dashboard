@@ -988,6 +988,22 @@ module.exports = (app, { pool, requireAuth, requireAdmin, getClientToken, ML_API
     } catch (e) { err(res, e); }
   });
 
+  // Calcula los pisos de un cliente a pedido (no hace falta que tenga alertas). Sirve para
+  // diseñar los agentes de AdMan de una cuenta nueva con el piso real de cada campaña.
+  app.post('/api/adman/pisos/calcular', requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const clientId = parseInt((req.body || {}).client_id);
+      if (!clientId) return res.status(400).json({ error: 'Falta client_id' });
+      const cfg = await cargarConfig();
+      const cl = await pool.query('SELECT margen_conservar_pts FROM clients WHERE id=$1', [clientId]);
+      const mPts = cl.rows[0] && cl.rows[0].margen_conservar_pts != null ? parseFloat(cl.rows[0].margen_conservar_pts) : cfg.margen_conservar_pts;
+      const { pisos, desde, hasta } = await calcularPisosCuenta(clientId, cfg, mPts);
+      const inf = v => (v === Infinity ? 'infinito' : v);
+      res.json({ client_id: clientId, desde, hasta, margen_conservar_pts: mPts,
+        campanas: Object.values(pisos.porCampana).map(c => ({ ...c, piso: inf(c.piso), equilibrio: inf(c.equilibrio) })) });
+    } catch (e) { err(res, e); }
+  });
+
   // Última foto de pisos de un cliente (campañas y publicaciones).
   app.get('/api/adman/pisos', requireAuth, requireAdmin, async (req, res) => {
     try {
