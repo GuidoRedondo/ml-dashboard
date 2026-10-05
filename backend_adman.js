@@ -1,6 +1,6 @@
 // backend_adman.js
 // ============================================================
-//  Alertas AdMan — Etapas 1 (lectura) y 2 (panel y decisiones)  —  Negocio Redondo · ML Dashboard
+//  Alertas AdMan — Etapas 1 (lectura), 2 (panel y decisiones) y 3 (pisos y clasificación)
 // ============================================================
 //
 //  Se monta desde server.js (mismo patrón que backend_reclamos.js):
@@ -9,9 +9,10 @@
 //  QUÉ HACE (spec: docs/spec-alertas-adman.md)
 //  -------------------------------------------
 //  Trae las alertas pendientes de los agentes de AdMan de toda la cartera y las
-//  guarda (Etapa 1). Guido las aprueba o desestima desde el panel y eso se manda a
-//  AdMan en lotes (Etapa 2, ver más abajo). Todavía no clasifica: toda alerta va a la
-//  pila "revisar" hasta la Etapa 3.
+//  guarda (Etapa 1). Al terminar cada corrida las clasifica en Aceptar, Desestimar o
+//  Revisar contra el piso de ROAS de cada cuenta (Etapa 3, lib/adman-clasificar.js).
+//  Guido las aprueba o desestima desde el panel y eso se manda a AdMan en lotes (Etapa 2).
+//  La corrida es automática a las 03:15 ART, con un repaso a las 04:30 y aviso por Slack.
 //
 //  Solo admin: nada de esto lo ve un cliente ni un colaborador.
 //
@@ -33,6 +34,7 @@
 //  el panel de AdMan y saber si es UTC de verdad o hora argentina con la Z puesta.
 
 const { abrirSesion, limpiar } = require('./lib/adman-client');
+const { CONFIG_DEFAULT, calcularPisos, clasificar, detectarConflictos } = require('./lib/adman-clasificar');
 
 async function crearTablas(pool) {
   await pool.query(`
@@ -164,6 +166,50 @@ async function crearTablas(pool) {
     );
     CREATE INDEX IF NOT EXISTS idx_decisiones_log_ref ON decisiones_log (origen, ref_id);
     CREATE INDEX IF NOT EXISTS idx_decisiones_log_client ON decisiones_log (client_id, fecha DESC);
+
+    -- Etapa 3. Detalle de la clasificación (ROAS, piso, equilibrio, CM, gravedad) para la pantalla.
+    ALTER TABLE adman_alertas ADD COLUMN IF NOT EXISTS clasif         JSONB;
+    ALTER TABLE adman_alertas ADD COLUMN IF NOT EXISTS clasificada_en TIMESTAMPTZ;
+
+    -- Margen a conservar por cliente, en puntos. NULL = usa el global de config_alertas.
+    ALTER TABLE clients ADD COLUMN IF NOT EXISTS margen_conservar_pts NUMERIC;
+
+    -- Umbrales editables: una sola fila (id=1). Los valores por defecto son los de la spec.
+    CREATE TABLE IF NOT EXISTS config_alertas (
+      id                      INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+      margen_conservar_pts    NUMERIC DEFAULT 10,
+      presup_lisb_min         NUMERIC DEFAULT 20,
+      presup_lisb_desestimar  NUMERIC DEFAULT 10,
+      presup_consumo_topeada  NUMERIC DEFAULT 95,
+      bajar_multiplo_piso     NUMERIC DEFAULT 1.5,
+      peso_max_sin_cmv        NUMERIC DEFAULT 20,
+      ventana_dias            INTEGER DEFAULT 14,
+      min_inversion           NUMERIC DEFAULT 20000,
+      min_ventas_ads          INTEGER DEFAULT 3,
+      actualizada             TIMESTAMPTZ DEFAULT NOW()
+    );
+    INSERT INTO config_alertas (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
+
+    -- Foto diaria de CM, equilibrio y piso por campaña y por publicación. Piso NULL con
+    -- extra.piso_infinito = el producto no aguanta publicidad con ese margen a conservar.
+    CREATE TABLE IF NOT EXISTS pisos_diarios (
+      id                   SERIAL PRIMARY KEY,
+      fecha                DATE NOT NULL,
+      client_id            INTEGER REFERENCES clients(id) ON DELETE CASCADE,
+      nivel                TEXT NOT NULL,          -- campana, mla
+      entidad_id           TEXT NOT NULL,
+      entidad_nombre       TEXT,
+      cm                   NUMERIC,
+      equilibrio           NUMERIC,
+      piso                 NUMERIC,
+      ventas_ads           NUMERIC,
+      sin_cmv              BOOLEAN DEFAULT FALSE,
+      motivo_indefinido    TEXT,
+      margen_conservar_pts NUMERIC,
+      extra                JSONB,
+      creada               TIMESTAMPTZ DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_pisos_diarios ON pisos_diarios (client_id, fecha, nivel);
   `);
   // Si el server se reinició a mitad de una corrida, esa corrida no va a terminar nunca.
   await pool.query(`
@@ -215,7 +261,8 @@ function filaAlerta(a) {
 
 // ════════════════════════════════════════════════════════════════════
 
-module.exports = (app, { pool, requireAuth, requireAdmin, getClientToken, ML_API }) => {
+module.exports = (app, { pool, requireAuth, requireAdmin, getClientToken, ML_API, nodeCron, ART, ymd, ymdShift,
+                         margenRealPorMla, adsPorCampanaItem, margenPromoPublicacion }) => {
 
   let corridaEnCurso = null;
   const log = m => console.log(m);
@@ -249,7 +296,7 @@ module.exports = (app, { pool, requireAuth, requireAdmin, getClientToken, ML_API
         accion_raw, operador, valor_previo, valor_nuevo, metricas, errores, pila, motivo,
         created_at_adman, created_at_raw, mla, promocion)
       VALUES ($1,$2,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,'revisar',
-        'Sin clasificar (Etapa 1)',$19,$20,$21,$22)
+        'Sin clasificar todavía',$19,$20,$21,$22)
       ON CONFLICT (alert_id) DO UPDATE SET
         ultima_corrida_id = EXCLUDED.ultima_corrida_id,
         client_id   = COALESCE(adman_alertas.client_id, EXCLUDED.client_id),
@@ -393,6 +440,17 @@ module.exports = (app, { pool, requireAuth, requireAdmin, getClientToken, ML_API
         }
       }
 
+      // Etapa 3: clasificar lo pendiente. Si falla, las alertas quedan como estaban y la
+      // corrida se marca parcial: nunca se recomienda nada por defecto.
+      if (detalle.cuentas_leidas.length) {
+        try { detalle.clasificacion = await clasificarPendientes(); }
+        catch (e) {
+          detalle.clasificacion = { error: limpiar(e.message) };
+          detalle.cuentas_fallidas.push({ cuenta: '(clasificación)', error: limpiar(e.message) });
+          log(`[ADMAN] Corrida ${corridaId}: falló la clasificación: ${limpiar(e.message)}`);
+        }
+      }
+
       const leidas = detalle.cuentas_leidas.length, fallidas = detalle.cuentas_fallidas.length;
       const estado = fallidas === 0 ? 'ok' : (leidas === 0 ? 'fallida' : 'parcial');
       const error = fallidas ? `Fallaron ${fallidas} cuenta(s): ${detalle.cuentas_fallidas.map(x => x.cuenta).join(', ')}` : null;
@@ -418,6 +476,8 @@ module.exports = (app, { pool, requireAuth, requireAdmin, getClientToken, ML_API
     corridaEnCurso = id;
     correr(id)
       .catch(e => log(`[ADMAN] Corrida ${id} error inesperado: ${limpiar(e.message)}`))
+      .then(() => (origen === 'cron' || origen === 'repaso') ? avisarSlack(id, origen) : null)
+      .catch(e => log(`[ADMAN] Slack corrida ${id}: ${limpiar(e.message)}`))
       .finally(() => { corridaEnCurso = null; });
     return { ya_en_curso: false, corrida_id: id };
   }
@@ -618,7 +678,7 @@ module.exports = (app, { pool, requireAuth, requireAdmin, getClientToken, ML_API
                  a.flow_nombre, a.flow_tipo, a.entity_type, a.entity_name, a.accion, a.accion_cambio, a.operador,
                  a.valor_previo, a.valor_nuevo, a.metricas, a.pila, a.motivo, a.piso_usado, a.estado, a.decision,
                  a.lote_id, a.motivo_fallo, a.created_at_adman, a.primera_vez, a.mla, a.mla_opciones, a.promocion,
-                 c.nickname, cl.name AS client_name
+                 a.clasif, a.clasificada_en, c.nickname, cl.name AS client_name
           FROM adman_alertas a
           LEFT JOIN adman_cuentas c ON c.adman_cust_id=a.adman_cust_id
           LEFT JOIN clients cl ON cl.id=a.client_id
@@ -634,6 +694,7 @@ module.exports = (app, { pool, requireAuth, requireAdmin, getClientToken, ML_API
       res.json({
         corrida: corrida.rows[0] || null,
         corrida_en_curso: corridaEnCurso,
+        clasificacion_en_curso: clasificacionEnCurso,
         lotes_en_curso: lotes.rows,
         alertas: alertas.rows,
         decididas_24h: decididas.rows,
@@ -696,9 +757,245 @@ module.exports = (app, { pool, requireAuth, requireAdmin, getClientToken, ML_API
     } catch (e) { err(res, e); }
   });
 
+  // ══ Etapa 3: pisos y clasificación ══════════════════════════════════════════
+  //
+  // Cada alerta pendiente cae en Aceptar, Desestimar o Revisar con un motivo de una línea.
+  // Código determinístico (lib/adman-clasificar.js), nunca un modelo de IA, y no ejecuta
+  // nada: la pila es una recomendación, decide el clic.
+  //
+  // Los pisos salen de ML y del P&L por producto, no de AdMan: no gastan su cupo de 10
+  // llamadas por minuto. La CM por publicación es la de calcularMargenRealPorMla (la misma
+  // de Rentabilidad), antes de publicidad.
+
+  let clasificacionEnCurso = null;
+
+  async function cargarConfig() {
+    const r = await pool.query('SELECT * FROM config_alertas WHERE id=1');
+    const cfg = { ...CONFIG_DEFAULT };
+    if (r.rows[0]) Object.keys(CONFIG_DEFAULT).forEach(k => {
+      const v = parseFloat(r.rows[0][k]);
+      if (!isNaN(v)) cfg[k] = v;
+    });
+    return cfg;
+  }
+
+  // Ventana de los pisos: los últimos N días completos (hasta ayer, hora argentina).
+  function ventana(cfg) {
+    const hasta = ymdShift(ymd(), -1);
+    return { desde: ymdShift(hasta, -(cfg.ventana_dias - 1)), hasta };
+  }
+
+  async function calcularPisosCuenta(clientId, cfg, mPts) {
+    const { desde, hasta } = ventana(cfg);
+    const [margen, ads] = await Promise.all([
+      margenRealPorMla(clientId, desde, hasta),
+      adsPorCampanaItem(clientId, desde, hasta),
+    ]);
+    const pisos = calcularPisos({ items: margen.items, ads: ads.ads, campanas: ads.campanas,
+                                  m: mPts / 100, pesoMaxSinCmv: cfg.peso_max_sin_cmv / 100 });
+    // Foto del día: la del último cálculo pisa la anterior del mismo día.
+    const fecha = ymd();
+    const fin = v => (v == null || !isFinite(v)) ? null : v;
+    const filas = [];
+    Object.values(pisos.porCampana).forEach(c => filas.push(['campana', c.id, c.name, c.cm, c.equilibrio, c.piso,
+      c.ventas_ads, c.indefinido != null, c.indefinido, { roas: c.roas, inversion: c.inversion, peso_sin_cmv: c.peso_sin_cmv,
+      roas_target: c.roas_target, acos_target: c.acos_target, budget: c.budget, status: c.status,
+      piso_infinito: c.piso === Infinity }]));
+    Object.values(pisos.porMla).forEach(x => filas.push(['mla', x.mla, x.title, x.cm, x.equilibrio, x.piso,
+      null, x.sin_cmv, x.sin_cmv ? 'sin CMV' : null, { facturacion: x.facturacion, piso_infinito: x.piso === Infinity }]));
+    const db = await pool.connect();
+    try {
+      await db.query('BEGIN');
+      await db.query('DELETE FROM pisos_diarios WHERE fecha=$1 AND client_id=$2', [fecha, clientId]);
+      for (let i = 0; i < filas.length; i += 200) {
+        const vals = [], ph = [];
+        filas.slice(i, i + 200).forEach((f, j) => {
+          const b = j * 13;
+          ph.push(`(${Array.from({ length: 13 }, (_, k) => `$${b + k + 1}`).join(',')})`);
+          vals.push(fecha, clientId, f[0], f[1], f[2], fin(f[3]), fin(f[4]), fin(f[5]), f[6], f[7], f[8], mPts, JSON.stringify(f[9]));
+        });
+        await db.query(`
+          INSERT INTO pisos_diarios (fecha, client_id, nivel, entidad_id, entidad_nombre, cm, equilibrio, piso,
+            ventas_ads, sin_cmv, motivo_indefinido, margen_conservar_pts, extra)
+          VALUES ${ph.join(',')}`, vals);
+      }
+      await db.query('COMMIT');
+    } catch (e) { await db.query('ROLLBACK').catch(() => {}); throw e; }
+    finally { db.release(); }
+    return { pisos, desde, hasta };
+  }
+
+  // Clasifica todas las alertas decidibles (o las de un cliente). Devuelve el resumen.
+  async function clasificarPendientes({ clientId = null } = {}) {
+    const cfg = await cargarConfig();
+    const cond = clientId ? 'AND a.client_id=$1' : '';
+    const r = await pool.query(`
+      SELECT a.alert_id::text AS alert_id, a.client_id, a.adman_cust_id::text AS adman_cust_id, a.flow_id,
+             a.entity_type, a.entity_id, a.entity_name, a.accion, a.operador, a.valor_previo, a.valor_nuevo,
+             a.metricas, a.mla, a.promocion, a.created_at_adman, cl.margen_conservar_pts
+      FROM adman_alertas a LEFT JOIN clients cl ON cl.id=a.client_id
+      WHERE a.estado IN ('pendiente','fallida') ${cond}`, clientId ? [clientId] : []);
+    const conflictos = detectarConflictos(r.rows);
+    const porCliente = {};
+    r.rows.forEach(a => { (porCliente[a.client_id || 'sin'] ||= []).push(a); });
+    const resumen = { aceptar: 0, desestimar: 0, revisar: 0, errores: [] };
+
+    for (const [cid, alertas] of Object.entries(porCliente)) {
+      const mPts = alertas[0].margen_conservar_pts != null ? parseFloat(alertas[0].margen_conservar_pts) : cfg.margen_conservar_pts;
+      const m = mPts / 100;
+      let pisos = null, errorPisos = null;
+      if (cid !== 'sin' && alertas.some(a => a.entity_type === 'campaign')) {
+        try { pisos = (await calcularPisosCuenta(parseInt(cid), cfg, mPts)).pisos; }
+        catch (e) {
+          errorPisos = limpiar(e.message);
+          resumen.errores.push({ client_id: cid, error: errorPisos });
+          log(`[ADMAN] Pisos de cliente ${cid}: ${errorPisos}`);
+        }
+      }
+      const promoCache = {};
+      for (const a of alertas) {
+        let res;
+        if (cid === 'sin' && a.accion !== 'pauseProductAd') {
+          res = { pila: 'revisar', motivo: 'Cuenta de AdMan sin cliente en el dashboard: no hay costos para calcular el piso' };
+        } else {
+          let promo = null;
+          const esPromo = a.accion === 'participateInCandidatePromotions' || a.entity_type === 'promotion';
+          const precio = parseFloat((a.promocion || {}).dealPrice ?? a.valor_nuevo);
+          if (esPromo && a.mla && precio > 0) {
+            const k = `${a.mla}|${precio}`;
+            if (!(k in promoCache)) {
+              try { promoCache[k] = await margenPromoPublicacion(parseInt(cid), a.mla, precio); }
+              catch (e) { promoCache[k] = { error: limpiar(e.message) }; }
+            }
+            promo = promoCache[k];
+          }
+          res = clasificar(a, {
+            cfg, m, promo, errorPisos, conflicto: conflictos[a.alert_id] || 0,
+            campana: pisos && a.entity_type === 'campaign' ? (pisos.porCampana[String(a.entity_id)] || null) : null,
+          });
+        }
+        resumen[res.pila]++;
+        // Solo si sigue decidible: no pisar una que entró a un lote mientras se clasificaba.
+        await pool.query(`
+          UPDATE adman_alertas SET pila=$2, motivo=$3, piso_usado=$4, clasif=$5, clasificada_en=NOW()
+          WHERE alert_id=$1 AND estado IN ('pendiente','fallida')`,
+          [a.alert_id, res.pila, res.motivo, res.piso_usado ?? null, res.clasif ? JSON.stringify(res.clasif) : null]);
+      }
+    }
+    return resumen;
+  }
+
+  async function lanzarClasificacion(opts = {}) {
+    if (clasificacionEnCurso) return { ya_en_curso: true };
+    clasificacionEnCurso = { inicio: new Date(), client_id: opts.clientId || null };
+    clasificarPendientes(opts)
+      .then(r => log(`[ADMAN] Clasificación: ${r.aceptar} aceptar, ${r.desestimar} desestimar, ${r.revisar} revisar${r.errores.length ? `, ${r.errores.length} cuenta(s) sin piso` : ''}`))
+      .catch(e => log(`[ADMAN] Clasificación falló: ${limpiar(e.message)}`))
+      .finally(() => { clasificacionEnCurso = null; });
+    return { ya_en_curso: false };
+  }
+
+  // ── Aviso de Slack (solo corridas automáticas) ──────────────────────────────
+  async function avisarSlack(corridaId, origen) {
+    const url = process.env.SLACK_WEBHOOK_URL;
+    if (!url) return;
+    const c = (await pool.query('SELECT * FROM adman_corridas WHERE id=$1', [corridaId])).rows[0];
+    if (!c) return;
+    // El repaso de las 04:30 solo avisa si trajo alertas nuevas (o si falló).
+    if (origen === 'repaso' && c.estado === 'ok' && !(c.nuevas > 0)) return;
+    const p = (await pool.query(`
+      SELECT pila, COUNT(*)::int AS n FROM adman_alertas WHERE estado IN ('pendiente','fallida') GROUP BY pila`)).rows;
+    const n = k => (p.find(x => x.pila === k) || {}).n || 0;
+    const total = n('aceptar') + n('desestimar') + n('revisar');
+    let txt = `🎯 Alertas AdMan${origen === 'repaso' ? ' (repaso)' : ''}: ${total} pendientes — ${n('aceptar')} aceptar, ${n('desestimar')} desestimar, ${n('revisar')} revisar`;
+    if (origen === 'repaso') txt += ` · ${c.nuevas} nuevas desde la corrida de las 03:15`;
+    if (c.estado !== 'ok') txt += `\n⚠️ Corrida ${c.estado}: ${c.error || 'sin detalle'}`;
+    txt += `\nhttps://app.negocioredondolatam.com/admin/alertas`;
+    try {
+      await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: txt }) });
+    } catch (e) { log(`[ADMAN] Slack: ${e.message}`); }
+  }
+
+  // ── Rutas de la Etapa 3 ──────────────────────────────────────────────────────
+
+  app.post('/api/adman/clasificar', requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const clientId = parseInt((req.body || {}).client_id) || null;
+      const r = await lanzarClasificacion({ clientId });
+      res.status(r.ya_en_curso ? 409 : 202).json(r);
+    } catch (e) { err(res, e); }
+  });
+
+  // Config global + margen a conservar de cada cuenta de AdMan vinculada.
+  app.get('/api/adman/config', requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const cfg = await cargarConfig();
+      const cuentas = await pool.query(`
+        SELECT a.client_id, cl.name AS client_name, a.nickname, cl.margen_conservar_pts
+        FROM adman_cuentas a JOIN clients cl ON cl.id=a.client_id
+        WHERE a.activo IS NOT FALSE ORDER BY a.nickname`);
+      res.json({ config: cfg, defaults: CONFIG_DEFAULT, cuentas: cuentas.rows, clasificacion_en_curso: clasificacionEnCurso });
+    } catch (e) { err(res, e); }
+  });
+
+  app.put('/api/adman/config', requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const body = req.body || {};
+      const sets = [], vals = [];
+      for (const k of Object.keys(CONFIG_DEFAULT)) {
+        if (body[k] === undefined || body[k] === '') continue;
+        const v = parseFloat(body[k]);
+        if (isNaN(v) || v < 0) return res.status(400).json({ error: `Valor inválido para ${k}` });
+        if (k === 'ventana_dias' && (v < 3 || v > 90)) return res.status(400).json({ error: 'La ventana va de 3 a 90 días' });
+        vals.push(v); sets.push(`${k}=$${vals.length}`);
+      }
+      if (!sets.length) return res.status(400).json({ error: 'Nada para guardar' });
+      await pool.query(`UPDATE config_alertas SET ${sets.join(', ')}, actualizada=NOW() WHERE id=1`, vals);
+      await lanzarClasificacion();
+      res.json({ ok: true, config: await cargarConfig() });
+    } catch (e) { err(res, e); }
+  });
+
+  // Margen a conservar de un cliente. null = usa el global. Guardar reclasifica la cuenta.
+  app.put('/api/adman/margen/:clientId', requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const clientId = parseInt(req.params.clientId);
+      const raw = (req.body || {}).margen_conservar_pts;
+      const v = raw === null || raw === '' || raw === undefined ? null : parseFloat(raw);
+      if (v !== null && (isNaN(v) || v < 0 || v >= 100)) return res.status(400).json({ error: 'Margen inválido' });
+      await pool.query('UPDATE clients SET margen_conservar_pts=$2 WHERE id=$1', [clientId, v]);
+      await lanzarClasificacion({ clientId });
+      res.json({ ok: true, client_id: clientId, margen_conservar_pts: v });
+    } catch (e) { err(res, e); }
+  });
+
+  // Última foto de pisos de un cliente (campañas y publicaciones).
+  app.get('/api/adman/pisos', requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const clientId = parseInt(req.query.client_id);
+      if (!clientId) return res.status(400).json({ error: 'Falta client_id' });
+      const r = await pool.query(`
+        SELECT * FROM pisos_diarios WHERE client_id=$1
+          AND fecha = (SELECT MAX(fecha) FROM pisos_diarios WHERE client_id=$1)
+        ORDER BY nivel, ventas_ads DESC NULLS LAST, entidad_nombre`, [clientId]);
+      res.json({ client_id: clientId, fecha: r.rows[0] ? r.rows[0].fecha : null, filas: r.rows });
+    } catch (e) { err(res, e); }
+  });
+
+  // ── Cron: 03:15 corrida diaria; 04:30 repaso (el 30/9 AdMan generó alertas hasta las 03:50) ──
+  if (nodeCron) {
+    nodeCron.schedule('15 3 * * *', () => {
+      lanzarCorrida('cron').catch(e => log(`[ADMAN][cron] ${limpiar(e.message)}`));
+    }, { timezone: ART });
+    nodeCron.schedule('30 4 * * *', () => {
+      lanzarCorrida('repaso').catch(e => log(`[ADMAN][cron] ${limpiar(e.message)}`));
+    }, { timezone: ART });
+    log('[CRON] Alertas AdMan programadas: 03:15 y repaso 04:30 ART');
+  }
+
   crearTablas(pool)
     .then(() => log('[ADMAN] Tablas listas'))
     .catch(e => console.error('[ADMAN] No se pudieron crear las tablas:', e.message));
 
-  return { lanzarCorrida };
+  return { lanzarCorrida, lanzarClasificacion };
 };

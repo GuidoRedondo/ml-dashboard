@@ -10884,9 +10884,13 @@ const reclamos = require('./backend_reclamos')(app, {
 });
 
 // Alertas de los agentes de AdMan — módulo aparte (backend_adman.js), solo admin.
-// Etapa 1 de docs/spec-alertas-adman.md: lee las alertas pendientes de toda la
-// cartera vía el MCP de AdMan y las guarda. No clasifica ni ejecuta nada todavía.
-const adman = require('./backend_adman')(app, { pool, requireAuth, requireAdmin, getClientToken, ML_API });
+// docs/spec-alertas-adman.md: lee las alertas pendientes de toda la cartera vía el MCP de
+// AdMan, las clasifica contra los pisos de ROAS de cada cuenta (Etapa 3) y las decide con
+// un clic. Los pisos salen de la CM del P&L por producto: se le pasan las funciones, no se duplican.
+const adman = require('./backend_adman')(app, {
+  pool, requireAuth, requireAdmin, getClientToken, ML_API, nodeCron, ART, ymd, ymdShift,
+  margenRealPorMla: margenRealPorMlaCacheado, adsPorCampanaItem, margenPromoPublicacion,
+});
 
 // Ficha de una publicación (Performance → Publicaciones) — módulo aparte
 // (backend_publicacion_detalle.js). Serie diaria, envío, cuotas, publi, zonas,
@@ -13547,6 +13551,113 @@ function veredictoPromo(best, margenHoy) {
   return { veredicto: 'meter',
            motivo: `Deja ${best.margen_pct}% de margen${resigna}`,
            prioridad: 1 };
+}
+
+// ── Etapa 3 de Alertas AdMan (backend_adman.js): datos para los pisos de ROAS ──────────
+// Se exponen al módulo en vez de duplicar la lógica: la CM es la misma del P&L por producto.
+
+// calcularMargenRealPorMla con el mismo caché de 12 h que Rentabilidad y Top por ganancia.
+async function margenRealPorMlaCacheado(clientId, date_from, date_to) {
+  const c = await pool.query(
+    `SELECT data FROM margen_producto_cache
+      WHERE client_id=$1 AND date_from=$2 AND date_to=$3 AND fetched_at > NOW() - INTERVAL '12 hours'`,
+    [clientId, date_from, date_to]);
+  if (c.rows[0] && c.rows[0].data?.calc_version === MARGEN_CALC_VERSION) return c.rows[0].data;
+  const payload = await calcularMargenRealPorMla(clientId, date_from, date_to);
+  await pool.query(
+    `INSERT INTO margen_producto_cache (client_id, date_from, date_to, data, fetched_at)
+     VALUES ($1,$2,$3,$4,NOW())
+     ON CONFLICT (client_id, date_from, date_to) DO UPDATE SET data=$4, fetched_at=NOW()`,
+    [clientId, date_from, date_to, JSON.stringify(payload)]);
+  return payload;
+}
+
+// Campañas y anuncios de ML con sus métricas de la ventana. Sale de ML y no de AdMan: AdMan
+// deja 10 llamadas por minuto y sus métricas por publicación pesan ~80k caracteres por página.
+// OJO: ML repite la métrica del ítem en cada campaña donde está (ver dedupAdsPorItem). Para
+// ponderar adentro de UNA campaña sirve igual; para sumar entre campañas, no.
+async function adsPorCampanaItem(clientId, date_from, date_to) {
+  const token = await getClientToken(parseInt(clientId));
+  if (!token) throw new Error('Sin token de ML');
+  const h1 = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'Api-Version': '1' };
+  const h2 = { 'Authorization': `Bearer ${token}`, 'api-version': '2' };
+  const advData = await fetch(`${ML_API}/advertising/advertisers?product_id=PADS`, { headers: h1 }).then(r => r.json());
+  const advs = advData.advertisers || [];
+  const adv = advs.find(a => a.site_id === 'MLA') || advs[0];
+  if (!adv) return { campanas: [], ads: [], sin_publicidad: true };
+  const siteId = adv.site_id || 'MLA', advId = adv.advertiser_id;
+
+  const campanas = [];
+  const vistas = new Set();
+  for (let offset = 0; offset <= 2000; offset += 50) {
+    const url = `${ML_API}/advertising/${siteId}/advertisers/${advId}/product_ads/campaigns/search` +
+      `?limit=50&offset=${offset}&date_from=${date_from}&date_to=${date_to}&metrics=cost,total_amount`;
+    const d = await fetch(url, { headers: h2 }).then(r => r.json());
+    if (d && d.error) throw new Error(`Campañas de ML: ${d.message || d.error}`);
+    const res = d.results || [];
+    res.forEach(c => {
+      if (vistas.has(String(c.id))) return;
+      vistas.add(String(c.id));
+      const m = c.metrics || {};
+      campanas.push({ id: String(c.id), name: c.name, status: c.status, budget: c.budget ?? null,
+        roas_target: c.roas_target ?? null, acos_target: c.acos_target ?? null, strategy: c.strategy || null,
+        cost: parseFloat(m.cost) || 0, total_amount: parseFloat(m.total_amount) || 0 });
+    });
+    const total = d.paging?.total ?? res.length;
+    if (!res.length || offset + 50 >= total) break;
+  }
+
+  const ads = (await fetchPadsAds(siteId, advId, h2, { date_from, date_to, metrics: 'cost,total_amount' }))
+    .map(a => ({ item_id: a.item_id, campaign_id: a.campaign_id != null ? String(a.campaign_id) : null,
+                 status: a.status || null,
+                 cost: parseFloat(a.metrics?.cost) || 0, total_amount: parseFloat(a.metrics?.total_amount) || 0 }));
+  return { campanas, ads };
+}
+
+// Margen por unidad de una publicación a un precio dado (el de la promo que propone AdMan).
+// Mismo cálculo que la pestaña de Promociones (feesAlPrecio + margenEnPromo). El envío del
+// vendedor no sale de listing_prices (lo devuelve en 0): desde $33.000 el envío gratis lo
+// paga el vendedor y se le pregunta a ML por la publicación (list_cost de shipping_options,
+// el más caro de CABA y Mendoza, para no aprobar con el envío barato). Debajo de $33.000 el
+// vendedor no paga envío (hasta $15.000 lo paga el comprador; de $15.000 a $32.999, ML).
+async function margenPromoPublicacion(clientId, mla, precio) {
+  const token = await getClientToken(parseInt(clientId));
+  if (!token) return { sin_datos: 'Sin token de ML' };
+  const headers = { 'Authorization': `Bearer ${token}` };
+  const cRes = await pool.query('SELECT tasa_iibb_pct, condicion_iva FROM clients WHERE id=$1', [clientId]);
+  const tasaIibb   = parseFloat(cRes.rows[0]?.tasa_iibb_pct) || 0;
+  const esMonotrib = (cRes.rows[0]?.condicion_iva || 'responsable_inscripto') === 'monotributista';
+  const x = await fetch(`${ML_API}/items/${mla}?attributes=id,price,listing_type_id,category_id,shipping`, { headers })
+    .then(r => r.json()).catch(() => null);
+  if (!x || !x.id) return { sin_datos: 'ML no devolvió la publicación' };
+  const cr = await pool.query('SELECT costo_unit, alicuota_iva FROM product_costs WHERE client_id=$1 AND mla_id=$2', [clientId, mla]);
+  const costo = cr.rows[0] ? parseFloat(cr.rows[0].costo_unit) || 0 : 0;
+  const alic  = cr.rows[0] ? parseFloat(cr.rows[0].alicuota_iva) || 21 : 21;
+  // Mismo criterio que Promociones: un costo de menos del 5% del precio es un error de carga.
+  if (!(costo > 0)) return { sin_cmv: true };
+  if (x.price > 0 && costo / x.price < 0.05) return { sin_cmv: true, costo_sospechoso: true };
+  const it = {
+    listing_type_id: x.listing_type_id, category_id: x.category_id,
+    logistic_type: x.shipping?.logistic_type || 'cross_docking', shipping_mode: x.shipping?.mode || 'me2',
+    peso: x.shipping?.dimensions?.weight || null,
+  };
+  const f = await feesAlPrecio(it, precio, headers, new Map(), null);
+  if (f.com_pct == null) return { sin_datos: 'ML no devolvió la comisión' };
+  let envio = 0, envioSinDato = false;
+  if (precio >= 33000) {
+    const costos = await Promise.all(ENVIO_CP_SONDA.map(async z => {
+      try {
+        const r = await fetch(`${ML_API}/items/${mla}/shipping_options?zip_code=${z.cp}`, { headers });
+        if (!r.ok) return null;
+        const v = ((await r.json()).options || []).map(o => parseFloat(o.list_cost)).filter(v => Number.isFinite(v) && v > 0);
+        return v.length ? Math.min(...v) : null;
+      } catch (e) { return null; }
+    }));
+    const validos = costos.filter(v => v != null);
+    if (validos.length) envio = Math.round(Math.max(...validos)); else envioSinDato = true;
+  }
+  const r = margenEnPromo({ precio, costo, alic, comPct: f.com_pct, envio, esMonotrib, tasaIibb, pesoGr: it.peso });
+  return { ...r, precio, precio_actual: x.price, costo, com_pct: f.com_pct, envio_sin_descontar: envioSinDato };
 }
 
 async function analizarCandidatosPromo(clientId) {

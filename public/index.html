@@ -27792,7 +27792,8 @@ function renderImpactoCostos(r) {
 <script>
 // ════════════════════════════════════════════════════════════════════════════
 //  ALERTAS AdMan — panel interno (solo admin). Backend: backend_adman.js
-//  Spec: docs/spec-alertas-adman.md, Etapa 2.
+//  Spec: docs/spec-alertas-adman.md, Etapas 2 (decisiones) y 3 (pilas por piso de ROAS).
+//  La pila (Aceptar / Desestimar / Revisar) es una recomendación: nada se ejecuta sin clic.
 //
 //  Todo lo que se ve sale de /api/adman/panel, que lee de la base: la pantalla NUNCA
 //  consulta AdMan al cargar (AdMan deja 10 llamadas por minuto). Lo único que toca
@@ -27803,12 +27804,15 @@ const _adm = {
   data: null,
   filtroCliente: '',
   filtroTipo: '',
+  filtroGravedad: '',
+  cfg: null,               // /api/adman/config, se pide al abrir "Criterios"
   sel: new Set(),          // alert_ids seleccionados
   abiertas: new Set(),     // filas con "Más info" desplegado
   gruposAbiertos: new Set(), // grupos de pausa por stock desplegados
   lotes: {},               // lote_id → { lote, alertas } de los lotes que se siguen en pantalla
   pollLotes: null,
   pollCorrida: null,
+  pollClasif: null,
 };
 
 const admEsc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -27883,12 +27887,23 @@ function admAccionTexto(a) {
   return `${admEsc(nombre)}${cambio}${regla ? `<div class="sub">Regla del agente: ${admEsc(regla)}</div>` : ''}`;
 }
 
+const ADM_GRAVEDAD = { perdida: ['Pérdida', 'fallida'], riesgo: ['Riesgo', 'riesgo'], ok: ['OK', 'ok'] };
+const admPiso = v => v == null ? '—' : v === 'infinito' ? '∞' : admNum(v, 2);
 function admMetricas(a) {
   const m = a.metricas || {};
   const v = k => (m[k] && typeof m[k] === 'object') ? m[k].value : m[k];
+  const c = a.clasif || {};
   const out = [];
-  if (v('roas') != null) out.push(`ROAS <b>${admNum(v('roas'), 2)}</b> · piso —`);
+  if (c.gravedad && ADM_GRAVEDAD[c.gravedad]) out.push(`<span class="adm-tag ${ADM_GRAVEDAD[c.gravedad][1]}">${ADM_GRAVEDAD[c.gravedad][0]}</span>`);
+  if (a.entity_type === 'promotion' && c.cm != null) {
+    out.push(`Margen en promo <b>${admNum(c.cm * 100)}%</b> (${admPesos(c.margen_pesos)}/u)`);
+    if (c.roas != null) out.push(`ROAS ${admNum(c.roas, 2)} · piso ${admPiso(c.piso)}`);
+  } else if (v('roas') != null) {
+    out.push(`ROAS <b>${admNum(v('roas'), 2)}</b> · piso <b>${admPiso(c.piso)}</b>` + (c.equilibrio != null ? ` · equil. ${admPiso(c.equilibrio)}` : ''));
+    if (c.cm != null) out.push(`CM campaña ${admNum(c.cm * 100)}%` + (c.peso_sin_cmv ? ` · ${admNum(c.peso_sin_cmv * 100, 0)}% sin CMV` : ''));
+  }
   if (v('lisb') != null) out.push(`Imp. perdidas: presup. ${admNum(v('lisb'), 0)}% · ranking ${admNum(v('lisar'), 0)}%`);
+  if (v('budget_consumption') != null) out.push(`Consumo de presupuesto ${admNum(v('budget_consumption'), 0)}%`);
   if (v('acos') != null) out.push(`ACOS ${admNum(v('acos'))}%`);
   if (v('investment') != null) out.push(`Inversión ${admPesos(v('investment'))}`);
   return out.join('<br>') || '<span class="sub">—</span>';
@@ -27906,7 +27921,8 @@ const admDecidible = a => a.estado === 'pendiente' || a.estado === 'fallida';
 function admFiltradas() {
   return ((_adm.data && _adm.data.alertas) || []).filter(a =>
     (!_adm.filtroCliente || a.nickname === _adm.filtroCliente) &&
-    (!_adm.filtroTipo || a.accion === _adm.filtroTipo));
+    (!_adm.filtroTipo || a.accion === _adm.filtroTipo) &&
+    (!_adm.filtroGravedad || (a.clasif && a.clasif.gravedad) === _adm.filtroGravedad));
 }
 
 async function loadAdmanPanel() {
@@ -27922,6 +27938,7 @@ async function loadAdmanPanel() {
   admRender();
   if (Object.values(_adm.lotes).some(x => x.lote.estado === 'en_curso')) admSeguirLotes();
   if (r.corrida_en_curso) admSeguirCorrida();
+  if (r.clasificacion_en_curso) admSeguirClasif();
 }
 
 function admRender() {
@@ -27959,19 +27976,20 @@ function admRender() {
       ${c ? `· ${c.total_alertas} alertas` : ''}
       ${c && c.error ? `<div style="color:#b42318;margin-top:4px">${admEsc(c.error)}</div>` : ''}
       <span id="adm-corrida-prog" class="sub"></span>
+      ${d.clasificacion_en_curso ? '<span class="adm-tag env">Clasificando…</span>' : ''}
     </div>
 
     <div class="adm-cards">
-      <div class="adm-card" style="border-color:#0f6b5c"><div class="t" style="color:#0f6b5c">Aceptar</div><div class="n">${porPila('aceptar').length}</div><div class="d">La clasificación llega en la Etapa 3</div></div>
-      <div class="adm-card"><div class="t" style="color:#6b7280">Desestimar</div><div class="n">${porPila('desestimar').length}</div><div class="d">La clasificación llega en la Etapa 3</div></div>
-      <div class="adm-card" style="border-color:#c2410c"><div class="t" style="color:#c2410c">Revisar</div><div class="n">${porPila('revisar').length}</div><div class="d">${cuentas.length} cuenta(s) con alertas</div></div>
+      <div class="adm-card" style="border-color:#0f6b5c"><div class="t" style="color:#0f6b5c">Aceptar</div><div class="n">${porPila('aceptar').length}</div><div class="d">Arriba del piso o pausa por stock</div></div>
+      <div class="adm-card"><div class="t" style="color:#6b7280">Desestimar</div><div class="n">${porPila('desestimar').length}</div><div class="d">Pierde plata o el freno no es la plata</div></div>
+      <div class="adm-card" style="border-color:#c2410c"><div class="t" style="color:#c2410c">Revisar</div><div class="n">${porPila('revisar').length}</div><div class="d">Zona gris, falta CMV o agentes en conflicto · ${cuentas.length} cuenta(s)</div></div>
       <div class="adm-card"><div class="t" style="color:#b42318">Margen</div><div class="n">—</div><div class="d">Alertas propias: Etapa 4</div></div>
     </div>
 
     <div id="adm-lotes">${admLotesHtml()}</div>
 
     <div class="adm-bar">
-      <button class="adm-btn ok" disabled title="Se activa con la clasificación por pisos (Etapa 3)">Aprobar todo lo recomendado (${recomendadas.length})</button>
+      <button class="adm-btn ok" ${recomendadas.length ? '' : 'disabled'} onclick="admConfirmarRecomendado()">Aprobar todo lo recomendado (${recomendadas.length})</button>
       <select onchange="_adm.filtroCliente=this.value;admRender()">
         <option value="">Todas las cuentas</option>
         ${cuentas.map(n => `<option ${n === _adm.filtroCliente ? 'selected' : ''}>${admEsc(n)}</option>`).join('')}
@@ -27980,7 +27998,10 @@ function admRender() {
         <option value="">Todos los tipos</option>
         ${tipos.map(t => `<option value="${admEsc(t)}" ${t === _adm.filtroTipo ? 'selected' : ''}>${admEsc(ADM_ACCIONES[t] || t)}</option>`).join('')}
       </select>
-      <select disabled title="La gravedad sale de los pisos (Etapa 3)"><option>Gravedad: Etapa 3</option></select>
+      <select onchange="_adm.filtroGravedad=this.value;admRender()">
+        <option value="">Toda gravedad</option>
+        ${Object.entries(ADM_GRAVEDAD).map(([k, [t]]) => `<option value="${k}" ${k === _adm.filtroGravedad ? 'selected' : ''}>${t}</option>`).join('')}
+      </select>
     </div>
 
     ${_adm.sel.size ? `
@@ -27991,13 +28012,14 @@ function admRender() {
         <button class="adm-btn" onclick="_adm.sel.clear();admRender()">Limpiar</button>
       </div>` : ''}
 
-    ${bloque('Recomendado aceptar', 'aceptar', filtradas.filter(a => a.pila === 'aceptar'), 'Se activa con la clasificación por pisos (Etapa 3).')}
-    ${bloque('Recomendado desestimar', 'desestimar', filtradas.filter(a => a.pila === 'desestimar'), 'Se activa con la clasificación por pisos (Etapa 3).')}
+    ${bloque('Recomendado aceptar', 'aceptar', filtradas.filter(a => a.pila === 'aceptar'), 'Nada para aceptar con estos filtros.')}
+    ${bloque('Recomendado desestimar', 'desestimar', filtradas.filter(a => a.pila === 'desestimar'), 'Nada para desestimar con estos filtros.')}
     ${bloque('Para revisar', 'revisar', filtradas.filter(a => a.pila === 'revisar'), 'No hay alertas pendientes con estos filtros.')}
     <div class="adm-block"><h3>Alertas de margen <span class="adm-tag riesgo">—</span></h3>
       <div class="adm-vacio">Las alertas propias de margen (ROAS real contra la CM de cada publicación) llegan en la Etapa 4.</div></div>
 
     ${admDecididasHtml()}
+    ${admCriteriosHtml()}
   `;
 }
 
@@ -28026,7 +28048,7 @@ function admFila(a) {
       <td>${admEsc(a.entity_name || '—')}${admMla(a)}<div class="sub">${a.entity_type === 'campaign' ? 'Campaña' : a.entity_type === 'item' ? 'Publicación' : a.entity_type === 'promotion' ? 'Promoción' : admEsc(a.entity_type)}</div></td>
       <td>${admAccionTexto(a)}</td>
       <td>${admMetricas(a)}</td>
-      <td><span class="adm-tag revisar">Revisar</span><div class="sub">${admEsc(a.motivo || '')}</div>${admEstadoTag(a)}</td>
+      <td>${admPilaTag(a.pila)}<div class="sub">${admEsc(a.motivo || '')}</div>${admEstadoTag(a)}</td>
       <td style="white-space:nowrap">
         <button class="adm-btn ok" ${dec ? '' : 'disabled'} onclick="admConfirmar('aprobar',['${id}'])">Aprobar</button>
         <button class="adm-btn no" ${dec ? '' : 'disabled'} onclick="admConfirmar('desestimar',['${id}'])">Desestimar</button>
@@ -28051,7 +28073,7 @@ function admFilaGrupo(g) {
       <td><b>${g.length} publicaciones</b><div class="sub">Pausa por stock</div></td>
       <td>Pausar anuncios${regla ? `<div class="sub">Regla del agente: ${admEsc(regla)}</div>` : ''}</td>
       <td><span class="sub">—</span></td>
-      <td><span class="adm-tag revisar">Revisar</span>${conProblema.length ? `<div class="sub" style="color:#b42318">${conProblema.length} con problema: desplegá</div>` : ''}</td>
+      <td>${admPilaTag(g[0].pila)}<div class="sub">${admEsc(g[0].motivo || '')}</div>${conProblema.length ? `<div class="sub" style="color:#b42318">${conProblema.length} con problema: desplegá</div>` : ''}</td>
       <td style="white-space:nowrap">
         <button class="adm-btn ok" ${ids.length ? '' : 'disabled'} onclick='admConfirmar("aprobar", ${JSON.stringify(ids)})'>Aprobar ${ids.length}</button>
         <button class="adm-btn no" ${ids.length ? '' : 'disabled'} onclick='admConfirmar("desestimar", ${JSON.stringify(ids)})'>Desestimar</button>
@@ -28062,6 +28084,10 @@ function admFilaGrupo(g) {
       <td><input type="checkbox" ${_adm.sel.has(a.alert_id) ? 'checked' : ''} ${admDecidible(a) ? '' : 'disabled'} onchange="admSel('${a.alert_id}', this.checked)"></td>
       <td></td><td colspan="3">${admEsc(a.entity_name)}${admMla(a)}</td><td colspan="2">${admEstadoTag(a)}</td></tr>`).join('') : ''}`;
 }
+
+const admPilaTag = p => p === 'aceptar' ? '<span class="adm-tag aceptar">Aceptar</span>'
+  : p === 'desestimar' ? '<span class="adm-tag desestimar">Desestimar</span>'
+  : '<span class="adm-tag revisar">Revisar</span>';
 
 function admSel(id, on) { on ? _adm.sel.add(id) : _adm.sel.delete(id); admRender(); }
 function admSelVarias(ids, on) { ids.forEach(id => on ? _adm.sel.add(id) : _adm.sel.delete(id)); admRender(); }
@@ -28109,6 +28135,114 @@ function admConfirmar(decision, ids) {
     if (ev.target === bg || x === 'cancelar') bg.remove();
     if (x === 'ok') { bg.remove(); admEnviar(decision, lista.map(a => a.alert_id)); }
   });
+}
+
+// "Aprobar todo lo recomendado": la pila Aceptar se aprueba y la pila Desestimar se
+// desestima. Revisar no se toca. Respeta los filtros que estén puestos.
+function admConfirmarRecomendado() {
+  const vista = admFiltradas().filter(admDecidible);
+  const acep = vista.filter(a => a.pila === 'aceptar'), dese = vista.filter(a => a.pila === 'desestimar');
+  if (!acep.length && !dese.length) { showToast('No hay recomendaciones para decidir'); return; }
+  const fila = a => `<tr><td><b>${admEsc(a.entity_name)}</b>${admMla(a)}<div class="sub">${admEsc(a.nickname)}</div></td><td>${admAccionTexto(a)}<div class="sub">${admEsc(a.motivo || '')}</div></td></tr>`;
+  const tabla = l => `<table class="adm-tabla"><tbody>${l.slice(0, 10).map(fila).join('')}
+    ${l.length > 10 ? `<tr><td colspan="2" class="sub">… y ${l.length - 10} más</td></tr>` : ''}</tbody></table>`;
+  const bg = document.createElement('div');
+  bg.className = 'adm-modal-bg';
+  bg.innerHTML = `<div class="adm-modal">
+    <h3>Aprobar lo recomendado</h3>
+    ${acep.length ? `<div class="adm-aviso">Se van a APROBAR ${acep.length} alerta(s): AdMan ejecuta la acción en Mercado Libre. No se deshace desde acá.</div>${tabla(acep)}` : ''}
+    ${dese.length ? `<div style="font-size:12px;font-weight:700;margin:12px 0 6px">Se van a DESESTIMAR ${dese.length} alerta(s) (no se ejecuta nada):</div>${tabla(dese)}` : ''}
+    <div class="sub" style="margin-top:8px">Las de "Revisar" no se tocan.${_adm.filtroCliente || _adm.filtroTipo || _adm.filtroGravedad ? ' Solo las que pasan los filtros puestos.' : ''}</div>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
+      <button class="adm-btn" data-x="cancelar">Cancelar</button>
+      <button class="adm-btn ok" data-x="ok">Sí, ejecutar ${acep.length + dese.length}</button>
+    </div></div>`;
+  document.body.appendChild(bg);
+  bg.addEventListener('click', async ev => {
+    const x = ev.target.getAttribute('data-x');
+    if (ev.target === bg || x === 'cancelar') bg.remove();
+    if (x === 'ok') {
+      bg.remove();
+      if (acep.length) await admEnviar('aprobar', acep.map(a => a.alert_id));
+      if (dese.length) await admEnviar('desestimar', dese.map(a => a.alert_id));
+    }
+  });
+}
+
+// ── Criterios: umbrales globales y margen a conservar por cuenta ──────────────
+const ADM_CFG_CAMPOS = [
+  ['margen_conservar_pts', 'Margen a conservar (pts)', 'Global. Cada cuenta puede tener el suyo abajo'],
+  ['presup_lisb_min', 'Subir presupuesto: imp. perdidas por presupuesto mín. (%)', 'Con ROAS ≥ piso, desde acá se acepta'],
+  ['presup_lisb_desestimar', 'Subir presupuesto: debajo de esto se desestima (%)', 'El freno es el ranking, no la plata'],
+  ['presup_consumo_topeada', 'Campaña topeada desde consumo de (%)', 'Topeada cuenta como "le falta plata" aunque lisb sea bajo'],
+  ['bajar_multiplo_piso', 'Bajar presupuesto: desestimar desde ROAS de N × piso', ''],
+  ['peso_max_sin_cmv', 'Máx. % de ventas por ads sin CMV', 'Desde acá el piso de la campaña queda indefinido'],
+  ['ventana_dias', 'Ventana (días)', 'Días completos hasta ayer para CM y ROAS'],
+];
+
+function admCriteriosHtml() {
+  const c = _adm.cfg;
+  const cuerpo = !c ? '<div class="adm-vacio">Cargando…</div>' : `
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:10px;margin-top:8px">
+      ${ADM_CFG_CAMPOS.map(([k, t, d]) => `<label style="font-size:12px;background:#fff;border:2px solid #292929;border-radius:10px;padding:8px 10px">
+        <b>${admEsc(t)}</b>${d ? `<div class="sub">${admEsc(d)}</div>` : ''}
+        <input type="number" step="any" min="0" data-cfg="${k}" value="${admEsc(c.config[k])}" style="margin-top:6px;width:100%;font-family:inherit;padding:5px 8px;border:2px solid #292929;border-radius:8px">
+      </label>`).join('')}
+    </div>
+    <div class="adm-bar"><button class="adm-btn prim" onclick="admGuardarCfg()">Guardar criterios y reclasificar</button>
+      <button class="adm-btn" onclick="admReclasificar()">Reclasificar ahora</button></div>
+    <table class="adm-tabla" style="margin-top:8px"><thead><tr><th>Cuenta</th><th>Cliente</th><th>Margen a conservar (pts)</th><th></th></tr></thead><tbody>
+      ${c.cuentas.map(x => `<tr><td><b>${admEsc(x.nickname)}</b></td><td>${admEsc(x.client_name)}</td>
+        <td><input type="number" step="any" min="0" max="99" id="adm-m-${x.client_id}" value="${x.margen_conservar_pts == null ? '' : admEsc(x.margen_conservar_pts)}"
+          placeholder="global (${admEsc(c.config.margen_conservar_pts)})" style="width:130px;font-family:inherit;padding:4px 8px;border:2px solid #292929;border-radius:8px"></td>
+        <td><button class="adm-btn" onclick="admGuardarMargen(${x.client_id})">Guardar</button></td></tr>`).join('')}
+    </tbody></table>`;
+  return `<details class="adm-block" ${c ? 'open' : ''} ontoggle="if(this.open&&!_adm.cfg)admCargarCfg()">
+    <summary style="cursor:pointer;font-weight:800;font-size:14px">⚙️ Criterios de clasificación</summary>${cuerpo}</details>`;
+}
+
+async function admCargarCfg() {
+  const r = await apiCall('GET', '/api/adman/config');
+  if (!r || r.error) { showToast('No se pudo leer la configuración'); return; }
+  _adm.cfg = r; admRender();
+}
+
+async function admGuardarCfg() {
+  const body = {};
+  document.querySelectorAll('[data-cfg]').forEach(el => { if (el.value !== '') body[el.getAttribute('data-cfg')] = el.value; });
+  const r = await apiCall('PUT', '/api/adman/config', body);
+  if (!r || r.error) { showToast('No se guardó: ' + ((r && r.error) || 'error')); return; }
+  _adm.cfg.config = r.config;
+  showToast('Criterios guardados: reclasificando');
+  admSeguirClasif();
+}
+
+async function admGuardarMargen(clientId) {
+  const el = document.getElementById('adm-m-' + clientId);
+  const v = el ? el.value.trim() : '';
+  const r = await apiCall('PUT', `/api/adman/margen/${clientId}`, { margen_conservar_pts: v === '' ? null : v });
+  if (!r || r.error) { showToast('No se guardó: ' + ((r && r.error) || 'error')); return; }
+  const x = _adm.cfg.cuentas.find(c => c.client_id === clientId); if (x) x.margen_conservar_pts = r.margen_conservar_pts;
+  showToast(v === '' ? 'Vuelve al margen global: reclasificando la cuenta' : 'Margen guardado: reclasificando la cuenta');
+  admSeguirClasif();
+}
+
+async function admReclasificar() {
+  const r = await apiCall('POST', '/api/adman/clasificar', {});
+  if (!r || r.error) { showToast(r && r.ya_en_curso ? 'Ya hay una clasificación en curso' : 'No se pudo reclasificar'); }
+  else showToast('Reclasificando: calcula los pisos de cada cuenta con alertas, puede tardar unos minutos');
+  admSeguirClasif();
+}
+
+function admSeguirClasif() {
+  if (_adm.pollClasif) return;
+  _adm.pollClasif = setInterval(async () => {
+    const r = await apiCall('GET', '/api/adman/config');
+    if (r && !r.clasificacion_en_curso) {
+      clearInterval(_adm.pollClasif); _adm.pollClasif = null;
+      loadAdmanPanel();
+    }
+  }, 5000);
 }
 
 async function admEnviar(decision, ids) {
