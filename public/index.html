@@ -1156,6 +1156,10 @@ tr.fam-hijo > td { background: rgba(99,102,241,.025); }
           style="padding:8px 18px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-2px;font-family:var(--font-b)">
           💳 Formas de pago
         </button>
+        <button id="tab-perf-no-concretadas" onclick="switchPerfTab('no-concretadas')"
+          style="padding:8px 18px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-2px;font-family:var(--font-b)">
+          🚫 No concretadas
+        </button>
         <button id="tab-perf-ciclo-vida" onclick="switchPerfTab('ciclo-vida')"
           style="padding:8px 18px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-2px;font-family:var(--font-b)">
           🔄 Ciclo de Vida
@@ -1262,6 +1266,15 @@ tr.fam-hijo > td { background: rgba(99,102,241,.025); }
             title="Descarga el resumen por cuotas, forma de pago, medio y publicación">📥 Excel</button>
         </div>
         <div id="formasPagoContent"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Seleccioná la pestaña Formas de pago para cargar.</div></div>
+      </div>
+      <!-- Tab No concretadas -->
+      <div id="perf-tab-no-concretadas" style="display:none">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap">
+          <div style="font-size:12px;color:var(--muted);max-width:640px">Órdenes canceladas del mes contra todas las del mes: quién la cortó, por qué, en qué momento, por qué medio de envío y de qué producto.</div>
+          <select id="ncMesSel" onchange="loadNoConcretadas(false)" style="margin-left:auto;padding:6px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px"></select>
+          <button onclick="loadNoConcretadas(true)" class="sync-btn">🔄 Actualizar</button>
+        </div>
+        <div id="noConcretadasContent"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Seleccioná la pestaña No concretadas para cargar.</div></div>
       </div>
       <!-- Tab Ciclo de Vida -->
       <div id="perf-tab-ciclo-vida" style="display:none">
@@ -2979,6 +2992,7 @@ async function selectClient(clientId, el) {
   _catVentasLoaded = false;
   window._abcFilter = 'todos';
   window._formasPagoData = null;
+  window._ncData = null;
   // Los reclamos se cargan una sola vez por cuenta y quedan en memoria: sin esto,
   // cambiar de cuenta mostraba los reclamos de la anterior.
   _recData = null; _recHilos = {}; _recAbiertoId = null; _recMes = null;
@@ -6519,7 +6533,7 @@ let _perfPubModeFilter = null;
 
 function switchPerfTab(tab) {
   _perfActiveTab = tab;
-  ['analisis','publicaciones','conversion','ventas-hora','seguimiento','opiniones','formas-pago','ciclo-vida'].forEach(t => {
+  ['analisis','publicaciones','conversion','ventas-hora','seguimiento','opiniones','formas-pago','no-concretadas','ciclo-vida'].forEach(t => {
     const el  = document.getElementById(`perf-tab-${t}`);
     const btn = document.getElementById(`tab-perf-${t}`);
     if (el)  el.style.display  = t === tab ? '' : 'none';
@@ -6535,6 +6549,7 @@ function switchPerfTab(tab) {
   if (tab === 'conversion') initConversionTab();
   if (tab === 'opiniones' && !_opinionesData) loadOpiniones();
   if (tab === 'formas-pago' && !window._formasPagoData) loadFormasPago(false);
+  if (tab === 'no-concretadas' && !window._ncData) loadNoConcretadas(false);
   if (tab === 'ciclo-vida' && !window._cvData) loadCicloVida(false);
   if (tab === 'ventas-hora') {
     const client = getActiveClient();
@@ -6545,6 +6560,218 @@ function switchPerfTab(tab) {
       iframe.src = target; // siempre recargar para reflejar cambios de período
     }
   }
+}
+
+// ── TAB NO CONCRETADAS ───────────────────────────────────────────────────────
+// Órdenes canceladas de un mes calendario: quién la cortó, motivo, momento (antes del
+// despacho / en camino / entregada), medio de envío y producto. Backend:
+// backend_no_concretadas.js (cachea por mes; la primera vez de una cuenta grande tarda).
+function _ncInitMeses() {
+  const sel = document.getElementById('ncMesSel');
+  if (!sel || sel.options.length) return;
+  for (let i = 0; i <= 12; i++) {
+    const m = mesART(i);
+    const o = document.createElement('option');
+    o.value = m.val;
+    o.textContent = m.label + (i === 0 ? ' (en curso)' : '');
+    if (i === 1) o.selected = true;
+    sel.appendChild(o);
+  }
+}
+
+async function loadNoConcretadas(force) {
+  const el = document.getElementById('noConcretadasContent');
+  if (!el) return;
+  _ncInitMeses();
+  const client = getActiveClient();
+  if (!client) { el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Seleccioná un cliente</div>'; return; }
+  const sel = document.getElementById('ncMesSel');
+  const mes = sel.value;
+  el.innerHTML = `<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">⏳ Analizando las órdenes de ${sel.selectedOptions[0].textContent}…<br><span style="font-size:11px;display:block;margin-top:6px">La primera vez de una cuenta grande puede tardar 2-3 minutos (pide el envío de cada orden); después queda guardado.</span></div>`;
+  try {
+    // El mes anterior sólo si ya está calculado: no se duplica la espera por una flecha
+    const [y, m] = mes.split('-').map(Number);
+    const mesAnt = `${m === 1 ? y - 1 : y}-${String(m === 1 ? 12 : m - 1).padStart(2, '0')}`;
+    const [data, ant] = await Promise.all([
+      apiCall('GET', `/api/no-concretadas?client_id=${client.id}&mes=${mes}${force ? '&force=1' : ''}`),
+      apiCall('GET', `/api/no-concretadas?client_id=${client.id}&mes=${mesAnt}&solo_cache=1`).catch(() => null),
+    ]);
+    // Si mientras tanto cambió la cuenta o el mes, esta respuesta ya no va
+    if (getActiveClient()?.id !== client.id || sel.value !== mes) return;
+    if (data?.error) throw new Error(data.error);
+    window._ncData = data;
+    window._ncAnt = ant && !ant.sin_cache && !ant.error ? ant : null;
+    renderNoConcretadas();
+  } catch (e) {
+    el.innerHTML = '<div style="color:#ff5252;font-size:13px;padding:40px;text-align:center">Error analizando las no concretadas: ' + (e?.message || e) + '</div>';
+  }
+}
+
+const _ncM = n => '$' + Math.round(n || 0).toLocaleString('es-AR');
+const _ncP = n => (n == null ? '—' : (+n).toLocaleString('es-AR', { maximumFractionDigits: 1 }) + '%');
+const _ncEsc = s => String(s ?? '').replace(/[<>&"]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' }[c]));
+const _NC_MOMENTO_COLOR = {
+  'Antes del despacho': '#f59e0b', 'Despachada, no entregada': '#3b82f6',
+  'Después de entregada': '#dc2626', 'Sin envío': '#8a8676', 'Sin dato': '#a8a493',
+};
+const _ncTh = (t, al) => `<th style="text-align:${al || 'left'};padding:8px;font-size:11px;color:var(--muted);font-weight:700;text-transform:uppercase;letter-spacing:.04em;border-bottom:1px solid var(--border);white-space:nowrap">${t}</th>`;
+const _ncTd = (t, al, extra) => `<td style="text-align:${al || 'left'};padding:8px;font-size:12.5px;border-bottom:1px solid var(--border);${extra || ''}">${t}</td>`;
+const _ncMomentoChip = (k, v) => `<span style="display:inline-block;font-size:10.5px;padding:1px 6px;border-radius:10px;margin:1px 3px 1px 0;background:${(_NC_MOMENTO_COLOR[k] || '#888')}1f;color:${_NC_MOMENTO_COLOR[k] || '#888'};font-weight:700;white-space:nowrap">${_ncEsc(k)}${v != null ? ' ' + v : ''}</span>`;
+
+function renderNoConcretadas() {
+  const el = document.getElementById('noConcretadasContent');
+  const d = window._ncData, ant = window._ncAnt;
+  if (!el || !d) return;
+  if (!d.ordenes) {
+    el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">No hay órdenes en el mes seleccionado.</div>';
+    return;
+  }
+  const card = 'background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:16px 18px';
+  const titulo = t => `<div style="font-size:13px;font-weight:800;font-family:var(--font-b);margin-bottom:12px">${t}</div>`;
+  // Chip contra el mes anterior: acá bajar es bueno
+  const chip = (act, prev, esPct) => {
+    if (prev == null || act == null) return '';
+    const dif = act - prev;
+    if (Math.abs(dif) < (esPct ? 0.1 : 1)) return '<span style="font-size:11px;font-weight:700;color:#8a8676;background:#8a86761a;padding:2px 7px;border-radius:20px">→ igual</span>';
+    const col = dif < 0 ? '#16a34a' : '#dc2626';
+    const txt = esPct ? `${dif > 0 ? '▲' : '▼'} ${Math.abs(dif).toFixed(1)} pts` : `${dif > 0 ? '▲' : '▼'} ${_ncM(Math.abs(dif))}`;
+    return `<span title="contra el mes anterior" style="font-size:11px;font-weight:800;color:${col};background:${col}1a;padding:2px 7px;border-radius:20px;white-space:nowrap">${txt}</span>`;
+  };
+  const kpi = (lbl, val, sub, extra) => `<div style="${card};flex:1;min-width:190px">
+    <div style="font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)">${lbl}</div>
+    <div style="display:flex;align-items:baseline;gap:8px;margin-top:6px;flex-wrap:wrap"><span style="font-size:24px;font-weight:800;font-family:var(--font-b)">${val}</span>${extra || ''}</div>
+    <div style="font-size:11.5px;color:var(--muted);margin-top:4px">${sub}</div></div>`;
+
+  const antesDesp = d.por_momento.find(x => x.momento === 'Antes del despacho');
+  const entregada = d.por_momento.find(x => x.momento === 'Después de entregada');
+  const pctDe = x => d.canceladas ? (x / d.canceladas * 100) : 0;
+  const kpis = `<div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:18px">
+    ${kpi('No concretadas', _ncP(d.pct_ordenes), `${d.canceladas.toLocaleString('es-AR')} de ${d.ordenes.toLocaleString('es-AR')} órdenes${ant ? ` · mes anterior ${_ncP(ant.pct_ordenes)}` : ''}`, chip(d.pct_ordenes, ant?.pct_ordenes, true))}
+    ${kpi('Plata que no entró', _ncM(d.monto_cancelado), `${_ncP(d.pct_monto)} de lo vendido en el mes${ant ? ` · mes anterior ${_ncM(ant.monto_cancelado)}` : ''}`, chip(d.monto_cancelado, ant?.monto_cancelado, false))}
+    ${kpi('Antes del despacho', antesDesp ? antesDesp.ordenes.toLocaleString('es-AR') : '0', antesDesp ? `${pctDe(antesDesp.ordenes).toFixed(0)}% de las caídas${d.horas_mediana_antes_despacho != null ? ` · a las ${d.horas_mediana_antes_despacho.toLocaleString('es-AR')} h de la compra (mediana)` : ''}` : 'ninguna se cayó antes de salir')}
+    ${kpi('Bajan la reputación', d.afectan_reputacion.toLocaleString('es-AR'), d.afectan_reputacion ? 'canceladas por el vendedor' : 'ninguna la canceló el vendedor')}
+  </div>`;
+
+  // Lectura: dónde está el problema
+  const lect = [];
+  if (antesDesp && pctDe(antesDesp.ordenes) >= 35)
+    lect.push(`<b>${pctDe(antesDesp.ordenes).toFixed(0)}% se cae antes de que salga el paquete</b>${d.horas_mediana_antes_despacho != null ? `, a las ${d.horas_mediana_antes_despacho.toLocaleString('es-AR')} h de la compra (mediana)` : ''}: el comprador se arrepiente o encuentra algo mejor mientras espera. La palanca es despachar más rápido (FULL, Flex, despacho en el día).`);
+  if (entregada && pctDe(entregada.ordenes) >= 25)
+    lect.push(`<b>${pctDe(entregada.ordenes).toFixed(0)}% se cae con el producto ya entregado</b>: son devoluciones por reclamo. Mirá los productos de abajo: lo que muestra la publicación no es lo que recibe el comprador (medidas, calidad, compatibilidad).`);
+  const canalesComp = d.por_canal.filter(c => c.ordenes >= 30 && !['Sin dato', 'Sin envío'].includes(c.canal));
+  if (canalesComp.length >= 2) {
+    const ord = canalesComp.slice().sort((a, b) => b.pct_ordenes - a.pct_ordenes);
+    const peor = ord[0], mejor = ord[ord.length - 1];
+    if (mejor.pct_ordenes > 0 && peor.pct_ordenes >= mejor.pct_ordenes * 1.5)
+      lect.push(`Por <b>${_ncEsc(peor.canal)}</b> se cae el ${_ncP(peor.pct_ordenes)} de las órdenes contra ${_ncP(mejor.pct_ordenes)} por <b>${_ncEsc(mejor.canal)}</b>.`);
+  }
+  if (d.afectan_reputacion > 0)
+    lect.push(`<b>${d.afectan_reputacion}</b> ${d.afectan_reputacion === 1 ? 'la canceló' : 'las canceló'} el vendedor: son las únicas que bajan la reputación y casi siempre son stock que no estaba.`);
+  const lectura = lect.length ? `<div style="background:#fff8db;border:1px solid #f5d76e;border-radius:12px;padding:12px 16px;margin-bottom:18px;font-size:13px;line-height:1.55;color:#292929">${lect.map(t => `<div style="margin:3px 0">• ${t}</div>`).join('')}</div>` : '';
+
+  // Barras horizontales sobre el total de canceladas
+  const barras = (rows, lblKey, colorOf) => rows.map(r => {
+    const p = pctDe(r.ordenes);
+    const col = colorOf(r);
+    return `<div style="margin-bottom:9px">
+      <div style="display:flex;justify-content:space-between;gap:8px;font-size:12px;margin-bottom:3px">
+        <span style="font-weight:600">${_ncEsc(r[lblKey])}</span>
+        <span style="color:var(--muted);white-space:nowrap">${r.ordenes} · ${_ncM(r.monto)} · <b style="color:${col}">${p.toFixed(0)}%</b></span>
+      </div>
+      <div style="height:7px;background:var(--surface2);border-radius:4px;overflow:hidden"><div style="height:100%;width:${p.toFixed(1)}%;background:${col}"></div></div>
+    </div>`;
+  }).join('');
+  const quienMomento = `<div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:18px">
+    <div style="${card};flex:1;min-width:300px">${titulo('¿Quién la cortó?')}${barras(d.por_quien, 'quien', r => r.quien === 'El vendedor' ? '#dc2626' : '#6366f1')}</div>
+    <div style="${card};flex:1;min-width:300px">${titulo('¿En qué momento?')}${barras(d.por_momento, 'momento', r => _NC_MOMENTO_COLOR[r.momento] || '#6366f1')}
+      <div style="font-size:11px;color:var(--muted);margin-top:8px">Sale del envío de cada orden: si llegó a despacharse y si llegó a entregarse.</div></div>
+  </div>`;
+
+  const momentosMini = mm => Object.entries(mm || {}).sort((a, b) => b[1] - a[1]).map(([k, v]) => _ncMomentoChip(k, v)).join('');
+  const motivos = `<div style="${card};margin-bottom:18px">${titulo('Motivos')}
+    <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse">
+      <thead><tr>${_ncTh('Motivo')}${_ncTh('Quién')}${_ncTh('Órdenes', 'right')}${_ncTh('% de las caídas', 'right')}${_ncTh('$', 'right')}${_ncTh('Momento')}</tr></thead>
+      <tbody>${d.por_motivo.map(r => `<tr>${_ncTd('<b>' + _ncEsc(r.motivo) + '</b>')}${_ncTd(_ncEsc(r.quien), 'left', 'color:var(--muted)')}${_ncTd(r.ordenes, 'right')}${_ncTd(pctDe(r.ordenes).toFixed(0) + '%', 'right')}${_ncTd(_ncM(r.monto), 'right')}${_ncTd(momentosMini(r.momentos))}</tr>`).join('')}</tbody>
+    </table></div></div>`;
+
+  const canales = `<div style="${card};margin-bottom:18px">${titulo('Por medio de envío')}
+    <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse">
+      <thead><tr>${_ncTh('Medio')}${_ncTh('Órdenes', 'right')}${_ncTh('Canceladas', 'right')}${_ncTh('Tasa', 'right')}${_ncTh('$ que no entró', 'right')}</tr></thead>
+      <tbody>${d.por_canal.map(r => {
+        const alta = r.ordenes >= 20 && r.pct_ordenes > d.pct_ordenes * 1.3;
+        return `<tr>${_ncTd('<b>' + _ncEsc(r.canal) + '</b>')}${_ncTd(r.ordenes.toLocaleString('es-AR'), 'right')}${_ncTd(r.canceladas, 'right')}${_ncTd(_ncP(r.pct_ordenes), 'right', alta ? 'color:#dc2626;font-weight:800' : 'font-weight:700')}${_ncTd(_ncM(r.monto_cancelado), 'right')}</tr>`;
+      }).join('')}</tbody>
+    </table></div>
+    <div style="font-size:11px;color:var(--muted);margin-top:8px">Tasa = canceladas sobre las órdenes de ese medio. En rojo: más de 1,3 veces la tasa de la cuenta (${_ncP(d.pct_ordenes)}).${d.envios_sin_dato ? ` ${d.envios_sin_dato} envíos no se pudieron leer y van como "Sin dato".` : ''}</div></div>`;
+
+  const productos = `<div style="${card};margin-bottom:18px">
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px">
+      <div style="font-size:13px;font-weight:800;font-family:var(--font-b)">Por producto <span style="font-weight:400;color:var(--muted);font-size:12px">· ${d.por_item.length} de ${d.items_con_ventas} publicaciones con ventas tuvieron alguna caída</span></div>
+      <input id="ncItemSearch" placeholder="Buscar MLA o título…" oninput="renderNcItems()" style="margin-left:auto;padding:6px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:12px;min-width:220px">
+    </div>
+    <div id="ncItemsTabla"></div>
+    <div style="font-size:11px;color:var(--muted);margin-top:8px">⚠️ = al menos 10 órdenes y una tasa de más de 1,5 veces la de la cuenta. Con pocas ventas una sola caída da un % alto: por eso el aviso pide volumen.</div>
+  </div>`;
+
+  const det = d.canceladas_detalle || [];
+  const detalle = det.length ? `<details style="${card};margin-bottom:18px"><summary style="cursor:pointer;font-size:13px;font-weight:800;font-family:var(--font-b)">📋 Las ${det.length} órdenes una por una</summary>
+    <div style="overflow:auto;margin-top:12px;max-height:520px"><table style="width:100%;border-collapse:collapse">
+      <thead><tr>${_ncTh('Fecha')}${_ncTh('Orden')}${_ncTh('Producto')}${_ncTh('$', 'right')}${_ncTh('Motivo')}${_ncTh('Momento')}${_ncTh('Medio')}${_ncTh('Horas', 'right')}</tr></thead>
+      <tbody>${det.slice(0, 500).map(r => `<tr>
+        ${_ncTd(dART(r.fecha).toLocaleDateString('es-AR', { timeZone: ART_TZ, day: '2-digit', month: '2-digit' }))}
+        ${_ncTd(`<a href="https://www.mercadolibre.com.ar/ventas/${r.order_id}/detalle" target="_blank" style="color:var(--accent);text-decoration:none;font-size:11.5px;white-space:nowrap">${r.order_id} ↗</a>`)}
+        ${_ncTd(`<div style="max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${_ncEsc(r.titulo)}">${_ncEsc(r.titulo)}</div><div style="font-size:10.5px;color:var(--muted)">${r.item_id || ''}${r.items > 1 ? ` · +${r.items - 1} producto${r.items > 2 ? 's' : ''}` : ''}</div>`)}
+        ${_ncTd(_ncM(r.monto), 'right')}
+        ${_ncTd(_ncEsc(r.motivo) + (r.afecta_reputacion ? ' <span title="Baja la reputación" style="color:#dc2626;font-weight:800">●</span>' : ''))}
+        ${_ncTd(_ncMomentoChip(r.momento))}
+        ${_ncTd(_ncEsc(r.canal))}
+        ${_ncTd(r.horas != null ? r.horas.toLocaleString('es-AR') : '—', 'right')}
+      </tr>`).join('')}</tbody>
+    </table>${det.length > 500 ? '<div style="font-size:11px;color:var(--muted);padding:8px">Se muestran las 500 de mayor monto.</div>' : ''}</div></details>` : '';
+
+  const notas = [];
+  if (d.packs_separados) notas.push(`${d.packs_separados} órdenes canceladas porque el comprador separó el carrito no se cuentan: ML las reemplaza por otras órdenes, no es una venta perdida.`);
+  if (d.truncado) notas.push(`La cuenta tuvo ${d.ordenes_ml_total.toLocaleString('es-AR')} órdenes y ML sólo deja leer 10.000 por búsqueda: el análisis cubre las más recientes del mes.`);
+  if (d.cache_at) notas.push(`Calculado el ${new Date(d.cache_at).toLocaleString('es-AR', { timeZone: ART_TZ, day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}. Las mediaciones pueden cancelar órdenes semanas después de la compra: el mes en curso y el anterior todavía se mueven.`);
+  const pie = notas.length ? `<div style="font-size:11px;color:var(--muted);line-height:1.6">${notas.map(n => `<div>${n}</div>`).join('')}</div>` : '';
+
+  el.innerHTML = kpis + lectura + quienMomento + motivos + canales + productos + detalle + pie;
+  renderNcItems();
+}
+
+function sortNcItems(col) {
+  window._ncItemSort = col;
+  renderNcItems();
+}
+
+function renderNcItems() {
+  const box = document.getElementById('ncItemsTabla');
+  const d = window._ncData;
+  if (!box || !d) return;
+  const q = (document.getElementById('ncItemSearch')?.value || '').trim().toLowerCase();
+  const col = window._ncItemSort || 'monto_cancelado';
+  const filas = d.por_item
+    .filter(r => !q || r.item_id.toLowerCase().includes(q) || (r.titulo || '').toLowerCase().includes(q))
+    .sort((a, b) => (b[col] || 0) - (a[col] || 0));
+  const th = (t, c, al) => `<th${c ? ` onclick="sortNcItems('${c}')"` : ''} style="text-align:${al || 'left'};padding:8px;font-size:11px;color:${col === c ? 'var(--text)' : 'var(--muted)'};font-weight:700;text-transform:uppercase;letter-spacing:.04em;border-bottom:1px solid var(--border);white-space:nowrap;${c ? 'cursor:pointer;user-select:none' : ''}">${t}${col === c ? ' ▼' : ''}</th>`;
+  const mostrar = window._ncItemsTodos ? filas : filas.slice(0, 50);
+  box.innerHTML = `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse">
+    <thead><tr>${th('Producto')}${th('Órdenes', 'ordenes', 'right')}${th('Canceladas', 'canceladas', 'right')}${th('Tasa', 'pct_ordenes', 'right')}${th('$ que no entró', 'monto_cancelado', 'right')}${th('Motivo principal')}${th('Momento')}${th('Medio')}</tr></thead>
+    <tbody>${mostrar.map(r => {
+      const alerta = r.ordenes >= 10 && r.pct_ordenes > d.pct_ordenes * 1.5;
+      return `<tr>
+        ${_ncTd(`<div style="max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600" title="${_ncEsc(r.titulo)}">${alerta ? '⚠️ ' : ''}${_ncEsc(r.titulo)}</div><div style="font-size:10.5px;color:var(--muted)">${r.item_id}</div>`)}
+        ${_ncTd(r.ordenes.toLocaleString('es-AR'), 'right')}
+        ${_ncTd(r.canceladas, 'right')}
+        ${_ncTd(_ncP(r.pct_ordenes), 'right', alerta ? 'color:#dc2626;font-weight:800' : 'font-weight:700')}
+        ${_ncTd(_ncM(r.monto_cancelado), 'right')}
+        ${_ncTd(_ncEsc(r.motivo_principal || '—'), 'left', 'font-size:12px')}
+        ${_ncTd(r.momento_principal ? _ncMomentoChip(r.momento_principal) : '—')}
+        ${_ncTd(_ncEsc(r.canal_principal || '—'), 'left', 'font-size:12px;color:var(--muted)')}
+      </tr>`;
+    }).join('') || `<tr>${_ncTd('Sin resultados', 'left', 'color:var(--muted)')}</tr>`}</tbody>
+  </table></div>
+  ${filas.length > 50 ? `<button onclick="window._ncItemsTodos=!window._ncItemsTodos;renderNcItems()" style="margin-top:10px;padding:6px 12px;border:1px solid var(--border);border-radius:8px;background:var(--surface2);color:var(--text);font-size:12px;cursor:pointer">${window._ncItemsTodos ? 'Ver sólo las 50 primeras' : `Ver las ${filas.length}`}</button>` : ''}`;
 }
 
 // ── TAB FORMAS DE PAGO ───────────────────────────────────────────────────────
@@ -16067,6 +16294,8 @@ function diagStory(cols) {
   let hero = `En <b>${last.label}</b> la cuenta facturó <b>${f.m(fact)}</b>`;
   if (prev) hero += `, la facturación <b>${mov('facturacion')}</b> frente a ${prev.label}`;
   hero += '.';
+  const ncPct = _diagNum(G(last,'rep_no_conc_pct')), ncMonto = _diagNum(G(last,'rep_no_conc_monto'));
+  if (ncPct!=null && ncMonto>0) hero += ` Se cayeron <b>${f.m(ncMonto)}</b> en ventas no concretadas (${f.p(ncPct)})${prev && dl('rep_no_conc_pct') ? `, que ${mov('rep_no_conc_pct', false)} frente a ${prev.label}` : ''}.`;
   if (pctQueda!=null) hero += ` De cada $100 que entran quedan <b>$${pctQueda.toFixed(0)}</b> después de las comisiones de Mercado Libre y la publicidad (antes del costo del producto).`;
 
   // KPIs grandes del último mes
@@ -16076,6 +16305,7 @@ function diagStory(cols) {
     { label:'Conversión',   value:f.p(G(last,'conversion')),         delta:dl('conversion'),   hib:true },
     { label:'Te queda limpio', value:pctQueda!=null?pctQueda.toFixed(1)+'%':'—', delta:dl('m.fin_pct_neto_total'), hib:true },
     { label:'ROAS publi',   value:f.x(G(last,'pads_roas')),          delta:dl('pads_roas'),    hib:true },
+    { label:'No concretadas', value:f.p(G(last,'rep_no_conc_pct')),  delta:dl('rep_no_conc_pct'), hib:false },
   ];
 
   // Demanda / embudo
@@ -16313,6 +16543,12 @@ function diagRender(meses, clientId) {
     ${row('✅ % que queda después de ML', d=>d.manuales?.fin_pct_neto_ml??null, fmtP)}
     ${row('− Publicidad', d=>d.manuales?.fin_publicidad||null, fmtM, false)}
     ${row('✅ % que queda (– publicidad)', d=>d.manuales?.fin_pct_neto_total??null, fmtP)}
+    ${sec('🚫 Ventas no concretadas — lo que se cayó','#fee2e2')}
+    ${row('% no concretado ($)', d=>d.rep_no_conc_pct, fmtP, false)}
+    ${row('$ no concretados', d=>d.rep_no_conc_monto, fmtM, false)}
+    ${row('Órdenes no concretadas', d=>d.manuales?.nc_ordenes??null, fmtN, false)}
+    ${row('% no concretado (órdenes)', d=>d.manuales?.nc_pct_ordenes??null, fmtP, false)}
+    ${row('Canceladas por el vendedor (bajan reputación)', d=>d.manuales?.nc_afectan_reputacion??null, fmtN, false)}
     ${sec('🏷 Publicidad','#fce7e7')}
     ${row('Inversión PADS', d=>d.pads_inversion, fmtM, false)}
     ${row('Facturación PADS', d=>d.pads_ingresos, fmtM)}
@@ -16347,8 +16583,6 @@ function diagRender(meses, clientId) {
           ['% Reclamos', rd.rep_reclamos!=null?(parseFloat(rd.rep_reclamos)*100).toFixed(2)+'%':'—'],
           ['% Cancelaciones', rd.rep_cancelaciones!=null?(parseFloat(rd.rep_cancelaciones)*100).toFixed(2)+'%':'—'],
           ['% Demoras', rd.rep_demoras!=null?(parseFloat(rd.rep_demoras)*100).toFixed(2)+'%':'—'],
-          ['No conc. $', fmtM(rd.rep_no_conc_monto)],
-          ['% No conc.', fmtP(rd.rep_no_conc_pct)],
         ].map(([l,v])=>`<div><div style="font-size:10px;color:var(--muted)">${l}</div><div style="font-size:13px;font-weight:600">${v}</div></div>`).join('')}
       </div>
     </div>
@@ -16735,6 +16969,13 @@ function diagExportPDF() {
         ['🎟 Ventas con cupón','m.mkt_ordenes_con_cupon',fmtN],
         ['% ventas con cupón','m.mkt_pct_cupon',fmtP],
         ['$ resignado en cupones','m.mkt_monto_cupon',fmtM],
+      ])}
+      ${tbl('🚫 Ventas no concretadas', '#dc2626', [
+        ['% no concretado ($)','rep_no_conc_pct',fmtP],
+        ['$ no concretados','rep_no_conc_monto',fmtM],
+        ['Órdenes no concretadas','m.nc_ordenes',fmtN],
+        ['% no concretado (órdenes)','m.nc_pct_ordenes',fmtP],
+        ['Canceladas por el vendedor (bajan reputación)','m.nc_afectan_reputacion',fmtN],
       ])}
       ${tbl('🏷 Publicidad', '#ef4444', [
         ['Inversión PADS','pads_inversion',fmtM],

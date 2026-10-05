@@ -47,26 +47,8 @@ const { legible: motivoReclamo } = require('./backend_reclamos');
 const DIAS_HISTORIA_ADS = 90; // PADS no responde fechas más viejas que esto
 const MAX_DIAS_VISITAS = 150; // tope de /items/{id}/visits/time_window?last=
 
-// Quién cortó la venta, según cancel_detail.group
-const GRUPO_CANCELACION = {
-  buyer: 'El comprador', seller: 'El vendedor', shipment: 'Problema de envío',
-  delivery: 'Problema de envío', fraud: 'Fraude (ML)', internal: 'Mercado Libre',
-  mediations: 'Reclamo / mediación', payment: 'Pago no acreditado',
-};
-
-// ML manda el motivo de la cancelación en inglés. Los que aparecieron en cuentas reales;
-// el resto se muestra tal cual viene.
-const MOTIVO_CANCELACION = [
-  [/mediation with status cancel_purchase/i, 'Mediación: el comprador anuló la compra'],
-  [/mediations cancel the order/i,           'La mediación canceló la orden'],
-  [/shipment was not delivered/i,            'El envío no se entregó'],
-  [/out of stock|sin stock/i,                'Sin stock'],
-  [/buyer.*(cancel|regret)/i,                'El comprador se arrepintió'],
-  [/seller.*cancel/i,                        'La canceló el vendedor'],
-  [/fraud/i,                                 'Sospecha de fraude'],
-  [/payment/i,                               'Problema con el pago'],
-];
-const motivoCancelacion = txt => (MOTIVO_CANCELACION.find(([re]) => re.test(txt)) || [])[1] || txt;
+// Quién cortó la venta y por qué: el mismo diccionario que Performance → No concretadas
+const { quienDeOrden, motivoDeOrden } = require('./cancelaciones');
 
 // Una publicación de mucho volumen tarda ~12 s (AB Fitness: 287 órdenes, 643 llamadas,
 // casi todas de envíos). Se guarda en memoria media hora: la ficha se abre y se cierra
@@ -258,9 +240,9 @@ module.exports = (app, deps) => {
         s.canceladas[i] += 1; s.monto_cancelado[i] += montoProp;
         cancel.ordenes += 1; cancel.unidades += unid; cancel.monto += montoProp;
         const cd = o.cancel_detail || {};
-        const quien = GRUPO_CANCELACION[cd.group] || (cd.group ? cd.group : 'Sin dato');
+        const quien = quienDeOrden(cd);
         cancel.por_quien[quien] = (cancel.por_quien[quien] || 0) + 1;
-        const motivo = motivoCancelacion(cd.description || cd.code || 'Sin motivo declarado');
+        const motivo = motivoDeOrden(cd);
         cancel.motivos[motivo] = (cancel.motivos[motivo] || 0) + 1;
         return;
       }

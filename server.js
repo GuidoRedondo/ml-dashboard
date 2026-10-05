@@ -6156,15 +6156,17 @@ app.post('/api/diagnostico/calcular', requireAuth, async (req, res) => {
     const repCancelaciones = repMetrics.cancellations ? parseFloat((repMetrics.cancellations.rate||0).toFixed(4)) : 0;
     const repMediaciones = 0; // no expuesto directamente en API pública
 
-    // No concretadas en $: órdenes canceladas del mes
-    const cancelledRes = await fetch(
-      `${ML_API}/orders/search?seller=${uid}&order.status=cancelled&order.date_created.from=${encodeURIComponent(fmt(dateFrom))}&order.date_created.to=${encodeURIComponent(fmt(dateTo))}&limit=50`,
-      { headers }
-    ).then(r => r.json());
-    const cancelledOrders = cancelledRes.results || [];
-    const repNoConcMonto = cancelledOrders.reduce((s,o) => s+(parseFloat(o.total_amount)||0), 0);
-    const repNoConcPct = (facturacion + repNoConcMonto) > 0
-      ? parseFloat(((repNoConcMonto / (facturacion + repNoConcMonto))*100).toFixed(2)) : 0;
+    // No concretadas: canceladas del mes, paginadas (antes se leía sólo la primera página
+    // de 50 y AB Fitness, con 301 en sep-2026, quedaba muy por debajo) y sin los carritos
+    // separados, que ML reemplaza por otras órdenes y no son ventas perdidas.
+    let noConc = null;
+    try { noConc = await noConcretadas.canceladasDelMes(uid, headers, fmt(dateFrom), fmt(dateTo)); }
+    catch (e) { console.error('[DIAG] no concretadas', e.message); }
+    const repNoConcMonto = noConc ? noConc.monto : null;
+    const repNoConcPct = noConc && (facturacion + noConc.monto) > 0
+      ? parseFloat(((noConc.monto / (facturacion + noConc.monto))*100).toFixed(2)) : null;
+    const ncOrdenesPct = noConc && (ventas + noConc.ordenes) > 0
+      ? parseFloat(((noConc.ordenes / (ventas + noConc.ordenes))*100).toFixed(2)) : null;
 
     // ── 6. Publicidad (PADS) — same approach as working /api/ads ─────────────
     let padsInversion=0, padsIngresos=0, padsClicks=0, padsVentas=0, padsImpresiones=0;
@@ -6506,6 +6508,13 @@ app.post('/api/diagnostico/calcular', requireAuth, async (req, res) => {
       // Preserve manual fields
       mkt_descuentos: mktOrdenesConDescuento > 0 ? 'SI' : (manualesExistentes.mkt_descuentos || 'NO'),
       mkt_cupones:    mktOrdenesConCupon > 0     ? 'SI' : (manualesExistentes.mkt_cupones    || 'NO'),
+      // Ventas no concretadas (si ML no respondió quedan los valores anteriores)
+      ...(noConc ? {
+        nc_ordenes: noConc.ordenes,
+        nc_pct_ordenes: ncOrdenesPct,
+        nc_afectan_reputacion: noConc.afectan_reputacion,
+        nc_packs_separados: noConc.packs_separados,
+      } : {}),
       mkt_difusiones: manualesExistentes.mkt_difusiones || '',
       mkt_notas:      manualesExistentes.mkt_notas || '',
       notas:          manualesExistentes.notas || '',
@@ -10885,6 +10894,13 @@ const adman = require('./backend_adman')(app, { pool, requireAuth, requireAdmin,
 require('./backend_publicacion_detalle')(app, {
   pool, requireAuth, getClientToken, ML_API, ymd, ymdShift, mlFrom, mlTo,
   fetchShippingCosts, repartirEnvioPorItem, ivaContenido, IVA_SERVICIOS_PCT, PYL_ESTADOS, comisionLinea
+});
+
+// Ventas no concretadas (Performance → No concretadas) — módulo aparte
+// (backend_no_concretadas.js). Canceladas del mes por quién, motivo, momento, canal y
+// producto. canceladasDelMes() también la usa el Diagnóstico mensual.
+const noConcretadas = require('./backend_no_concretadas')(app, {
+  pool, requireAuth, getClientToken, ML_API, ymd, mlFrom, mlTo
 });
 
 // Auditoría de costos de envío — módulo aparte (backend_envios.js). Guarda cada envío
