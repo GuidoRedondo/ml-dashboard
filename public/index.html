@@ -18499,7 +18499,7 @@ function renderExperiencia() {
       <div style="font-size:26px;font-weight:700;font-family:var(--font-b);color:${color}">${n(num)}</div>
       <div style="font-size:11px;color:var(--muted);line-height:1.35">${sub}</div></div>`;
   const tarjetas = `<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px">
-    ${card('propio', '🔴 Con reclamos propios', g.propio.length, 'Rojas o naranjas que tuvieron reclamos en los últimos 180 días. Acá se ataca la causa.', '#b91c1c')}
+    ${card('propio', '🔴 Con reclamos propios', g.propio.length, `Rojas o naranjas que tuvieron reclamos en los últimos ${d.ventana_dias} días. Acá se ataca la causa.`, '#b91c1c')}
     ${card('categoria', '🟠 Castigadas por la categoría', g.categoria.length, 'Rojas o naranjas sin un reclamo propio: ML las mide con los reclamos de su categoría.', '#c2410c')}
     ${card('sana', '🟢 Sanas — aptas para Ads', g.sana.length, 'ML les da experiencia buena: la pauta no pelea contra la penalización.', '#15803d')}
     ${card('sinmedir', '⚪ Sin medir', g.sinmedir.length, 'Sin ventas en 180 días: ML no las califica todavía.', '#64748b')}
@@ -18515,7 +18515,7 @@ function renderExperiencia() {
     <div style="font-size:12px;color:var(--muted);margin-bottom:10px">Cuando una publicación no tiene ventas propias suficientes, ML la califica con los reclamos de toda la categoría. "Ventana limpia" es el día en que el último reclamo sale de los ${d.ventana_dias} días que mira ML — si no entra ninguno nuevo. Tocá una para filtrar.</div>
     <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden"><div style="overflow-x:auto">
     <table style="width:100%;border-collapse:collapse"><thead><tr style="background:var(--surface2)">
-      ${th('Categoría')}${th('Pubs', 'center')}${th('Rojas', 'center')}${th('Naranjas', 'center')}${th('Verdes', 'center')}${th('Reclamos 180d', 'center')}${th('Último', 'center')}${th('Ventana limpia', 'center')}
+      ${th('Categoría')}${th('Pubs', 'center')}${th('Rojas', 'center')}${th('Naranjas', 'center')}${th('Verdes', 'center')}${th(`Reclamos ${d.ventana_dias}d`, 'center')}${th('Último', 'center')}${th('Ventana limpia', 'center')}
     </tr></thead><tbody>${cats.map(c => `<tr onclick="filtrarExperienciaCat('${esc(c.categoria_id)}')" style="cursor:pointer;${_expCat === c.categoria_id ? 'background:var(--surface2)' : ''}">
       ${td(esc(c.categoria || c.categoria_id))}${td(n(c.pubs), 'center')}${td(n(c.rojas), 'center', 'color:#b91c1c;font-weight:600')}${td(n(c.naranjas), 'center')}${td(n(c.verdes), 'center', 'color:#15803d')}
       ${td(n(c.reclamos), 'center', 'font-weight:600')}${td(fecha(c.ultimo), 'center')}${td(fecha(c.ventana_limpia), 'center')}
@@ -18552,7 +18552,7 @@ function renderExperiencia() {
     </div>
     <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden"><div style="overflow-x:auto">
     <table style="width:100%;border-collapse:collapse"><thead><tr style="background:var(--surface2)">
-      ${th('Publicación')}${th('Experiencia', 'center')}${th('Medida', 'center')}${th('Reclamos 180d', 'center')}${th('Último reclamo', 'center')}${th('Cambio de color', 'center')}${th('Vendidos', 'center')}${th('Qué pide ML')}
+      ${th('Publicación')}${th('Experiencia', 'center')}${th('Medida', 'center')}${th(`Reclamos ${d.ventana_dias}d`, 'center')}${th('Último reclamo', 'center')}${th('Cambio de color', 'center')}${th('Vendidos', 'center')}${th('Qué pide ML')}
     </tr></thead><tbody>${filas || vacio}</tbody></table></div></div>
     ${lista.length > TOPE ? `<div style="font-size:11px;color:var(--muted);margin-top:6px">Se muestran ${TOPE} de ${n(lista.length)}. El Excel trae todas.</div>` : ''}
   </div>`;
@@ -18567,7 +18567,7 @@ function exportarExperiencia() {
   const fila = i => ({
     MLA: i.item_id, Publicacion: i.titulo, Categoria: i.categoria, Experiencia: (EXP_COLOR[i.color] || {}).txt || i.color,
     Valor: i.valor, Medida: i.fuente === 'categoria' ? 'por categoría' : i.fuente === 'item' ? 'propia' : '',
-    'Reclamos 180d': i.reclamos, 'De producto': i.producto, 'No llegó': i.no_llego, 'Cancel. comprador': i.canc_comprador,
+    [`Reclamos ${d.ventana_dias}d`]: i.reclamos, 'De producto': i.producto, 'No llegó': i.no_llego, 'Cancel. comprador': i.canc_comprador,
     'Último reclamo': i.ultimo || '', 'Ventana limpia': i.ventana_limpia || '',
     'Color anterior': i.color_anterior ? (EXP_COLOR[i.color_anterior] || {}).txt : '', 'Cambió el': i.color_desde || '',
     Vendidos: i.vendidos, Stock: i.stock, Precio: i.precio != null ? parseFloat(i.precio) : '', Logistica: i.logistica,
@@ -18582,7 +18582,7 @@ function exportarExperiencia() {
   hoja('Sanas para Ads', items.filter(i => expGrupo(i) === 'sana').sort((a, b) => (b.vendidos || 0) - (a.vendidos || 0)).map(fila));
   hoja('Sin medir', items.filter(i => expGrupo(i) === 'sinmedir').map(fila));
   hoja('Categorias', (d.categorias || []).map(c => ({ Categoria: c.categoria || c.categoria_id, Pubs: c.pubs, Rojas: c.rojas, Naranjas: c.naranjas,
-    Verdes: c.verdes, 'Sin medir': c.grises, 'Reclamos 180d': c.reclamos, 'Último reclamo': c.ultimo || '', 'Ventana limpia': c.ventana_limpia || '' })));
+    Verdes: c.verdes, 'Sin medir': c.grises, [`Reclamos ${d.ventana_dias}d`]: c.reclamos, 'Último reclamo': c.ultimo || '', 'Ventana limpia': c.ventana_limpia || '' })));
   const hist = [];
   Object.entries(d.cambios || {}).forEach(([id, h]) => h.forEach(x => hist.push({ MLA: id, Fecha: x.fecha, Experiencia: (EXP_COLOR[x.color] || {}).txt || x.color, Valor: x.valor, Medida: x.fuente || '' })));
   hoja('Historial', hist);

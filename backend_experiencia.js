@@ -18,7 +18,9 @@
 //    a partir de tus ventas de productos en la misma categoría"). En Redfish 2.825
 //    publicaciones rojas no tenían un solo reclamo propio: las hunden los reclamos
 //    de las hermanas de categoría. Por eso `fuente` se guarda aparte.
-//  - La ventana es de 180 días (lo dice el texto de las grises).
+//  - El color se calcula sobre los ÚLTIMOS 60 DÍAS (lo dice el panel de ML: "¿Por qué
+//    tengo este desempeño? | Últimos 60 días"). Los 180 días que aparecen en la API
+//    son otra cosa: si la publicación no vendió en 180 días queda gris, sin medir.
 //  - `freeze` vino vacío en todas. `metrics_details` sólo viene en el formato viejo
 //    (sin texto de IA) y nunca trajo el detalle de los casos.
 //  - NO HAY HISTORIAL. La respuesta es una foto de hoy. Para saber cuándo una
@@ -29,7 +31,7 @@
 //  ------------------------
 //  La tabla `reclamos` sólo tiene el item cuando el caso terminó en devolución, y
 //  los casos cuyo recurso es un envío (no una orden) no traen order_id. Acá se
-//  resuelve cada reclamo de los últimos 180 días a sus publicaciones (por la orden
+//  resuelve cada reclamo de los últimos 60 días a sus publicaciones (por la orden
 //  o por /shipments/{id}/items) una sola vez y se guarda: las corridas siguientes
 //  sólo resuelven los nuevos. Cuentan los tipos que ML usa para el semáforo
 //  (reclamos, mediaciones y cancelaciones del vendedor); la cancelación del
@@ -39,7 +41,8 @@
 
 const fetch = require('node-fetch');
 
-const VENTANA_DIAS = 180;
+// Ventana con la que ML calcula el color (panel de ML, confirmado 6/10/2026).
+const VENTANA_DIAS = 60;
 const TIPOS_QUE_CUENTAN = ['returns', 'mediations', 'cancel_sale'];
 
 async function crearTablas(pool) {
