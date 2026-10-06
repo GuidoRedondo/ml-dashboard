@@ -1944,9 +1944,14 @@ tr.fam-hijo > td { background: rgba(99,102,241,.025); }
           style="padding:8px 18px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-2px;font-family:var(--font-b)">
           ⚖️ Reclamos
         </button>
+        <button id="tab-rep-experiencia" onclick="switchRepTab('experiencia')"
+          style="padding:8px 18px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-2px;font-family:var(--font-b)">
+          🚦 Experiencia de compra
+        </button>
       </div>
       <div id="reputacionContent"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Cargando...</div></div>
       <div id="reclamosContent" style="display:none"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Seleccioná la pestaña Reclamos para cargar</div></div>
+      <div id="experienciaContent" style="display:none"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Seleccioná la pestaña Experiencia de compra para cargar</div></div>
     </div>
 
     <!-- CENTRO DE INTELIGENCIA -->
@@ -2997,6 +3002,7 @@ async function selectClient(clientId, el) {
   // Los reclamos se cargan una sola vez por cuenta y quedan en memoria: sin esto,
   // cambiar de cuenta mostraba los reclamos de la anterior.
   _recData = null; _recHilos = {}; _recAbiertoId = null; _recMes = null;
+  _expData = null;
   resetPrecios();
   document.querySelectorAll('#clientSelector .nav-item').forEach(n => n.classList.remove('active'));
   if (el) el.classList.add('active');
@@ -3004,6 +3010,7 @@ async function selectClient(clientId, el) {
   syncCondicionIvaSelectores();
   await loadDashboardData();
   if (_repTabActiva === 'reclamos') loadReclamos();
+  if (_repTabActiva === 'experiencia') loadExperiencia();
 }
 
 async function loadDashboardData() {
@@ -18025,7 +18032,7 @@ let _recFiltro = 'todos';  // todos | vence | ia | sin_atender
 let _repTabActiva = 'metricas';
 
 function switchRepTab(tab) {
-  const tabs = { metricas: 'reputacionContent', reclamos: 'reclamosContent' };
+  const tabs = { metricas: 'reputacionContent', reclamos: 'reclamosContent', experiencia: 'experienciaContent' };
   Object.keys(tabs).forEach(t => {
     document.getElementById(tabs[t]).style.display = t === tab ? '' : 'none';
     const btn = document.getElementById(`tab-rep-${t}`);
@@ -18038,10 +18045,12 @@ function switchRepTab(tab) {
   const excel = document.getElementById('repExcelBtn');
   if (excel) excel.style.display = tab === 'metricas' ? '' : 'none';
   if (tab === 'reclamos' && !_recData) loadReclamos();
+  if (tab === 'experiencia' && !_expData) loadExperiencia();
 }
 
 function refreshRepTab() {
   if (_repTabActiva === 'reclamos') loadReclamos({ sync: true });
+  else if (_repTabActiva === 'experiencia') loadExperiencia({ sync: true });
   else loadReputacion({ calcular: true });
 }
 
@@ -18377,6 +18386,207 @@ function renderReclamos() {
   </div>` : '';
 
   el.innerHTML = barra + bloqueAbiertos + bloqueMes + bloqueItems;
+}
+
+// ════════════════════════════════════════════════════════════════════
+// EXPERIENCIA DE COMPRA — el semáforo de ML por publicación
+// ════════════════════════════════════════════════════════════════════
+// ML sólo da la foto de hoy; el cron de las 07:00 la guarda todos los días y así
+// se ve cuándo cada publicación cambió de color. Una publicación sin ventas propias
+// suficientes se mide con la CATEGORÍA: por eso hay rojas sin un solo reclamo.
+let _expData = null, _expReq = 0, _expPoll = null, _expFiltro = 'propio', _expBusca = '', _expCat = '';
+
+const EXP_COLOR = {
+  red:    { txt: 'Mala',      bg: '#fee2e2', fg: '#b91c1c' },
+  orange: { txt: 'Media',     bg: '#ffedd5', fg: '#c2410c' },
+  green:  { txt: 'Buena',     bg: '#dcfce7', fg: '#15803d' },
+  gray:   { txt: 'Sin medir', bg: '#f1f5f9', fg: '#64748b' },
+};
+function expGrupo(i) {
+  if (i.color === 'red' || i.color === 'orange') return i.reclamos > 0 ? 'propio' : 'categoria';
+  if (i.color === 'green') return 'sana';
+  return 'sinmedir';
+}
+function expMejoro(i) {
+  return i.color_desde && i.valor_anterior != null && i.valor > i.valor_anterior;
+}
+
+async function loadExperiencia(opts = {}) {
+  const el = document.getElementById('experienciaContent');
+  const client = getActiveClient();
+  if (!client || !client.id) {
+    el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">Sin cuenta conectada — seleccioná una cuenta en el topbar</div>';
+    return;
+  }
+  const req = ++_expReq;
+  if (opts.sync) {
+    try { await apiCall('POST', '/api/experiencia-compra/sync', { client_id: client.id }); } catch (e) {}
+    arrancarPollExperiencia();
+  }
+  if (!_expData) el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">⏳ Cargando experiencia de compra…</div>';
+  try {
+    const data = await apiCall('GET', `/api/experiencia-compra?client_id=${client.id}`);
+    if (req !== _expReq) return;
+    if (!data || data.error) {
+      el.innerHTML = `<div style="color:var(--muted);padding:40px;text-align:center">${(data && data.error) || 'Error al cargar'}</div>`;
+      return;
+    }
+    _expData = data;
+    renderExperiencia();
+    if (data.sync && data.sync.sincronizando) arrancarPollExperiencia();
+  } catch (e) {
+    if (req !== _expReq) return;
+    el.innerHTML = `<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Error: ${e.message}</div>`;
+  }
+}
+
+// La foto son miles de llamadas a ML (una por publicación): la vista se refresca
+// sola cuando termina.
+function arrancarPollExperiencia() {
+  if (_expPoll) return;
+  _expPoll = setInterval(async () => {
+    const client = getActiveClient();
+    if (!client || !client.id || _repTabActiva !== 'experiencia') { clearInterval(_expPoll); _expPoll = null; return; }
+    try {
+      const e = await apiCall('GET', `/api/experiencia-compra/sync/estado?client_id=${client.id}`);
+      if (!e || !e.corriendo) { clearInterval(_expPoll); _expPoll = null; _expData = null; loadExperiencia(); }
+    } catch (err) { clearInterval(_expPoll); _expPoll = null; }
+  }, 15000);
+}
+
+function filtrarExperiencia(f) { _expFiltro = f; renderExperiencia(); }
+function filtrarExperienciaCat(c) { _expCat = _expCat === c ? '' : c; renderExperiencia(); }
+function buscarExperiencia(v) {
+  _expBusca = v;
+  clearTimeout(window._expBuscaT);
+  window._expBuscaT = setTimeout(() => {
+    renderExperiencia();
+    const inp = document.getElementById('expBusca');
+    if (inp) { inp.focus(); inp.setSelectionRange(v.length, v.length); }
+  }, 250);
+}
+
+function renderExperiencia() {
+  const d = _expData;
+  const el = document.getElementById('experienciaContent');
+  const esc = s => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  const fecha = f => f ? dART(f).toLocaleDateString('es-AR', { timeZone: ART_TZ, day: '2-digit', month: '2-digit', year: '2-digit' }) : '—';
+  const n = v => (v || 0).toLocaleString('es-AR');
+  const sy = d.sync || {};
+  const items = d.items || [];
+
+  const barra = `<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:14px;font-size:12px;color:var(--muted)">
+    <span>${sy.synced_at ? `Última foto de ML: ${new Date(sy.synced_at).toLocaleString('es-AR', { timeZone: ART_TZ, day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}` : 'Todavía no se sacó la foto de esta cuenta'}${sy.desde ? ` · historial desde el ${fecha(sy.desde)}` : ''}</span>
+    ${sy.sincronizando ? '<span style="background:#e0f2fe;color:#0369a1;padding:2px 8px;border-radius:20px">⏳ consultando a ML… (una llamada por publicación, tarda unos minutos)</span>' : ''}
+    ${sy.error ? `<span style="background:#fee2e2;color:#b91c1c;padding:2px 8px;border-radius:20px">${esc(sy.error)}</span>` : ''}
+    <span style="flex:1"></span>
+    <button class="sync-btn" onclick="loadExperiencia({ sync: true })">📸 Sacar foto ahora</button>
+    ${items.length ? '<button class="sync-btn" onclick="exportarExperiencia()">📥 Excel</button>' : ''}
+  </div>`;
+
+  if (!items.length) {
+    el.innerHTML = barra + `<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:30px;text-align:center">
+      <div style="font-size:14px;font-weight:600;font-family:var(--font-b);margin-bottom:6px">Esta cuenta todavía no tiene la foto de experiencia de compra</div>
+      <div style="font-size:12px;color:var(--muted)">Se saca sola todos los días a las 07:00. Tocá <b>Sacar foto ahora</b> para la primera.</div></div>`;
+    return;
+  }
+
+  const g = { propio: [], categoria: [], sana: [], sinmedir: [] };
+  items.forEach(i => g[expGrupo(i)].push(i));
+  const mejoraron = items.filter(expMejoro);
+  const card = (k, titulo, num, sub, color) => `<div onclick="filtrarExperiencia('${k}')" style="cursor:pointer;flex:1;min-width:170px;background:var(--surface);border:${_expFiltro === k ? '2px solid var(--accent)' : '1px solid var(--border)'};border-radius:12px;padding:14px">
+      <div style="font-size:11px;color:var(--muted);font-weight:600">${titulo}</div>
+      <div style="font-size:26px;font-weight:700;font-family:var(--font-b);color:${color}">${n(num)}</div>
+      <div style="font-size:11px;color:var(--muted);line-height:1.35">${sub}</div></div>`;
+  const tarjetas = `<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px">
+    ${card('propio', '🔴 Con reclamos propios', g.propio.length, 'Rojas o naranjas que tuvieron reclamos en los últimos 180 días. Acá se ataca la causa.', '#b91c1c')}
+    ${card('categoria', '🟠 Castigadas por la categoría', g.categoria.length, 'Rojas o naranjas sin un reclamo propio: ML las mide con los reclamos de su categoría.', '#c2410c')}
+    ${card('sana', '🟢 Sanas — aptas para Ads', g.sana.length, 'ML les da experiencia buena: la pauta no pelea contra la penalización.', '#15803d')}
+    ${card('sinmedir', '⚪ Sin medir', g.sinmedir.length, 'Sin ventas en 180 días: ML no las califica todavía.', '#64748b')}
+    ${card('mejoraron', '📈 Mejoraron', mejoraron.length, 'Subieron de nivel desde que se sacan fotos diarias.', '#0369a1')}
+  </div>`;
+
+  // Categorías: la palanca real cuando ML mide por categoría.
+  const cats = (d.categorias || []).filter(c => c.rojas + c.naranjas > 0).slice(0, 15);
+  const th = (t, al = 'left') => `<th style="padding:8px 12px;text-align:${al};font-size:11px;font-weight:600;color:var(--muted)">${t}</th>`;
+  const td = (t, al = 'left', extra = '') => `<td style="padding:8px 12px;border-top:1px solid var(--border);font-size:12px;text-align:${al};${extra}">${t}</td>`;
+  const bloqueCats = cats.length ? `<div style="margin-bottom:18px">
+    <div style="font-size:14px;font-weight:600;font-family:var(--font-b);margin-bottom:4px">Categorías que arrastran</div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:10px">Cuando una publicación no tiene ventas propias suficientes, ML la califica con los reclamos de toda la categoría. "Ventana limpia" es el día en que el último reclamo sale de los ${d.ventana_dias} días que mira ML — si no entra ninguno nuevo. Tocá una para filtrar.</div>
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden"><div style="overflow-x:auto">
+    <table style="width:100%;border-collapse:collapse"><thead><tr style="background:var(--surface2)">
+      ${th('Categoría')}${th('Pubs', 'center')}${th('Rojas', 'center')}${th('Naranjas', 'center')}${th('Verdes', 'center')}${th('Reclamos 180d', 'center')}${th('Último', 'center')}${th('Ventana limpia', 'center')}
+    </tr></thead><tbody>${cats.map(c => `<tr onclick="filtrarExperienciaCat('${esc(c.categoria_id)}')" style="cursor:pointer;${_expCat === c.categoria_id ? 'background:var(--surface2)' : ''}">
+      ${td(esc(c.categoria || c.categoria_id))}${td(n(c.pubs), 'center')}${td(n(c.rojas), 'center', 'color:#b91c1c;font-weight:600')}${td(n(c.naranjas), 'center')}${td(n(c.verdes), 'center', 'color:#15803d')}
+      ${td(n(c.reclamos), 'center', 'font-weight:600')}${td(fecha(c.ultimo), 'center')}${td(fecha(c.ventana_limpia), 'center')}
+    </tr>`).join('')}</tbody></table></div></div></div>` : '';
+
+  let lista = _expFiltro === 'mejoraron' ? mejoraron : (g[_expFiltro] || []);
+  if (_expCat) lista = lista.filter(i => i.categoria_id === _expCat);
+  if (_expBusca) { const b = _expBusca.toLowerCase(); lista = lista.filter(i => (i.titulo || '').toLowerCase().includes(b) || (i.item_id || '').toLowerCase().includes(b)); }
+  if (_expFiltro === 'sana' || _expFiltro === 'sinmedir') lista = [...lista].sort((a, b) => (b.vendidos || 0) - (a.vendidos || 0));
+  const TOPE = 300;
+  const chip = c => { const x = EXP_COLOR[c] || EXP_COLOR.gray; return `<span style="background:${x.bg};color:${x.fg};padding:2px 8px;border-radius:20px;font-size:11px;font-weight:600;white-space:nowrap">${x.txt}</span>`; };
+  const historia = i => {
+    const h = (d.cambios || {})[i.item_id] || [];
+    if (i.color_desde) return `${chip(i.color_anterior)} → ${chip(i.color)}<div style="font-size:10px;color:var(--muted);margin-top:2px">desde el ${fecha(i.color_desde)}</div>`;
+    return h.length ? `<span style="font-size:11px;color:var(--muted)">igual desde el ${fecha(h[0].fecha)}</span>` : '—';
+  };
+  const filas = lista.slice(0, TOPE).map(i => `<tr>
+    ${td(`<a href="https://articulo.mercadolibre.com.ar/${String(i.item_id).replace('MLA', 'MLA-')}" target="_blank" style="color:var(--text);text-decoration:none">${esc(i.titulo || i.item_id)}</a><div style="font-size:10px;color:var(--muted)">${i.item_id} · ${esc(i.categoria || '')}${i.logistica === 'fulfillment' ? ' · FULL' : ''}</div>`)}
+    ${td(chip(i.color), 'center')}
+    ${td(i.fuente === 'categoria' ? '<span title="ML la calificó con las ventas de la categoría, no con las propias" style="font-size:11px">por categoría</span>' : i.fuente === 'item' ? '<span style="font-size:11px">propia</span>' : '—', 'center')}
+    ${td(i.reclamos ? `<b>${i.reclamos}</b><div style="font-size:10px;color:var(--muted)">${[i.producto ? `${i.producto} producto` : '', i.no_llego ? `${i.no_llego} no llegó` : ''].filter(Boolean).join(' · ')}</div>` : '—', 'center')}
+    ${td(i.ultimo ? `${fecha(i.ultimo)}<div style="font-size:10px;color:var(--muted)">limpia el ${fecha(i.ventana_limpia)}</div>` : '—', 'center')}
+    ${td(historia(i), 'center')}
+    ${td(n(i.vendidos), 'center')}
+    ${td(`<span title="${esc((i.motivo || '') + (i.recomendaciones ? '\n\nRecomendaciones: ' + i.recomendaciones : ''))}" style="font-size:11px">${esc(i.accion || '—')}</span>`)}
+  </tr>`).join('');
+  const titulos = { propio: 'Con reclamos propios', categoria: 'Castigadas por la categoría', sana: 'Sanas — aptas para Ads', sinmedir: 'Sin medir', mejoraron: 'Mejoraron' };
+  const vacio = `<tr><td colspan="8" style="padding:20px;text-align:center;color:var(--muted);font-size:12px;border-top:1px solid var(--border)">Nada en este grupo</td></tr>`;
+  const bloqueLista = `<div>
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px">
+      <div style="font-size:14px;font-weight:600;font-family:var(--font-b)">${titulos[_expFiltro]} · ${n(lista.length)}${_expCat ? ` <span style="font-size:11px;color:var(--muted);font-weight:400">filtrado por categoría — <a href="#" onclick="filtrarExperienciaCat('${esc(_expCat)}');return false">sacar filtro</a></span>` : ''}</div>
+      <span style="flex:1"></span>
+      <input id="expBusca" value="${esc(_expBusca)}" oninput="buscarExperiencia(this.value)" placeholder="Buscar título o MLA" style="padding:6px 10px;border:1px solid var(--border);border-radius:8px;font-size:12px;background:var(--surface);color:var(--text)">
+    </div>
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden"><div style="overflow-x:auto">
+    <table style="width:100%;border-collapse:collapse"><thead><tr style="background:var(--surface2)">
+      ${th('Publicación')}${th('Experiencia', 'center')}${th('Medida', 'center')}${th('Reclamos 180d', 'center')}${th('Último reclamo', 'center')}${th('Cambio de color', 'center')}${th('Vendidos', 'center')}${th('Qué pide ML')}
+    </tr></thead><tbody>${filas || vacio}</tbody></table></div></div>
+    ${lista.length > TOPE ? `<div style="font-size:11px;color:var(--muted);margin-top:6px">Se muestran ${TOPE} de ${n(lista.length)}. El Excel trae todas.</div>` : ''}
+  </div>`;
+
+  el.innerHTML = barra + tarjetas + bloqueCats + bloqueLista;
+}
+
+function exportarExperiencia() {
+  const d = _expData;
+  if (!d || !window.XLSX) return;
+  const client = getActiveClient();
+  const fila = i => ({
+    MLA: i.item_id, Publicacion: i.titulo, Categoria: i.categoria, Experiencia: (EXP_COLOR[i.color] || {}).txt || i.color,
+    Valor: i.valor, Medida: i.fuente === 'categoria' ? 'por categoría' : i.fuente === 'item' ? 'propia' : '',
+    'Reclamos 180d': i.reclamos, 'De producto': i.producto, 'No llegó': i.no_llego, 'Cancel. comprador': i.canc_comprador,
+    'Último reclamo': i.ultimo || '', 'Ventana limpia': i.ventana_limpia || '',
+    'Color anterior': i.color_anterior ? (EXP_COLOR[i.color_anterior] || {}).txt : '', 'Cambió el': i.color_desde || '',
+    Vendidos: i.vendidos, Stock: i.stock, Precio: i.precio != null ? parseFloat(i.precio) : '', Logistica: i.logistica,
+    'Qué pide ML': i.accion, Motivo: i.motivo, Recomendaciones: i.recomendaciones,
+    Link: `https://articulo.mercadolibre.com.ar/${String(i.item_id).replace('MLA', 'MLA-')}`
+  });
+  const wb = XLSX.utils.book_new();
+  const hoja = (nombre, rows) => XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows.length ? rows : [{ '': 'Sin publicaciones' }]), nombre);
+  const items = d.items || [];
+  hoja('Con reclamos propios', items.filter(i => expGrupo(i) === 'propio').map(fila));
+  hoja('Castigadas por categoria', items.filter(i => expGrupo(i) === 'categoria').map(fila));
+  hoja('Sanas para Ads', items.filter(i => expGrupo(i) === 'sana').sort((a, b) => (b.vendidos || 0) - (a.vendidos || 0)).map(fila));
+  hoja('Sin medir', items.filter(i => expGrupo(i) === 'sinmedir').map(fila));
+  hoja('Categorias', (d.categorias || []).map(c => ({ Categoria: c.categoria || c.categoria_id, Pubs: c.pubs, Rojas: c.rojas, Naranjas: c.naranjas,
+    Verdes: c.verdes, 'Sin medir': c.grises, 'Reclamos 180d': c.reclamos, 'Último reclamo': c.ultimo || '', 'Ventana limpia': c.ventana_limpia || '' })));
+  const hist = [];
+  Object.entries(d.cambios || {}).forEach(([id, h]) => h.forEach(x => hist.push({ MLA: id, Fecha: x.fecha, Experiencia: (EXP_COLOR[x.color] || {}).txt || x.color, Valor: x.valor, Medida: x.fuente || '' })));
+  hoja('Historial', hist);
+  XLSX.writeFile(wb, `Experiencia_compra_${(client?.name || 'cliente').replace(/\s+/g, '_')}_${ymd(new Date())}.xlsx`);
 }
 
 async function loadDesempenioEnvios(opts = {}) {

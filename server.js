@@ -10894,6 +10894,13 @@ const reclamos = require('./backend_reclamos')(app, {
   fetchClaimsTodos
 });
 
+// Experiencia de compra por publicación — módulo aparte (backend_experiencia.js).
+// ML sólo da la foto de hoy del semáforo de cada publicación; el cron de las 07:00
+// ART la saca todos los días y guarda los cambios, para ver cuándo empieza a mejorar.
+require('./backend_experiencia')(app, {
+  pool, requireAuth, getClientToken, ML_API, nodeCron, ART, ymd, ymdShift, fetchClaimsTodos
+});
+
 // Alertas de los agentes de AdMan — módulo aparte (backend_adman.js), solo admin.
 // docs/spec-alertas-adman.md: lee las alertas pendientes de toda la cartera vía el MCP de
 // AdMan, las clasifica contra los pisos de ROAS de cada cuenta (Etapa 3) y las decide con
