@@ -20003,7 +20003,7 @@ function renderComparacion(data, mes_a, mes_b) {
             ${sec('📤 Lo que se va en Mercado Libre')}
             ${row('Comisión ML',              a?.egresos_ml?.comision,      b?.egresos_ml?.comision,      diff?.comision,   true, false, false, factA, factB)}
             ${row('Costo envío vendedor',     envioA,                       envioB,                       diff?.envio_total, true, false, false, factA, factB)}
-            ${row('Publicidad (PADS)',        a?.egresos_ml?.publicidad,    b?.egresos_ml?.publicidad,    diff?.publicidad, true, false, false, factA, factB)}
+            ${row('Publicidad (PADS + Brand)', a?.egresos_ml?.publicidad,    b?.egresos_ml?.publicidad,    diff?.publicidad, true, false, false, factA, factB)}
             ${hay(a?.egresos_ml?.costos_full, b?.egresos_ml?.costos_full) ? row('Costos FULL', a?.egresos_ml?.costos_full, b?.egresos_ml?.costos_full, diff?.costos_full, true, false, false, factA, factB) : ''}
             ${hay(a?.egresos_ml?.impuestos, b?.egresos_ml?.impuestos) ? row('Impuestos / retenciones', a?.egresos_ml?.impuestos, b?.egresos_ml?.impuestos, diff?.imp_operacion, true, false, false, factA, factB) : ''}
             ${hay(a?.egresos_ml?.reembolsos, b?.egresos_ml?.reembolsos) ? row('Reembolsos', a?.egresos_ml?.reembolsos, b?.egresos_ml?.reembolsos, diff?.reembolsos, true, false, false, factA, factB) : ''}
@@ -20126,7 +20126,7 @@ function descargarComparacionPDF(mes_a, mes_b) {
       ${S('📤 Lo que se va en Mercado Libre')}
       ${R('Comisión ML', a?.egresos_ml?.comision, b?.egresos_ml?.comision, diff?.comision, {indent:true, pos:false, pctFact:true})}
       ${R('Costo envío vendedor', envioA, envioB, diff?.envio_total, {indent:true, pos:false, pctFact:true})}
-      ${R('Publicidad (PADS)', a?.egresos_ml?.publicidad, b?.egresos_ml?.publicidad, diff?.publicidad, {indent:true, pos:false, pctFact:true})}
+      ${R('Publicidad (PADS + Brand)', a?.egresos_ml?.publicidad, b?.egresos_ml?.publicidad, diff?.publicidad, {indent:true, pos:false, pctFact:true})}
       ${hay(a?.egresos_ml?.costos_full, b?.egresos_ml?.costos_full) ? R('Costos FULL', a?.egresos_ml?.costos_full, b?.egresos_ml?.costos_full, diff?.costos_full, {indent:true, pos:false, pctFact:true}) : ''}
       ${hay(a?.egresos_ml?.impuestos, b?.egresos_ml?.impuestos) ? R('Impuestos / retenciones', a?.egresos_ml?.impuestos, b?.egresos_ml?.impuestos, diff?.imp_operacion, {indent:true, pos:false, pctFact:true}) : ''}
       ${hay(a?.egresos_ml?.reembolsos, b?.egresos_ml?.reembolsos) ? R('Reembolsos', a?.egresos_ml?.reembolsos, b?.egresos_ml?.reembolsos, diff?.reembolsos, {indent:true, pos:false, pctFact:true}) : ''}
@@ -20691,7 +20691,8 @@ function renderPyL(pyl) {
         ${detalleRow('Comisión ML', pyl.egresos_ml.comision, pyl.ingresos.facturacion)}
         ${pyl.egresos_ml.envio_total ? detalleRow('Envío vendedor (total)', pyl.egresos_ml.envio_total, pyl.ingresos.facturacion) : pyl.egresos_ml.envio_vendedor ? detalleRow('Envío vendedor', pyl.egresos_ml.envio_vendedor, pyl.ingresos.facturacion) : ''}
         ${pyl.egresos_ml.envios_flex_manual > 0 ? `<div style="padding:4px 12px 4px 28px;font-size:11px;color:var(--muted)">└ API ML: $${Math.round(pyl.egresos_ml.envio_vendedor).toLocaleString('es-AR')} &nbsp;+&nbsp; Manual Flex: $${Math.round(pyl.egresos_ml.envios_flex_manual).toLocaleString('es-AR')}</div>` : ''}
-        ${pyl.egresos_ml.publicidad ? detalleRow('Publicidad (PADS)', pyl.egresos_ml.publicidad, pyl.ingresos.facturacion) : ''}
+        ${pyl.egresos_ml.publicidad ? detalleRow(pyl.egresos_ml.publicidad_marca > 0 ? 'Publicidad' : 'Publicidad (PADS)', pyl.egresos_ml.publicidad, pyl.ingresos.facturacion) : ''}
+        ${pyl.egresos_ml.publicidad_marca > 0 ? `<div style="padding:4px 12px 6px 28px;font-size:11px;color:var(--muted);line-height:1.6">└ Product Ads: $${Math.round(pyl.egresos_ml.publicidad_pads || 0).toLocaleString('es-AR')}<br>└ Brand Ads / Display (factura ML): $${Math.round(pyl.egresos_ml.publicidad_marca).toLocaleString('es-AR')}</div>` : ''}
         ${pyl.egresos_ml.costos_full > 0 ? detalleRow('Costos FULL', pyl.egresos_ml.costos_full, pyl.ingresos.facturacion) : ''}
         ${(pyl.egresos_ml.costos_full_detalle || []).length ? `<div style="padding:4px 12px 6px 28px;font-size:11px;color:var(--muted);line-height:1.6">${
           pyl.egresos_ml.costos_full_detalle.map(d => `└ ${d.concepto || d.codigo}: $${Math.round(d.monto).toLocaleString('es-AR')}`).join('<br>')
@@ -20817,7 +20818,11 @@ async function exportarReporteExcel() {
       ['   └ API ML', '', -pyl.egresos_ml.envio_vendedor],
       ['   └ Flex/Full (manual)', '', -pyl.egresos_ml.envios_flex_manual],
     ] : []),
-    ['Publicidad (PADS)', -pyl.egresos_ml.publicidad],
+    [pyl.egresos_ml.publicidad_marca > 0 ? 'Publicidad' : 'Publicidad (PADS)', -pyl.egresos_ml.publicidad],
+    ...(pyl.egresos_ml.publicidad_marca > 0 ? [
+      ['   └ Product Ads', '', -(pyl.egresos_ml.publicidad_pads || 0)],
+      ['   └ Brand Ads / Display', '', -pyl.egresos_ml.publicidad_marca],
+    ] : []),
     ...(pyl.egresos_ml.costos_full > 0 ? [
       ['Costos FULL', -pyl.egresos_ml.costos_full],
       ...(pyl.egresos_ml.costos_full_detalle || []).map(d => [`   └ ${d.concepto || d.codigo}`, '', -d.monto]),

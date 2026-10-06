@@ -8386,6 +8386,14 @@ app.get('/api/reporte/pyl', requireAuth, async (req, res) => {
 
     const costos_full = billOk ? bill.costos_full.total : 0;
 
+    // Brand Ads / Display: no salen de la API de PADS, sólo de la factura. Se suman a
+    // la publicidad para que todo lo que mira `egresos_ml.publicidad` (totales, TACOS,
+    // comparativa entre meses) los incluya. Sin factura sincronizada quedan en 0 y el
+    // front avisa con facturacion_ml.disponible.
+    const egreso_publicidad_pads  = egreso_publicidad;
+    const egreso_publicidad_marca = billOk ? bill.publicidad_marca.total : 0;
+    egreso_publicidad = egreso_publicidad_pads + egreso_publicidad_marca;
+
     // IIBB: sólo lo facturado. La tasa manual por cliente (`tasa_iibb_pct`) quedaba
     // vieja y erraba feo — en la cuenta con la que se validó, 4% daba $2.072.075
     // contra $1.131.485 realmente percibidos — así que dejó de entrar al cálculo.
@@ -8455,7 +8463,10 @@ app.get('/api/reporte/pyl', requireAuth, async (req, res) => {
         envio_vendedor: egreso_envio_vendedor,
         envios_flex_manual,
         envio_total: egreso_envio_total,
-        publicidad: egreso_publicidad,
+        publicidad: egreso_publicidad,          // Product Ads + Brand Ads/Display
+        publicidad_pads: egreso_publicidad_pads,
+        publicidad_marca: egreso_publicidad_marca,
+        publicidad_marca_detalle: billOk ? bill.publicidad_marca.detalle : [],
         reembolsos: egreso_reembolsos,
         // Cupones que pagó el vendedor (coupon_fee del cobro en MP). Los de ML no están.
         cupones_vendedor: egreso_cupones,
@@ -8498,7 +8509,7 @@ app.get('/api/reporte/pyl', requireAuth, async (req, res) => {
           // la comparación signifique algo hay que sumar los tres códigos.
           comision:   { pyl: egreso_comision,   facturado: (bill.ya_en_pyl.CVFV || 0) + (bill.ya_en_pyl.CVFF || 0) + (bill.ya_en_pyl.CVFN || 0) },
           envios:     { pyl: egreso_envio_vendedor, facturado: (bill.ya_en_pyl.CXD || 0) + (bill.ya_en_pyl.CFF || 0) },
-          publicidad: { pyl: egreso_publicidad, facturado: bill.ya_en_pyl.PADS || 0 },
+          publicidad: { pyl: egreso_publicidad_pads, facturado: bill.ya_en_pyl.PADS || 0 },
           iibb:       { pyl: iibb_estimado,     facturado: iibb_facturado },
         }
       } : { disponible: false, motivo: 'sin datos de facturación sincronizados' },

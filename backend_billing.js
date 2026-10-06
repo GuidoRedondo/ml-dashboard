@@ -72,6 +72,17 @@ const YA_EN_PYL = {
   CDSD: 'Cargo por devolución',
 };
 
+// Publicidad que NO es Product Ads: Brand Ads (anuncios de marca) y Display. El P&L
+// suma Product Ads desde la API de PADS, pero estos cargos sólo aparecen en la
+// factura: antes caían en `otros`, que no entra a ningún total, y un cliente que
+// invertía fuerte en Brand Ads veía el P&L como si no hubiera gastado un peso.
+// Van por código conocido y, por si ML usa otro, por el texto del concepto.
+const PUBLI_MARCA = {
+  BADS: 'Publicidad Brand Ads',
+  DADS: 'Publicidad Display',
+};
+const RE_PUBLI_MARCA = /(brand\s*ads|display|anuncios?\s+de\s+marca|publicidad\s+de\s+marca)/i;
+
 const OTROS = {
   CESM: 'Mantenimiento de Mi Página',
   CPY:  'Diferencias en medidas y peso del paquete',
@@ -93,6 +104,7 @@ const GRUPOS = {
   PERC_IVA: 'percepciones_iva',
   PERC_IIBB: 'percepciones_iibb',
   YA_EN_PYL: 'ya_en_pyl',
+  PUBLI_MARCA: 'publicidad_marca',
   OTROS: 'otros',
 };
 
@@ -103,6 +115,7 @@ function clasificar(subType, concepto) {
   if (RE_PERCEPCION_IIBB.test(txt)) return GRUPOS.PERC_IIBB;
   if (RE_PERCEPCION_IVA.test(txt))  return GRUPOS.PERC_IVA;
   if (YA_EN_PYL[subType]) return GRUPOS.YA_EN_PYL;
+  if (PUBLI_MARCA[subType] || RE_PUBLI_MARCA.test(txt)) return GRUPOS.PUBLI_MARCA;
   return GRUPOS.OTROS;
 }
 
@@ -259,6 +272,24 @@ async function crearTablas(pool) {
     UPDATE billing_detalle SET grupo = 'percepciones_iibb' WHERE grupo = 'percepcion_iibb';
   `).catch(e => { console.error('[BILLING] migración de grupos:', e.message); return null; });
   if (fix) console.log('[BILLING] grupos de percepciones normalizados');
+
+  // Migración idempotente: Brand Ads / Display se guardaban en `otros`. Se reclasifica
+  // con el mismo clasificador que usa la sincronización, así no hay dos reglas.
+  try {
+    const otros = await pool.query(
+      `SELECT DISTINCT detail_sub_type, concepto FROM billing_detalle WHERE grupo = $1`, [GRUPOS.OTROS]);
+    let movidas = 0;
+    for (const r of otros.rows) {
+      const g = clasificar(r.detail_sub_type, r.concepto);
+      if (g === GRUPOS.OTROS) continue;
+      const u = await pool.query(
+        `UPDATE billing_detalle SET grupo = $1
+          WHERE grupo = $2 AND detail_sub_type = $3 AND concepto IS NOT DISTINCT FROM $4`,
+        [g, GRUPOS.OTROS, r.detail_sub_type, r.concepto]);
+      movidas += u.rowCount;
+    }
+    if (movidas) console.log(`[BILLING] ${movidas} líneas reclasificadas fuera de "otros"`);
+  } catch (e) { console.error('[BILLING] migración publicidad de marca:', e.message); }
 }
 
 /** Upsert por detail_id: el mismo período se puede resincronizar cuantas veces haga falta. */
@@ -361,6 +392,7 @@ async function resumenParaPyL(pool, clientId, from, to) {
     [GRUPOS.PERC_IVA]:  { total: 0, lineas: 0, detalle: [] },
     [GRUPOS.PERC_IIBB]: { total: 0, lineas: 0, detalle: [] },
     [GRUPOS.YA_EN_PYL]: {},
+    [GRUPOS.PUBLI_MARCA]: { total: 0, lineas: 0, detalle: [] },
     [GRUPOS.OTROS]:     { total: 0, lineas: 0, detalle: [] },
   };
 
@@ -382,7 +414,7 @@ async function resumenParaPyL(pool, clientId, from, to) {
     out[destino].lineas += n;
     out[destino].detalle.push({ codigo: row.detail_sub_type, concepto: row.concepto, monto: neto, n });
   }
-  for (const g of [GRUPOS.FULL, GRUPOS.PERC_IVA, GRUPOS.PERC_IIBB, GRUPOS.OTROS]) {
+  for (const g of [GRUPOS.FULL, GRUPOS.PERC_IVA, GRUPOS.PERC_IIBB, GRUPOS.PUBLI_MARCA, GRUPOS.OTROS]) {
     out[g].detalle.sort((a, b) => b.monto - a.monto);
   }
   return out;
@@ -564,6 +596,7 @@ module.exports = (app, { pool, requireAuth, requireConsultor, requireAdmin, getC
 module.exports.COSTOS_FULL = COSTOS_FULL;
 module.exports.YA_EN_PYL = YA_EN_PYL;
 module.exports.OTROS = OTROS;
+module.exports.PUBLI_MARCA = PUBLI_MARCA;
 module.exports.clasificar = clasificar;
 module.exports.periodosQueCubren = periodosQueCubren;
 module.exports.resumenParaPyL = resumenParaPyL;
