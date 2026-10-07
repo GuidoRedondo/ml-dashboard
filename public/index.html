@@ -920,6 +920,8 @@ tr.fam-hijo > td { background: rgba(99,102,241,.025); }
           <button onclick="applyGlobalRange()" style="width:100%;padding:7px;border-radius:8px;border:none;background:var(--accent);color:#fff;font-size:12px;font-weight:600;cursor:pointer;font-family:var(--font)">Aplicar rango</button>
         </div>
       </div>
+      <!-- Cuenta activa: siempre a la vista, para saber sobre qué cuenta se está trabajando -->
+      <div id="cuentaActivaBadge" style="display:none;align-items:center;gap:7px;padding:6px 14px;border-radius:10px;font-size:13px;font-weight:700;white-space:nowrap;max-width:280px;overflow:hidden;text-overflow:ellipsis"></div>
       <div class="header-user" style="display:flex;align-items:center;gap:10px">
         <div id="accountSelectorWrap" style="display:none;position:relative">
           <input id="accountSelectorInput" type="text" autocomplete="off" spellcheck="false"
@@ -2849,8 +2851,31 @@ let _acsIdx = -1;       // fila resaltada con el teclado
 const _acsNorm = s => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
 const _acsEsc = s => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
+// Cartel del topbar con la cuenta sobre la que se está trabajando.
+// Sin cuenta elegida la vista es consolidada: se avisa en rojo para que no pase desapercibido.
+function renderCuentaActivaBadge() {
+  const el = document.getElementById('cuentaActivaBadge');
+  if (!el) return;
+  const c = activeClientId ? getActiveClient() : null;
+  el.style.display = allClients.length ? 'flex' : 'none';
+  if (c) {
+    el.style.background = 'rgba(34,197,94,.12)';
+    el.style.border = '1px solid rgba(34,197,94,.45)';
+    el.style.color = 'var(--text)';
+    el.innerHTML = `<span style="width:8px;height:8px;border-radius:50%;background:#22c55e;flex-shrink:0"></span><span style="overflow:hidden;text-overflow:ellipsis">${_acsEsc(c.name)}</span>`;
+    el.title = 'Cuenta activa: ' + c.name;
+  } else {
+    el.style.background = 'rgba(239,68,68,.10)';
+    el.style.border = '1px solid rgba(239,68,68,.45)';
+    el.style.color = '#ef4444';
+    el.innerHTML = '⚠️ Sin cuenta seleccionada';
+    el.title = 'Elegí una cuenta en el buscador';
+  }
+}
+
 // El input muestra el nombre de la cuenta activa cuando no se está buscando
 function acsMostrarActiva() {
+  renderCuentaActivaBadge();
   const inp = document.getElementById('accountSelectorInput');
   if (!inp) return;
   const c = _acsCuentas.find(x => x.id === activeClientId);
@@ -2974,6 +2999,7 @@ async function onAccountSelect(value) {
     state.accounts = [];
     _escData = null;
     _catVentasLoaded = false;
+    renderCuentaActivaBadge();
     updateDashboard();
     return;
   }
@@ -3014,6 +3040,7 @@ async function selectClient(clientId, el) {
 }
 
 async function loadDashboardData() {
+  renderCuentaActivaBadge();
   if (!allClients.length) return;
   const clientsToLoad = activeClientId
     ? allClients.filter(c => c.id === activeClientId && c.ml_user_id)
