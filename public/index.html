@@ -22469,7 +22469,7 @@ function renderCurvaABC() {
   const classified = products.map((p, i) => {
     acum += p.revenue;
     const pctAcum = totalRevenue > 0 ? (acum / totalRevenue * 100) : 0;
-    const clase   = pctAcum <= 80 ? 'A' : pctAcum <= 95 ? 'B' : 'C';
+    const clase   = pctAcum <= 70 ? 'A' : pctAcum <= 90 ? 'B' : 'C';
     return { ...p, pctAcum, clase, rank: i + 1 };
   });
 
@@ -22538,9 +22538,9 @@ function renderCurvaABC() {
       </div>
     </div>
     <div style="font-size:11px;color:var(--muted);margin-top:10px;display:flex;gap:20px;flex-wrap:wrap">
-      <span>🟢 A = productos que suman el 80% de la facturación</span>
-      <span>🟡 B = siguiente 15% (acumulado 80–95%)</span>
-      <span>🔴 C = último 5% (acumulado 95–100%)</span>
+      <span>🟢 A = productos que suman el 70% de la facturación</span>
+      <span>🟡 B = siguiente 20% (acumulado 70–90%)</span>
+      <span>🔴 C = último 10% (acumulado 90–100%)</span>
       <span>Stock: 🟢 >10 · 🟠 ≤10 · 🔴 ≤3</span>
     </div>`;
 }
@@ -22610,7 +22610,7 @@ function renderPrioridades() {
   sorted.forEach(([id, rev]) => {
     acum += rev;
     const pctAcum = totalRevenue > 0 ? acum / totalRevenue * 100 : 0;
-    claseByProduct[id] = pctAcum <= 80 ? 'A' : pctAcum <= 95 ? 'B' : 'C';
+    claseByProduct[id] = pctAcum <= 70 ? 'A' : pctAcum <= 90 ? 'B' : 'C';
   });
 
   // Cruzar con score de escalabilidad (_escData ya tiene todo calculado)
