@@ -17008,6 +17008,21 @@ app.patch('/api/clients/:id/publi-activa', requireAuth, async (req, res) => {
 //   'ex_cliente' → se fue: se conservan histórico y token para consultar, pero no genera ni una
 //                  sugerencia más. Es lo que evita seguir laburando gratis sobre cuentas que ya no pagan.
 // Solo admin. Volver a 'cliente' reintegra la cuenta a todos los procesos.
+// Renombrar la cuenta. Reconectar por OAuth conserva el nombre de una cuenta existente,
+// así que el que se pone acá no lo pisa el nickname de ML.
+app.patch('/api/clients/:id/nombre', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const name = String(req.body?.name || '').trim();
+    if (!name) return res.status(400).json({ error: 'El nombre no puede estar vacío' });
+    if (name.length > 100) return res.status(400).json({ error: 'El nombre es demasiado largo' });
+    const r = await pool.query('UPDATE clients SET name=$1, updated_at=NOW() WHERE id=$2 RETURNING id, name',
+      [name, req.params.id]);
+    if (!r.rowCount) return res.status(404).json({ error: 'El cliente no existe' });
+    console.log(`[CLIENTES] ${req.user?.username} renombró cliente ${req.params.id} a '${name}'`);
+    res.json({ ok: true, ...r.rows[0] });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
 app.patch('/api/clients/:id/tipo-cuenta', requireAuth, requireAdmin, async (req, res) => {
   try {
     const { tipo_cuenta } = req.body;

@@ -3229,6 +3229,7 @@ function renderClientsList() {
       <td style="display:flex;gap:8px;flex-wrap:wrap">
         ${tipoBtn}
         ${!c.ml_user_id ? `<button class="sync-btn" onclick="generateAuthLink(${c.id})">🔗 Generar Link</button>` : `<button class="sync-btn" onclick="generateAuthLink(${c.id})">🔄 Reconectar</button>`}
+        <button class="sync-btn" title="Cambiar nombre" onclick="renombrarCliente(${c.id}, '${nameJs}')">✏️</button>
         <button class="sync-btn" style="color:#ff4d4d;border-color:#ff4d4d" onclick="deleteClient(${c.id}, '${nameJs}')">🗑</button>
       </td>
     </tr>`;
@@ -3278,6 +3279,16 @@ function copyAuthLink() {
 
 function openAuthLink() {
   window.open(document.getElementById('authLinkText').value, '_blank');
+}
+
+async function renombrarCliente(id, actual) {
+  const nuevo = (prompt(`Nuevo nombre para "${actual}":`, actual) || '').trim();
+  if (!nuevo || nuevo === actual) return;
+  const r = await apiCall('PATCH', `/api/clients/${id}/nombre`, { name: nuevo });
+  if (r && r.ok) {
+    showToast(`✅ Renombrada a "${r.name}"`);
+    await loadClients();   // refresca selector de cuenta + lista
+  }
 }
 
 async function setTipoCuenta(id, name, tipo) {
