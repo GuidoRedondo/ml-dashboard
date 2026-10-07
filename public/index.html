@@ -16698,6 +16698,24 @@ function diagChartConfigs(cols) {
   return configs;
 }
 
+// Conteo de publicaciones del Diagnóstico por familia (variantes agrupadas) cuando el mes
+// ya se calculó con familias; si no, el de publicaciones sueltas de siempre.
+// n(clave, pubs) = "familias (pubs)" listo para mostrar; v = los números que se usan para %.
+function pubFam(rd) {
+  const m = rd?.manuales || {};
+  const hay = m.fam_activas != null;
+  const f = k => m['fam_' + k] != null ? parseFloat(m['fam_' + k]) : null;
+  const num = x => x != null && x !== '' ? parseFloat(x).toLocaleString('es-AR') : '—';
+  const v = hay
+    ? { total: f('total'), activas: f('activas'), exitosas: f('exitosas'), pareto_pct: f('pareto_pct') }
+    : { total: rd?.pub_total, activas: rd?.pub_activas, exitosas: rd?.pub_exitosas, pareto_pct: rd?.pub_pareto_pct };
+  const n = (k, pubs) => {
+    if (!hay) return num(pubs);
+    return `${num(f(k))} <span style="font-size:10px;font-weight:400;color:var(--muted)">(${num(pubs)} pubs)</span>`;
+  };
+  return { hay, v, n };
+}
+
 function diagRender(meses, clientId) {
   const el = document.getElementById('diagContent');
   const last3 = diagGetLast3Months();
@@ -16836,19 +16854,21 @@ function diagRender(meses, clientId) {
       </div>
     </div>
     <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px 18px">
-      <div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:#16a34a;margin-bottom:12px">📋 Publicaciones — estado actual</div>
+      <div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:#16a34a;margin-bottom:12px">📋 ${pubFam(rd).hay ? 'Familias de publicaciones' : 'Publicaciones'} — estado actual</div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
-        ${[
-          ['Total', fmtN(rd.pub_total)],
-          ['Activas', fmtN(rd.pub_activas)],
-          ['⏸ Pausadas', fmtN(rd.manuales?.pub_pausadas)],
-          ['⛔ Inactivas', fmtN(rd.pub_inactivas)],
-          ['% Activas', rd.pub_activas&&rd.pub_total?fmtP(rd.pub_activas/rd.pub_total*100):'—'],
-          ['Con ventas', fmtN(rd.pub_exitosas)],
-          ['% Relevantes', rd.pub_exitosas&&rd.pub_activas?fmtP(rd.pub_exitosas/rd.pub_activas*100):'—'],
-          ['Pareto 80%', fmtP(rd.pub_pareto_pct)],
-        ].map(([l,v])=>`<div><div style="font-size:10px;color:var(--muted)">${l}</div><div style="font-size:13px;font-weight:600">${v}</div></div>`).join('')}
+        ${(() => { const f = pubFam(rd); return [
+          ['Total', f.n('total', rd.pub_total)],
+          ['Activas', f.n('activas', rd.pub_activas)],
+          ['⏸ Pausadas', f.n('pausadas', rd.manuales?.pub_pausadas)],
+          ['⛔ Inactivas', f.n('inactivas', rd.pub_inactivas)],
+          ['% Activas', f.v.activas&&f.v.total?fmtP(f.v.activas/f.v.total*100):'—'],
+          ['Con ventas', f.n('exitosas', rd.pub_exitosas)],
+          ['% Relevantes', f.v.exitosas&&f.v.activas?fmtP(f.v.exitosas/f.v.activas*100):'—'],
+          ['Pareto 80%', fmtP(f.v.pareto_pct)],
+        ]; })().map(([l,v])=>`<div><div style="font-size:10px;color:var(--muted)">${l}</div><div style="font-size:13px;font-weight:600">${v}</div></div>`).join('')}
       </div>
+      ${pubFam(rd).hay ? `<div style="font-size:10px;color:var(--muted);margin-top:10px">Cada familia agrupa las variantes (talle, color) de un mismo producto. Entre paréntesis, las publicaciones sueltas.</div>`
+        : `<div style="font-size:10px;color:var(--muted);margin-top:10px">Conteo por publicación. Recalculá el mes para verlo por familia.</div>`}
     </div>
   </div>` : '';
 
@@ -17094,9 +17114,9 @@ function diagExportPDF() {
       ${kpi('Ventas 60d', fmtN(rd.rep_ventas_60))}
       ${kpi('% Reclamos', rd.rep_reclamos!=null?(parseFloat(rd.rep_reclamos)*100).toFixed(2)+'%':'—')}
       ${kpi('% Cancelaciones', rd.rep_cancelaciones!=null?(parseFloat(rd.rep_cancelaciones)*100).toFixed(2)+'%':'—')}
-      ${kpi('Publicaciones activas', fmtN(rd.pub_activas))}
-      ${kpi('Con ventas', fmtN(rd.pub_exitosas))}
-      ${kpi('Pareto 80%', fmtP(rd.pub_pareto_pct))}
+      ${kpi(pubFam(rd).hay ? 'Familias activas' : 'Publicaciones activas', fmtN(pubFam(rd).v.activas))}
+      ${kpi('Con ventas', fmtN(pubFam(rd).v.exitosas))}
+      ${kpi('Pareto 80%', fmtP(pubFam(rd).v.pareto_pct))}
     </div>`;
 
   const hoy = new Date().toLocaleDateString('es-AR', { timeZone: ART_TZ, day:'2-digit', month:'long', year:'numeric' });

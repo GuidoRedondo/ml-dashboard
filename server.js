@@ -6144,6 +6144,42 @@ app.post('/api/diagnostico/calcular', requireAuth, async (req, res) => {
     const pubParetoP = totalActive > 0 ? parseFloat(((paretoCount / totalActive)*100).toFixed(1)) : 0;
     const pubInteres = totalActive > 0 ? parseFloat((visitas / totalActive).toFixed(1)) : 0;
 
+    // ── 4b. Lo mismo por familia ──────────────────────────────────────────────
+    // Con User Products cada talle/color es un MLA propio: una remera en 6 talles cuenta
+    // como 6 publicaciones. Por familia (family_id; sin familia = el MLA es su propia
+    // familia) se ve cuántos productos hay de verdad. Si algo falla queda en null y el
+    // front muestra solo las publicaciones.
+    let fam = null;
+    try {
+      const estados = { activas: ['active'], pausadas: ['paused'], inactivas: ['inactive', 'closed'] };
+      const idsPorEstado = {};
+      for (const [k, sts] of Object.entries(estados)) {
+        idsPorEstado[k] = (await Promise.all(sts.map(st => fetchItemIdsPorEstado(uid, headers, st)))).flat();
+      }
+      const todos = [...new Set([...Object.values(idsPorEstado).flat(), ...Object.keys(salesByItem)])];
+      const { familias } = await familiasDeItems(parseInt(client_id), todos);
+      const famDe = id => (familias[id] && familias[id].fid) ? `F${familias[id].fid}` : id;
+      const contar = ids => new Set(ids.map(famDe)).size;
+      const famActivas = new Set(idsPorEstado.activas.map(famDe));
+
+      // Pareto por familia: se suma la facturación de sus variantes
+      const revFam = {};
+      Object.entries(salesByItem).forEach(([id, s]) => { const f = famDe(id); revFam[f] = (revFam[f] || 0) + s.revenue; });
+      const famSorted = Object.values(revFam).sort((a, b) => b - a);
+      let cum = 0, paretoFam = 0;
+      for (const r of famSorted) { cum += r; paretoFam++; if (cum >= target80) break; }
+
+      fam = {
+        fam_total:     contar(Object.values(idsPorEstado).flat()),
+        fam_activas:   famActivas.size,
+        fam_pausadas:  contar(idsPorEstado.pausadas),
+        fam_inactivas: contar(idsPorEstado.inactivas),
+        fam_exitosas:  Object.keys(revFam).length,
+        fam_pareto_pct: famActivas.size > 0 ? parseFloat(((paretoFam / famActivas.size) * 100).toFixed(1)) : 0,
+      };
+      console.log(`[DIAG FAMILIAS] ${mes}`, JSON.stringify(fam));
+    } catch (e) { console.error('[DIAG FAMILIAS]', e.message); }
+
     // ── 5. Reputación ─────────────────────────────────────────────────────────
     const repRes = await fetch(`${ML_API}/users/${uid}`, { headers }).then(r => r.json());
     const rep = repRes.seller_reputation || {};
@@ -6479,6 +6515,8 @@ app.post('/api/diagnostico/calcular', requireAuth, async (req, res) => {
       // Publicaciones por estado (auto)
       pub_pausadas:   totalPaused,
       pub_inactivas:  totalInactive,
+      // Mismo conteo por familia (variantes agrupadas). Si falló, queda el del cálculo anterior.
+      ...(fam || {}),
       // Logística (auto)
       full_activo:    logFullActive ? 'SI' : 'NO',
       flex_activo:    logFlexActive ? 'SI' : 'NO',
@@ -7168,17 +7206,11 @@ app.post('/api/performance/precios', requireAuth, async (req, res) => {
 // ── Familias de publicaciones ────────────────────────────────────────────────
 // Con el modelo User Products cada variante (talle, color) es un MLA propio y las tablas
 // muestran una fila por talle. ML los ata con family_id / family_name en /items; con eso
-// el front agrupa. Devuelve { familias: { MLA: { fid, nombre } } } — fid null = sin familia
-// (publicación del modelo viejo: sus variantes ya viven adentro del mismo MLA).
-app.post('/api/familias', requireAuth, async (req, res) => {
-  try {
-    const clientId = parseInt(req.body?.client_id);
-    const ids = [...new Set((req.body?.ids || []).filter(id => /^MLA\d+$/.test(id)))].slice(0, 5000);
-    if (!clientId) return res.status(400).json({ error: 'client_id requerido' });
-    if (req.user.role === 'cliente' && parseInt(req.user.client_id) !== clientId)
-      return res.status(403).json({ error: 'Sin acceso' });
-    if (!ids.length) return res.json({ familias: {} });
-
+// el front agrupa (y el Diagnóstico cuenta familias). item_familias es caché de 30 días.
+// Devuelve { familias: { MLA: { fid, nombre } }, parcial } — fid null = sin familia
+// (publicación del modelo viejo: sus variantes ya viven adentro del mismo MLA);
+// parcial = no había token para completar lo que faltaba.
+async function familiasDeItems(clientId, ids) {
     const out = {};
     const { rows } = await pool.query(
       `SELECT item_id, family_id, family_name FROM item_familias
@@ -7189,7 +7221,7 @@ app.post('/api/familias', requireAuth, async (req, res) => {
     const faltan = ids.filter(id => !out[id]);
     if (faltan.length) {
       const token = await getClientToken(clientId);
-      if (!token) return res.json({ familias: out, parcial: true });
+      if (!token) return { familias: out, parcial: true };
       const headers = { Authorization: `Bearer ${token}` };
       const lotes = [];
       for (let i = 0; i < faltan.length; i += 20) lotes.push(faltan.slice(i, i + 20));
@@ -7218,7 +7250,19 @@ app.post('/api/familias', requireAuth, async (req, res) => {
           [clientId, nuevos.map(n => n[0]), nuevos.map(n => n[1]), nuevos.map(n => n[2])]);
       }
     }
-    res.json({ familias: out });
+    return { familias: out, parcial: false };
+}
+
+app.post('/api/familias', requireAuth, async (req, res) => {
+  try {
+    const clientId = parseInt(req.body?.client_id);
+    const ids = [...new Set((req.body?.ids || []).filter(id => /^MLA\d+$/.test(id)))].slice(0, 5000);
+    if (!clientId) return res.status(400).json({ error: 'client_id requerido' });
+    if (req.user.role === 'cliente' && parseInt(req.user.client_id) !== clientId)
+      return res.status(403).json({ error: 'Sin acceso' });
+    if (!ids.length) return res.json({ familias: {} });
+    const r = await familiasDeItems(clientId, ids);
+    res.json(r.parcial ? r : { familias: r.familias });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -12160,6 +12204,23 @@ app.get('/api/reputacion', requireAuth, async (req, res) => {
 // Trae TODOS los ítems activos de un seller usando search_type=scan (scroll).
 // La paginación por offset de ML corta en offset 1000 (400 Bad Request), así que
 // para cuentas con +1000 publicaciones (ej. White Salud: 2321) hay que usar scan.
+// Todos los MLA de un estado (active, paused, inactive, closed), también por scan.
+async function fetchItemIdsPorEstado(uid, headers, status) {
+  const ids = [];
+  let scrollId = null;
+  for (let guard = 0; guard < 300; guard++) { // tope de seguridad: 30.000 ítems
+    const base = `${ML_API}/users/${uid}/items/search?search_type=scan&status=${status}&limit=100`;
+    const url = scrollId ? `${base}&scroll_id=${encodeURIComponent(scrollId)}` : base;
+    const r = await fetch(url, { headers }).then(r => r.json()).catch(() => ({}));
+    const results = r.results || [];
+    if (r.scroll_id) scrollId = r.scroll_id;
+    if (!results.length) break;
+    ids.push(...results);
+    if (!scrollId) break;
+  }
+  return ids;
+}
+
 async function fetchAllActiveItemIds(uid, headers) {
   const ids = [];
   let scrollId = null;
