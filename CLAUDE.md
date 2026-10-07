@@ -38,6 +38,7 @@ There are no tests or linting scripts configured.
 | **Diagnóstico Mensual** | Last 3 months of KPI snapshots side-by-side; manual fields stored in `manuales` JSONB column |
 | **Bitácora** | CRM-style task/note log per client |
 | **Tokens** | OAuth token status page per client (expiry, refresh availability) |
+| **Minutas** | Weekly client meetings (Gemini notes) and the tasks that came out of them, grouped by client. Only users in `MINUTAS_USUARIOS` (admins) see it. The dashboard does not process anything: Claude's scheduled task sends the result to `/api/minutas/ingest`; the view only changes each task's status and due date |
 
 ## Architecture
 
@@ -74,6 +75,8 @@ This is a **single-file Node.js/Express backend** (`server.js`) + **single-file 
 | `billing_sync` | Which (client, period) pairs have been downloaded and whether they came back complete — lets the P&L tell "pays no FULL" apart from "not synced yet" |
 | `reclamos` | One row per claim with its stage, reason, who answered, return status, return-label cost and the message thread. Filled by the 05:00 ART cron in `backend_reclamos.js`; the view never hits ML |
 | `reclamos_sync` | Per client: when it last synced, how many cases, and whether the pagination came back short — so "no claims" can be told apart from "not synced yet" |
+| `minutas` | One row per client meeting (id = Gemini Google Doc id): summary, decisions, pending items. `client_id` resolved by name when it matches exactly one client |
+| `minutas_tareas` | One row per task of a meeting. Re-ingesting never overwrites `estado` / `estado_cambiado_at` — what was marked done in the view stays done |
 | `precios_cache` | Base of the Precios sub-tab (listing + real commission + shipping + weight), 12h TTL. Building it costs one `listing_prices` call per listing, so it is never rebuilt on a plain tab open |
 
 ### API surface (grouped)
@@ -92,6 +95,7 @@ This is a **single-file Node.js/Express backend** (`server.js`) + **single-file 
 - **Panel de Clientes (vista rápida)**: `GET /api/panel/metricas`, `GET /api/panel/metricas/hoy`, `POST /api/panel/metricas/backfill`, `GET|POST /api/panel/metricas/cron`
 - **Reclamos** (`backend_reclamos.js`): `GET /api/reclamos`, `GET /api/reclamos/hilo`, `POST /api/reclamos/sync`, `POST /api/reclamos/enriquecer`, `GET /api/reclamos/sync/estado`, `GET|POST /api/reclamos/cron`
 - **Facturación real** (`backend_billing.js`): `GET /api/billing/resumen`, `GET /api/billing/estado`, `POST /api/billing/sync`, `POST /api/billing/backfill`, `GET|POST /api/billing/cron`
+- **Minutas** (`backend_minutas.js`): `POST /api/minutas/ingest` and `GET /api/minutas/ingest/ids` (header `x-minutas-secret`, no session), `GET /api/minutas`, `PATCH /api/minutas/tareas/:id` (admin + `MINUTAS_USUARIOS`). `/api/me` returns `minutas: true|false`
 - **Costos en dólares**: `GET|PUT /api/costos/dolar` (manual rate per client; PUT re-prices every item with `costo_usd`, effective from today). `POST /api/reporte/costos` accepts `costo_usd`
 - **Other**: `GET /api/promociones`, `GET /api/preguntas`, `GET /api/devoluciones`, `GET /api/bitacora`, `POST /api/bitacora`, `PUT|DELETE /api/bitacora/:id`, `GET /api/proxy-ml`, `GET /api/item-fees`
 - **Debug**: `GET /api/debug/shipping|item|billing|order|app-token`
@@ -251,6 +255,8 @@ asistente virtual de Mercado Libre". There is no field for it — it's the text.
 | `SMTP_HOST` / `SMTP_USER` / `SMTP_PASS` | No | Nodemailer email config |
 | `SMTP_PORT` | No | SMTP port (default 587) |
 | `SMTP_SECURE` | No | `true` for port 465 |
+| `MINUTAS_USUARIOS` | No | Comma-separated dashboard usernames (admins) that can see Minutas. Unset = nobody |
+| `MINUTAS_SECRET` | No | Shared secret for `/api/minutas/ingest` (header `x-minutas-secret`). Unset = ingest answers 503 |
 | `RAILWAY_PUBLIC_DOMAIN` / `SELF_URL` | No | Enables keep-alive self-ping |
 
 ## Deployment

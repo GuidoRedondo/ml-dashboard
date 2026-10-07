@@ -737,6 +737,51 @@ tbody td {
 .adm-modal { background:var(--adm-crema,#f4f1e8); color:#292929; font-family:'Plus Jakarta Sans',var(--font); border:3px solid #292929; border-radius:14px; box-shadow:6px 6px 0 #292929; max-width:560px; width:100%; max-height:80vh; overflow:auto; padding:18px 20px; }
 .adm-modal h3 { margin:0 0 10px; font-weight:800; }
 .adm-aviso { background:#fff4e5; border:2px solid #c2410c; border-radius:10px; padding:8px 10px; font-size:12px; font-weight:700; color:#7c2d12; margin:10px 0; }
+/* ── Minutas (backend_minutas.js) — misma paleta que Alertas AdMan ──────────── */
+#page-minutas { --min-crema:#f4f1e8; --min-tinta:#292929; --min-amarillo:#fff952; --min-rojo:#b42318;
+  --min-verde:#0f6b5c; --min-naranja:#c2410c; --min-gris:#6b7280;
+  font-family:'Plus Jakarta Sans',var(--font); background:var(--min-crema); color:var(--min-tinta); }
+#page-minutas h2 { font-family:'Plus Jakarta Sans',var(--font); font-weight:800; margin:0; }
+.min-bar { position:sticky; top:0; z-index:5; display:flex; gap:8px; align-items:center; flex-wrap:wrap;
+  background:var(--min-crema); border-bottom:2px solid var(--min-tinta); padding:10px 0; margin-bottom:12px; }
+.min-bar select, .min-bar input { font-family:inherit; font-size:12px; padding:6px 8px; border-radius:8px;
+  border:2px solid var(--min-tinta); background:#fff; color:var(--min-tinta); }
+.min-bar input[type=search] { min-width:200px; flex:1; }
+.min-tabs { display:flex; border:2px solid var(--min-tinta); border-radius:8px; overflow:hidden; }
+.min-tabs button { font-family:inherit; font-weight:800; font-size:12px; padding:6px 14px; border:0; background:#fff; color:var(--min-tinta); cursor:pointer; }
+.min-tabs button.on { background:var(--min-tinta); color:#fff; }
+.min-grupo { margin-bottom:18px; }
+.min-grupo h3 { font-size:15px; font-weight:800; margin:0 0 6px; display:flex; gap:10px; align-items:baseline; flex-wrap:wrap; }
+.min-grupo h3 .sub { font-size:11px; font-weight:600; color:var(--min-gris); }
+.min-lista { background:#fff; border:2px solid var(--min-tinta); border-radius:12px; box-shadow:4px 4px 0 var(--min-tinta); overflow:hidden; }
+.min-fila { display:flex; gap:12px; align-items:flex-start; padding:10px 12px; border-top:1px solid #e7e2d3; }
+.min-fila:first-child { border-top:0; }
+.min-fila .cuerpo { flex:1; min-width:0; }
+.min-fila .tarea { font-weight:800; font-size:13px; }
+.min-fila .detalle { font-size:12px; color:#4b4b4b; margin-top:2px; white-space:pre-wrap; }
+.min-fila .chips { display:flex; gap:5px; flex-wrap:wrap; margin-top:6px; }
+.min-fila .lado { text-align:right; font-size:11px; color:var(--min-gris); white-space:nowrap; display:flex; flex-direction:column; gap:3px; align-items:flex-end; }
+.min-fila .lado a { color:var(--min-tinta); font-weight:700; }
+.min-fila.hecha .tarea, .min-fila.hecha .detalle { text-decoration:line-through; color:#9ca3af; }
+.min-fila.hecha .chips { opacity:.5; }
+.min-estado { font-family:inherit; font-weight:800; font-size:11px; width:84px; padding:6px 4px; border-radius:8px;
+  border:2px solid var(--min-tinta); background:#fff; color:var(--min-tinta); cursor:pointer; flex-shrink:0; }
+.min-estado.curso { background:var(--min-amarillo); }
+.min-estado.hecha { background:var(--min-verde); border-color:var(--min-verde); color:#fff; }
+.min-estado:disabled { opacity:.5; cursor:wait; }
+.min-chip { display:inline-block; font-size:10px; font-weight:800; padding:2px 7px; border-radius:999px;
+  background:#efece2; color:var(--min-tinta); text-transform:uppercase; letter-spacing:.03em; }
+.min-chip.nr { background:var(--min-amarillo); border:1px solid var(--min-tinta); }
+.min-chip.alta { background:var(--min-rojo); color:#fff; }
+.min-vence { font-family:inherit; font-size:11px; border:1px solid #d6d1c2; border-radius:6px; padding:2px 4px; background:#fff; color:var(--min-tinta); }
+.min-vence.vencida { border-color:var(--min-rojo); color:var(--min-rojo); font-weight:800; }
+.min-card { background:#fff; border:2px solid var(--min-tinta); border-radius:12px; box-shadow:4px 4px 0 var(--min-tinta); padding:14px 16px; margin-bottom:14px; }
+.min-card h4 { margin:0; font-size:15px; font-weight:800; }
+.min-card .meta { font-size:11px; color:var(--min-gris); margin:2px 0 8px; }
+.min-card .resumen { font-size:13px; white-space:pre-wrap; }
+.min-card ul { margin:4px 0 0 18px; padding:0; font-size:12px; }
+.min-card .tit { font-size:11px; font-weight:800; text-transform:uppercase; letter-spacing:.04em; margin-top:10px; }
+@media (max-width:640px) { .min-fila { flex-wrap:wrap; } .min-fila .lado { flex-direction:row; text-align:left; width:100%; } }
 /* Familias de publicaciones (famAgrupar): fila madre clickeable y variantes con filete */
 tr.fam-madre { cursor: pointer; }
 tr.fam-madre > td { background: rgba(99,102,241,.08); }
@@ -878,6 +923,9 @@ tr.fam-hijo > td { background: rgba(99,102,241,.025); }
       </div>
       <div class="nav-item" id="nav-adman-alertas" data-page="adman-alertas" style="display:none" onclick="showPage('adman-alertas',this);loadAdmanPanel()">
         <span class="nav-icon">🎯</span> Alertas AdMan
+      </div>
+      <div class="nav-item" id="nav-minutas" data-page="minutas" style="display:none" onclick="showPage('minutas',this);loadMinutasPanel()">
+        <span class="nav-icon">📋</span> Minutas
       </div>
       <div class="nav-item" data-page="hotsale-report" onclick="showPage('hotsale-report',this);loadHotsaleReport()">
         <span class="nav-icon">🔥</span> Reporte Hotsale
@@ -2039,6 +2087,11 @@ tr.fam-hijo > td { background: rgba(99,102,241,.025); }
         El reporte se envía automáticamente cada día a las 23:59 hs Argentina.</span>
         <div id="hotsaleSlackStatus" style="margin-top:8px;font-weight:600"></div>
       </div>
+    </div>
+
+    <!-- MINUTAS (backend_minutas.js · docs/spec-minutas.md) -->
+    <div class="page" id="page-minutas">
+      <div id="min-root"><div style="padding:20px;color:#6b7280">Cargando…</div></div>
     </div>
 
     <!-- MOTOR DE PUBLICIDAD -->
@@ -15057,6 +15110,10 @@ function initApp() {
       if (getSessionRole() === 'cliente' && antes !== me.client_id && allClients.length) renderClientSelector();
     }
     applyPermissions();
+    // Minutas: sólo quien esté en MINUTAS_USUARIOS (lo decide el backend). Va después de
+    // applyPermissions para que nada lo vuelva a mostrar.
+    const minNavEl = document.getElementById('nav-minutas');
+    if (minNavEl) minNavEl.style.display = me?.minutas === true ? '' : 'none';
   });
 
   // Load clients from server
@@ -28596,6 +28653,214 @@ function admSeguirCorrida() {
       loadAdmanPanel();
     }
   }, 5000);
+}
+
+// ════════════════════════════════════════════════════════════════════
+// MINUTAS — docs/spec-minutas.md (backend_minutas.js)
+// ════════════════════════════════════════════════════════════════════
+// Las carga la tarea programada de Claude; desde acá sólo se cambia el estado de
+// cada tarea y su vencimiento. Responsable y estado elegidos se recuerdan en
+// localStorage (comodidad, nada más).
+const MIN_ESTADOS = ['Pendiente', 'En curso', 'Hecha'];
+const MIN_PALANCAS = ['Tráfico', 'Conversión', 'Rentabilidad', 'Publicidad', 'Promociones', 'Logística', 'Operación'];
+const minLs = (k, def) => { try { return localStorage.getItem('min_' + k) || def; } catch (e) { return def; } };
+const minLsSet = (k, v) => { try { localStorage.setItem('min_' + k, v); } catch (e) {} };
+const _min = { data: null, tab: 'tareas', cliente: '', resp: minLs('resp', ''), estado: minLs('estado', 'abiertas'), palanca: '', q: '' };
+
+const minEsc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const minFecha = v => v ? dART(v).toLocaleDateString('es-AR', { timeZone: ART_TZ, day: 'numeric', month: 'short', year: '2-digit' }) : '—';
+const minAbierta = t => t.estado !== 'Hecha';
+const minVencida = (t, hoy) => minAbierta(t) && !!t.vence && t.vence < hoy;
+const minNorm = s => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+
+async function loadMinutasPanel() {
+  const root = document.getElementById('min-root');
+  if (!root) return;
+  if (!_min.data) root.innerHTML = '<div style="padding:20px;color:#6b7280">Cargando…</div>';
+  const r = await apiCall('GET', '/api/minutas');
+  if (!r || r.error) {
+    root.innerHTML = `<div class="adm-vacio" style="margin:20px">No se pudieron cargar las minutas${r && r.error ? ': ' + minEsc(r.error) : ' (sin acceso)'}.</div>`;
+    return;
+  }
+  _min.data = r;
+  minRender();
+}
+
+function minRender() {
+  const root = document.getElementById('min-root');
+  const d = _min.data;
+  if (!root || !d) return;
+  const clientes = [...new Set([...d.minutas.map(m => m.cliente), ...d.tareas.map(t => t.cliente)])]
+    .sort((a, b) => a.localeCompare(b, 'es'));
+  if (_min.cliente && !clientes.includes(_min.cliente)) _min.cliente = '';
+  const opt = (v, label, sel) => `<option value="${minEsc(v)}" ${v === sel ? 'selected' : ''}>${minEsc(label)}</option>`;
+
+  root.innerHTML = `
+    <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+      <h2 style="flex:1">📋 Minutas</h2>
+      <button class="adm-btn" onclick="loadMinutasPanel()">Actualizar</button>
+    </div>
+    <div id="min-cards"></div>
+    <div class="min-bar">
+      <div class="min-tabs">
+        <button class="${_min.tab === 'tareas' ? 'on' : ''}" onclick="_min.tab='tareas';minRender()">Tareas</button>
+        <button class="${_min.tab === 'minutas' ? 'on' : ''}" onclick="_min.tab='minutas';minRender()">Minutas</button>
+      </div>
+      <select onchange="_min.cliente=this.value;minRenderLista()">
+        ${opt('', 'Todos los clientes', _min.cliente)}${clientes.map(c => opt(c, c, _min.cliente)).join('')}
+      </select>
+      ${_min.tab === 'tareas' ? `
+      <select onchange="_min.resp=this.value;minLsSet('resp',this.value);minRenderLista()">
+        ${opt('', 'NR y cliente', _min.resp)}${opt('NR', 'Negocio Redondo', _min.resp)}${opt('Cliente', 'Cliente', _min.resp)}
+      </select>
+      <select onchange="_min.estado=this.value;minLsSet('estado',this.value);minRenderLista()">
+        ${opt('abiertas', 'Abiertas', _min.estado)}${opt('todas', 'Todas', _min.estado)}${MIN_ESTADOS.map(e => opt(e, e, _min.estado)).join('')}
+      </select>
+      <select onchange="_min.palanca=this.value;minRenderLista()">
+        ${opt('', 'Todas las palancas', _min.palanca)}${MIN_PALANCAS.map(p => opt(p, p, _min.palanca)).join('')}
+      </select>` : ''}
+      <input type="search" placeholder="${_min.tab === 'tareas' ? 'Buscar en tarea, detalle o quién…' : 'Buscar en las minutas…'}"
+        value="${minEsc(_min.q)}" oninput="_min.q=this.value;minRenderLista()">
+    </div>
+    <div id="min-lista"></div>`;
+  minRenderLista();
+}
+
+function minTareasFiltradas() {
+  const d = _min.data, q = minNorm(_min.q.trim());
+  return d.tareas.filter(t => {
+    if (_min.cliente && t.cliente !== _min.cliente) return false;
+    if (_min.resp && t.responsable !== _min.resp) return false;
+    if (_min.estado === 'abiertas' && !minAbierta(t)) return false;
+    if (MIN_ESTADOS.includes(_min.estado) && t.estado !== _min.estado) return false;
+    if (_min.palanca && t.palanca !== _min.palanca) return false;
+    if (q && !minNorm([t.tarea, t.detalle, t.quien].join(' ')).includes(q)) return false;
+    return true;
+  });
+}
+
+function minRenderLista() {
+  const d = _min.data, hoy = ymd();
+  const cards = document.getElementById('min-cards'), lista = document.getElementById('min-lista');
+  if (!d || !cards || !lista) return;
+
+  // Resumen: respeta el filtro de cliente, no los demás (es la foto de la semana).
+  const delCliente = x => !_min.cliente || x.cliente === _min.cliente;
+  const abiertas = d.tareas.filter(t => delCliente(t) && minAbierta(t));
+  const nMinutas = d.minutas.filter(delCliente).length;
+  cards.innerHTML = `
+    <div class="adm-cards">
+      <div class="adm-card" style="background:#fff952"><div class="t">Abiertas de NR</div><div class="n">${abiertas.filter(t => t.responsable === 'NR').length}</div><div class="d">Pendientes + en curso</div></div>
+      <div class="adm-card"><div class="t">Abiertas del cliente</div><div class="n">${abiertas.filter(t => t.responsable === 'Cliente').length}</div><div class="d">Lo que tiene que hacer cada cliente</div></div>
+      <div class="adm-card" style="border-color:#b42318"><div class="t" style="color:#b42318">Vencidas</div><div class="n">${abiertas.filter(t => minVencida(t, hoy)).length}</div><div class="d">Abiertas con vencimiento antes de hoy</div></div>
+      <div class="adm-card"><div class="t">Minutas</div><div class="n">${nMinutas}</div><div class="d">Reuniones cargadas</div></div>
+    </div>`;
+
+  if (!d.minutas.length && !d.tareas.length) {
+    lista.innerHTML = '<div class="adm-vacio">Todavía no hay minutas cargadas: la tarea programada las carga de lunes a viernes a la noche.</div>';
+    return;
+  }
+  const sinResultados = '<div class="adm-vacio">No hay resultados para estos filtros.</div>';
+
+  if (_min.tab === 'minutas') {
+    const q = minNorm(_min.q.trim());
+    const tareasPorMinuta = {};
+    d.tareas.forEach(t => { tareasPorMinuta[t.minuta_id] = (tareasPorMinuta[t.minuta_id] || 0) + 1; });
+    const ms = d.minutas.filter(m => delCliente(m) && (!q || minNorm(
+      [m.cliente, m.titulo, m.resumen, ...(m.decisiones || []), ...(m.pendientes || [])].join(' ')).includes(q)))
+      .sort((a, b) => (b.fecha || '').localeCompare(a.fecha || '') || a.cliente.localeCompare(b.cliente, 'es'));
+    if (!ms.length) { lista.innerHTML = sinResultados; return; }
+    const ul = arr => arr && arr.length
+      ? `<ul>${arr.map(x => `<li>${minEsc(x)}</li>`).join('')}</ul>`
+      : '<div style="font-size:12px;color:#6b7280">—</div>';
+    lista.innerHTML = ms.map(m => `
+      <div class="min-card">
+        <div style="display:flex;gap:10px;align-items:baseline;flex-wrap:wrap">
+          <h4 style="flex:1">${minEsc(m.cliente)} · ${minFecha(m.fecha)}</h4>
+          ${m.doc_url ? `<a href="${minEsc(m.doc_url)}" target="_blank" rel="noopener" style="font-size:12px;font-weight:700;color:inherit">Doc ↗</a>` : ''}
+        </div>
+        <div class="meta">${minEsc(m.titulo || '')}${m.titulo ? ' · ' : ''}${tareasPorMinuta[m.id] || 0} tarea(s)</div>
+        <div class="resumen">${minEsc(m.resumen || '')}</div>
+        <div class="tit">Decisiones</div>${ul(m.decisiones)}
+        <div class="tit">Pendientes</div>${ul(m.pendientes)}
+      </div>`).join('');
+    return;
+  }
+
+  const ts = minTareasFiltradas();
+  if (!ts.length) { lista.innerHTML = sinResultados; return; }
+  const ultimaReunion = {};
+  d.minutas.forEach(m => { if (!ultimaReunion[m.cliente] || m.fecha > ultimaReunion[m.cliente]) ultimaReunion[m.cliente] = m.fecha; });
+  const grupos = {};
+  ts.forEach(t => (grupos[t.cliente] = grupos[t.cliente] || []).push(t));
+  lista.innerHTML = Object.keys(grupos).sort((a, b) => a.localeCompare(b, 'es')).map(cli => {
+    const filas = grupos[cli].sort((a, b) =>
+      (minAbierta(b) - minAbierta(a)) || (a.vence || '9999').localeCompare(b.vence || '9999') || a.id.localeCompare(b.id));
+    return `
+      <div class="min-grupo">
+        <h3>${minEsc(cli)} <span class="sub">${filas.length} tarea(s) · última reunión ${minFecha(ultimaReunion[cli])}</span></h3>
+        <div class="min-lista">${filas.map(t => minFilaHtml(t, hoy)).join('')}</div>
+      </div>`;
+  }).join('');
+}
+
+function minFilaHtml(t, hoy) {
+  const cls = t.estado === 'Hecha' ? 'hecha' : t.estado === 'En curso' ? 'curso' : '';
+  const resp = t.responsable
+    ? `<span class="min-chip ${t.responsable === 'NR' ? 'nr' : ''}">${minEsc(t.responsable)}${t.quien ? ' · ' + minEsc(t.quien) : ''}</span>`
+    : (t.quien ? `<span class="min-chip">${minEsc(t.quien)}</span>` : '');
+  // El id va por data-id y no dentro del onclick: así no hay que escapar comillas en JS.
+  return `
+    <div class="min-fila ${t.estado === 'Hecha' ? 'hecha' : ''}" data-id="${minEsc(t.id)}">
+      <button class="min-estado ${cls}" title="Cambiar estado" onclick="minRotarEstado(this.closest('.min-fila').dataset.id)">${minEsc(t.estado)}</button>
+      <div class="cuerpo">
+        <div class="tarea">${minEsc(t.tarea)}</div>
+        ${t.detalle ? `<div class="detalle">${minEsc(t.detalle)}</div>` : ''}
+        <div class="chips">
+          ${resp}
+          ${t.palanca ? `<span class="min-chip">${minEsc(t.palanca)}</span>` : ''}
+          ${t.prioridad === 'Alta' ? '<span class="min-chip alta">Alta</span>' : ''}
+        </div>
+      </div>
+      <div class="lado">
+        <label>vence <input type="date" class="min-vence ${minVencida(t, hoy) ? 'vencida' : ''}" value="${minEsc(t.vence || '')}"
+          onchange="minCambiarVence(this.closest('.min-fila').dataset.id, this.value)"></label>
+        <span>reunión ${minFecha(t.fecha_reunion)}</span>
+        ${t.doc_url ? `<a href="${minEsc(t.doc_url)}" target="_blank" rel="noopener">minuta ↗</a>` : ''}
+      </div>
+    </div>`;
+}
+
+async function minPatch(id, body) {
+  const r = await apiCall('PATCH', '/api/minutas/tareas/' + encodeURIComponent(id), body);
+  if (!r || r.error || !r.tarea) throw new Error(r && r.error ? r.error : 'sin acceso');
+  return r.tarea;
+}
+
+async function minRotarEstado(id) {
+  const t = _min.data && _min.data.tareas.find(x => x.id === id);
+  if (!t) return;
+  const antes = t.estado;
+  t.estado = MIN_ESTADOS[(MIN_ESTADOS.indexOf(antes) + 1) % MIN_ESTADOS.length];
+  minRenderLista(); // optimista: el botón cambia al toque
+  try {
+    Object.assign(t, await minPatch(id, { estado: t.estado }));
+  } catch (e) {
+    t.estado = antes;
+    showToast('No se pudo cambiar el estado: ' + e.message);
+  }
+  minRenderLista();
+}
+
+async function minCambiarVence(id, valor) {
+  const t = _min.data && _min.data.tareas.find(x => x.id === id);
+  if (!t) return;
+  try {
+    Object.assign(t, await minPatch(id, { vence: valor || null }));
+  } catch (e) {
+    showToast('No se pudo cambiar el vencimiento: ' + e.message);
+  }
+  minRenderLista();
 }
 </script>
 </body>

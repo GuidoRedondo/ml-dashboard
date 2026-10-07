@@ -1019,7 +1019,10 @@ app.get('/api/me', requireAuth, async (req, res) => {
       email: req.user.email,
       role: req.user.role,
       client_id: req.user.client_id,
-      permissions
+      permissions,
+      // Minutas: admin + username en MINUTAS_USUARIOS (backend_minutas.js). El front sólo
+      // decide si muestra el menú; el backend igual corta con 403.
+      minutas: require('./backend_minutas').puedeVerMinutas(req.user)
     });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
@@ -10893,6 +10896,11 @@ const reclamos = require('./backend_reclamos')(app, {
   pool, requireAuth, requireAdmin, getClientToken, ML_API, nodeCron, ART, ymd, ymdShift,
   fetchClaimsTodos
 });
+
+// Minutas de reuniones con clientes — módulo aparte (backend_minutas.js), docs/spec-minutas.md.
+// La tarea programada de Claude manda lo procesado a /api/minutas/ingest (header
+// x-minutas-secret); la vista sólo la ve quien esté en MINUTAS_USUARIOS.
+require('./backend_minutas')(app, { pool, requireAuth, requireAdmin, ymd, ymdShift });
 
 // Experiencia de compra por publicación — módulo aparte (backend_experiencia.js).
 // ML sólo da la foto de hoy del semáforo de cada publicación; el cron de las 07:00
