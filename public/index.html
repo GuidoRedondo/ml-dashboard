@@ -28859,6 +28859,7 @@ async function loadMinutasPanel() {
     return;
   }
   _min.data = r;
+  if (r.sync) minSyncSet(r.sync.vigente, r.sync.ahora);
   minRender();
 }
 
@@ -28874,6 +28875,8 @@ function minRender() {
   root.innerHTML = `
     <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
       <h2 style="flex:1">📋 Minutas</h2>
+      ${d.sync ? `<span id="min-sync-msg" style="font-size:12px;font-weight:700"></span>
+      <button class="adm-btn" id="min-sync-btn" onclick="minSyncNow()">Sincronizar ahora</button>` : ''}
       <button class="adm-btn" onclick="loadMinutasPanel()">Actualizar</button>
     </div>
     <div id="min-cards"></div>
@@ -28900,6 +28903,69 @@ function minRender() {
     </div>
     <div id="min-lista"></div>`;
   minRenderLista();
+  minSyncPintar();
+}
+
+// ── Sincronizar ahora ────────────────────────────────────────────────────────
+// Dispara a mano la rutina de Claude que procesa las minutas. El botón sólo existe si
+// el backend manda `sync` (usuario en MINUTAS_SYNC_USUARIOS). El bloqueo de 5 minutos
+// lo decide el backend con el último disparo guardado en la base; acá sólo se cuenta
+// hacia atrás. `offset` corrige la diferencia entre el reloj de esta máquina y el server.
+const _minSync = { vigente: null, offset: 0, error: '', timer: null, recargado: null };
+
+function minSyncSet(vigente, ahoraServer) {
+  _minSync.vigente = vigente || null;
+  if (ahoraServer) _minSync.offset = new Date(ahoraServer).getTime() - Date.now();
+}
+
+function minSyncPintar() {
+  const btn = document.getElementById('min-sync-btn'), msg = document.getElementById('min-sync-msg');
+  clearInterval(_minSync.timer); _minSync.timer = null;
+  if (!btn || !msg) return;
+  const v = _minSync.vigente, ahora = Date.now() + _minSync.offset;
+  const libre = v ? new Date(v.libre_desde).getTime() : 0;
+  const recargar = v ? new Date(v.recargar_en).getTime() : 0;
+  if (v && ahora < libre) {
+    const seg = Math.ceil((libre - ahora) / 1000);
+    btn.disabled = true;
+    btn.textContent = `Sincronizar ahora (${Math.floor(seg / 60)}:${String(seg % 60).padStart(2, '0')})`;
+    const link = v.session_url ? ` · <a href="${minEsc(v.session_url)}" target="_blank" rel="noopener" style="color:inherit">ver sesión</a>` : '';
+    msg.style.color = 'var(--min-tinta)';
+    msg.innerHTML = v.status === 200 && ahora < recargar ? `⏳ Procesando… (~3 min)${link}`
+                  : v.status === 200 ? `✓ Tablero recargado${link}` : '⏳ Disparando…';
+    // A los 3 minutos se recarga el tablero, una sola vez por disparo.
+    if (v.status === 200 && ahora >= recargar && _minSync.recargado !== v.id) {
+      _minSync.recargado = v.id;
+      loadMinutasPanel();
+      return;
+    }
+    _minSync.timer = setInterval(() => {
+      if (!document.getElementById('min-sync-btn')) { clearInterval(_minSync.timer); return; }
+      minSyncPintar();
+    }, 1000);
+    return;
+  }
+  btn.disabled = false;
+  btn.textContent = 'Sincronizar ahora';
+  msg.style.color = 'var(--min-rojo)';
+  msg.textContent = _minSync.error ? '⚠️ ' + _minSync.error : '';
+}
+
+async function minSyncNow() {
+  const btn = document.getElementById('min-sync-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Disparando…'; }
+  _minSync.error = '';
+  let r = null;
+  try { r = await apiCall('POST', '/api/minutas/sync-now'); }
+  catch (e) { r = { error: e.message }; }
+  if (r && r.ok) {
+    minSyncSet(r.vigente, r.ahora);
+  } else if (r && r.bloqueado) {
+    minSyncSet(r.vigente);
+  } else {
+    _minSync.error = (r && r.error) || 'Sin acceso';
+  }
+  minSyncPintar();
 }
 
 function minTareasFiltradas() {

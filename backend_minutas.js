@@ -25,6 +25,11 @@
 //    Sin la variable no entra nadie. Para abrirlo a Tati alcanza con agregarla ahí.
 //  - Ingest: sin sesión, header `x-minutas-secret` contra MINUTAS_SECRET. Sin la
 //    variable responde 503: el endpoint nunca queda abierto.
+//  - "Sincronizar ahora" (POST /api/minutas/sync-now): dispara la rutina de Claude a
+//    mano. Además de Minutas exige que el username esté en MINUTAS_SYNC_USUARIOS (sin la
+//    variable no lo ve nadie): MINUTAS_USUARIOS va a sumar a Tati y el botón es sólo de
+//    Guido. El token de la rutina (MINUTAS_ROUTINE_TOKEN) vive sólo acá, nunca viaja
+//    al front.
 
 'use strict';
 
@@ -49,6 +54,18 @@ function puedeVerMinutas(user) {
   if (!user || user.role !== 'admin') return false;
   return usuariosMinutas().includes(String(user.username || '').toLowerCase());
 }
+
+function puedeSincronizarMinutas(user) {
+  if (!puedeVerMinutas(user)) return false;
+  return String(process.env.MINUTAS_SYNC_USUARIOS || '')
+    .split(',').map(x => x.trim().toLowerCase()).filter(Boolean)
+    .includes(String(user.username || '').toLowerCase());
+}
+
+// Un disparo bloquea el botón SYNC_BLOQUEO_MIN; el tablero se recarga a los
+// SYNC_RECARGA_MIN, que es lo que tarda la rutina en mandar el resultado al ingest.
+const SYNC_BLOQUEO_MIN = 5;
+const SYNC_RECARGA_MIN = 3;
 
 function secretoValido(provisto) {
   const secret = process.env.MINUTAS_SECRET;
@@ -100,6 +117,18 @@ async function crearTablas(pool) {
     );
     CREATE INDEX IF NOT EXISTS idx_minutas_tareas_estado  ON minutas_tareas (estado);
     CREATE INDEX IF NOT EXISTS idx_minutas_tareas_cliente ON minutas_tareas (cliente);
+
+    -- Cada disparo manual de la rutina. status NULL = en vuelo. El bloqueo de 5 minutos
+    -- se lee de acá (no de memoria) para que sobreviva a un reinicio o a un deploy.
+    CREATE TABLE IF NOT EXISTS minutas_sync (
+      id          SERIAL PRIMARY KEY,
+      username    TEXT,
+      disparado   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      status      INTEGER,
+      session_url TEXT,
+      error       TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_minutas_sync_disparado ON minutas_sync (disparado DESC);
   `);
 }
 
@@ -223,6 +252,29 @@ const COLS_TAREA = `id, minuta_id, cliente, client_id, tarea, detalle, palanca, 
   to_char(vence, 'YYYY-MM-DD') AS vence, estado, to_char(fecha_reunion, 'YYYY-MM-DD') AS fecha_reunion,
   doc_url, estado_cambiado_at, created_at, updated_at`;
 
+// Último disparo que bloquea: uno exitoso de los últimos 5 minutos, o uno todavía en
+// vuelo (status NULL, con un minuto de gracia por si el proceso murió en el medio).
+async function syncVigente(db) {
+  const { rows } = await db.query(`
+    SELECT id, username, disparado, status, session_url,
+           disparado + make_interval(mins => ${SYNC_BLOQUEO_MIN}) AS libre_desde,
+           disparado + make_interval(mins => ${SYNC_RECARGA_MIN}) AS recargar_en
+      FROM minutas_sync
+     WHERE (status = 200 AND disparado > NOW() - make_interval(mins => ${SYNC_BLOQUEO_MIN}))
+        OR (status IS NULL AND disparado > NOW() - INTERVAL '1 minute')
+     ORDER BY disparado DESC LIMIT 1`);
+  return rows[0] || null;
+}
+
+// Traduce la respuesta de la rutina a lo que ve Guido.
+function mensajeRutina(status, body) {
+  if (status === 401) return 'Token inválido o regenerado';
+  if (status === 400) return 'Rutina pausada';
+  if (status === 429) return 'Límite por hora, probá más tarde';
+  const m = body && (body.error?.message || body.error || body.message);
+  return (typeof m === 'string' && m) ? m : `La rutina respondió ${status}`;
+}
+
 // ════════════════════════════════════════════════════════════════════
 
 module.exports = (app, { pool, requireAuth, requireAdmin, ymd, ymdShift }) => {
@@ -337,7 +389,11 @@ module.exports = (app, { pool, requireAuth, requireAdmin, ymd, ymdShift }) => {
         pool.query(`SELECT ${COLS_MINUTA} FROM minutas ORDER BY fecha DESC, id`),
         pool.query(`SELECT ${COLS_TAREA} FROM minutas_tareas ORDER BY cliente, vence NULLS LAST, id`),
       ]);
-      res.json({ minutas: m.rows, tareas: t.rows, hoy: ymd() });
+      // El estado del botón "Sincronizar ahora" viaja sólo a quien lo puede usar.
+      const sync = puedeSincronizarMinutas(req.user)
+        ? { vigente: await syncVigente(pool), ahora: new Date().toISOString() }
+        : null;
+      res.json({ minutas: m.rows, tareas: t.rows, hoy: ymd(), sync });
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
 
@@ -368,6 +424,71 @@ module.exports = (app, { pool, requireAuth, requireAdmin, ymd, ymdShift }) => {
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
 
+  // ── Disparo manual de la rutina ─────────────────────────────────────────────
+
+  app.post('/api/minutas/sync-now', requireAuth, requireAdmin, async (req, res) => {
+    if (!puedeSincronizarMinutas(req.user)) return res.status(403).json({ error: 'Sin acceso' });
+    const url = process.env.MINUTAS_ROUTINE_URL, token = process.env.MINUTAS_ROUTINE_TOKEN;
+    if (!url || !token) return res.status(503).json({ error: 'Falta MINUTAS_ROUTINE_URL o MINUTAS_ROUTINE_TOKEN' });
+
+    // Reserva: chequear el bloqueo e insertar el disparo bajo un lock, así dos clicks
+    // seguidos no disparan la rutina dos veces.
+    let syncId;
+    const db = await pool.connect();
+    try {
+      await db.query('BEGIN');
+      await db.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['minutas_sync']);
+      const vigente = await syncVigente(db);
+      if (vigente) {
+        await db.query('ROLLBACK');
+        return res.status(429).json({ error: 'Ya se disparó hace menos de 5 minutos', bloqueado: true, vigente });
+      }
+      const { rows } = await db.query(
+        'INSERT INTO minutas_sync (username) VALUES ($1) RETURNING id', [req.user.username]);
+      syncId = rows[0].id;
+      await db.query('COMMIT');
+    } catch (e) {
+      await db.query('ROLLBACK').catch(() => {});
+      return res.status(500).json({ error: e.message });
+    } finally {
+      db.release();
+    }
+
+    const cerrar = (status, sessionUrl, error) => pool.query(
+      'UPDATE minutas_sync SET status = $2, session_url = $3, error = $4 WHERE id = $1',
+      [syncId, status, sessionUrl || null, error || null]).catch(e => console.error('[MINUTAS][sync] no se guardó el resultado:', e.message));
+
+    try {
+      const r = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'anthropic-version': '2023-06-01',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ text: 'Disparo manual desde el dashboard' }),
+        signal: AbortSignal.timeout(30000),
+      });
+      const raw = await r.text();
+      let body = null; try { body = JSON.parse(raw); } catch (e) { body = raw ? { message: raw.slice(0, 300) } : null; }
+
+      if (r.status === 200) {
+        const sessionUrl = body && body.claude_code_session_url || null;
+        await cerrar(200, sessionUrl, null);
+        return res.json({ ok: true, claude_code_session_url: sessionUrl, vigente: await syncVigente(pool), ahora: new Date().toISOString() });
+      }
+      const msg = mensajeRutina(r.status, body);
+      console.warn(`[MINUTAS][sync] la rutina respondió ${r.status}: ${raw.slice(0, 300)}`);
+      await cerrar(r.status, null, msg);
+      // 502 y no el status de la rutina: un 401 acá haría que el front mande a Guido al login.
+      return res.status(502).json({ error: msg, status_rutina: r.status });
+    } catch (e) {
+      const msg = e.name === 'TimeoutError' ? 'La rutina no respondió en 30 segundos' : e.message;
+      await cerrar(0, null, msg);
+      return res.status(502).json({ error: msg });
+    }
+  });
+
   // ── Arranque ────────────────────────────────────────────────────────────────
 
   crearTablas(pool)
@@ -378,5 +499,6 @@ module.exports = (app, { pool, requireAuth, requireAdmin, ymd, ymdShift }) => {
 };
 
 module.exports.puedeVerMinutas = puedeVerMinutas;
+module.exports.puedeSincronizarMinutas = puedeSincronizarMinutas;
 module.exports.PALANCAS = PALANCAS;
 module.exports.ESTADOS = ESTADOS;

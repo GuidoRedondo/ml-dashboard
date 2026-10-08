@@ -95,7 +95,7 @@ This is a **single-file Node.js/Express backend** (`server.js`) + **single-file 
 - **Panel de Clientes (vista rápida)**: `GET /api/panel/metricas`, `GET /api/panel/metricas/hoy`, `POST /api/panel/metricas/backfill`, `GET|POST /api/panel/metricas/cron`
 - **Reclamos** (`backend_reclamos.js`): `GET /api/reclamos`, `GET /api/reclamos/hilo`, `POST /api/reclamos/sync`, `POST /api/reclamos/enriquecer`, `GET /api/reclamos/sync/estado`, `GET|POST /api/reclamos/cron`
 - **Facturación real** (`backend_billing.js`): `GET /api/billing/resumen`, `GET /api/billing/estado`, `POST /api/billing/sync`, `POST /api/billing/backfill`, `GET|POST /api/billing/cron`
-- **Minutas** (`backend_minutas.js`): `POST /api/minutas/ingest` and `GET /api/minutas/ingest/ids` (header `x-minutas-secret`, no session), `GET /api/minutas`, `PATCH /api/minutas/tareas/:id` (admin + `MINUTAS_USUARIOS`). `/api/me` returns `minutas: true|false`
+- **Minutas** (`backend_minutas.js`): `POST /api/minutas/ingest` and `GET /api/minutas/ingest/ids` (header `x-minutas-secret`, no session), `GET /api/minutas`, `PATCH /api/minutas/tareas/:id` (admin + `MINUTAS_USUARIOS`). `/api/me` returns `minutas: true|false`. `POST /api/minutas/sync-now` fires Claude's routine by hand (admin + `MINUTAS_SYNC_USUARIOS`; the routine token never reaches the front; 5-minute lock read from table `minutas_sync`; routine errors come back as 502 because a 401 would send the front to the login)
 - **Costos en dólares**: `GET|PUT /api/costos/dolar` (manual rate per client; PUT re-prices every item with `costo_usd`, effective from today). `POST /api/reporte/costos` accepts `costo_usd`
 - **Other**: `GET /api/promociones`, `GET /api/preguntas`, `GET /api/devoluciones`, `GET /api/bitacora`, `POST /api/bitacora`, `PUT|DELETE /api/bitacora/:id`, `GET /api/proxy-ml`, `GET /api/item-fees`
 - **Debug**: `GET /api/debug/shipping|item|billing|order|app-token`
@@ -257,6 +257,8 @@ asistente virtual de Mercado Libre". There is no field for it — it's the text.
 | `SMTP_SECURE` | No | `true` for port 465 |
 | `MINUTAS_USUARIOS` | No | Comma-separated dashboard usernames (admins) that can see Minutas. Unset = nobody |
 | `MINUTAS_SECRET` | No | Shared secret for `/api/minutas/ingest` (header `x-minutas-secret`). Unset = ingest answers 503 |
+| `MINUTAS_SYNC_USUARIOS` | No | Usernames that see the "Sincronizar ahora" button in Minutas (Guido only). Unset = nobody |
+| `MINUTAS_ROUTINE_URL` / `MINUTAS_ROUTINE_TOKEN` | No | Endpoint and bearer token of Claude's minutas routine, used by `/api/minutas/sync-now`. Unset = 503 |
 | `RAILWAY_PUBLIC_DOMAIN` / `SELF_URL` | No | Enables keep-alive self-ping |
 
 ## Deployment
