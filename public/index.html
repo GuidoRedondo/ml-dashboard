@@ -4343,6 +4343,24 @@ function dibujarSerieDiaria(chartEl, legendEl, d, cfg) {
     grid += `<line x1="${padL}" y1="${y.toFixed(1)}" x2="${padL + innerW}" y2="${y.toFixed(1)}" stroke="rgba(255,255,255,.05)" stroke-width="1"/>`;
   }
 
+  // Semanas: franja de fondo en sábado y domingo + línea punteada donde arranca cada
+  // lunes. Así se ve de un vistazo dónde cae cada fin de semana y qué días son una semana.
+  let semanasSvg = '';
+  {
+    const anchoDia = innerW / days;
+    fechas.forEach((f, i) => {
+      if (!f) return;
+      const dow = dART(f).getDay();
+      const x = padL + i * anchoDia;
+      if (dow === 6 || dow === 0) {
+        semanasSvg += `<rect x="${x.toFixed(1)}" y="${padT}" width="${anchoDia.toFixed(1)}" height="${innerH}" fill="rgba(99,102,241,.13)" pointer-events="none"/>`;
+      }
+      if (dow === 1 && i > 0) {
+        semanasSvg += `<line x1="${x.toFixed(1)}" y1="${padT - 6}" x2="${x.toFixed(1)}" y2="${padT + innerH}" stroke="rgba(255,255,255,.22)" stroke-width="1" stroke-dasharray="3 3" pointer-events="none"/>`;
+      }
+    });
+  }
+
   // Etiquetas X — una por columna siempre que entre el número.
   // Antes se mostraba una cada `step` días y no se sabía de qué día hablaba cada barra.
   // Se etiqueta el día del mes debajo de cada columna, y el mes se escribe sólo donde
@@ -4454,7 +4472,7 @@ function dibujarSerieDiaria(chartEl, legendEl, d, cfg) {
     onmousemove="chartHover(event, this, '${K}')" onmouseleave="chartHoverOut('${K}')"/>`;
 
   chartEl.innerHTML = `<svg width="100%" height="${H}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
-    ${grid}${ceroLine}${barsSvg}${facArea}${facPath}${cmArea}${cmPath}${visitasPath}${convPath}${convDots}${tacosPath}${xLabels}${peakLabels}${hoverLine}${hoverDots}${overlay}
+    ${semanasSvg}${grid}${ceroLine}${barsSvg}${facArea}${facPath}${cmArea}${cmPath}${visitasPath}${convPath}${convDots}${tacosPath}${xLabels}${peakLabels}${hoverLine}${hoverDots}${overlay}
   </svg>
   <div id="${K}TipBox" style="position:absolute;top:0;left:0;display:none;pointer-events:none;
     background:rgba(20,20,30,.96);border:1px solid var(--border);border-radius:8px;padding:8px 10px;
@@ -4482,7 +4500,9 @@ function dibujarSerieDiaria(chartEl, legendEl, d, cfg) {
         total: tacosProm.toFixed(1) + '%', sub: fmt(totAds) + ' de pauta', type: 'dash' }] : []),
   ];
   legendEl.innerHTML =
-    `<div style="font-size:11px;color:var(--muted);width:100%;margin-bottom:2px">Clickeá para mostrar u ocultar cada serie</div>`
+    `<div style="font-size:11px;color:var(--muted);width:100%;margin-bottom:2px">Clickeá para mostrar u ocultar cada serie
+      · <span style="display:inline-block;width:10px;height:10px;background:rgba(99,102,241,.35);border-radius:2px;vertical-align:-1px"></span> sábado y domingo
+      · <span style="letter-spacing:-1px">┆</span> arranca la semana (lunes)</div>`
     + legends.map(l => {
     const on = !!series[l.key];
     const glifo = l.type === 'line' ? '━' : l.type === 'dash' ? '╌' : '▪';
@@ -13170,6 +13190,42 @@ function loadPerformance() {
 
   window._zonasPorItem = zonasPorItem;   // lo consume renderZonasProducto()
 
+  // ── Ventas por día de la semana (lunes a domingo) ────────────────────────
+  // Sale de orders_detail, que trae todas las órdenes del período. Respeta los mismos
+  // filtros que el resto de la pestaña (modo de entrega y búsqueda por MLA/título) y deja
+  // afuera las canceladas. Como un rango de 30 días puede tener 5 lunes y 4 domingos,
+  // además del total se calcula el PROMEDIO POR DÍA: es lo que permite comparar.
+  const byWeekday = Array.from({ length: 7 }, () => ({ unidades: 0, ordenes: 0, facturacion: 0, dias: 0 }));
+  connected.forEach(acc => {
+    const f = window._perfModeFilter;
+    (acc.data.orders_detail || []).forEach(o => {
+      if (o.status === 'cancelled' || !o.date) return;
+      if (f && o.mode !== f) return;
+      let prods = o.productos || [];
+      if (_perfMlaFilter) {
+        prods = prods.filter(p => (p.id||'').toLowerCase().includes(_perfMlaFilter) || (p.title||'').toLowerCase().includes(_perfMlaFilter));
+        if (!prods.length) return;
+      }
+      const w = (dART(ymd(new Date(o.date))).getDay() + 6) % 7;   // 0 = lunes … 6 = domingo
+      byWeekday[w].ordenes     += 1;
+      byWeekday[w].unidades    += prods.reduce((s, p) => s + (p.qty || 0), 0);
+      byWeekday[w].facturacion += _perfMlaFilter
+        ? prods.reduce((s, p) => s + (p.qty || 0) * (p.price || 0), 0)
+        : (parseFloat(o.facturacion) || 0);
+    });
+  });
+  {
+    const rg = getDateRange();
+    const hasta = rg.date_to ? ymd(dART(rg.date_to)) : ymd();
+    const nDias = (rg.date_from && rg.date_to)
+      ? Math.max(1, Math.round((dART(rg.date_to) - dART(rg.date_from)) / 864e5) + 1)
+      : (state.rangeDays || 30);
+    for (let i = 0; i < nDias; i++) {
+      const d = new Date(dART(hasta).getTime() - i * 864e5);
+      byWeekday[(d.getDay() + 6) % 7].dias++;
+    }
+  }
+
   const fmt = n => { const sign = n < 0 ? '-' : ''; return sign + '$' + Math.round(Math.abs(n)).toLocaleString('es-AR'); };
   const fmtK = n => n >= 1e6 ? (n/1e6).toFixed(1)+'M' : n >= 1e3 ? Math.round(n/1e3)+'K' : n.toLocaleString('es-AR');
   const totalOrders = Object.values(byMode).reduce((a,b)=>a+b,0) || 1;
@@ -13203,7 +13259,7 @@ function loadPerformance() {
       pct_ordenes_organicas: pctOrganic, pct_ordenes_ads: pctPaid,
     },
     topRevenue: top15Rev, topUnits: top15Units,
-    byMode, byProvince, byCity, byHour,
+    byMode, byProvince, byCity, byHour, byWeekday,
     zonasPorItem,
   };
 
@@ -13410,6 +13466,75 @@ function loadPerformance() {
       </div>`;
   }
 
+  // ── WEEKDAY CHART (lunes a domingo) ───────────────────────────────────────
+  // Barra = unidades promedio por día de ese día de la semana; abajo, totales del período.
+  function weekdayChart(wd) {
+    const nombres = ['Lunes','Martes','Miércoles','Jueves','Viernes','Sábado','Domingo'];
+    const prom = wd.map(d => d.dias > 0 ? d.unidades / d.dias : 0);
+    const totU = wd.reduce((s, d) => s + d.unidades, 0);
+    if (!totU) return '<div style="color:var(--muted);font-size:12px;padding:20px;text-align:center">Sin ventas en el período</div>';
+    const max = Math.max(...prom, 0.01);
+    const promGeneral = totU / Math.max(1, wd.reduce((s, d) => s + d.dias, 0));
+    const W = 900, H = 210, padL = 10, padR = 10, padT = 26, padB = 34;
+    const innerW = W - padL - padR, innerH = H - padT - padB, col = innerW / 7;
+    const fmtU = v => v >= 10 ? Math.round(v).toLocaleString('es-AR') : v.toFixed(1).replace('.', ',');
+    const yProm = padT + innerH - (promGeneral / max) * innerH;
+    const bars = prom.map((v, i) => {
+      const h = Math.max(2, (v / max) * innerH);
+      const x = padL + i * col + col * 0.18, bw = col * 0.64, y = padT + innerH - h;
+      const finde = i >= 5;
+      const color = finde ? '#6366f1' : '#00e676';
+      const d = wd[i];
+      return `
+        <rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${bw.toFixed(1)}" height="${h.toFixed(1)}" fill="${color}" rx="4" opacity="0.9">
+          <title>${nombres[i]} — ${fmtU(v)} u./día promedio · ${d.unidades} u. en ${d.dias} ${nombres[i].toLowerCase()}${d.dias === 1 ? '' : 's'}</title>
+        </rect>
+        <text x="${(x + bw / 2).toFixed(1)}" y="${(y - 6).toFixed(1)}" text-anchor="middle" font-size="12" font-weight="700" fill="var(--text)" font-family="sans-serif">${fmtU(v)}</text>
+        <text x="${(x + bw / 2).toFixed(1)}" y="${H - 12}" text-anchor="middle" font-size="12" font-weight="${finde ? 700 : 500}" fill="#888" font-family="sans-serif">${nombres[i]}</text>`;
+    }).join('');
+    const lineaProm = `<line x1="${padL}" y1="${yProm.toFixed(1)}" x2="${padL + innerW}" y2="${yProm.toFixed(1)}" stroke="#FFD700" stroke-width="1.5" stroke-dasharray="5 4"/>
+      <text x="${padL + innerW}" y="${(yProm - 5).toFixed(1)}" text-anchor="end" font-size="10" fill="#FFD700" font-family="sans-serif">prom. ${fmtU(promGeneral)} u./día</text>`;
+
+    const totO = wd.reduce((s, d) => s + d.ordenes, 0) || 1;
+    const totF = wd.reduce((s, d) => s + d.facturacion, 0) || 1;
+    const filas = wd.map((d, i) => {
+      const desvio = promGeneral > 0 ? (prom[i] / promGeneral - 1) * 100 : 0;
+      const dc = desvio >= 5 ? '#00e676' : desvio <= -5 ? '#ff5252' : 'var(--muted)';
+      return `<tr style="border-bottom:1px solid var(--border)${i >= 5 ? ';background:rgba(99,102,241,.07)' : ''}">
+        <td style="padding:6px 4px;font-weight:600">${nombres[i]}</td>
+        <td style="padding:6px 4px;text-align:right;color:var(--muted)">${d.dias}</td>
+        <td style="padding:6px 4px;text-align:right;font-weight:700;color:var(--accent)">${d.unidades.toLocaleString('es-AR')}</td>
+        <td style="padding:6px 4px;text-align:right;font-weight:700">${fmtU(prom[i])}</td>
+        <td style="padding:6px 4px;text-align:right;font-weight:700;color:${dc}">${desvio >= 0 ? '+' : ''}${desvio.toFixed(0)}%</td>
+        <td style="padding:6px 4px;text-align:right;color:var(--muted)">${d.ordenes.toLocaleString('es-AR')} <span style="font-size:10px">(${(d.ordenes / totO * 100).toFixed(1)}%)</span></td>
+        <td style="padding:6px 4px;text-align:right;color:var(--muted)">${fmt(d.facturacion)} <span style="font-size:10px">(${(d.facturacion / totF * 100).toFixed(1)}%)</span></td>
+      </tr>`;
+    }).join('');
+    const th = (t, al = 'right') => `<th style="text-align:${al};padding:6px 4px;color:var(--muted);font-weight:600">${t}</th>`;
+    const mejor = prom.indexOf(Math.max(...prom)), peor = prom.indexOf(Math.min(...prom));
+    return `
+      <svg viewBox="0 0 ${W} ${H}" style="width:100%;height:210px;display:block">${bars}${lineaProm}</svg>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin:8px 0 12px;flex-wrap:wrap;gap:8px">
+        <div style="display:flex;gap:16px;font-size:11px;color:var(--muted)">
+          <span><span style="color:#00e676">■</span> Lunes a viernes</span>
+          <span><span style="color:#6366f1">■</span> Fin de semana</span>
+          <span>Barra = unidades promedio por día (corrige que el período no tenga la misma cantidad de cada día)</span>
+        </div>
+        <div style="font-size:12px;color:var(--muted)">
+          Mejor día: <strong style="color:var(--text)">${nombres[mejor]}</strong>
+          · Más flojo: <strong style="color:var(--text)">${nombres[peor]}</strong>
+        </div>
+      </div>
+      <div style="overflow-x:auto">
+      <table style="width:100%;border-collapse:collapse;font-size:12px">
+        <thead><tr style="border-bottom:1px solid var(--border)">
+          ${th('Día', 'left')}${th('Días en el período')}${th('Unidades')}${th('Prom. u./día')}${th('vs promedio')}${th('Órdenes')}${th('Facturación')}
+        </tr></thead>
+        <tbody>${filas}</tbody>
+      </table>
+      </div>`;
+  }
+
   // ── TOP 15 TABLE with % recibido + % del total + Stock ─────────────────
   const stockMap = {};
   if (window._pubsData && window._pubsData.length) {
@@ -13584,6 +13709,12 @@ function loadPerformance() {
     <div class="kpi-card" style="padding:18px;margin-bottom:12px">
       <div class="kpi-label" style="margin-bottom:14px">🕐 Ventas por horario</div>
       ${hourChart(byHour)}
+    </div>
+
+    <!-- ROW 3b: Día de la semana full width -->
+    <div class="kpi-card" style="padding:18px;margin-bottom:12px">
+      <div class="kpi-label" style="margin-bottom:14px">📅 Ventas por día de la semana</div>
+      ${weekdayChart(byWeekday)}
     </div>
 
     <!-- ROW 4: Rankings por facturación y unidades -->
@@ -14758,6 +14889,19 @@ function exportPerformanceExcel() {
     '% del total': _xD(v / totalHoras * 100),
   }));
 
+  const nombresDia = ['Lunes','Martes','Miércoles','Jueves','Viernes','Sábado','Domingo'];
+  const wd = d.byWeekday || [];
+  const totUniDia = wd.reduce((s, x) => s + x.unidades, 0) || 1;
+  const diasRows = wd.map((x, i) => ({
+    'Día': nombresDia[i],
+    'Días en el período': x.dias,
+    'Unidades': _xR(x.unidades),
+    'Prom. unidades/día': _xD(x.dias > 0 ? x.unidades / x.dias : 0),
+    '% unidades': _xD(x.unidades / totUniDia * 100),
+    'Órdenes': _xR(x.ordenes),
+    'Facturación': _xR(x.facturacion),
+  }));
+
   // Top provincia / ciudad / modo por publicación: el "a dónde va cada producto".
   const topDe = o => { const e = Object.entries(o || {}).sort((a, b) => b[1] - a[1])[0]; return e ? e[0] + ' (' + e[1] + ')' : ''; };
   const zonasRows = Object.entries(d.zonasPorItem || {}).map(([mla, z]) => ({
@@ -14778,6 +14922,7 @@ function exportPerformanceExcel() {
     { name: 'Por ciudad',      rows: dimRows(d.byCity, 'Ciudad'),                       cols: [32, 11, 13] },
     { name: 'Por entrega',     rows: dimRows(d.byMode, 'Modo de entrega'),              cols: [22, 11, 13] },
     { name: 'Por hora',        rows: horasRows,                                         cols: [10, 11, 13] },
+    { name: 'Por día semana',  rows: diasRows,                                          cols: [12, 18, 11, 18, 12, 11, 15] },
     { name: 'Zonas por pub',   rows: zonasRows,                                         cols: [16, 45, 11, 15, 26, 26, 22] },
   ], _perfFileName('Performance'));
 }
