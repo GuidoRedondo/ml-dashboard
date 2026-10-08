@@ -113,7 +113,7 @@ written by name, without a mention. Text is escaped for Slack (`&`, `<`, `>`).
 
 | When | Message |
 |---|---|
-| An admin assigns a task, or reassigns it to someone else (same person or "Nadie" → no message) | `<@id> 📌 Nueva tarea: *tarea* — cliente` / `Vence dd/mm · Prioridad X · Palanca` / detalle / `<doc|Ver minuta> · <dashboard|Abrir en el dashboard>`. Missing parts are left out |
+| An admin assigns a task, or reassigns it to someone else (same person or "Nadie" → no message). Tasks assigned to a Minutas **admin** (Guido) never go to Slack — neither here nor in the due-date reminder: the channel is for what is handed to the team | `<@id> 📌 Nueva tarea: *tarea* — cliente` / `Vence dd/mm · Prioridad X · Palanca` / detalle / `<doc|Ver minuta> · <dashboard|Abrir en el dashboard>`. Missing parts are left out |
 | A miembro moves their task to Hecha (if an admin closes it, no message) | `<@ids de admins> ✅ Amanda cerró: *tarea* — cliente` |
 | `POST /api/minutas/avisos-vencimiento`, once a day at 09:00 ART from the external cron (cron-job.org, the same account as the alerts) | One message per person: `<@id> ⏰ Tareas para hoy:` + `• *tarea* — cliente (vence dd/mm)` for every open assigned task due today or earlier; overdue ones get `🔴`. Nothing due → nothing sent. A task is marked only if Slack accepted the message, so a failed run is retried by the next one |
 

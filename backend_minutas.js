@@ -596,15 +596,18 @@ module.exports = (app, { pool, requireAuth, requireAdmin, ymd, ymdShift, postSla
       db.release();
     }
 
-    // Aviso de asignación: sólo si quedó alguien y es otra persona que antes.
+    // Las tareas de un admin de minutas (Guido) no van a Slack: ni al asignarlas ni en el
+    // recordatorio de vencimientos. El canal es para lo que se le pasa al equipo.
+    const asignadaEsAdmin = eq.equipo.some(p => p.username === tarea.asignada_a && p.rol === 'admin');
+
+    // Aviso de asignación: sólo si quedó alguien, es otra persona que antes y no es admin.
     let aviso = null;
-    if ('asignada_a' in body && tarea.asignada_a && tarea.asignada_a !== antes.asignada_a) {
+    if ('asignada_a' in body && tarea.asignada_a && tarea.asignada_a !== antes.asignada_a && !asignadaEsAdmin) {
       const r = await avisar(msgAsignacion(tarea, eq.nombres), 'MINUTAS][slack');
       aviso = { tipo: 'asignacion', ...r };
     }
     // Aviso de cierre: la tarea pasó a Hecha, está asignada a alguien que no es admin de
     // minutas y la cerró esa persona (si la cierra Guido, avisarle a Guido no tiene sentido).
-    const asignadaEsAdmin = eq.equipo.some(p => p.username === tarea.asignada_a && p.rol === 'admin');
     if (tarea.estado === 'Hecha' && antes.estado !== 'Hecha' && tarea.asignada_a
         && !asignadaEsAdmin && rol !== 'admin') {
       const r = await avisar(msgCerrada(tarea, yo, eq.nombres), 'MINUTAS][slack');
@@ -631,9 +634,12 @@ module.exports = (app, { pool, requireAuth, requireAdmin, ymd, ymdShift, postSla
          ORDER BY asignada_a, vence, cliente, id`);
       if (!rows.length) return res.json({ ok: true, hoy, personas: [] });
 
-      const { nombres } = await cargarEquipo(pool);
+      // Las tareas de los admins de minutas no se recuerdan por Slack (ver PATCH).
+      const { equipo, nombres } = await cargarEquipo(pool);
+      const admins = new Set(equipo.filter(p => p.rol === 'admin').map(p => p.username));
       const porPersona = {};
-      rows.forEach(t => (porPersona[t.asignada_a] = porPersona[t.asignada_a] || []).push(t));
+      rows.filter(t => !admins.has(t.asignada_a))
+        .forEach(t => (porPersona[t.asignada_a] = porPersona[t.asignada_a] || []).push(t));
 
       const personas = [];
       for (const [username, tareas] of Object.entries(porPersona)) {
