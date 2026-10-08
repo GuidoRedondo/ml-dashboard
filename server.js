@@ -1022,7 +1022,9 @@ app.get('/api/me', requireAuth, async (req, res) => {
       permissions,
       // Minutas: admin + username en MINUTAS_USUARIOS (backend_minutas.js). El front sólo
       // decide si muestra el menú; el backend igual corta con 403.
-      minutas: require('./backend_minutas').puedeVerMinutas(req.user)
+      minutas: require('./backend_minutas').puedeVerMinutas(req.user),
+      // 'admin' (ve todo y asigna) | 'miembro' (sólo sus tareas asignadas) | null
+      minutas_rol: require('./backend_minutas').rolMinutas(req.user)
     });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
@@ -3691,6 +3693,9 @@ const SLACK_TIPO_CONFIG = {
                           } },
 };
 
+// Envío a Slack (webhook por parámetro, nunca loguea la URL): lib/slack.js.
+const { postSlack } = require('./lib/slack');
+
 async function sendSlackAlert(newAlerts) {
   const webhookUrl = process.env.SLACK_WEBHOOK_URL;
   if (!webhookUrl || !newAlerts.length) return;
@@ -3728,14 +3733,8 @@ async function sendSlackAlert(newAlerts) {
     : (process.env.RAILWAY_PUBLIC_DOMAIN ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}` : '');
   if (dashUrl) text += `<${dashUrl}|Ver detalle en el dashboard →>`;
 
-  try {
-    await fetch(webhookUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text })
-    });
-    console.log('[SLACK] Notificación enviada');
-  } catch(e) { console.error('[SLACK] Error:', e.message); }
+  const r = await postSlack(webhookUrl, text, 'SLACK');
+  if (r.ok) console.log('[SLACK] Notificación enviada');
 }
 
 async function sendEmailAlert(newAlerts) {
@@ -10944,7 +10943,7 @@ const reclamos = require('./backend_reclamos')(app, {
 // Minutas de reuniones con clientes — módulo aparte (backend_minutas.js), docs/spec-minutas.md.
 // La tarea programada de Claude manda lo procesado a /api/minutas/ingest (header
 // x-minutas-secret); la vista sólo la ve quien esté en MINUTAS_USUARIOS.
-require('./backend_minutas')(app, { pool, requireAuth, requireAdmin, ymd, ymdShift });
+require('./backend_minutas')(app, { pool, requireAuth, requireAdmin, ymd, ymdShift, postSlack });
 
 // Experiencia de compra por publicación — módulo aparte (backend_experiencia.js).
 // ML sólo da la foto de hoy del semáforo de cada publicación; el cron de las 07:00

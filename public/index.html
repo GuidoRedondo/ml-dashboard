@@ -28841,7 +28841,23 @@ const MIN_ESTADOS = ['Pendiente', 'En curso', 'Hecha'];
 const MIN_PALANCAS = ['Tráfico', 'Conversión', 'Rentabilidad', 'Publicidad', 'Promociones', 'Logística', 'Operación'];
 const minLs = (k, def) => { try { return localStorage.getItem('min_' + k) || def; } catch (e) { return def; } };
 const minLsSet = (k, v) => { try { localStorage.setItem('min_' + k, v); } catch (e) {} };
-const _min = { data: null, tab: 'tareas', cliente: '', resp: minLs('resp', ''), estado: minLs('estado', 'abiertas'), palanca: '', q: '' };
+const _min = { data: null, tab: 'tareas', cliente: '', resp: minLs('resp', ''), estado: minLs('estado', 'abiertas'), palanca: '', asig: '', q: '' };
+// Rol en Minutas (lo decide el backend): 'admin' ve todo y asigna; 'miembro' sólo ve sus
+// tareas y les cambia el estado. El backend corta igual: esto sólo arma la vista.
+const minEsAdmin = () => !!(_min.data && _min.data.rol === 'admin');
+const minNombre = u => {
+  const p = _min.data && (_min.data.equipo || []).find(x => x.username === u);
+  return p ? p.nombre : (u ? u.charAt(0).toUpperCase() + u.slice(1) : '');
+};
+
+// Link directo (/?page=minutas, el que va en los avisos de Slack). Mismo patrón que el
+// deep link de AdMan: corre con la app ya armada.
+window.addEventListener('DOMContentLoaded', () => {
+  if (new URLSearchParams(location.search).get('page') !== 'minutas') return;
+  if (!getSession()) return;
+  showPage('minutas', document.getElementById('nav-minutas'));
+  loadMinutasPanel();
+});
 
 const minEsc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const minFecha = v => v ? dART(v).toLocaleDateString('es-AR', { timeZone: ART_TZ, day: 'numeric', month: 'short', year: '2-digit' }) : '—';
@@ -28871,30 +28887,37 @@ function minRender() {
     .sort((a, b) => a.localeCompare(b, 'es'));
   if (_min.cliente && !clientes.includes(_min.cliente)) _min.cliente = '';
   const opt = (v, label, sel) => `<option value="${minEsc(v)}" ${v === sel ? 'selected' : ''}>${minEsc(label)}</option>`;
+  const admin = minEsAdmin();
+  if (!admin) _min.tab = 'tareas';
 
   root.innerHTML = `
     <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
-      <h2 style="flex:1">📋 Minutas</h2>
+      <h2 style="flex:1">📋 ${admin ? 'Minutas' : 'Mis tareas'}</h2>
       ${d.sync ? `<span id="min-sync-msg" style="font-size:12px;font-weight:700"></span>
       <button class="adm-btn" id="min-sync-btn" onclick="minSyncNow()">Sincronizar ahora</button>` : ''}
       <button class="adm-btn" onclick="loadMinutasPanel()">Actualizar</button>
     </div>
     <div id="min-cards"></div>
     <div class="min-bar">
-      <div class="min-tabs">
+      ${admin ? `<div class="min-tabs">
         <button class="${_min.tab === 'tareas' ? 'on' : ''}" onclick="_min.tab='tareas';minRender()">Tareas</button>
         <button class="${_min.tab === 'minutas' ? 'on' : ''}" onclick="_min.tab='minutas';minRender()">Minutas</button>
-      </div>
+      </div>` : ''}
       <select onchange="_min.cliente=this.value;minRenderLista()">
         ${opt('', 'Todos los clientes', _min.cliente)}${clientes.map(c => opt(c, c, _min.cliente)).join('')}
       </select>
-      ${_min.tab === 'tareas' ? `
+      ${_min.tab === 'tareas' && admin ? `
       <select onchange="_min.resp=this.value;minLsSet('resp',this.value);minRenderLista()">
         ${opt('', 'NR y cliente', _min.resp)}${opt('NR', 'Negocio Redondo', _min.resp)}${opt('Cliente', 'Cliente', _min.resp)}
       </select>
+      <select onchange="_min.asig=this.value;minRenderLista()" title="Asignadas a…">
+        ${opt('', 'Asignadas a… (todas)', _min.asig)}${opt('__nadie', 'Sin asignar', _min.asig)}${(d.equipo || []).map(p => opt(p.username, p.nombre, _min.asig)).join('')}
+      </select>` : ''}
+      ${_min.tab === 'tareas' ? `
       <select onchange="_min.estado=this.value;minLsSet('estado',this.value);minRenderLista()">
         ${opt('abiertas', 'Abiertas', _min.estado)}${opt('todas', 'Todas', _min.estado)}${MIN_ESTADOS.map(e => opt(e, e, _min.estado)).join('')}
-      </select>
+      </select>` : ''}
+      ${_min.tab === 'tareas' && admin ? `
       <select onchange="_min.palanca=this.value;minRenderLista()">
         ${opt('', 'Todas las palancas', _min.palanca)}${MIN_PALANCAS.map(p => opt(p, p, _min.palanca)).join('')}
       </select>` : ''}
@@ -28976,6 +28999,8 @@ function minTareasFiltradas() {
     if (_min.estado === 'abiertas' && !minAbierta(t)) return false;
     if (MIN_ESTADOS.includes(_min.estado) && t.estado !== _min.estado) return false;
     if (_min.palanca && t.palanca !== _min.palanca) return false;
+    if (_min.asig === '__nadie' && t.asignada_a) return false;
+    if (_min.asig && _min.asig !== '__nadie' && t.asignada_a !== _min.asig) return false;
     if (q && !minNorm([t.tarea, t.detalle, t.quien].join(' ')).includes(q)) return false;
     return true;
   });
@@ -28990,7 +29015,18 @@ function minRenderLista() {
   const delCliente = x => !_min.cliente || x.cliente === _min.cliente;
   const abiertas = d.tareas.filter(t => delCliente(t) && minAbierta(t));
   const nMinutas = d.minutas.filter(delCliente).length;
-  cards.innerHTML = `
+  if (!minEsAdmin()) {
+    cards.innerHTML = `
+    <div class="adm-cards">
+      <div class="adm-card" style="background:#fff952"><div class="t">Abiertas</div><div class="n">${abiertas.length}</div><div class="d">Pendientes + en curso</div></div>
+      <div class="adm-card" style="border-color:#b42318"><div class="t" style="color:#b42318">Vencidas</div><div class="n">${abiertas.filter(t => minVencida(t, hoy)).length}</div><div class="d">Con vencimiento antes de hoy</div></div>
+      <div class="adm-card"><div class="t">Vencen hoy</div><div class="n">${abiertas.filter(t => t.vence === hoy).length}</div><div class="d">Para cerrar hoy</div></div>
+    </div>`;
+    if (!d.tareas.length) {
+      lista.innerHTML = '<div class="adm-vacio">No tenés tareas asignadas por ahora.</div>';
+      return;
+    }
+  } else cards.innerHTML = `
     <div class="adm-cards">
       <div class="adm-card" style="background:#fff952"><div class="t">Abiertas de NR</div><div class="n">${abiertas.filter(t => t.responsable === 'NR').length}</div><div class="d">Pendientes + en curso</div></div>
       <div class="adm-card"><div class="t">Abiertas del cliente</div><div class="n">${abiertas.filter(t => t.responsable === 'Cliente').length}</div><div class="d">Lo que tiene que hacer cada cliente</div></div>
@@ -28998,7 +29034,7 @@ function minRenderLista() {
       <div class="adm-card"><div class="t">Minutas</div><div class="n">${nMinutas}</div><div class="d">Reuniones cargadas</div></div>
     </div>`;
 
-  if (!d.minutas.length && !d.tareas.length) {
+  if (minEsAdmin() && !d.minutas.length && !d.tareas.length) {
     lista.innerHTML = '<div class="adm-vacio">Todavía no hay minutas cargadas: la tarea programada las carga de lunes a viernes a la noche.</div>';
     return;
   }
@@ -29059,14 +29095,20 @@ function minFilaHtml(t, hoy) {
         <div class="tarea">${minEsc(t.tarea)}</div>
         ${t.detalle ? `<div class="detalle">${minEsc(t.detalle)}</div>` : ''}
         <div class="chips">
+          ${t.asignada_a ? `<span class="min-chip nr" title="Asignada a ${minEsc(minNombre(t.asignada_a))}">👤 ${minEsc(minNombre(t.asignada_a))}</span>` : ''}
           ${resp}
           ${t.palanca ? `<span class="min-chip">${minEsc(t.palanca)}</span>` : ''}
           ${t.prioridad === 'Alta' ? '<span class="min-chip alta">Alta</span>' : ''}
         </div>
       </div>
       <div class="lado">
+        ${minEsAdmin() ? `<label>asignar a <select class="min-vence" onchange="minAsignar(this.closest('.min-fila').dataset.id, this.value)">
+          <option value="" ${!t.asignada_a ? 'selected' : ''}>Nadie</option>
+          ${(_min.data.equipo || []).map(p => `<option value="${minEsc(p.username)}" ${p.username === t.asignada_a ? 'selected' : ''}>${minEsc(p.nombre)}</option>`).join('')}
+        </select></label>
         <label>vence <input type="date" class="min-vence ${minVencida(t, hoy) ? 'vencida' : ''}" value="${minEsc(t.vence || '')}"
-          onchange="minCambiarVence(this.closest('.min-fila').dataset.id, this.value)"></label>
+          onchange="minCambiarVence(this.closest('.min-fila').dataset.id, this.value)"></label>`
+        : `<span class="${minVencida(t, hoy) ? 'min-vence vencida' : ''}">vence ${minFecha(t.vence)}</span>`}
         <span>reunión ${minFecha(t.fecha_reunion)}</span>
         ${t.doc_url ? `<a href="${minEsc(t.doc_url)}" target="_blank" rel="noopener">minuta ↗</a>` : ''}
       </div>
@@ -29090,6 +29132,23 @@ async function minRotarEstado(id) {
   } catch (e) {
     t.estado = antes;
     showToast('No se pudo cambiar el estado: ' + e.message);
+  }
+  minRenderLista();
+}
+
+async function minAsignar(id, username) {
+  const t = _min.data && _min.data.tareas.find(x => x.id === id);
+  if (!t) return;
+  const r = await apiCall('PATCH', '/api/minutas/tareas/' + encodeURIComponent(id), { asignada_a: username || null });
+  if (!r || r.error || !r.tarea) {
+    showToast('No se pudo asignar: ' + (r && r.error ? r.error : 'sin acceso'));
+  } else {
+    Object.assign(t, r.tarea);
+    const quien = minNombre(r.tarea.asignada_a);
+    if (!r.tarea.asignada_a) showToast('Tarea sin asignar');
+    else if (!r.aviso) showToast(`Asignada a ${quien}`);
+    else if (r.aviso.ok) showToast(`Asignada a ${quien} · aviso enviado por Slack`);
+    else showToast(`Asignada a ${quien} · sin aviso: ${r.aviso.motivo === 'sin_webhook' ? 'falta el webhook' : 'Slack falló'}`);
   }
   minRenderLista();
 }

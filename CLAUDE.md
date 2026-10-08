@@ -38,7 +38,7 @@ There are no tests or linting scripts configured.
 | **Diagnóstico Mensual** | Last 3 months of KPI snapshots side-by-side; manual fields stored in `manuales` JSONB column |
 | **Bitácora** | CRM-style task/note log per client |
 | **Tokens** | OAuth token status page per client (expiry, refresh availability) |
-| **Minutas** | Weekly client meetings (Gemini notes) and the tasks that came out of them, grouped by client. Only users in `MINUTAS_USUARIOS` (admins) see it. The dashboard does not process anything: Claude's scheduled task sends the result to `/api/minutas/ingest`; the view only changes each task's status and due date |
+| **Minutas** | Weekly client meetings (Gemini notes) and the tasks that came out of them, grouped by client. Two roles (`rolMinutas`): **admin** (`MINUTAS_USUARIOS` + dashboard role `admin`) sees everything, assigns tasks and edits due dates; **miembro** (`MINUTAS_MIEMBROS`) sees only the tasks assigned to them ("Mis tareas") and can only change their status — enforced in the backend too. Amanda is `admin` in the dashboard but `miembro` in Minutas: the dashboard role does not decide this. Assigning and closing tasks sends Slack messages (see below). The dashboard does not process meetings: Claude's scheduled task sends the result to `/api/minutas/ingest` |
 
 ## Architecture
 
@@ -76,7 +76,8 @@ This is a **single-file Node.js/Express backend** (`server.js`) + **single-file 
 | `reclamos` | One row per claim with its stage, reason, who answered, return status, return-label cost and the message thread. Filled by the 05:00 ART cron in `backend_reclamos.js`; the view never hits ML |
 | `reclamos_sync` | Per client: when it last synced, how many cases, and whether the pagination came back short — so "no claims" can be told apart from "not synced yet" |
 | `minutas` | One row per client meeting (id = Gemini Google Doc id): summary, decisions, pending items. `client_id` resolved by name when it matches exactly one client |
-| `minutas_tareas` | One row per task of a meeting. Re-ingesting never overwrites `estado` / `estado_cambiado_at` — what was marked done in the view stays done |
+| `minutas_tareas` | One row per task of a meeting. Re-ingesting never overwrites `estado` / `estado_cambiado_at` / `asignada_a` / `asignada_en` — what was marked or assigned in the view stays. `asignada_a` = dashboard username in lowercase (null = nobody); `aviso_vence_enviado` = last day the task went out in the due-date reminder (so a second cron run the same day doesn't repeat it) |
+| `minutas_sync` | Each manual "Sincronizar ahora" trigger (who, when, routine status, session URL). The 5-minute lock is read from here |
 | `precios_cache` | Base of the Precios sub-tab (listing + real commission + shipping + weight), 12h TTL. Building it costs one `listing_prices` call per listing, so it is never rebuilt on a plain tab open |
 
 ### API surface (grouped)
@@ -95,10 +96,26 @@ This is a **single-file Node.js/Express backend** (`server.js`) + **single-file 
 - **Panel de Clientes (vista rápida)**: `GET /api/panel/metricas`, `GET /api/panel/metricas/hoy`, `POST /api/panel/metricas/backfill`, `GET|POST /api/panel/metricas/cron`
 - **Reclamos** (`backend_reclamos.js`): `GET /api/reclamos`, `GET /api/reclamos/hilo`, `POST /api/reclamos/sync`, `POST /api/reclamos/enriquecer`, `GET /api/reclamos/sync/estado`, `GET|POST /api/reclamos/cron`
 - **Facturación real** (`backend_billing.js`): `GET /api/billing/resumen`, `GET /api/billing/estado`, `POST /api/billing/sync`, `POST /api/billing/backfill`, `GET|POST /api/billing/cron`
-- **Minutas** (`backend_minutas.js`): `POST /api/minutas/ingest` and `GET /api/minutas/ingest/ids` (header `x-minutas-secret`, no session), `GET /api/minutas`, `PATCH /api/minutas/tareas/:id` (admin + `MINUTAS_USUARIOS`). `/api/me` returns `minutas: true|false`. `POST /api/minutas/sync-now` fires Claude's routine by hand (admin + `MINUTAS_SYNC_USUARIOS`; the routine token never reaches the front; 5-minute lock read from table `minutas_sync`; routine errors come back as 502 because a 401 would send the front to the login)
+- **Minutas** (`backend_minutas.js`): `POST /api/minutas/ingest` and `GET /api/minutas/ingest/ids` (header `x-minutas-secret`, no session), `GET /api/minutas`, `PATCH /api/minutas/tareas/:id` (admin + `MINUTAS_USUARIOS`). `/api/me` returns `minutas: true|false`. `PATCH /api/minutas/tareas/:id` takes `estado`, `vence`, `asignada_a` from an admin and only `estado` (on their own tasks; others → 404, any other field → 403) from a miembro. `POST /api/minutas/avisos-vencimiento` (header `x-minutas-secret`, `?forzar=1` skips the same-day dedupe) sends the due-date reminders. `GET /minutas` redirects to `/?page=minutas` (deep link used in Slack). `POST /api/minutas/sync-now` fires Claude's routine by hand (admin + `MINUTAS_SYNC_USUARIOS`; the routine token never reaches the front; 5-minute lock read from table `minutas_sync`; routine errors come back as 502 because a 401 would send the front to the login)
 - **Costos en dólares**: `GET|PUT /api/costos/dolar` (manual rate per client; PUT re-prices every item with `costo_usd`, effective from today). `POST /api/reporte/costos` accepts `costo_usd`
 - **Other**: `GET /api/promociones`, `GET /api/preguntas`, `GET /api/devoluciones`, `GET /api/bitacora`, `POST /api/bitacora`, `PUT|DELETE /api/bitacora/:id`, `GET /api/proxy-ml`, `GET /api/item-fees`
 - **Debug**: `GET /api/debug/shipping|item|billing|order|app-token`
+
+### Minutas → Slack (`backend_minutas.js` + `lib/slack.js`)
+
+All three messages go to `SLACK_WEBHOOK_TAREAS` through `postSlack(webhook, text)` in
+`lib/slack.js` — the same sender the Centro de Inteligencia uses (`sendSlackAlert`). The
+webhook URL is the secret: it is read only from the environment and **never logged** (node-fetch
+puts the URL in its error message, so only the error code is logged). Slack failing or the
+variable missing never fails the request: the change is saved and the response says
+`aviso: { ok: false, motivo }`. Mentions come from `SLACK_IDS`; anyone missing there is
+written by name, without a mention. Text is escaped for Slack (`&`, `<`, `>`).
+
+| When | Message |
+|---|---|
+| An admin assigns a task, or reassigns it to someone else (same person or "Nadie" → no message) | `<@id> 📌 Nueva tarea: *tarea* — cliente` / `Vence dd/mm · Prioridad X · Palanca` / detalle / `<doc|Ver minuta> · <dashboard|Abrir en el dashboard>`. Missing parts are left out |
+| A miembro moves their task to Hecha (if an admin closes it, no message) | `<@ids de admins> ✅ Amanda cerró: *tarea* — cliente` |
+| `POST /api/minutas/avisos-vencimiento`, once a day at 09:00 ART from the external cron (cron-job.org, the same account as the alerts) | One message per person: `<@id> ⏰ Tareas para hoy:` + `• *tarea* — cliente (vence dd/mm)` for every open assigned task due today or earlier; overdue ones get `🔴`. Nothing due → nothing sent. A task is marked only if Slack accepted the message, so a failed run is retried by the next one |
 
 ### Frontend (`public/index.html`)
 
@@ -257,6 +274,9 @@ asistente virtual de Mercado Libre". There is no field for it — it's the text.
 | `SMTP_SECURE` | No | `true` for port 465 |
 | `MINUTAS_USUARIOS` | No | Comma-separated dashboard usernames (admins) that can see Minutas. Unset = nobody |
 | `MINUTAS_SECRET` | No | Shared secret for `/api/minutas/ingest` (header `x-minutas-secret`). Unset = ingest answers 503 |
+| `MINUTAS_MIEMBROS` | No | Comma-separated usernames that see only their assigned tasks in Minutas (no dashboard role required). If someone is in both lists, admin wins |
+| `SLACK_WEBHOOK_TAREAS` | No | Incoming webhook of the private Slack channel for task messages. Secret: read only from the environment, never write it in code, logs or docs. Unset = assignments still work, no message |
+| `SLACK_IDS` | No | JSON `{ "dashboard username": "Slack member ID" }` for mentions (keys are case-insensitive). Missing person = message with their name, no mention |
 | `MINUTAS_SYNC_USUARIOS` | No | Usernames that see the "Sincronizar ahora" button in Minutas (Guido only). Unset = nobody |
 | `MINUTAS_ROUTINE_URL` / `MINUTAS_ROUTINE_TOKEN` | No | Endpoint and bearer token of Claude's minutas routine, used by `/api/minutas/sync-now`. Unset = 503 |
 | `RAILWAY_PUBLIC_DOMAIN` / `SELF_URL` | No | Enables keep-alive self-ping |

@@ -21,8 +21,13 @@
 //
 //  ACCESO
 //  ------
-//  - Vista y PATCH: admin + username en MINUTAS_USUARIOS (lista separada por comas).
-//    Sin la variable no entra nadie. Para abrirlo a Tati alcanza con agregarla ahí.
+//  Dos niveles (rolMinutas):
+//  - Admin de minutas: rol `admin` del dashboard + username en MINUTAS_USUARIOS. Ve todo,
+//    asigna tareas y edita vencimientos.
+//  - Miembro: username en MINUTAS_MIEMBROS. Ve SÓLO las tareas que tiene asignadas y les
+//    cambia el estado; nada más. No depende del rol del dashboard: Amanda es `admin` del
+//    dashboard y en Minutas es miembro. Si alguien está en las dos listas, gana admin.
+//  Sin las variables no entra nadie. El backend corta igual que el front (403/404).
 //  - Ingest: sin sesión, header `x-minutas-secret` contra MINUTAS_SECRET. Sin la
 //    variable responde 503: el endpoint nunca queda abierto.
 //  - "Sincronizar ahora" (POST /api/minutas/sync-now): dispara la rutina de Claude a
@@ -44,19 +49,26 @@ const ESTADOS      = ['Pendiente', 'En curso', 'Hecha'];
 // ACCESO
 // ════════════════════════════════════════════════════════════════════
 
-function usuariosMinutas() {
-  return String(process.env.MINUTAS_USUARIOS || '')
+function listaEnv(nombre) {
+  return String(process.env[nombre] || '')
     .split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
 }
+const usuariosMinutas = () => listaEnv('MINUTAS_USUARIOS');
+const miembrosMinutas = () => listaEnv('MINUTAS_MIEMBROS');
+const uname = u => String(u || '').trim().toLowerCase();
 
 // Misma regla para el middleware y para /api/me.
-function puedeVerMinutas(user) {
-  if (!user || user.role !== 'admin') return false;
-  return usuariosMinutas().includes(String(user.username || '').toLowerCase());
+function rolMinutas(user) {
+  if (!user) return null;
+  const u = uname(user.username);
+  if (user.role === 'admin' && usuariosMinutas().includes(u)) return 'admin';
+  if (miembrosMinutas().includes(u)) return 'miembro';
+  return null;
 }
+const puedeVerMinutas = user => rolMinutas(user) !== null;
 
 function puedeSincronizarMinutas(user) {
-  if (!puedeVerMinutas(user)) return false;
+  if (rolMinutas(user) !== 'admin') return false;
   return String(process.env.MINUTAS_SYNC_USUARIOS || '')
     .split(',').map(x => x.trim().toLowerCase()).filter(Boolean)
     .includes(String(user.username || '').toLowerCase());
@@ -66,6 +78,76 @@ function puedeSincronizarMinutas(user) {
 // SYNC_RECARGA_MIN, que es lo que tarda la rutina en mandar el resultado al ingest.
 const SYNC_BLOQUEO_MIN = 5;
 const SYNC_RECARGA_MIN = 3;
+
+// ════════════════════════════════════════════════════════════════════
+// SLACK
+// ════════════════════════════════════════════════════════════════════
+//
+// Webhook: SLACK_WEBHOOK_TAREAS (canal #tareas-amanda). Se lee sólo del entorno y nunca
+// se loguea (postSlack, en server.js, se encarga). Menciones: SLACK_IDS, un JSON
+// { "username": "ID de Slack" }; las claves se comparan sin mayúsculas. Si alguien no
+// está, el mensaje sale igual con su nombre en texto.
+
+const DASHBOARD_MINUTAS_URL = 'https://app.negocioredondolatam.com/?page=minutas';
+
+function slackIds() {
+  try {
+    const obj = JSON.parse(process.env.SLACK_IDS || '{}');
+    const out = {};
+    for (const [k, v] of Object.entries(obj || {})) if (v) out[uname(k)] = String(v).trim();
+    return out;
+  } catch (e) {
+    console.error('[MINUTAS][slack] SLACK_IDS no es un JSON válido');
+    return {};
+  }
+}
+
+// Slack interpreta &, < y > como control: en texto libre van escapados.
+const slackEsc = s => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+// "2026-10-12" → "12/10"
+const ddmm = f => f ? `${f.slice(8, 10)}/${f.slice(5, 7)}` : '';
+
+// <@ID> si está en SLACK_IDS; si no, el nombre en texto.
+function mencion(username, nombres) {
+  const id = slackIds()[uname(username)];
+  return id ? `<@${id}>` : slackEsc(nombreDe(username, nombres));
+}
+
+function nombreDe(username, nombres) {
+  const u = uname(username);
+  if (nombres && nombres[u]) return nombres[u];
+  return u ? u.charAt(0).toUpperCase() + u.slice(1) : '';
+}
+
+function msgAsignacion(t, nombres) {
+  const linea2 = [
+    t.vence ? `Vence ${ddmm(t.vence)}` : null,
+    t.prioridad ? `Prioridad ${slackEsc(t.prioridad)}` : null,
+    t.palanca ? slackEsc(t.palanca) : null,
+  ].filter(Boolean).join(' · ');
+  const links = [
+    t.doc_url ? `<${t.doc_url}|Ver minuta>` : null,
+    `<${DASHBOARD_MINUTAS_URL}|Abrir en el dashboard>`,
+  ].filter(Boolean).join(' · ');
+  return [
+    `${mencion(t.asignada_a, nombres)} 📌 Nueva tarea: *${slackEsc(t.tarea)}* — ${slackEsc(t.cliente)}`,
+    linea2 || null,
+    t.detalle ? slackEsc(t.detalle) : null,
+    links,
+  ].filter(Boolean).join('\n');
+}
+
+function msgCerrada(t, quienCerro, nombres) {
+  const admins = usuariosMinutas().map(u => mencion(u, nombres)).join(' ');
+  return `${admins} ✅ ${slackEsc(nombreDe(quienCerro, nombres))} cerró: *${slackEsc(t.tarea)}* — ${slackEsc(t.cliente)}`;
+}
+
+function msgVencimientos(username, tareas, hoy, nombres) {
+  const items = tareas.map(t =>
+    `• ${t.vence < hoy ? '🔴 ' : ''}*${slackEsc(t.tarea)}* — ${slackEsc(t.cliente)} (vence ${ddmm(t.vence)})`);
+  return [`${mencion(username, nombres)} ⏰ Tareas para hoy:`, ...items].join('\n');
+}
 
 function secretoValido(provisto) {
   const secret = process.env.MINUTAS_SECRET;
@@ -129,6 +211,14 @@ async function crearTablas(pool) {
       error       TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_minutas_sync_disparado ON minutas_sync (disparado DESC);
+
+    -- Asignación a una persona del equipo (username del dashboard, en minúsculas).
+    -- aviso_vence_enviado = último día en que entró en el recordatorio de vencimientos:
+    -- evita que un segundo disparo del cron el mismo día la repita.
+    ALTER TABLE minutas_tareas ADD COLUMN IF NOT EXISTS asignada_a          TEXT NULL;
+    ALTER TABLE minutas_tareas ADD COLUMN IF NOT EXISTS asignada_en         TIMESTAMPTZ NULL;
+    ALTER TABLE minutas_tareas ADD COLUMN IF NOT EXISTS aviso_vence_enviado DATE NULL;
+    CREATE INDEX IF NOT EXISTS idx_minutas_tareas_asignada ON minutas_tareas (asignada_a);
   `);
 }
 
@@ -250,7 +340,7 @@ const COLS_MINUTA = `id, cliente, client_id, to_char(fecha, 'YYYY-MM-DD') AS fec
   resumen, decisiones, pendientes, procesada, created_at, updated_at`;
 const COLS_TAREA = `id, minuta_id, cliente, client_id, tarea, detalle, palanca, responsable, quien, prioridad,
   to_char(vence, 'YYYY-MM-DD') AS vence, estado, to_char(fecha_reunion, 'YYYY-MM-DD') AS fecha_reunion,
-  doc_url, estado_cambiado_at, created_at, updated_at`;
+  doc_url, estado_cambiado_at, asignada_a, asignada_en, created_at, updated_at`;
 
 // Último disparo que bloquea: uno exitoso de los últimos 5 minutos, o uno todavía en
 // vuelo (status NULL, con un minuto de gracia por si el proceso murió en el medio).
@@ -277,7 +367,7 @@ function mensajeRutina(status, body) {
 
 // ════════════════════════════════════════════════════════════════════
 
-module.exports = (app, { pool, requireAuth, requireAdmin, ymd, ymdShift }) => {
+module.exports = (app, { pool, requireAuth, requireAdmin, ymd, ymdShift, postSlack }) => {
 
   const requireMinutas = (req, res, next) => requireAuth(req, res, () => {
     if (!puedeVerMinutas(req.user)) return res.status(403).json({ error: 'Sin acceso a Minutas' });
@@ -381,47 +471,187 @@ module.exports = (app, { pool, requireAuth, requireAdmin, ymd, ymdShift }) => {
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
 
+  // ── Equipo ──────────────────────────────────────────────────────────────────
+  // Quiénes tienen acceso a Minutas, con el username tal como está en la base ("Amanda")
+  // para mostrarlo. Los admins de minutas tienen que tener rol admin, igual que en
+  // rolMinutas: alguien en MINUTAS_USUARIOS sin ese rol no entra, así que tampoco se le
+  // puede asignar nada.
+  async function cargarEquipo(db) {
+    const admins = usuariosMinutas(), miembros = miembrosMinutas();
+    const todos = [...new Set([...admins, ...miembros])];
+    if (!todos.length) return { equipo: [], nombres: {} };
+    const { rows } = await db.query(
+      'SELECT username, role FROM users WHERE LOWER(username) = ANY($1) ORDER BY LOWER(username)', [todos]);
+    const equipo = [], nombres = {};
+    for (const r of rows) {
+      const rol = rolMinutas(r);
+      if (!rol) continue;
+      equipo.push({ username: uname(r.username), nombre: r.username, rol });
+      nombres[uname(r.username)] = r.username;
+    }
+    return { equipo, nombres };
+  }
+
+  // Manda a Slack sin frenar nunca al que llama. Devuelve lo que pasó para que el front
+  // pueda decir "aviso enviado" o "sin aviso".
+  async function avisar(texto, tag) {
+    try {
+      return await postSlack(process.env.SLACK_WEBHOOK_TAREAS, texto, tag);
+    } catch (e) {
+      console.error(`[${tag}] error inesperado armando el aviso`);
+      return { ok: false, motivo: 'error' };
+    }
+  }
+
   // ── Vista ───────────────────────────────────────────────────────────────────
 
   app.get('/api/minutas', requireMinutas, async (req, res) => {
     try {
-      const [m, t] = await Promise.all([
-        pool.query(`SELECT ${COLS_MINUTA} FROM minutas ORDER BY fecha DESC, id`),
-        pool.query(`SELECT ${COLS_TAREA} FROM minutas_tareas ORDER BY cliente, vence NULLS LAST, id`),
+      const rol = rolMinutas(req.user), yo = uname(req.user.username);
+      // El miembro recibe sólo sus tareas y ninguna minuta: el filtro va en la consulta,
+      // no en el front.
+      const [m, t, eq] = await Promise.all([
+        rol === 'admin'
+          ? pool.query(`SELECT ${COLS_MINUTA} FROM minutas ORDER BY fecha DESC, id`)
+          : { rows: [] },
+        rol === 'admin'
+          ? pool.query(`SELECT ${COLS_TAREA} FROM minutas_tareas ORDER BY cliente, vence NULLS LAST, id`)
+          : pool.query(`SELECT ${COLS_TAREA} FROM minutas_tareas WHERE asignada_a = $1
+                         ORDER BY cliente, vence NULLS LAST, id`, [yo]),
+        cargarEquipo(pool),
       ]);
       // El estado del botón "Sincronizar ahora" viaja sólo a quien lo puede usar.
       const sync = puedeSincronizarMinutas(req.user)
         ? { vigente: await syncVigente(pool), ahora: new Date().toISOString() }
         : null;
-      res.json({ minutas: m.rows, tareas: t.rows, hoy: ymd(), sync });
+      res.json({
+        minutas: m.rows, tareas: t.rows, hoy: ymd(), sync,
+        rol, yo, equipo: eq.equipo,
+        slack_configurado: !!process.env.SLACK_WEBHOOK_TAREAS,
+      });
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
 
+  // Admin: estado, vence y asignada_a. Miembro: sólo estado, y sólo en sus tareas (una
+  // ajena da 404, como si no existiera). Los avisos de Slack salen después del COMMIT y
+  // nunca hacen fallar el cambio.
   app.patch('/api/minutas/tareas/:id', requireMinutas, async (req, res) => {
+    const rol = rolMinutas(req.user), yo = uname(req.user.username);
+    const body = req.body || {};
+    const permitidos = rol === 'admin' ? ['estado', 'vence', 'asignada_a'] : ['estado'];
+    const otros = Object.keys(body).filter(k => !permitidos.includes(k));
+    if (otros.length) return res.status(403).json({ error: `No podés modificar: ${otros.join(', ')}` });
+
+    const sets = [], vals = [];
+    if ('estado' in body) {
+      if (!ESTADOS.includes(body.estado))
+        return res.status(400).json({ error: `estado inválido (${ESTADOS.join(', ')})` });
+      vals.push(body.estado);
+      sets.push(`estado = $${vals.length}`,
+                `estado_cambiado_at = CASE WHEN estado IS DISTINCT FROM $${vals.length} THEN NOW() ELSE estado_cambiado_at END`);
+    }
+    if ('vence' in body) {
+      const v = texto(body.vence);
+      if (v && !esFecha(v)) return res.status(400).json({ error: 'vence inválido, va YYYY-MM-DD o null' });
+      vals.push(v);
+      sets.push(`vence = $${vals.length}`);
+    }
+
+    let eq;
+    try { eq = await cargarEquipo(pool); } catch (e) { return res.status(500).json({ error: e.message }); }
+    let nuevaAsignada;
+    if ('asignada_a' in body) {
+      nuevaAsignada = body.asignada_a == null || body.asignada_a === '' ? null : uname(body.asignada_a);
+      if (nuevaAsignada && !eq.equipo.some(p => p.username === nuevaAsignada))
+        return res.status(400).json({ error: `"${body.asignada_a}" no tiene acceso a Minutas` });
+      vals.push(nuevaAsignada);
+      sets.push(`asignada_a = $${vals.length}`,
+                `asignada_en = CASE WHEN $${vals.length}::text IS NULL THEN NULL
+                                    WHEN asignada_a IS DISTINCT FROM $${vals.length}::text THEN NOW()
+                                    ELSE asignada_en END`);
+    }
+    if (!sets.length) return res.status(400).json({ error: 'Mandá estado, vence o asignada_a' });
+
+    const db = await pool.connect();
+    let antes, tarea;
     try {
-      const body = req.body || {};
-      const sets = [], vals = [];
-      if ('estado' in body) {
-        if (!ESTADOS.includes(body.estado))
-          return res.status(400).json({ error: `estado inválido (${ESTADOS.join(', ')})` });
-        vals.push(body.estado);
-        sets.push(`estado = $${vals.length}`,
-                  `estado_cambiado_at = CASE WHEN estado IS DISTINCT FROM $${vals.length} THEN NOW() ELSE estado_cambiado_at END`);
+      await db.query('BEGIN');
+      const prev = await db.query(
+        'SELECT estado, asignada_a FROM minutas_tareas WHERE id = $1 FOR UPDATE', [req.params.id]);
+      antes = prev.rows[0];
+      if (!antes || (rol !== 'admin' && antes.asignada_a !== yo)) {
+        await db.query('ROLLBACK');
+        return res.status(404).json({ error: 'Tarea no encontrada' });
       }
-      if ('vence' in body) {
-        const v = texto(body.vence);
-        if (v && !esFecha(v)) return res.status(400).json({ error: 'vence inválido, va YYYY-MM-DD o null' });
-        vals.push(v);
-        sets.push(`vence = $${vals.length}`);
-      }
-      if (!sets.length) return res.status(400).json({ error: 'Mandá estado y/o vence' });
       vals.push(req.params.id);
-      const { rows } = await pool.query(
+      const { rows } = await db.query(
         `UPDATE minutas_tareas SET ${sets.join(', ')}, updated_at = NOW()
           WHERE id = $${vals.length} RETURNING ${COLS_TAREA}`, vals);
-      if (!rows.length) return res.status(404).json({ error: 'Tarea no encontrada' });
-      res.json({ ok: true, tarea: rows[0] });
-    } catch (e) { res.status(500).json({ error: e.message }); }
+      tarea = rows[0];
+      await db.query('COMMIT');
+    } catch (e) {
+      await db.query('ROLLBACK').catch(() => {});
+      return res.status(500).json({ error: e.message });
+    } finally {
+      db.release();
+    }
+
+    // Aviso de asignación: sólo si quedó alguien y es otra persona que antes.
+    let aviso = null;
+    if ('asignada_a' in body && tarea.asignada_a && tarea.asignada_a !== antes.asignada_a) {
+      const r = await avisar(msgAsignacion(tarea, eq.nombres), 'MINUTAS][slack');
+      aviso = { tipo: 'asignacion', ...r };
+    }
+    // Aviso de cierre: la tarea pasó a Hecha, está asignada a alguien que no es admin de
+    // minutas y la cerró esa persona (si la cierra Guido, avisarle a Guido no tiene sentido).
+    const asignadaEsAdmin = eq.equipo.some(p => p.username === tarea.asignada_a && p.rol === 'admin');
+    if (tarea.estado === 'Hecha' && antes.estado !== 'Hecha' && tarea.asignada_a
+        && !asignadaEsAdmin && rol !== 'admin') {
+      const r = await avisar(msgCerrada(tarea, yo, eq.nombres), 'MINUTAS][slack');
+      aviso = { tipo: 'cierre', ...r };
+    }
+    res.json({ ok: true, tarea, aviso });
+  });
+
+  // ── Recordatorio de vencimientos ────────────────────────────────────────────
+  // Lo dispara una vez por día (09:00 ART) el cron externo, con x-minutas-secret. Un
+  // mensaje por persona con sus tareas abiertas que vencen hoy o ya vencieron; las
+  // vencidas con 🔴. Una tarea que ya entró hoy no se repite si el cron corre dos veces
+  // (aviso_vence_enviado); ?forzar=1 lo saltea para probar. Sin nada que avisar, no manda nada.
+  app.post('/api/minutas/avisos-vencimiento', requireSecreto, async (req, res) => {
+    try {
+      const forzar = req.query.forzar === '1';
+      const hoy = ymd();
+      const { rows } = await pool.query(`
+        SELECT id, tarea, cliente, asignada_a, to_char(vence, 'YYYY-MM-DD') AS vence
+          FROM minutas_tareas
+         WHERE asignada_a IS NOT NULL AND estado <> 'Hecha'
+           AND vence IS NOT NULL AND vence <= CURRENT_DATE
+           ${forzar ? '' : 'AND aviso_vence_enviado IS DISTINCT FROM CURRENT_DATE'}
+         ORDER BY asignada_a, vence, cliente, id`);
+      if (!rows.length) return res.json({ ok: true, hoy, personas: [] });
+
+      const { nombres } = await cargarEquipo(pool);
+      const porPersona = {};
+      rows.forEach(t => (porPersona[t.asignada_a] = porPersona[t.asignada_a] || []).push(t));
+
+      const personas = [];
+      for (const [username, tareas] of Object.entries(porPersona)) {
+        const r = await avisar(msgVencimientos(username, tareas, hoy, nombres), 'MINUTAS][vencimientos');
+        // Sólo se marca si Slack lo recibió: si falló, el próximo disparo lo reintenta.
+        if (r.ok) await pool.query(
+          'UPDATE minutas_tareas SET aviso_vence_enviado = CURRENT_DATE WHERE id = ANY($1)', [tareas.map(t => t.id)]);
+        personas.push({
+          username, tareas: tareas.length,
+          vencidas: tareas.filter(t => t.vence < hoy).length,
+          enviado: r.ok, motivo: r.ok ? undefined : r.motivo,
+        });
+      }
+      res.json({ ok: true, hoy, personas });
+    } catch (e) {
+      console.error('[MINUTAS][vencimientos] error:', e.message);
+      res.status(500).json({ error: e.message });
+    }
   });
 
   // ── Disparo manual de la rutina ─────────────────────────────────────────────
@@ -495,10 +725,15 @@ module.exports = (app, { pool, requireAuth, requireAdmin, ymd, ymdShift }) => {
     .then(() => console.log('[MINUTAS] Tablas listas'))
     .catch(e => console.error('[MINUTAS] No se pudieron crear las tablas:', e.message));
 
+  // Link de los avisos de Slack: entra directo a Minutas.
+  app.get('/minutas', (req, res) => res.redirect('/?page=minutas'));
+
   return { puedeVerMinutas };
 };
 
 module.exports.puedeVerMinutas = puedeVerMinutas;
+module.exports.rolMinutas = rolMinutas;
+module.exports._mensajes = { msgAsignacion, msgCerrada, msgVencimientos };
 module.exports.puedeSincronizarMinutas = puedeSincronizarMinutas;
 module.exports.PALANCAS = PALANCAS;
 module.exports.ESTADOS = ESTADOS;
