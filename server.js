@@ -7681,6 +7681,37 @@ function conVentas(items, ventas) {
   });
 }
 
+// La campaña de cuotas entró a la base de Precios después de que existiera el caché. Para no
+// obligar a rearmar todo (una llamada a listing_prices por publicación), a un caché sin el
+// dato se le completa sólo eso con el multiget de ítems — 20 por llamada — y se guarda.
+async function completarCuotasCache(clientId, data) {
+  const items = data.items || [];
+  const faltan = items.filter(i => i.campana_cuotas === undefined).map(i => i.mla_id);
+  if (!faltan.length) return data;
+  const token = await getClientToken(clientId);
+  if (!token) return data;
+  const headers = { 'Authorization': `Bearer ${token}` };
+  const campana = {};
+  const lotes = [];
+  for (let i = 0; i < faltan.length; i += 20) lotes.push(faltan.slice(i, i + 20));
+  for (let i = 0; i < lotes.length; i += 5) {
+    await Promise.all(lotes.slice(i, i + 5).map(async lote => {
+      try {
+        const r = await getJsonML(`${ML_API}/items?ids=${lote.join(',')}&attributes=id,sale_terms`, headers);
+        (Array.isArray(r) ? r : []).forEach(x => {
+          if (x.code === 200 && x.body?.id) campana[x.body.id] = campanaCuotas(x.body);
+        });
+      } catch (_) { /* el lote queda sin verificar y se reintenta en la próxima lectura */ }
+    }));
+  }
+  const nuevo = { ...data, items: items.map(i =>
+    i.mla_id in campana ? { ...i, campana_cuotas: campana[i.mla_id] } : i) };
+  // Se guarda sin tocar fetched_at: el resto de la base sigue teniendo la edad que tenía.
+  await pool.query('UPDATE precios_cache SET data=$2 WHERE client_id=$1', [clientId, JSON.stringify(nuevo)])
+    .catch(e => console.error('[PRECIOS CUOTAS]', e.message));
+  return nuevo;
+}
+
 app.get('/api/precios', requireAuth, async (req, res) => {
   try {
     const clientId = parseInt(req.query.client_id);
@@ -7729,6 +7760,7 @@ app.get('/api/precios', requireAuth, async (req, res) => {
         'SELECT data, fetched_at FROM precios_cache WHERE client_id=$1', [clientId]);
       const row = hit.rows[0];
       if (row && (Date.now() - new Date(row.fetched_at).getTime()) < PRECIOS_TTL_MS) {
+        row.data = await completarCuotasCache(clientId, row.data);
         // Los costos guardados SÍ se releen sobre el caché: el CMV y el objetivo por
         // producto se cargan desde esta misma pantalla y tienen que verse al instante.
         const costs = await pool.query(
