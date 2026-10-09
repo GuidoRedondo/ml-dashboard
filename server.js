@@ -7493,7 +7493,9 @@ async function traerItemsActivos(clientId, { withFees = false } = {}) {
         const pesoKg = TARIFAS_ML.pesoDeItemKg(b)
           ?? (b.shipping?.dimensions?.weight > 0 ? b.shipping.dimensions.weight / 1000 : null);
 
-        itemsMap[b.id]   = { mla_id: b.id, title: b.title, sku, price, original_price: precioLista, stock: b.available_quantity, listing_type_id: b.listing_type_id, category_id: b.category_id, logistic_type: b.shipping?.logistic_type || 'cross_docking', shipping_mode: b.shipping?.mode || 'me2', shipping_weight: b.shipping?.dimensions?.weight || 500, peso_kg: pesoKg, peso_source: pesoKg == null ? 'default' : (TARIFAS_ML.pesoDeItemKg(b) != null ? 'ficha' : 'envio'), com_pct: comPct, envio_unit: envioUnit, com_source: comSource, envio_source: envioSource };
+        itemsMap[b.id]   = { mla_id: b.id, title: b.title, sku, price, original_price: precioLista, stock: b.available_quantity, listing_type_id: b.listing_type_id, category_id: b.category_id, logistic_type: b.shipping?.logistic_type || 'cross_docking', shipping_mode: b.shipping?.mode || 'me2', shipping_weight: b.shipping?.dimensions?.weight || 500, peso_kg: pesoKg, peso_source: pesoKg == null ? 'default' : (TARIFAS_ML.pesoDeItemKg(b) != null ? 'ficha' : 'envio'), com_pct: comPct, envio_unit: envioUnit, com_source: comSource, envio_source: envioSource,
+          // Campaña de cuotas sin interés (3x_campaign, ahora-12…) o null = no está en ninguna.
+          campana_cuotas: campanaCuotas(b) };
       } catch(e) {}
     }));
   }

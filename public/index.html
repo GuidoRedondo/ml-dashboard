@@ -10528,8 +10528,31 @@ function _prcMapItems(d) {
       units: i.units_30d != null ? parseInt(i.units_30d)   : null,
       ads:   i.ads_30d   != null ? parseFloat(i.ads_30d)   : null,
       tacosManual: i.tacos_pct != null ? parseFloat(i.tacos_pct) : null,
+      cuotas: _prcCuotas(i),
     };
   });
+}
+
+// ¿La publicación ofrece cuotas sin interés? Premium las trae siempre; una Clásica sólo
+// si está en una campaña de cuotas (sale_terms.INSTALLMENTS_CAMPAIGN). `con: null` =
+// la base vino de un caché anterior a este dato y la Clásica no se puede afirmar.
+function _prcCuotas(i) {
+  const premium = ['gold_pro', 'gold_premium'].includes(i.listing_type_id);
+  if (i.campana_cuotas) return { con: true, label: _campanaLabel(i.campana_cuotas) + (premium ? ' · Premium' : '') };
+  if (premium) return { con: true, label: 'Premium' };
+  if (i.campana_cuotas === undefined) return { con: null, label: 'sin verificar' };
+  return { con: false, label: 'Sin cuotas' };
+}
+
+function _prcCuotasChip(c) {
+  if (!c) return '';
+  const st = c.con === true  ? 'color:#5ea9ff;background:rgba(94,169,255,.12)'
+           : c.con === false ? 'color:var(--muted);background:var(--surface2)'
+           : 'color:#ff9100;background:var(--surface2)';
+  const tit = c.con === true  ? 'Ofrece cuotas sin interés: ML cobra el recargo dentro de la comisión'
+            : c.con === false ? 'Clásica sin campaña de cuotas: el comprador paga en 1 pago o con interés'
+            : 'Datos de antes de que se leyeran las cuotas. Tocá 🔄 para verificar';
+  return `<div title="${tit}" style="display:inline-block;margin-top:3px;font-size:10px;font-weight:700;padding:1px 6px;border-radius:5px;white-space:nowrap;${st}">${c.con === true ? '💳 ' : ''}${c.label}</div>`;
 }
 
 async function recargarPrecios(force) {
@@ -10770,6 +10793,8 @@ function renderPrecios() {
             <option value="sincmv"   ${window._prcFiltro==='sincmv'?'selected':''}>Sin CMV</option>
             <option value="propio"   ${window._prcFiltro==='propio'?'selected':''}>Con objetivo propio</option>
             <option value="manual"   ${window._prcFiltro==='manual'?'selected':''}>Con precio a mano</option>
+            <option value="cuotas"   ${window._prcFiltro==='cuotas'?'selected':''}>Con cuotas</option>
+            <option value="sincuotas" ${window._prcFiltro==='sincuotas'?'selected':''}>Sin cuotas</option>
           </select>
           <button class="sync-btn" onclick="exportarPreciosExcel()" title="Baja la tabla tal como la estás viendo">📥 Excel</button>
           <button class="sync-btn" onclick="recargarPrecios(true)" title="Vuelve a pedirle a ML la comisión y el envío de cada publicación">🔄</button>
@@ -10904,6 +10929,8 @@ function _prcFiltrar(filas) {
   if (modo === 'sincmv')   out = out.filter(f => !f.it.hasCMV);
   if (modo === 'propio')   out = out.filter(f => f.it.objetivoItem != null);
   if (modo === 'manual')   out = out.filter(f => f.esManual);
+  if (modo === 'cuotas')   out = out.filter(f => f.it.cuotas?.con === true);
+  if (modo === 'sincuotas') out = out.filter(f => f.it.cuotas?.con === false);
   return out.sort(_prcCmp());
 }
 
@@ -11025,8 +11052,8 @@ function _prcTabla(filas, sufijo) {
 
     const precioHtml = it.tieneDescuento
       ? `<span style="color:#ff9100;font-weight:700">${_prcFmt(it.precio)}</span>
-         <div style="font-size:10px;color:var(--muted);text-decoration:line-through">${_prcFmt(it.precioLista)}</div>`
-      : `<span style="font-weight:600">${_prcFmt(it.precio)}</span>`;
+         <div style="font-size:10px;color:var(--muted);text-decoration:line-through">${_prcFmt(it.precioLista)}</div>${_prcCuotasChip(it.cuotas)}`
+      : `<span style="font-weight:600">${_prcFmt(it.precio)}</span><div>${_prcCuotasChip(it.cuotas)}</div>`;
 
     // Input del precio objetivo. Vacío = lo calcula la CM objetivo (se ve de placeholder);
     // con un número escrito, manda ése y abajo se ve qué CM deja.
@@ -11427,6 +11454,7 @@ function exportarPreciosExcel() {
       'Costos variables $': Math.round(a.total),
       'Precio de lista': it.precioLista ? Math.round(it.precioLista) : '',
       'Precio actual': Math.round(it.precio),
+      'Cuotas sin interés': it.cuotas ? it.cuotas.label : '',
       'CM actual $': it.hasCMV ? Math.round(a.cm) : '',
       'CM actual % s/precio': it.hasCMV ? parseFloat(a.cmPct.toFixed(1)) : '',
       'CM actual % s/costo': it.hasCMV && a.cmCosto != null ? parseFloat(a.cmCosto.toFixed(1)) : '',
