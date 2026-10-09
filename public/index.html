@@ -10544,6 +10544,18 @@ function _prcCuotas(i) {
   return { con: false, label: 'Sin cuotas' };
 }
 
+// Etiqueta de la fila madre de una familia: la de las variantes si todas coinciden,
+// y si no, cuántas ofrecen cuotas.
+function _prcCuotasFam(ms) {
+  const cs = ms.map(m => m.it.cuotas).filter(Boolean);
+  if (!cs.length) return '';
+  const con = cs.filter(c => c.con === true).length;
+  if (con === cs.length) return _prcCuotasChip({ con: true, label: 'Con cuotas' });
+  if (cs.every(c => c.con === false)) return _prcCuotasChip({ con: false, label: 'Sin cuotas' });
+  if (!con) return _prcCuotasChip({ con: null, label: 'sin verificar' });
+  return _prcCuotasChip({ con: true, label: `${con} de ${cs.length} con cuotas` });
+}
+
 function _prcCuotasChip(c) {
   if (!c) return '';
   const st = c.con === true  ? 'color:#5ea9ff;background:rgba(94,169,255,.12)'
@@ -11007,7 +11019,7 @@ function _prcFilaFam(e) {
     <td style="${td};font-size:12px">${famRango(ms.filter(m => m.it.hasCMV).map(m => m.it.cmv), _prcFmt)}${sinCMV ? `<div style="font-size:10px;color:#ff9100">${sinCMV} sin CMV</div>` : ''}</td>
     <td style="${td};font-size:12px;color:var(--muted)">${it.fact > 0 ? pct(f.tacos.pct) : '—'}<div style="font-size:10px">${it.ads > 0 ? _prcFmt(it.ads) + ' de pauta' : 'sin pauta'}</div></td>
     <td style="${td};font-size:12px">${famRango(ms.map(m => m.actual.total), _prcFmt)}</td>
-    <td style="${td};font-size:12px;font-weight:600">${famRango(ms.map(m => m.it.precio), _prcFmt)}</td>
+    <td style="${td};font-size:12px;font-weight:600">${famRango(ms.map(m => m.it.precio), _prcFmt)}<div>${_prcCuotasFam(ms)}</div></td>
     <td style="${td}"><span style="font-size:13px;font-weight:800;color:${cmColor}">${cms.length ? famRango(cms, pct) : '—'}</span></td>
     <td style="${td};font-size:12px;color:var(--muted)">${famRango(ms.map(m => m.obj.pct), pct)}</td>
     <td style="${td};font-size:12px;font-weight:700">${famRango(ms.map(m => m.sugerido), _prcFmt)}</td>
