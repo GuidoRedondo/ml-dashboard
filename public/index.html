@@ -10691,6 +10691,7 @@ function _prcCalcular() {
     const sugerido   = esManual ? manual : calculado;
     const enSugerido = sugerido ? _prcCM(sugerido, it, ctx) : null;
     return { it, ctx, obj: objItem, actual, calculado, esManual, sugerido, enSugerido, tacos,
+             cob: _prcCobertura(it.stock, it.units),
              part: (totalFact > 0 && it.fact != null) ? it.fact / totalFact * 100 : null,
              gap: (sugerido && it.precio > 0) ? sugerido - it.precio : null,
              gapPct: (sugerido && it.precio > 0) ? (sugerido / it.precio - 1) * 100 : null };
@@ -10702,6 +10703,33 @@ function _prcCalcular() {
     .sort((a, b) => b.it.fact - a.it.fact)
     .forEach((f, i) => { acum += f.part; f.rank = i + 1; f.acum = acum; });
   return window._prcFilas;
+}
+
+// Cobertura de stock: cuántos días aguanta el stock disponible al ritmo de venta de los
+// últimos 30 días. Misma escala que la sección Stock (_stockUmbrales, configurable allá).
+//   dias null     -> no se puede calcular (no se leyó el stock o las ventas)
+//   dias Infinity -> tiene stock y no vendió nada en 30 días: sin rotación
+// El stock sale de la base de Precios, que se cachea 12h: puede estar algunas horas atrasado.
+function _prcCobertura(stock, units) {
+  if (stock == null || units == null) return { dias: null, estado: null };
+  if (stock <= 0) return { dias: 0, estado: 'sinstock' };
+  if (!(units > 0)) return { dias: Infinity, estado: 'sinrot' };
+  const dias = Math.round(stock / (units / 30));
+  const u = _stockUmbrales;
+  return { dias, estado: dias <= u.critico ? 'critico' : dias <= u.alerta ? 'alerta' : 'ok' };
+}
+
+function _prcCobHtml(cob, stock) {
+  const col = { sinstock: '#ff5252', critico: '#ff5252', alerta: '#ff9100', ok: '#00e676', sinrot: 'var(--muted)' }[cob.estado] || 'var(--muted)';
+  const txt = cob.dias == null ? '—'
+            : cob.estado === 'sinstock' ? 'sin stock'
+            : cob.estado === 'sinrot'   ? 'sin rotación'
+            : cob.dias.toLocaleString('es-AR') + ' d';
+  const tit = cob.estado === 'sinrot' ? 'Tiene stock pero no vendió nada en 30 días'
+            : cob.dias == null ? 'No se pudo leer el stock o las ventas de 30 días'
+            : 'Días que aguanta el stock al ritmo de venta de los últimos 30 días';
+  return `<span style="font-size:12px;font-weight:700;color:${col}" title="${tit}">${txt}</span>
+          <div style="font-size:10px;color:var(--muted)">${stock != null ? stock.toLocaleString('es-AR') + ' u. en stock' : 'stock —'}</div>`;
 }
 
 function _prcFmt(n)  { return '$' + Math.round(n).toLocaleString('es-AR'); }
@@ -10816,6 +10844,10 @@ function renderPrecios() {
             <option value="manual"   ${window._prcFiltro==='manual'?'selected':''}>Con precio a mano</option>
             <option value="cuotas"   ${window._prcFiltro==='cuotas'?'selected':''}>Con cuotas</option>
             <option value="sincuotas" ${window._prcFiltro==='sincuotas'?'selected':''}>Sin cuotas</option>
+            <option value="cob_critico" ${window._prcFiltro==='cob_critico'?'selected':''}>Cobertura crítica (≤ ${_stockUmbrales.critico} d o sin stock)</option>
+            <option value="cob_alerta"  ${window._prcFiltro==='cob_alerta'?'selected':''}>Cobertura en alerta (${_stockUmbrales.critico + 1}–${_stockUmbrales.alerta} d)</option>
+            <option value="cob_ok"      ${window._prcFiltro==='cob_ok'?'selected':''}>Cobertura sana (+${_stockUmbrales.alerta} d)</option>
+            <option value="cob_sinrot"  ${window._prcFiltro==='cob_sinrot'?'selected':''}>Sin rotación (stock sin ventas)</option>
           </select>
           <button class="sync-btn" onclick="exportarPreciosExcel()" title="Baja la tabla tal como la estás viendo">📥 Excel</button>
           <button class="sync-btn" onclick="recargarPrecios(true)" title="Vuelve a pedirle a ML la comisión y el envío de cada publicación">🔄</button>
@@ -10952,11 +10984,25 @@ function _prcFiltrar(filas) {
   if (modo === 'manual')   out = out.filter(f => f.esManual);
   if (modo === 'cuotas')   out = out.filter(f => f.it.cuotas?.con === true);
   if (modo === 'sincuotas') out = out.filter(f => f.it.cuotas?.con === false);
+  if (modo === 'cob_critico') out = out.filter(f => f.cob.estado === 'critico' || f.cob.estado === 'sinstock');
+  if (modo === 'cob_alerta')  out = out.filter(f => f.cob.estado === 'alerta');
+  if (modo === 'cob_ok')      out = out.filter(f => f.cob.estado === 'ok');
+  if (modo === 'cob_sinrot')  out = out.filter(f => f.cob.estado === 'sinrot');
   return out.sort(_prcCmp());
 }
 
 function _prcCmp() {
   const { col, asc } = window._prcSort;
+  // Cobertura: las que no se pueden calcular van siempre al fondo, y las sin rotación (∞)
+  // justo antes, en los dos sentidos — si no, al ordenar de menor a mayor taparían a las
+  // que se están por quedar sin stock.
+  if (col === 'cob') return (a, b) => {
+    const da = a.cob?.dias, db = b.cob?.dias;
+    if (da == null || db == null) return (da == null) - (db == null);
+    const ia = da === Infinity, ib = db === Infinity;
+    if (ia || ib) return ia - ib;
+    return asc ? da - db : db - da;
+  };
   const val = f => {
     if (col === 'mla')      return f.it.id;
     if (col === 'title')    return (f.it.title || '').toLowerCase();
@@ -10994,7 +11040,14 @@ function _prcAggFam(ms) {
   const hasCMV = ms.every(f => f.it.hasCMV);
   const cmOf = f => _prcCMValor(f.actual, f.it);
   const peor = ms.filter(f => f.it.hasCMV).sort((a, b) => (cmOf(a) ?? 1e9) - (cmOf(b) ?? 1e9))[0] || ms[0];
+  // Cobertura de la familia: stock total sobre ventas totales. Si a alguna variante no se le
+  // pudo leer el stock o las ventas, la suma mentiría: queda sin dato.
+  const stocks = ms.map(f => f.it.stock), unidades = ms.map(f => f.it.units);
+  const famStock = stocks.some(s => s == null) ? null : sum(stocks);
+  const famUnits = unidades.some(u => u == null) ? null : sum(unidades);
   return {
+    stock: famStock,
+    cob: _prcCobertura(famStock, famUnits),
     it: { id: ms[0].it.id, title: ms[0].it.title, sku: famPrefijo(ms.map(f => f.it.sku)),
           cmv: min(ms.map(f => f.it.cmv)) ?? 0, precio: min(ms.map(f => f.it.precio)) ?? 0,
           fact, units: sum(ms.map(f => f.it.units || 0)), ads, hasCMV },
@@ -11025,6 +11078,7 @@ function _prcFilaFam(e) {
     <td style="${td}">${it.fact == null ? '<span style="color:var(--muted)">—</span>'
       : `<span style="font-size:12px;font-weight:700">${_prcFmt(it.fact)}</span><div style="font-size:10px;color:var(--muted)">${it.units.toLocaleString('es-AR')} u.</div>`}</td>
     <td style="${td};font-size:12px;font-weight:700;color:${f.part >= 5 ? 'var(--accent)' : 'var(--text)'}">${f.part == null ? '—' : pct(f.part)}</td>
+    <td style="${td}">${_prcCobHtml(f.cob, f.stock)}</td>
     <td style="${td};font-size:12px">${famRango(ms.filter(m => m.it.hasCMV).map(m => m.it.cmv), _prcFmt)}${sinCMV ? `<div style="font-size:10px;color:#ff9100">${sinCMV} sin CMV</div>` : ''}</td>
     <td style="${td};font-size:12px;color:var(--muted)">${it.fact > 0 ? pct(f.tacos.pct) : '—'}<div style="font-size:10px">${it.ads > 0 ? _prcFmt(it.ads) + ' de pauta' : 'sin pauta'}</div></td>
     <td style="${td};font-size:12px">${famRango(ms.map(m => m.actual.total), _prcFmt)}</td>
@@ -11053,6 +11107,7 @@ function _prcTabla(filas, sufijo) {
     ${_prcTh('sku', 'SKU', 'left')}
     ${_prcTh('fact', 'Facturación 30d', 'right', 'Lo que facturó la publicación en los últimos 30 días (órdenes pagas), con las unidades abajo')}
     ${_prcTh('part', '% cuenta', 'right', 'Participación en la facturación total de la cuenta en 30 días. Abajo: su puesto en el ranking y el acumulado (Pareto)')}
+    ${_prcTh('cob', 'Cobertura', 'right', `Días que aguanta el stock al ritmo de venta de 30 días, con el stock abajo. Rojo ≤ ${_stockUmbrales.critico} d, naranja ≤ ${_stockUmbrales.alerta} d (umbrales de la sección Stock). El stock puede tener hasta 12h de atraso: 🔄 lo actualiza`)}
     ${_prcTh('cmv', 'CMV', 'right', 'Costo del producto. Editable: se guarda en el Reporte Financiero')}
     ${_prcTh('tacos', 'TACOS', 'right', 'El TACOS que entra en la cuenta de esta fila. En modo Por publicación: el real de 30 días (publicidad / facturación del ítem), editable — vacío vuelve al medido')}
     ${_prcTh('costos', 'Costos var.', 'right', 'Comisión + cargo fijo/envío ML + IIBB + TACOS + déb/créd + IVA neto + otros. Click en la fila para abrir el detalle')}
@@ -11129,6 +11184,7 @@ function _prcTabla(filas, sufijo) {
       <td style="padding:6px 8px;font-size:11px;color:var(--muted);max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${(it.sku || '').replace(/"/g, "'")}">${it.sku || '—'}</td>
       <td style="padding:6px 8px;text-align:right;white-space:nowrap">${factHtml}</td>
       <td style="padding:6px 8px;text-align:right;white-space:nowrap">${partHtml}</td>
+      <td style="padding:6px 8px;text-align:right;white-space:nowrap">${_prcCobHtml(f.cob, it.stock)}</td>
       <td style="padding:4px 6px;text-align:right;white-space:nowrap">
         <span style="font-size:11px;color:var(--muted)">$</span>
         <input type="number" value="${it.cmv || ''}" min="0" step="1" placeholder="0"
@@ -11191,7 +11247,7 @@ function _prcDetalle(f) {
     : `sin declarar — se calcula con ${_prcPesoDefault} kg de referencia`;
 
   return `<tr style="background:rgba(34,211,238,.05)">
-    <td colspan="13" style="padding:12px 16px">
+    <td colspan="14" style="padding:12px 16px">
       <div style="display:flex;gap:24px;flex-wrap:wrap">
 
         <div style="flex:1;min-width:320px">
@@ -11492,6 +11548,7 @@ function exportarPreciosExcel() {
       'CM al precio objetivo % s/costo': s && it.hasCMV && s.cmCosto != null ? parseFloat(s.cmCosto.toFixed(1)) : '',
       'Peso kg': it.pesoKg != null ? it.pesoKg : '',
       'Stock': it.stock != null ? it.stock : '',
+      'Cobertura (días)': f.cob.estado === 'sinrot' ? 'Sin rotación' : (f.cob.dias != null ? f.cob.dias : ''),
     };
   });
 
