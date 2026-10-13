@@ -122,6 +122,7 @@ function nombreDe(username, nombres) {
 
 function msgAsignacion(t, nombres) {
   const linea2 = [
+    t.prioritaria ? '⭐ Prioritaria' : null,
     t.vence ? `Vence ${ddmm(t.vence)}` : null,
     t.prioridad ? `Prioridad ${slackEsc(t.prioridad)}` : null,
     t.palanca ? slackEsc(t.palanca) : null,
@@ -219,6 +220,10 @@ async function crearTablas(pool) {
     ALTER TABLE minutas_tareas ADD COLUMN IF NOT EXISTS asignada_en         TIMESTAMPTZ NULL;
     ALTER TABLE minutas_tareas ADD COLUMN IF NOT EXISTS aviso_vence_enviado DATE NULL;
     CREATE INDEX IF NOT EXISTS idx_minutas_tareas_asignada ON minutas_tareas (asignada_a);
+
+    -- Marca manual de un admin, aparte de la prioridad (Alta/Media/Baja) que trae la ingesta: la
+    -- re-ingesta no la toca (no está en el INSERT ni en el ON CONFLICT).
+    ALTER TABLE minutas_tareas ADD COLUMN IF NOT EXISTS prioritaria BOOLEAN NOT NULL DEFAULT FALSE;
   `);
 }
 
@@ -340,7 +345,7 @@ const COLS_MINUTA = `id, cliente, client_id, to_char(fecha, 'YYYY-MM-DD') AS fec
   resumen, decisiones, pendientes, procesada, created_at, updated_at`;
 const COLS_TAREA = `id, minuta_id, cliente, client_id, tarea, detalle, palanca, responsable, quien, prioridad,
   to_char(vence, 'YYYY-MM-DD') AS vence, estado, to_char(fecha_reunion, 'YYYY-MM-DD') AS fecha_reunion,
-  doc_url, estado_cambiado_at, asignada_a, asignada_en, created_at, updated_at`;
+  doc_url, estado_cambiado_at, asignada_a, asignada_en, prioritaria, created_at, updated_at`;
 
 // Último disparo que bloquea: uno exitoso de los últimos 5 minutos, o uno todavía en
 // vuelo (status NULL, con un minuto de gracia por si el proceso murió en el medio).
@@ -532,13 +537,13 @@ module.exports = (app, { pool, requireAuth, requireAdmin, ymd, ymdShift, postSla
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
 
-  // Admin: estado, vence y asignada_a. Miembro: sólo estado, y sólo en sus tareas (una
+  // Admin: estado, vence, asignada_a y prioritaria. Miembro: sólo estado, y sólo en sus tareas (una
   // ajena da 404, como si no existiera). Los avisos de Slack salen después del COMMIT y
   // nunca hacen fallar el cambio.
   app.patch('/api/minutas/tareas/:id', requireMinutas, async (req, res) => {
     const rol = rolMinutas(req.user), yo = uname(req.user.username);
     const body = req.body || {};
-    const permitidos = rol === 'admin' ? ['estado', 'vence', 'asignada_a'] : ['estado'];
+    const permitidos = rol === 'admin' ? ['estado', 'vence', 'asignada_a', 'prioritaria'] : ['estado'];
     const otros = Object.keys(body).filter(k => !permitidos.includes(k));
     if (otros.length) return res.status(403).json({ error: `No podés modificar: ${otros.join(', ')}` });
 
@@ -556,6 +561,11 @@ module.exports = (app, { pool, requireAuth, requireAdmin, ymd, ymdShift, postSla
       vals.push(v);
       sets.push(`vence = $${vals.length}`);
     }
+    if ('prioritaria' in body) {
+      if (typeof body.prioritaria !== 'boolean') return res.status(400).json({ error: 'prioritaria va true o false' });
+      vals.push(body.prioritaria);
+      sets.push(`prioritaria = $${vals.length}`);
+    }
 
     let eq;
     try { eq = await cargarEquipo(pool); } catch (e) { return res.status(500).json({ error: e.message }); }
@@ -570,7 +580,7 @@ module.exports = (app, { pool, requireAuth, requireAdmin, ymd, ymdShift, postSla
                                     WHEN asignada_a IS DISTINCT FROM $${vals.length}::text THEN NOW()
                                     ELSE asignada_en END`);
     }
-    if (!sets.length) return res.status(400).json({ error: 'Mandá estado, vence o asignada_a' });
+    if (!sets.length) return res.status(400).json({ error: 'Mandá estado, vence, asignada_a o prioritaria' });
 
     const db = await pool.connect();
     let antes, tarea;

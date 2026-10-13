@@ -773,6 +773,10 @@ tbody td {
   background:#efece2; color:var(--min-tinta); text-transform:uppercase; letter-spacing:.03em; }
 .min-chip.nr { background:var(--min-amarillo); border:1px solid var(--min-tinta); }
 .min-chip.alta { background:var(--min-rojo); color:#fff; }
+.min-chip.prio { background:var(--min-amarillo); border:1px solid var(--min-tinta); }
+.min-star { font-size:18px; line-height:1; border:0; background:none; cursor:pointer; padding:2px; filter:grayscale(1); opacity:.35; }
+.min-star.on { filter:none; opacity:1; }
+.min-star:hover { opacity:.8; }
 .min-vence { font-family:inherit; font-size:11px; border:1px solid #d6d1c2; border-radius:6px; padding:2px 4px; background:#fff; color:var(--min-tinta); }
 .min-vence.vencida { border-color:var(--min-rojo); color:var(--min-rojo); font-weight:800; }
 .min-card { background:#fff; border:2px solid var(--min-tinta); border-radius:12px; box-shadow:4px 4px 0 var(--min-tinta); padding:14px 16px; margin-bottom:14px; }
@@ -28890,6 +28894,8 @@ const _min = { data: null, tab: 'tareas', cliente: '', resp: minLs('resp', ''), 
 // Rol en Minutas (lo decide el backend): 'admin' ve todo y asigna; 'miembro' sólo ve sus
 // tareas y les cambia el estado. El backend corta igual: esto sólo arma la vista.
 const minEsAdmin = () => !!(_min.data && _min.data.rol === 'admin');
+// 'prioritarias' es la misma vista de tareas con un filtro más y sin agrupar por cliente
+const minVistaTareas = () => _min.tab === 'tareas' || _min.tab === 'prioritarias';
 const minNombre = u => {
   const p = _min.data && (_min.data.equipo || []).find(x => x.username === u);
   return p ? p.nombre : (u ? u.charAt(0).toUpperCase() + u.slice(1) : '');
@@ -28933,7 +28939,8 @@ function minRender() {
   if (_min.cliente && !clientes.includes(_min.cliente)) _min.cliente = '';
   const opt = (v, label, sel) => `<option value="${minEsc(v)}" ${v === sel ? 'selected' : ''}>${minEsc(label)}</option>`;
   const admin = minEsAdmin();
-  if (!admin) _min.tab = 'tareas';
+  if (!admin && _min.tab === 'minutas') _min.tab = 'tareas';
+  const nPrio = d.tareas.filter(t => t.prioritaria && minAbierta(t)).length;
 
   root.innerHTML = `
     <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
@@ -28944,29 +28951,30 @@ function minRender() {
     </div>
     <div id="min-cards"></div>
     <div class="min-bar">
-      ${admin ? `<div class="min-tabs">
-        <button class="${_min.tab === 'tareas' ? 'on' : ''}" onclick="_min.tab='tareas';minRender()">Tareas</button>
-        <button class="${_min.tab === 'minutas' ? 'on' : ''}" onclick="_min.tab='minutas';minRender()">Minutas</button>
-      </div>` : ''}
+      <div class="min-tabs">
+        <button class="${_min.tab === 'tareas' ? 'on' : ''}" onclick="_min.tab='tareas';minRender()">${admin ? 'Tareas' : 'Mis tareas'}</button>
+        <button class="${_min.tab === 'prioritarias' ? 'on' : ''}" onclick="_min.tab='prioritarias';minRender()">⭐ Prioritarias${nPrio ? ` (${nPrio})` : ''}</button>
+        ${admin ? `<button class="${_min.tab === 'minutas' ? 'on' : ''}" onclick="_min.tab='minutas';minRender()">Minutas</button>` : ''}
+      </div>
       <select onchange="_min.cliente=this.value;minRenderLista()">
         ${opt('', 'Todos los clientes', _min.cliente)}${clientes.map(c => opt(c, c, _min.cliente)).join('')}
       </select>
-      ${_min.tab === 'tareas' && admin ? `
+      ${minVistaTareas() && admin ? `
       <select onchange="_min.resp=this.value;minLsSet('resp',this.value);minRenderLista()">
         ${opt('', 'NR y cliente', _min.resp)}${opt('NR', 'Negocio Redondo', _min.resp)}${opt('Cliente', 'Cliente', _min.resp)}
       </select>
       <select onchange="_min.asig=this.value;minRenderLista()" title="Asignadas a…">
         ${opt('', 'Asignadas a… (todas)', _min.asig)}${opt('__nadie', 'Sin asignar', _min.asig)}${(d.equipo || []).map(p => opt(p.username, p.nombre, _min.asig)).join('')}
       </select>` : ''}
-      ${_min.tab === 'tareas' ? `
+      ${minVistaTareas() ? `
       <select onchange="_min.estado=this.value;minLsSet('estado',this.value);minRenderLista()">
         ${opt('abiertas', 'Abiertas', _min.estado)}${opt('todas', 'Todas', _min.estado)}${MIN_ESTADOS.map(e => opt(e, e, _min.estado)).join('')}
       </select>` : ''}
-      ${_min.tab === 'tareas' && admin ? `
+      ${minVistaTareas() && admin ? `
       <select onchange="_min.palanca=this.value;minRenderLista()">
         ${opt('', 'Todas las palancas', _min.palanca)}${MIN_PALANCAS.map(p => opt(p, p, _min.palanca)).join('')}
       </select>` : ''}
-      <input type="search" placeholder="${_min.tab === 'tareas' ? 'Buscar en tarea, detalle o quién…' : 'Buscar en las minutas…'}"
+      <input type="search" placeholder="${minVistaTareas() ? 'Buscar en tarea, detalle o quién…' : 'Buscar en las minutas…'}"
         value="${minEsc(_min.q)}" oninput="_min.q=this.value;minRenderLista()">
     </div>
     <div id="min-lista"></div>`;
@@ -29039,6 +29047,7 @@ async function minSyncNow() {
 function minTareasFiltradas() {
   const d = _min.data, q = minNorm(_min.q.trim());
   return d.tareas.filter(t => {
+    if (_min.tab === 'prioritarias' && !t.prioritaria) return false;
     if (_min.cliente && t.cliente !== _min.cliente) return false;
     if (_min.resp && t.responsable !== _min.resp) return false;
     if (_min.estado === 'abiertas' && !minAbierta(t)) return false;
@@ -29066,6 +29075,7 @@ function minRenderLista() {
       <div class="adm-card" style="background:#fff952"><div class="t">Abiertas</div><div class="n">${abiertas.length}</div><div class="d">Pendientes + en curso</div></div>
       <div class="adm-card" style="border-color:#b42318"><div class="t" style="color:#b42318">Vencidas</div><div class="n">${abiertas.filter(t => minVencida(t, hoy)).length}</div><div class="d">Con vencimiento antes de hoy</div></div>
       <div class="adm-card"><div class="t">Vencen hoy</div><div class="n">${abiertas.filter(t => t.vence === hoy).length}</div><div class="d">Para cerrar hoy</div></div>
+      <div class="adm-card"><div class="t">⭐ Prioritarias</div><div class="n">${abiertas.filter(t => t.prioritaria).length}</div><div class="d">Abiertas marcadas como prioritarias</div></div>
     </div>`;
     if (!d.tareas.length) {
       lista.innerHTML = '<div class="adm-vacio">No tenés tareas asignadas por ahora.</div>';
@@ -29076,6 +29086,7 @@ function minRenderLista() {
       <div class="adm-card" style="background:#fff952"><div class="t">Abiertas de NR</div><div class="n">${abiertas.filter(t => t.responsable === 'NR').length}</div><div class="d">Pendientes + en curso</div></div>
       <div class="adm-card"><div class="t">Abiertas del cliente</div><div class="n">${abiertas.filter(t => t.responsable === 'Cliente').length}</div><div class="d">Lo que tiene que hacer cada cliente</div></div>
       <div class="adm-card" style="border-color:#b42318"><div class="t" style="color:#b42318">Vencidas</div><div class="n">${abiertas.filter(t => minVencida(t, hoy)).length}</div><div class="d">Abiertas con vencimiento antes de hoy</div></div>
+      <div class="adm-card"><div class="t">⭐ Prioritarias</div><div class="n">${abiertas.filter(t => t.prioritaria).length}</div><div class="d">Abiertas marcadas como prioritarias</div></div>
       <div class="adm-card"><div class="t">Minutas</div><div class="n">${nMinutas}</div><div class="d">Reuniones cargadas</div></div>
     </div>`;
 
@@ -29111,7 +29122,23 @@ function minRenderLista() {
   }
 
   const ts = minTareasFiltradas();
-  if (!ts.length) { lista.innerHTML = sinResultados; return; }
+  if (!ts.length) {
+    lista.innerHTML = _min.tab === 'prioritarias' && !d.tareas.some(t => t.prioritaria)
+      ? `<div class="adm-vacio">Todavía no hay tareas prioritarias.${minEsAdmin() ? ' Marcalas con la ⭐ en la pestaña Tareas.' : ''}</div>`
+      : sinResultados;
+    return;
+  }
+  if (_min.tab === 'prioritarias') {
+    const filas = ts.slice().sort((a, b) =>
+      (minAbierta(b) - minAbierta(a)) || (a.vence || '9999').localeCompare(b.vence || '9999')
+      || a.cliente.localeCompare(b.cliente, 'es') || a.id.localeCompare(b.id));
+    lista.innerHTML = `
+      <div class="min-grupo">
+        <h3>⭐ Prioritarias <span class="sub">${filas.length} tarea(s) de ${new Set(filas.map(t => t.cliente)).size} cliente(s) · por vencimiento</span></h3>
+        <div class="min-lista">${filas.map(t => minFilaHtml(t, hoy, true)).join('')}</div>
+      </div>`;
+    return;
+  }
   const ultimaReunion = {};
   d.minutas.forEach(m => { if (!ultimaReunion[m.cliente] || m.fecha > ultimaReunion[m.cliente]) ultimaReunion[m.cliente] = m.fecha; });
   const grupos = {};
@@ -29127,7 +29154,7 @@ function minRenderLista() {
   }).join('');
 }
 
-function minFilaHtml(t, hoy) {
+function minFilaHtml(t, hoy, conCliente) {
   const cls = t.estado === 'Hecha' ? 'hecha' : t.estado === 'En curso' ? 'curso' : '';
   const resp = t.responsable
     ? `<span class="min-chip ${t.responsable === 'NR' ? 'nr' : ''}">${minEsc(t.responsable)}${t.quien ? ' · ' + minEsc(t.quien) : ''}</span>`
@@ -29136,10 +29163,14 @@ function minFilaHtml(t, hoy) {
   return `
     <div class="min-fila ${t.estado === 'Hecha' ? 'hecha' : ''}" data-id="${minEsc(t.id)}">
       <button class="min-estado ${cls}" title="Cambiar estado" onclick="minRotarEstado(this.closest('.min-fila').dataset.id)">${minEsc(t.estado)}</button>
+      ${minEsAdmin()
+        ? `<button class="min-star ${t.prioritaria ? 'on' : ''}" title="${t.prioritaria ? 'Sacar de prioritarias' : 'Marcar como prioritaria'}" onclick="minTogglePrioritaria(this.closest('.min-fila').dataset.id)">⭐</button>`
+        : ''}
       <div class="cuerpo">
-        <div class="tarea">${minEsc(t.tarea)}</div>
+        <div class="tarea">${conCliente ? `<b>${minEsc(t.cliente)}</b> · ` : ''}${minEsc(t.tarea)}</div>
         ${t.detalle ? `<div class="detalle">${minEsc(t.detalle)}</div>` : ''}
         <div class="chips">
+          ${t.prioritaria && !minEsAdmin() ? '<span class="min-chip prio">⭐ Prioritaria</span>' : ''}
           ${t.asignada_a ? `<span class="min-chip nr" title="Asignada a ${minEsc(minNombre(t.asignada_a))}">👤 ${minEsc(minNombre(t.asignada_a))}</span>` : ''}
           ${resp}
           ${t.palanca ? `<span class="min-chip">${minEsc(t.palanca)}</span>` : ''}
@@ -29179,6 +29210,21 @@ async function minRotarEstado(id) {
     showToast('No se pudo cambiar el estado: ' + e.message);
   }
   minRenderLista();
+}
+
+async function minTogglePrioritaria(id) {
+  const t = _min.data && _min.data.tareas.find(x => x.id === id);
+  if (!t) return;
+  const antes = !!t.prioritaria;
+  t.prioritaria = !antes;
+  minRender(); // optimista; minRender (no minRenderLista) para que se actualice el conteo de la pestaña
+  try {
+    Object.assign(t, await minPatch(id, { prioritaria: t.prioritaria }));
+  } catch (e) {
+    t.prioritaria = antes;
+    showToast('No se pudo cambiar la prioridad: ' + e.message);
+  }
+  minRender();
 }
 
 async function minAsignar(id, username) {
