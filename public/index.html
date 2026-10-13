@@ -6730,6 +6730,8 @@ const _ncM = n => '$' + Math.round(n || 0).toLocaleString('es-AR');
 const _ncHoras = h => h < 1 ? Math.max(1, Math.round(h * 60)) + ' min' : h.toLocaleString('es-AR', { maximumFractionDigits: 1 }) + ' h';
 const _ncP = n => (n == null ? '—' : (+n).toLocaleString('es-AR', { maximumFractionDigits: 1 }) + '%');
 const _ncEsc = s => String(s ?? '').replace(/[<>&"]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' }[c]));
+// Quién atendió el reclamo (lo deduce backend_reclamos.js del hilo)
+const _NC_ATENDIO = { vendedor: 'Respondió el vendedor', ml_persona: 'Lo atendió un agente de ML', ia_ml: 'Lo atendió la IA de ML', nadie: 'Nadie respondió' };
 const _NC_MOMENTO_COLOR = {
   'Antes del despacho': '#f59e0b', 'Despachada, no entregada': '#3b82f6',
   'Después de entregada': '#dc2626', 'Sin envío': '#8a8676', 'Sin dato': '#a8a493',
@@ -6819,6 +6821,7 @@ function renderNoConcretadas() {
 
   const momentosMini = mm => Object.entries(mm || {}).sort((a, b) => b[1] - a[1]).map(([k, v]) => _ncMomentoChip(k, v)).join('');
   const motivos = `<div style="${card};margin-bottom:18px">${titulo('Motivos')}
+    ${d.reclamos?.con_detalle ? `<div style="font-size:11.5px;color:var(--muted);margin:-4px 0 10px">Lo que va después del <b>·</b> es el motivo que eligió el comprador al abrir el reclamo (sale de Reputación → Reclamos). ${d.reclamos.con_detalle} de las ${d.canceladas} caídas tienen reclamo.</div>` : ''}
     <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse">
       <thead><tr>${_ncTh('Motivo')}${_ncTh('Quién')}${_ncTh('Órdenes', 'right')}${_ncTh('% de las caídas', 'right')}${_ncTh('$', 'right')}${_ncTh('Momento')}</tr></thead>
       <tbody>${d.por_motivo.map(r => `<tr>${_ncTd('<b>' + _ncEsc(r.motivo) + '</b>')}${_ncTd(_ncEsc(r.quien), 'left', 'color:var(--muted)')}${_ncTd(r.ordenes, 'right')}${_ncTd(pctDe(r.ordenes).toFixed(0) + '%', 'right')}${_ncTd(_ncM(r.monto), 'right')}${_ncTd(momentosMini(r.momentos))}</tr>`).join('')}</tbody>
@@ -6859,7 +6862,8 @@ function renderNoConcretadas() {
         ${_ncTd(`<a href="https://www.mercadolibre.com.ar/ventas/${r.order_id}/detalle" target="_blank" style="color:var(--accent);text-decoration:none;font-size:11.5px;white-space:nowrap">${r.order_id} ↗</a>`)}
         ${_ncTd(`<div style="max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${_ncEsc(r.titulo)}">${_ncEsc(r.titulo)}</div><div style="font-size:10.5px;color:var(--muted)">${r.item_id || ''}${r.items > 1 ? ` · +${r.items - 1} producto${r.items > 2 ? 's' : ''}` : ''}</div>`)}
         ${_ncTd(_ncM(r.monto), 'right')}
-        ${_ncTd(_ncEsc(r.motivo) + (r.afecta_reputacion ? ' <span title="Baja la reputación" style="color:#dc2626;font-weight:800">●</span>' : ''))}
+        ${_ncTd(_ncEsc(r.motivo) + (r.afecta_reputacion ? ' <span title="Baja la reputación" style="color:#dc2626;font-weight:800">●</span>' : '')
+          + (r.reclamo && (r.reclamo.resolucion || _NC_ATENDIO[r.reclamo.atendio]) ? `<div style="font-size:10.5px;color:var(--muted)">${[r.reclamo.resolucion, _NC_ATENDIO[r.reclamo.atendio]].filter(Boolean).map(_ncEsc).join(' · ')}</div>` : ''))}
         ${_ncTd(_ncMomentoChip(r.momento))}
         ${_ncTd(_ncEsc(r.canal))}
         ${_ncTd(r.horas != null ? _ncHoras(r.horas) : '—', 'right', 'white-space:nowrap')}
@@ -6867,6 +6871,7 @@ function renderNoConcretadas() {
     </table>${det.length > 500 ? '<div style="font-size:11px;color:var(--muted);padding:8px">Se muestran las 500 de mayor monto.</div>' : ''}</div></details>` : '';
 
   const notas = [];
+  if (d.reclamos?.sin_detalle) notas.push(`${d.reclamos.sin_detalle} caídas por reclamo todavía no tienen el reclamo sincronizado y quedan sin el motivo del comprador${d.reclamos.sync_at ? ` (reclamos sincronizados por última vez el ${new Date(d.reclamos.sync_at).toLocaleString('es-AR', { timeZone: ART_TZ, day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })})` : ' (esta cuenta nunca sincronizó reclamos)'}.`);
   if (d.packs_separados) notas.push(`${d.packs_separados} órdenes canceladas porque el comprador separó el carrito no se cuentan: ML las reemplaza por otras órdenes, no es una venta perdida.`);
   if (d.truncado) notas.push(`La cuenta tuvo ${d.ordenes_ml_total.toLocaleString('es-AR')} órdenes y ML sólo deja leer 10.000 por búsqueda: el análisis cubre las más recientes del mes.`);
   if (d.cache_at) notas.push(`Calculado el ${new Date(d.cache_at).toLocaleString('es-AR', { timeZone: ART_TZ, day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}. Las mediaciones pueden cancelar órdenes semanas después de la compra: el mes en curso y el anterior todavía se mueven.`);

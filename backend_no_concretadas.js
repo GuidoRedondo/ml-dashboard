@@ -30,9 +30,18 @@
 //  (AB Fitness, ~5.000 órdenes/mes) y las siguientes sólo piden los envíos nuevos.
 //  Las canceladas se piden siempre frescas: su historial (despachada/entregada) puede
 //  moverse hasta semanas después.
+//
+//  POR QUÉ RECLAMÓ
+//  ---------------
+//  La orden cancelada sólo dice que hubo una mediación (`mediations`) o que el comprador
+//  la anuló (`buyer_cancel_express`), no por qué. El porqué está en la tabla `reclamos`
+//  (cron de las 05:00, backend_reclamos.js), atada por order_id: si la orden tiene un
+//  reclamo, el motivo pasa a ser "<motivo de la orden> · <motivo del reclamo>". Sin
+//  reclamo sincronizado queda el motivo de la orden y se cuenta en `reclamos.sin_detalle`.
 
 const fetch = require('node-fetch');
 const { quienDeOrden, motivoDeOrden, afectaReputacion, esPackSeparado } = require('./cancelaciones');
+const { legible: motivoReclamo, TIPOS: TIPOS_RECLAMO, RESOLUCIONES } = require('./backend_reclamos');
 
 const MAX_OFFSET = 10000;      // ML corta la paginación de /orders/search acá
 const PARALELO_ENVIOS = 10;
@@ -51,7 +60,7 @@ const canalDeEnvio = s => {
 };
 
 // Sube cuando cambia la forma de la respuesta: la caché de otra versión se recalcula
-const VERSION = 2;
+const VERSION = 3;
 
 const MOMENTOS = ['Antes del despacho', 'Despachada, no entregada', 'Después de entregada', 'Sin envío', 'Sin dato'];
 
@@ -171,7 +180,27 @@ module.exports = (app, deps) => {
     return a.length % 2 ? a[m] : (a[m - 1] + a[m]) / 2;
   };
 
-  async function calcular(uid, headers, mes) {
+  // order_id → reclamo de esa orden (el más nuevo si tuvo varios). Busca también por
+  // pack_id: en un carrito el reclamo puede quedar atado al pack.
+  async function reclamosDeOrdenes(clientId, ordenes) {
+    const ids = [...new Set(ordenes.flatMap(o => [o.id, o.pack_id]).filter(Boolean).map(String))];
+    if (!ids.length) return {};
+    const { rows } = await pool.query(
+      `SELECT order_id::text AS order_id, claim_id::text AS claim_id, tipo, motivo, resolucion, atendio
+         FROM reclamos WHERE client_id = $1 AND order_id = ANY($2::bigint[]) ORDER BY fecha, claim_id`,
+      [clientId, ids]).catch(e => { console.error('[NO-CONC] reclamos', e.message); return { rows: [] }; });
+    const porOrden = {};
+    rows.forEach(r => { porOrden[r.order_id] = r; });
+    return porOrden;
+  }
+
+  async function reclamosSyncAt(clientId) {
+    const { rows } = await pool.query('SELECT synced_at FROM reclamos_sync WHERE client_id = $1', [clientId])
+      .catch(() => ({ rows: [] }));
+    return rows[0]?.synced_at || null;
+  }
+
+  async function calcular(clientId, uid, headers, mes) {
     const [y, m] = mes.split('-').map(Number);
     const ultimo = new Date(Date.UTC(y, m, 0)).getUTCDate();
     const desde = `${mes}-01`, hasta = `${mes}-${String(ultimo).padStart(2, '0')}`;
@@ -188,6 +217,8 @@ module.exports = (app, deps) => {
     const shipIds = [...new Set(universo.map(o => o.shipping?.id).filter(Boolean))];
     const frescos = [...new Set(canceladas.map(o => o.shipping?.id).filter(Boolean))];
     const { canal, envio } = await canalesDeEnvios(shipIds, frescos, headers);
+    const reclamoDe = await reclamosDeOrdenes(clientId, canceladas);
+    const rec = { con_detalle: 0, sin_detalle: 0 };
 
     const tot = { ordenes: 0, monto: 0, canceladas: 0, monto_cancelado: 0, afectan_reputacion: 0 };
     const porCanal = {}, porQuien = {}, porMotivo = {}, porItem = {}, porMomento = {};
@@ -207,7 +238,17 @@ module.exports = (app, deps) => {
       let det = null;
       if (cancelada) {
         const cd = o.cancel_detail || {};
-        const quien = quienDeOrden(cd), motivo = motivoDeOrden(cd);
+        const quien = quienDeOrden(cd);
+        const r = reclamoDe[String(o.id)] || (o.pack_id ? reclamoDe[String(o.pack_id)] : null);
+        const porQue = r ? (motivoReclamo(r.motivo) || TIPOS_RECLAMO[r.tipo] || null) : null;
+        const motivo = motivoDeOrden(cd) + (porQue ? ` · ${porQue}` : '');
+        if (porQue) rec.con_detalle++;
+        else if (cd.code === 'mediations') rec.sin_detalle++;
+        const reclamo = r ? {
+          id: r.claim_id, motivo: porQue,
+          resolucion: r.resolucion ? (RESOLUCIONES[r.resolucion] || motivoReclamo(r.resolucion)) : null,
+          atendio: r.atendio || null,
+        } : null;
         const momento = momentoDe(o, sid ? envio[sid] : null);
         const afecta = afectaReputacion(cd);
         const horas = cd.date && o.date_created
@@ -227,7 +268,7 @@ module.exports = (app, deps) => {
           item_id: oi0.item?.id || null, titulo: oi0.item?.title || '',
           items: (o.order_items || []).length, unidades: (o.order_items || []).reduce((s, x) => s + (x.quantity || 0), 0),
           monto: Math.round(monto), quien, motivo, momento, canal: ch,
-          horas: horas != null ? +horas.toFixed(1) : null, afecta_reputacion: afecta,
+          horas: horas != null ? +horas.toFixed(1) : null, afecta_reputacion: afecta, reclamo,
         });
       }
 
@@ -287,6 +328,7 @@ module.exports = (app, deps) => {
       })).sort((a, b) => b.monto_cancelado - a.monto_cancelado),
       items_con_ventas: Object.keys(porItem).length,
       canceladas_detalle: listado.sort((a, b) => b.monto - a.monto),
+      reclamos: { ...rec, sync_at: await reclamosSyncAt(clientId) },
       version: VERSION,
       generated_at: new Date().toISOString(),
     };
@@ -336,7 +378,7 @@ module.exports = (app, deps) => {
       if (!enCurso.has(key)) {
         enCurso.set(key, (async () => {
           const t0 = Date.now();
-          const data = await calcular(uid, headers, mes);
+          const data = await calcular(clientId, uid, headers, mes);
           data.segundos = +((Date.now() - t0) / 1000).toFixed(1);
           await pool.query(
             `INSERT INTO no_concretadas_cache (client_id, mes, data, fetched_at) VALUES ($1,$2,$3,NOW())
