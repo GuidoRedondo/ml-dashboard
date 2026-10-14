@@ -60,7 +60,7 @@ const canalDeEnvio = s => {
 };
 
 // Sube cuando cambia la forma de la respuesta: la caché de otra versión se recalcula
-const VERSION = 3;
+const VERSION = 4;
 
 const MOMENTOS = ['Antes del despacho', 'Despachada, no entregada', 'Después de entregada', 'Sin envío', 'Sin dato'];
 
@@ -265,6 +265,7 @@ module.exports = (app, deps) => {
         const oi0 = (o.order_items || [])[0] || {};
         listado.push({
           order_id: o.id, pack_id: o.pack_id || null, fecha: ymd(new Date(o.date_created)),
+          fecha_cancelacion: cd.date ? ymd(new Date(cd.date)) : null,
           item_id: oi0.item?.id || null, titulo: oi0.item?.title || '',
           items: (o.order_items || []).length, unidades: (o.order_items || []).reduce((s, x) => s + (x.quantity || 0), 0),
           monto: Math.round(monto), quien, motivo, momento, canal: ch,

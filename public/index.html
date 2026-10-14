@@ -6858,21 +6858,25 @@ function renderNoConcretadas() {
   </div>`;
 
   const det = d.canceladas_detalle || [];
-  const detalle = det.length ? `<details style="${card};margin-bottom:18px"><summary style="cursor:pointer;font-size:13px;font-weight:800;font-family:var(--font-b)">📋 Las ${det.length} órdenes una por una</summary>
-    <div style="overflow:auto;margin-top:12px;max-height:520px"><table style="width:100%;border-collapse:collapse">
-      <thead><tr>${_ncTh('Fecha')}${_ncTh('Orden')}${_ncTh('Producto')}${_ncTh('$', 'right')}${_ncTh('Motivo')}${_ncTh('Momento')}${_ncTh('Medio')}${_ncTh('Se cayó a', 'right')}</tr></thead>
-      <tbody>${det.slice(0, 500).map(r => `<tr>
-        ${_ncTd(dART(r.fecha).toLocaleDateString('es-AR', { timeZone: ART_TZ, day: '2-digit', month: '2-digit' }))}
-        ${_ncTd(`<a href="https://www.mercadolibre.com.ar/ventas/${r.order_id}/detalle" target="_blank" style="color:var(--accent);text-decoration:none;font-size:11.5px;white-space:nowrap">${r.order_id} ↗</a>`)}
-        ${_ncTd(`<div style="max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${_ncEsc(r.titulo)}">${_ncEsc(r.titulo)}</div><div style="font-size:10.5px;color:var(--muted)">${r.item_id || ''}${r.items > 1 ? ` · +${r.items - 1} producto${r.items > 2 ? 's' : ''}` : ''}</div>`)}
-        ${_ncTd(_ncM(r.monto), 'right')}
-        ${_ncTd(_ncEsc(r.motivo) + (r.afecta_reputacion ? ' <span title="Baja la reputación" style="color:#dc2626;font-weight:800">●</span>' : '')
-          + (r.reclamo && (r.reclamo.resolucion || _NC_ATENDIO[r.reclamo.atendio]) ? `<div style="font-size:10.5px;color:var(--muted)">${[r.reclamo.resolucion, _NC_ATENDIO[r.reclamo.atendio]].filter(Boolean).map(_ncEsc).join(' · ')}</div>` : ''))}
-        ${_ncTd(_ncMomentoChip(r.momento))}
-        ${_ncTd(_ncEsc(r.canal))}
-        ${_ncTd(r.horas != null ? _ncHoras(r.horas) : '—', 'right', 'white-space:nowrap')}
-      </tr>`).join('')}</tbody>
-    </table>${det.length > 500 ? '<div style="font-size:11px;color:var(--muted);padding:8px">Se muestran las 500 de mayor monto.</div>' : ''}</div></details>` : '';
+  const cuenta = (key) => { const m = {}; det.forEach(r => { m[r[key]] = (m[r[key]] || 0) + 1; }); return m; };
+  const nMot = cuenta('motivo'), nMom = cuenta('momento');
+  const detalle = det.length ? `<details id="ncOrdenesBox" style="${card};margin-bottom:18px"${window._ncOrdAbierto ? ' open' : ''} ontoggle="window._ncOrdAbierto=this.open"><summary style="cursor:pointer;font-size:13px;font-weight:800;font-family:var(--font-b)">📋 Las ${det.length} órdenes una por una</summary>
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:12px">
+      <select id="ncOrdMotivo" onchange="renderNcOrdenes()" style="${selSt}"><option value="">Todos los motivos</option>${Object.entries(nMot).sort((a, b) => b[1] - a[1]).map(([k, v]) => `<option value="${_ncEsc(k)}">${_ncEsc(k)} (${v})</option>`).join('')}</select>
+      <select id="ncOrdMomento" onchange="renderNcOrdenes()" style="${selSt}"><option value="">Todos los momentos</option>${d.por_momento.filter(r => nMom[r.momento]).map(r => `<option value="${_ncEsc(r.momento)}">${_ncEsc(r.momento)} (${nMom[r.momento]})</option>`).join('')}</select>
+      <select id="ncOrdHoras" onchange="renderNcOrdenes()" style="${selSt}" title="Tiempo entre la compra y la cancelación">
+        <option value="">Se cayó a: cualquier tiempo</option>
+        ${_NC_HORAS_RANGOS.map((r, i) => `<option value="${i}">${r.lbl}</option>`).join('')}
+      </select>
+      <span style="font-size:12px;color:var(--muted)">Cancelada del</span>
+      <input type="date" id="ncOrdDesde" onchange="renderNcOrdenes()" style="${selSt}">
+      <span style="font-size:12px;color:var(--muted)">al</span>
+      <input type="date" id="ncOrdHasta" onchange="renderNcOrdenes()" style="${selSt}">
+      <input id="ncOrdSearch" placeholder="Orden, MLA o título…" oninput="renderNcOrdenes()" style="${selSt};min-width:180px">
+      <button onclick="ncOrdLimpiar()" style="padding:6px 12px;border:1px solid var(--border);border-radius:8px;background:none;color:var(--muted);font-size:12px;cursor:pointer">✕ Limpiar</button>
+      <span id="ncOrdResumen" style="margin-left:auto;font-size:12px;color:var(--muted)"></span>
+    </div>
+    <div id="ncOrdenesTabla"></div></details>` : '';
 
   const notas = [];
   if (d.reclamos?.sin_detalle) notas.push(`${d.reclamos.sin_detalle} caídas por reclamo todavía no tienen el reclamo sincronizado y quedan sin el motivo del comprador${d.reclamos.sync_at ? ` (reclamos sincronizados por última vez el ${new Date(d.reclamos.sync_at).toLocaleString('es-AR', { timeZone: ART_TZ, day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })})` : ' (esta cuenta nunca sincronizó reclamos)'}.`);
@@ -6883,6 +6887,78 @@ function renderNoConcretadas() {
 
   el.innerHTML = kpis + lectura + quienMomento + motivos + canales + productos + detalle + pie;
   renderNcItems();
+  renderNcOrdenes();
+}
+
+// Tiempo entre la compra y la cancelación (campo `horas` de cada orden)
+const _NC_HORAS_RANGOS = [
+  { lbl: 'Menos de 1 h', min: 0, max: 1 },
+  { lbl: '1 a 24 h', min: 1, max: 24 },
+  { lbl: '1 a 3 días', min: 24, max: 72 },
+  { lbl: '3 a 7 días', min: 72, max: 168 },
+  { lbl: 'Más de 7 días', min: 168, max: Infinity },
+];
+
+// Órdenes una por una con los filtros de su propia barra (motivo, momento, tiempo hasta
+// caerse, día de la cancelación y texto). Las cachés anteriores a la versión 4 no traen
+// fecha_cancelacion: esas órdenes no pasan un filtro de fechas.
+function _ncOrdenesFiltradas() {
+  const d = window._ncData;
+  if (!d) return [];
+  const v = id => document.getElementById(id)?.value || '';
+  const fMot = v('ncOrdMotivo'), fMom = v('ncOrdMomento'), fH = v('ncOrdHoras');
+  const desde = v('ncOrdDesde'), hasta = v('ncOrdHasta');
+  const q = v('ncOrdSearch').trim().toLowerCase();
+  const rango = fH !== '' ? _NC_HORAS_RANGOS[+fH] : null;
+  return (d.canceladas_detalle || []).filter(r =>
+    (!fMot || r.motivo === fMot)
+    && (!fMom || r.momento === fMom)
+    && (!rango || (r.horas != null && r.horas >= rango.min && r.horas < rango.max))
+    && (!desde || (r.fecha_cancelacion && r.fecha_cancelacion >= desde))
+    && (!hasta || (r.fecha_cancelacion && r.fecha_cancelacion <= hasta))
+    && (!q || String(r.order_id).includes(q) || (r.item_id || '').toLowerCase().includes(q) || (r.titulo || '').toLowerCase().includes(q)));
+}
+
+function sortNcOrdenes(col) {
+  window._ncOrdSort = col;
+  renderNcOrdenes();
+}
+
+function renderNcOrdenes() {
+  const box = document.getElementById('ncOrdenesTabla');
+  const d = window._ncData;
+  if (!box || !d) return;
+  const col = window._ncOrdSort || 'monto';
+  // Las fechas ordenan de la más nueva a la más vieja; el resto de mayor a menor
+  const val = r => col === 'fecha' || col === 'fecha_cancelacion' ? (r[col] || '') : (r[col] ?? -1);
+  const filas = _ncOrdenesFiltradas().sort((a, b) => val(a) < val(b) ? 1 : val(a) > val(b) ? -1 : 0);
+  const totM = filas.reduce((s, r) => s + r.monto, 0);
+  const resumen = document.getElementById('ncOrdResumen');
+  if (resumen) resumen.innerHTML = `${filas.length} orden${filas.length === 1 ? '' : 'es'} · ${_ncM(totM)}${filas.length !== d.canceladas && d.canceladas ? ` · ${(filas.length / d.canceladas * 100).toFixed(0)}% de las caídas del mes` : ''}`;
+  const th = (t, c, al) => `<th${c ? ` onclick="sortNcOrdenes('${c}')"` : ''} style="text-align:${al || 'left'};padding:8px;font-size:11px;color:${col === c ? 'var(--text)' : 'var(--muted)'};font-weight:700;text-transform:uppercase;letter-spacing:.04em;border-bottom:1px solid var(--border);white-space:nowrap;position:sticky;top:0;background:var(--surface);${c ? 'cursor:pointer;user-select:none' : ''}">${t}${col === c ? ' ▼' : ''}</th>`;
+  const dia = s => s ? dART(s).toLocaleDateString('es-AR', { timeZone: ART_TZ, day: '2-digit', month: '2-digit' }) : '—';
+  const sinFechaCanc = !(d.canceladas_detalle || []).some(r => r.fecha_cancelacion);
+  box.innerHTML = `<div style="overflow:auto;margin-top:12px;max-height:520px"><table style="width:100%;border-collapse:collapse">
+      <thead><tr>${th('Compra', 'fecha')}${th('Cancelada', 'fecha_cancelacion')}${th('Orden')}${th('Producto')}${th('$', 'monto', 'right')}${th('Motivo')}${th('Momento')}${th('Medio')}${th('Se cayó a', 'horas', 'right')}</tr></thead>
+      <tbody>${filas.slice(0, 500).map(r => `<tr>
+        ${_ncTd(dia(r.fecha))}
+        ${_ncTd(dia(r.fecha_cancelacion))}
+        ${_ncTd(`<a href="https://www.mercadolibre.com.ar/ventas/${r.order_id}/detalle" target="_blank" style="color:var(--accent);text-decoration:none;font-size:11.5px;white-space:nowrap">${r.order_id} ↗</a>`)}
+        ${_ncTd(`<div style="max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${_ncEsc(r.titulo)}">${_ncEsc(r.titulo)}</div><div style="font-size:10.5px;color:var(--muted)">${r.item_id || ''}${r.items > 1 ? ` · +${r.items - 1} producto${r.items > 2 ? 's' : ''}` : ''}</div>`)}
+        ${_ncTd(_ncM(r.monto), 'right')}
+        ${_ncTd(_ncEsc(r.motivo) + (r.afecta_reputacion ? ' <span title="Baja la reputación" style="color:#dc2626;font-weight:800">●</span>' : '')
+          + (r.reclamo && (r.reclamo.resolucion || _NC_ATENDIO[r.reclamo.atendio]) ? `<div style="font-size:10.5px;color:var(--muted)">${[r.reclamo.resolucion, _NC_ATENDIO[r.reclamo.atendio]].filter(Boolean).map(_ncEsc).join(' · ')}</div>` : ''))}
+        ${_ncTd(_ncMomentoChip(r.momento))}
+        ${_ncTd(_ncEsc(r.canal))}
+        ${_ncTd(r.horas != null ? _ncHoras(r.horas) : '—', 'right', 'white-space:nowrap')}
+      </tr>`).join('') || `<tr><td colspan="9" style="padding:16px;font-size:12.5px;color:var(--muted)">Ninguna orden con ese filtro.</td></tr>`}</tbody>
+    </table>${filas.length > 500 ? '<div style="font-size:11px;color:var(--muted);padding:8px">Se muestran las primeras 500 según el orden elegido. El Excel las trae todas.</div>' : ''}</div>
+    ${sinFechaCanc ? '<div style="font-size:11px;color:var(--muted);margin-top:8px">Este mes se calculó antes de que se guardara el día de la cancelación: tocá 🔄 Actualizar para tenerlo.</div>' : ''}`;
+}
+
+function ncOrdLimpiar() {
+  ['ncOrdMotivo', 'ncOrdMomento', 'ncOrdHoras', 'ncOrdDesde', 'ncOrdHasta', 'ncOrdSearch'].forEach(id => { const e = document.getElementById(id); if (e) e.value = ''; });
+  renderNcOrdenes();
 }
 
 function sortNcItems(col) {
@@ -6966,6 +7042,11 @@ function exportNoConcretadasExcel() {
   const fTxt = (document.getElementById('ncItemSearch')?.value || '').trim();
   const filtros = [fMot && `motivo: ${fMot}`, fMom && `momento: ${fMom}`, fTxt && `búsqueda: ${fTxt}`].filter(Boolean).join(' · ');
   const pctC = n => d.canceladas ? _xD(n / d.canceladas * 100) : 0;
+  const ov = id => document.getElementById(id)?.value || '';
+  const fOrd = [ov('ncOrdMotivo') && `motivo: ${ov('ncOrdMotivo')}`, ov('ncOrdMomento') && `momento: ${ov('ncOrdMomento')}`,
+    ov('ncOrdHoras') !== '' && `se cayó a: ${_NC_HORAS_RANGOS[+ov('ncOrdHoras')].lbl}`,
+    (ov('ncOrdDesde') || ov('ncOrdHasta')) && `cancelada ${ov('ncOrdDesde') || '…'} a ${ov('ncOrdHasta') || '…'}`,
+    ov('ncOrdSearch').trim() && `búsqueda: ${ov('ncOrdSearch').trim()}`].filter(Boolean).join(' · ');
 
   const resumen = [
     ['Mes', mesLbl],
@@ -6979,6 +7060,7 @@ function exportNoConcretadasExcel() {
     ['Mediana hasta anularse, antes del despacho (horas)', d.horas_mediana_antes_despacho != null ? _xD(d.horas_mediana_antes_despacho) : ''],
     ['Carritos separados (no cuentan)', _xR(d.packs_separados)],
     ['Filtros de la hoja "Por producto"', filtros || 'ninguno'],
+    ['Filtros de la hoja "Órdenes"', fOrd || 'ninguno'],
   ].map(([k, v]) => ({ 'Métrica': k, 'Valor': v }));
 
   const productos = _ncItemsFiltrados().sort((a, b) => b.monto_cancelado - a.monto_cancelado).map(r => ({
@@ -7008,8 +7090,9 @@ function exportNoConcretadasExcel() {
   })));
   cruce.sort((a, b) => b['$ que no entró'] - a['$ que no entró']);
 
-  const ordenes = (d.canceladas_detalle || []).map(r => ({
+  const ordenes = _ncOrdenesFiltradas().map(r => ({
     'Fecha': r.fecha,
+    'Fecha cancelación': r.fecha_cancelacion || '',
     'Orden': String(r.order_id),
     'Pack': r.pack_id ? String(r.pack_id) : '',
     'MLA': r.item_id || '',
@@ -7041,7 +7124,7 @@ function exportNoConcretadasExcel() {
     { name: 'Resumen',               rows: resumen,   cols: [50, 30] },
     { name: 'Por producto',          rows: productos, cols: [16, 50, 10, 11, 9, 15, 34, 24, 16, 14, 14], autofiltro: true },
     { name: 'Producto x motivo',     rows: cruce,     cols: [16, 50, 12, 34, 24, 11, 15, 16], autofiltro: true },
-    { name: 'Órdenes',               rows: ordenes,   cols: [11, 16, 16, 16, 46, 10, 9, 12, 20, 34, 24, 16, 12, 10, 52], autofiltro: true },
+    { name: 'Órdenes',               rows: ordenes,   cols: [11, 12, 16, 16, 16, 46, 10, 9, 12, 20, 34, 24, 16, 12, 10, 52], autofiltro: true },
     { name: 'Motivos',               rows: motivos,   cols: [34, 22, 10, 14, 14, 18, 22, 20, 10, 10], autofiltro: true },
     { name: 'Medios de envío',       rows: canales,   cols: [24, 10, 11, 9, 15, 15], autofiltro: true },
   ], _perfFileName('No_concretadas_' + d.mes));
