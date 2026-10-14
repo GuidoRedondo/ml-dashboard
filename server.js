@@ -8162,10 +8162,18 @@ app.post('/api/reporte/costos', requireAuth, async (req, res) => {
   try {
     const { client_id, costos } = req.body; // costos: [{mla_id, title, costo_unit, costo_usd?, alicuota_iva, notas}]
     if (!client_id || !costos?.length) return res.status(400).json({ error: 'Faltan datos' });
+    // vigente_desde (opcional, 'YYYY-MM-DD'): el costo nuevo rige desde ese día en vez de
+    // desde hoy. Sirve cuando el cliente pasa la lista tarde ("los costos son desde el 1/10"):
+    // los días anteriores a esa fecha siguen con el costo que tenían, así que los P&L de
+    // meses cerrados no se mueven. Una publicación sin costo real previo no tiene "costo que
+    // tenía": su primer costo rige para atrás, como siempre (ver product_costs_hist_fn).
+    const desde = req.body.vigente_desde || null;
+    if (desde && (!/^\d{4}-\d{2}-\d{2}$/.test(desde) || desde > ymd() || desde < '2000-01-02'))
+      return res.status(400).json({ error: 'vigente_desde tiene que ser una fecha YYYY-MM-DD, no futura' });
     const ALIC_VALIDAS = [10.5, 21];
     const cotR = await pool.query('SELECT cotizacion_usd FROM clients WHERE id=$1', [client_id]);
     const cot = parseFloat(cotR.rows[0]?.cotizacion_usd) || null;
-    let saved = 0, sinCotizacion = 0;
+    let saved = 0, sinCotizacion = 0, conFecha = 0, primerCosto = 0;
     for (const c of costos) {
       // Alícuota: si llega un valor estándar válido se usa; si no llega (import de Excel
       // sin columna) se manda NULL y el COALESCE preserva la alícuota ya guardada (o 21 en
@@ -8185,20 +8193,46 @@ app.post('/api/reporte/costos', requireAuth, async (req, res) => {
         if (!cot) { sinCotizacion++; continue; }
         costoUnit = Math.round(usd * cot * 100) / 100;
       }
-      await pool.query(`
-        INSERT INTO product_costs (client_id, mla_id, title, costo_unit, costo_usd, alicuota_iva, notas, updated_at)
-        VALUES ($1,$2,$3,$4,$7::numeric,COALESCE($5::numeric,21),$6,NOW())
-        ON CONFLICT (client_id, mla_id) DO UPDATE SET
-          title=$3, costo_unit=$4,
-          costo_usd = CASE WHEN $8::boolean THEN $7::numeric
-                           WHEN product_costs.costo_unit = $4 THEN product_costs.costo_usd
-                           ELSE NULL END,
-          alicuota_iva=COALESCE($5::numeric, product_costs.alicuota_iva, 21),
-          notas=$6, updated_at=NOW()
-      `, [client_id, c.mla_id, c.title, costoUnit, alic, c.notas||'', usd, usdExplicito]);
+      const db = desde ? await pool.connect() : pool;
+      try {
+        if (desde) await db.query('BEGIN');
+        const teniaCosto = desde && (await db.query(
+          'SELECT 1 FROM product_costs_hist WHERE client_id=$1 AND mla_id=$2 AND costo_unit > 0 LIMIT 1',
+          [client_id, c.mla_id])).rowCount > 0;
+        await db.query(`
+          INSERT INTO product_costs (client_id, mla_id, title, costo_unit, costo_usd, alicuota_iva, notas, updated_at)
+          VALUES ($1,$2,$3,$4,$7::numeric,COALESCE($5::numeric,21),$6,NOW())
+          ON CONFLICT (client_id, mla_id) DO UPDATE SET
+            title=$3, costo_unit=$4,
+            costo_usd = CASE WHEN $8::boolean THEN $7::numeric
+                             WHEN product_costs.costo_unit = $4 THEN product_costs.costo_usd
+                             ELSE NULL END,
+            alicuota_iva=COALESCE($5::numeric, product_costs.alicuota_iva, 21),
+            notas=$6, updated_at=NOW()
+        `, [client_id, c.mla_id, c.title, costoUnit, alic, c.notas||'', usd, usdExplicito]);
+        if (desde && teniaCosto) {
+          // El trigger dejó el tramo con fecha de hoy: se reemplaza todo lo que rige desde
+          // `desde` (incluido ese tramo) por un único tramo con el costo nuevo.
+          await db.query('DELETE FROM product_costs_hist WHERE client_id=$1 AND mla_id=$2 AND vigente_desde >= $3',
+            [client_id, c.mla_id, desde]);
+          await db.query(`
+            INSERT INTO product_costs_hist (client_id, mla_id, vigente_desde, costo_unit, costo_usd, cotizacion_usd)
+            SELECT client_id, mla_id, $3::date, costo_unit, costo_usd,
+                   CASE WHEN costo_usd IS NOT NULL THEN $4::numeric END
+              FROM product_costs WHERE client_id=$1 AND mla_id=$2`, [client_id, c.mla_id, desde, cot]);
+          conFecha++;
+        } else if (desde) primerCosto++;
+        if (desde) await db.query('COMMIT');
+      } catch (e) {
+        if (desde) await db.query('ROLLBACK').catch(() => {});
+        throw e;
+      } finally {
+        if (desde) db.release();
+      }
       saved++;
     }
     res.json({ ok: true, saved, sin_cotizacion: sinCotizacion,
+               ...(desde ? { vigente_desde: desde, con_fecha: conFecha, primer_costo: primerCosto } : {}),
                ...(sinCotizacion ? { aviso: `${sinCotizacion} costos en dólares no se guardaron: falta cargar la cotización del dólar` } : {}) });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
