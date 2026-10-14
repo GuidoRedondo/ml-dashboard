@@ -8371,6 +8371,98 @@ app.get('/api/reporte/pyl', requireAuth, async (req, res) => {
 // El P&L de un rango. Lo usan /api/reporte/pyl (mensual, guarda el snapshot en
 // reporte_financiero) y el P&L semanal (guardarSnapshot:false: una semana no puede pisar
 // el snapshot del mes). Errores esperables salen con .status.
+// Comisión de ML partida en sus dos componentes: el cargo fijo por unidad (sólo productos
+// de menos de $33.000) y el porcentaje (comisión de la categoría + costo de cuotas). La
+// orden sólo trae sale_fee con todo junto, así que el cargo fijo sale de:
+//   1. La factura (billing_detalle, CVFF) cuando la venta ya está facturada — exacto. Se
+//      toma el cargo bruto: el P&L cuenta el sale_fee entero de toda venta no cancelada,
+//      aunque después una devolución lo anule.
+//   2. Ventas sin facturar (la semana / el mes en curso): lo que ML le cobró a esa misma
+//      publicación, en el mismo tramo de precio, en otra venta ya facturada.
+//   3. Si no hay ninguna, el tarifario al peso de referencia (estimado).
+// Desde $33.000 el cargo fijo es 0 por regla. El porcentaje es siempre comisión − fijo, así
+// que la suma de las dos líneas da exactamente la comisión de siempre.
+async function separarCargoFijo(clientId, orders) {
+  const vivas = orders.filter(o => o.status !== 'cancelled' && o.id);
+  const facturadas = new Set();
+  const cvffOrden = new Map();               // order_id → $ de cargo fijo facturado
+  const cvffLinea = new Map();               // order|item → $
+  if (vivas.length) {
+    try {
+      const r = await pool.query(`
+        SELECT order_id::text AS order_id, COALESCE(item_id,'') AS item_id, detail_sub_type AS sub,
+               SUM(CASE WHEN detail_type='BONUS' THEN 0 ELSE monto END) AS bruto
+          FROM billing_detalle
+         WHERE client_id=$1 AND order_id = ANY($2::bigint[]) AND detail_sub_type IN ('CVFV','CVFF')
+         GROUP BY 1,2,3`, [clientId, vivas.map(o => o.id)]);
+      r.rows.forEach(row => {
+        const monto = Math.abs(parseFloat(row.bruto) || 0);
+        if (row.sub === 'CVFV') { facturadas.add(row.order_id); return; }
+        cvffOrden.set(row.order_id, (cvffOrden.get(row.order_id) || 0) + monto);
+        if (row.item_id) {
+          const k = `${row.order_id}|${row.item_id}`;
+          cvffLinea.set(k, (cvffLinea.get(k) || 0) + monto);
+        }
+      });
+    } catch (e) { console.warn('[PYL] cargo fijo desde factura:', e.message); }
+  }
+
+  const esquemaDe = o => String(o.date_created || '').slice(0, 10) < TARIFAS_ML.VIGENCIA ? 'actual' : 'sep';
+  const tramo = (precio, esq) => `${esq}|${TARIFAS_ML.cargoFijo(precio, undefined, esq)}`;
+
+  // Lo aprendido de las ventas facturadas: cargo fijo por unidad de cada publicación y tramo.
+  const aprendido = {};
+  vivas.forEach(o => {
+    const oid = String(o.id);
+    if (!facturadas.has(oid)) return;
+    const items = o.order_items || [];
+    items.forEach(oi => {
+      const id = oi.item?.id;
+      const q = oi.quantity || 0;
+      if (!id || !q) return;
+      const monto = cvffLinea.has(`${oid}|${id}`) ? cvffLinea.get(`${oid}|${id}`)
+                  : items.length === 1 ? (cvffOrden.get(oid) || 0) : null;
+      if (monto == null) return;
+      aprendido[`${id}|${tramo(parseFloat(oi.unit_price) || 0, esquemaDe(o))}`] = monto / q;
+    });
+  });
+
+  let fijo = 0, fijo_factura = 0, fijo_aprendido = 0, fijo_tarifa = 0, comision = 0;
+  let ordenes_facturadas = 0, ordenes_sin_facturar = 0;
+  vivas.forEach(o => {
+    const oid = String(o.id);
+    const items = o.order_items || [];
+    const comOrden = items.reduce((t, oi) => t + comisionLinea(oi), 0);
+    comision += comOrden;
+    if (facturadas.has(oid)) {
+      ordenes_facturadas++;
+      const f = Math.min(cvffOrden.get(oid) || 0, comOrden);
+      fijo += f; fijo_factura += f;
+      return;
+    }
+    ordenes_sin_facturar++;
+    items.forEach(oi => {
+      const precio = parseFloat(oi.unit_price) || 0;
+      const q = oi.quantity || 0;
+      if (precio >= TARIFAS_ML.UMBRAL_ENVIO_GRATIS || !q) return;
+      const esq = esquemaDe(o);
+      const k = `${oi.item?.id}|${tramo(precio, esq)}`;
+      const porUnidad = aprendido[k] != null ? aprendido[k] : TARIFAS_ML.cargoFijo(precio, undefined, esq);
+      const f = Math.min(porUnidad * q, comisionLinea(oi));
+      fijo += f;
+      if (aprendido[k] != null) fijo_aprendido += f; else fijo_tarifa += f;
+    });
+  });
+  return {
+    cargo_fijo: fijo,
+    porcentaje: Math.max(0, comision - fijo),
+    // Qué parte del cargo fijo es estimada con el tarifario (sin peso real, puede errar
+    // unos cientos de pesos por unidad). Lo de la factura y lo aprendido de ella es real.
+    fijo_factura, fijo_aprendido, fijo_tarifa,
+    ordenes_facturadas, ordenes_sin_facturar,
+  };
+}
+
 async function calcularPyL(client_id, date_from, date_to, { guardarSnapshot = true } = {}) {
   const errPyl = (status, msg) => Object.assign(new Error(msg), { status });
   {
@@ -8438,9 +8530,10 @@ async function calcularPyL(client_id, date_from, date_to, { guardarSnapshot = tr
     //  · Ingreso por envío: SÓLO Flex. En Correo/ME2 lo que paga el comprador va a ML;
     //    antes se sumaba entero como ingreso y en AB Fitness inventaba ~$9M en 22 días.
     // Los cupones del vendedor se piden en paralelo (ver fetchCuponesVendedor).
-    const [shipCostMap, cuponesRaw] = await Promise.all([
+    const [shipCostMap, cuponesRaw, comSplit] = await Promise.all([
       fetchShippingCosts(orders, headers),
       fetchCuponesVendedor(orders, headers),
+      separarCargoFijo(parseInt(client_id), orders),
     ]);
     let egreso_envio_vendedor = 0;
     {
@@ -8628,6 +8721,13 @@ async function calcularPyL(client_id, date_from, date_to, { guardarSnapshot = tr
       },
       egresos_ml: {
         comision: egreso_comision,
+        // comision = comision_porcentaje + comision_cargo_fijo (ver separarCargoFijo)
+        comision_porcentaje: comSplit.porcentaje,
+        comision_cargo_fijo: comSplit.cargo_fijo,
+        comision_cargo_fijo_fuente: {
+          factura: comSplit.fijo_factura, aprendido: comSplit.fijo_aprendido, tarifa: comSplit.fijo_tarifa,
+          ordenes_facturadas: comSplit.ordenes_facturadas, ordenes_sin_facturar: comSplit.ordenes_sin_facturar,
+        },
         impuestos: egreso_imp_operacion,
         imp_operacion: egreso_imp_operacion,
         envio_vendedor: egreso_envio_vendedor,
@@ -8785,7 +8885,9 @@ app.get('/api/reporte/semanal', requireAuth, async (req, res) => {
       `SELECT to_char(semana, 'YYYY-MM-DD') AS semana, data, generated_at FROM reporte_semanal
         WHERE client_id = $1 AND semana >= $2::date ORDER BY semana DESC`,
       [clientId, esperadas[0]]);
-    const hay = new Set(r.rows.map(x => x.semana));
+    // Una semana guardada antes de partir la comisión en fijo / porcentaje también "falta":
+    // el botón la recalcula y la tabla queda pareja.
+    const hay = new Set(r.rows.filter(x => x.data?.egresos_ml?.comision_cargo_fijo != null).map(x => x.semana));
     res.json({ semanas: r.rows, faltan: esperadas.filter(s => !hay.has(s)), lunes_actual: lunesDe(ymd()) });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });

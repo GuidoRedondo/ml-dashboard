@@ -20735,6 +20735,9 @@ function renderComparacion(data, mes_a, mes_b) {
     ? 'IIBB (percepciones facturadas)'
     : `IIBB estimado${iibbTasa ? ` (${iibbTasa}%)` : ''}`;
   const hay = (x, y) => (parseFloat(x)||0) !== 0 || (parseFloat(y)||0) !== 0;
+  // Comisión partida en porcentaje / cargo fijo: sólo si los DOS meses la traen. Un mes
+  // guardado antes del cambio no la tiene; se regenera abriéndolo en el P&L.
+  const partida = a?.egresos_ml?.comision_cargo_fijo != null && b?.egresos_ml?.comision_cargo_fijo != null;
 
   // Margen de contribución % = Contribución Marginal / Facturación
   const cmPctA = parseFloat(factA) ? (parseFloat(a?.utilidad_antes_gf)||0) / parseFloat(factA) * 100 : null;
@@ -20758,6 +20761,8 @@ function renderComparacion(data, mes_a, mes_b) {
             ${row('TOTAL INGRESOS',           a?.ingresos?.total,           b?.ingresos?.total,           diff?.facturacion,   false, true)}
             ${sec('📤 Lo que se va en Mercado Libre')}
             ${row('Comisión ML',              a?.egresos_ml?.comision,      b?.egresos_ml?.comision,      diff?.comision,   true, false, false, factA, factB)}
+            ${partida ? row('&nbsp;&nbsp;└ Porcentaje (comisión + cuotas)', a.egresos_ml.comision_porcentaje, b.egresos_ml.comision_porcentaje, a.egresos_ml.comision_porcentaje - b.egresos_ml.comision_porcentaje, true, false, false, factA, factB) : ''}
+            ${partida ? row('&nbsp;&nbsp;└ Cargo fijo por unidad', a.egresos_ml.comision_cargo_fijo, b.egresos_ml.comision_cargo_fijo, a.egresos_ml.comision_cargo_fijo - b.egresos_ml.comision_cargo_fijo, true, false, false, factA, factB) : ''}
             ${row('Costo envío vendedor',     envioA,                       envioB,                       diff?.envio_total, true, false, false, factA, factB)}
             ${row('Publicidad (PADS + Brand)', a?.egresos_ml?.publicidad,    b?.egresos_ml?.publicidad,    diff?.publicidad, true, false, false, factA, factB)}
             ${hay(a?.egresos_ml?.costos_full, b?.egresos_ml?.costos_full) ? row('Costos FULL', a?.egresos_ml?.costos_full, b?.egresos_ml?.costos_full, diff?.costos_full, true, false, false, factA, factB) : ''}
@@ -20857,6 +20862,9 @@ function descargarComparacionPDF(mes_a, mes_b) {
     ? 'IIBB (percepciones facturadas)'
     : `IIBB estimado${iibbTasa ? ` (${iibbTasa}%)` : ''}`;
   const hay = (x, y) => (parseFloat(x)||0) !== 0 || (parseFloat(y)||0) !== 0;
+  // Comisión partida en porcentaje / cargo fijo: sólo si los DOS meses la traen. Un mes
+  // guardado antes del cambio no la tiene; se regenera abriéndolo en el P&L.
+  const partida = a?.egresos_ml?.comision_cargo_fijo != null && b?.egresos_ml?.comision_cargo_fijo != null;
   const cmPctA = parseFloat(factA) ? (parseFloat(a?.utilidad_antes_gf)||0) / parseFloat(factA) * 100 : null;
   const cmPctB = parseFloat(factB) ? (parseFloat(b?.utilidad_antes_gf)||0) / parseFloat(factB) * 100 : null;
   const cmPctD = (cmPctA != null && cmPctB != null) ? cmPctA - cmPctB : null;
@@ -20881,6 +20889,8 @@ function descargarComparacionPDF(mes_a, mes_b) {
       ${R('TOTAL INGRESOS', a?.ingresos?.total, b?.ingresos?.total, diff?.facturacion, {bold:true})}
       ${S('📤 Lo que se va en Mercado Libre')}
       ${R('Comisión ML', a?.egresos_ml?.comision, b?.egresos_ml?.comision, diff?.comision, {indent:true, pos:false, pctFact:true})}
+      ${partida ? R('&nbsp;&nbsp;└ Porcentaje (comisión + cuotas)', a.egresos_ml.comision_porcentaje, b.egresos_ml.comision_porcentaje, a.egresos_ml.comision_porcentaje - b.egresos_ml.comision_porcentaje, {indent:true, pos:false, pctFact:true}) : ''}
+      ${partida ? R('&nbsp;&nbsp;└ Cargo fijo por unidad', a.egresos_ml.comision_cargo_fijo, b.egresos_ml.comision_cargo_fijo, a.egresos_ml.comision_cargo_fijo - b.egresos_ml.comision_cargo_fijo, {indent:true, pos:false, pctFact:true}) : ''}
       ${R('Costo envío vendedor', envioA, envioB, diff?.envio_total, {indent:true, pos:false, pctFact:true})}
       ${R('Publicidad (PADS + Brand)', a?.egresos_ml?.publicidad, b?.egresos_ml?.publicidad, diff?.publicidad, {indent:true, pos:false, pctFact:true})}
       ${hay(a?.egresos_ml?.costos_full, b?.egresos_ml?.costos_full) ? R('Costos FULL', a?.egresos_ml?.costos_full, b?.egresos_ml?.costos_full, diff?.costos_full, {indent:true, pos:false, pctFact:true}) : ''}
@@ -21051,6 +21061,8 @@ function renderReporteSemanal(d, clientId) {
     ['Envío cobrado (Flex)', p => p.ingresos?.envio_comprador, { indent: true, ocultarCero: true }],
     ['Órdenes', p => p.ordenes, { cantidad: true }],
     ['Comisión ML', p => -(p.egresos_ml?.comision || 0), { indent: true }],
+    ['└ Porcentaje (comisión + cuotas)', p => p.egresos_ml?.comision_porcentaje == null ? null : -p.egresos_ml.comision_porcentaje, { sub: true }],
+    ['└ Cargo fijo por unidad', p => p.egresos_ml?.comision_cargo_fijo == null ? null : -p.egresos_ml.comision_cargo_fijo, { sub: true, ocultarCero: true }],
     ['Impuestos de la operación', p => -(p.egresos_ml?.imp_operacion || 0), { indent: true, ocultarCero: true }],
     ['Envíos', p => -(p.egresos_ml?.envio_total || 0), { indent: true }],
     ['Publicidad', p => -(p.egresos_ml?.publicidad || 0), { indent: true }],
@@ -21073,6 +21085,7 @@ function renderReporteSemanal(d, clientId) {
     if (p.cmv?.estimado) avisos.push(`CMV estimado en parte (${p.cmv.revenue_cubierto_pct}% de la facturación con costo cargado)`);
     if (p.egresos_ml?.iibb_fuente !== 'facturado') avisos.push(p.egresos_ml?.iibb_fuente === 'sin_datos' ? 'IIBB sin tasa cargada (va en 0)' : 'IIBB estimado con la tasa del cliente');
     if (!p.facturacion_ml?.disponible) avisos.push('Factura de ML todavía no sincronizada: FULL y publicidad de marca pueden faltar');
+    if ((p.egresos_ml?.comision_cargo_fijo_fuente?.tarifa || 0) >= 1) avisos.push('Cargo fijo estimado en parte con el tarifario (ventas todavía sin facturar)');
     const calc = s.generated_at ? 'Calculado el ' + new Date(s.generated_at).toLocaleString('es-AR', { timeZone: ART_TZ, day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '';
     const tip = [calc, ...avisos].filter(Boolean).join('\n').replace(/"/g, '&quot;');
     return `<th title="${tip}" style="padding:8px 10px;font-size:11px;text-align:right;border-bottom:1px solid var(--border);white-space:nowrap;color:var(--text)">
@@ -21083,7 +21096,7 @@ function renderReporteSemanal(d, clientId) {
     const tds = semanas.map((s, i) => {
       const v = fn(s.data || {});
       const f = fact(s);
-      let txt = o.cantidad ? (v ?? '—').toLocaleString('es-AR') : fmtM(v);
+      let txt = o.cantidad ? (v ?? '—').toLocaleString('es-AR') : v == null ? '—' : fmtM(v);
       let color = 'var(--text)';
       if (o.color && v != null) color = v >= 0 ? '#16a34a' : '#dc2626';
       let sub = '';
@@ -21099,7 +21112,7 @@ function renderReporteSemanal(d, clientId) {
         <div style="font-size:12px">${txt}</div>${sub ? `<div style="font-size:10px;color:var(--muted)">${sub}</div>` : ''}</td>`;
     }).join('');
     return `<tr${o.bold ? ' style="background:var(--surface2)"' : ''}>
-      <td style="padding:6px 10px 6px ${o.indent ? '24px' : '10px'};font-size:12px;border-bottom:1px solid var(--border);white-space:nowrap;${o.bold ? 'font-weight:700' : 'color:var(--muted)'}">${label}</td>${tds}</tr>`;
+      <td style="padding:6px 10px 6px ${o.sub ? '38px' : o.indent ? '24px' : '10px'};font-size:${o.sub ? '11px' : '12px'};border-bottom:1px solid var(--border);white-space:nowrap;${o.bold ? 'font-weight:700' : 'color:var(--muted)'}">${label}</td>${tds}</tr>`;
   }).join('');
 
   // Margen y TACOS al pie
@@ -21536,6 +21549,20 @@ function renderPyL(pyl) {
       </div>
     </div>`;
 
+  // Comisión partida: porcentaje (categoría + cuotas) y cargo fijo por unidad.
+  const comisionPartidaHtml = p => {
+    const e = p.egresos_ml || {};
+    if (e.comision_cargo_fijo == null) return '';
+    const fac = p.ingresos?.facturacion || 0;
+    const pf = v => fac > 0 ? ` <span style="opacity:.7">(${(v / fac * 100).toFixed(1)}%)</span>` : '';
+    const fu = e.comision_cargo_fijo_fuente || {};
+    const est = (fu.tarifa || 0) >= 1
+      ? ` <span title="$${Math.round(fu.tarifa).toLocaleString('es-AR')} de ventas todavía sin facturar, estimado con el tarifario de ML" style="color:#d97706;cursor:help">⚠ estimado en parte</span>` : '';
+    return `<div style="padding:4px 12px 6px 28px;font-size:11px;color:var(--muted);line-height:1.6">
+      └ Porcentaje (comisión + cuotas): $${Math.round(e.comision_porcentaje || 0).toLocaleString('es-AR')}${pf(e.comision_porcentaje || 0)}<br>
+      └ Cargo fijo por unidad: $${Math.round(e.comision_cargo_fijo).toLocaleString('es-AR')}${pf(e.comision_cargo_fijo)}${est}</div>`;
+  };
+
   const detalleRow = (label, monto, base) => `
     <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 16px;border-bottom:1px solid var(--border)">
       <span style="font-size:12px;color:var(--muted)">${label}</span>
@@ -21589,6 +21616,7 @@ function renderPyL(pyl) {
           <div style="font-size:11px;color:#dc2626;opacity:.7">${pyl.ingresos.facturacion>0?fmtP(pyl.egresos_ml.total/pyl.ingresos.facturacion*100):''} de la facturación</div>
         </div>
         ${detalleRow('Comisión ML', pyl.egresos_ml.comision, pyl.ingresos.facturacion)}
+        ${comisionPartidaHtml(pyl)}
         ${pyl.egresos_ml.envio_total ? detalleRow('Envío vendedor (total)', pyl.egresos_ml.envio_total, pyl.ingresos.facturacion) : pyl.egresos_ml.envio_vendedor ? detalleRow('Envío vendedor', pyl.egresos_ml.envio_vendedor, pyl.ingresos.facturacion) : ''}
         ${pyl.egresos_ml.envios_flex_manual > 0 ? `<div style="padding:4px 12px 4px 28px;font-size:11px;color:var(--muted)">└ API ML: $${Math.round(pyl.egresos_ml.envio_vendedor).toLocaleString('es-AR')} &nbsp;+&nbsp; Manual Flex: $${Math.round(pyl.egresos_ml.envios_flex_manual).toLocaleString('es-AR')}</div>` : ''}
         ${pyl.egresos_ml.publicidad ? detalleRow(pyl.egresos_ml.publicidad_marca > 0 ? 'Publicidad' : 'Publicidad (PADS)', pyl.egresos_ml.publicidad, pyl.ingresos.facturacion) : ''}
@@ -21713,6 +21741,10 @@ async function exportarReporteExcel() {
     // desgloses informativos van en la columna C para no romper esa suma.
     ['EGRESOS MERCADO LIBRE', ''],
     ['Comisión ML', -pyl.egresos_ml.comision],
+    ...(pyl.egresos_ml.comision_cargo_fijo != null ? [
+      ['   └ Porcentaje (comisión + cuotas)', '', -(pyl.egresos_ml.comision_porcentaje || 0)],
+      ['   └ Cargo fijo por unidad', '', -pyl.egresos_ml.comision_cargo_fijo],
+    ] : []),
     ['Envío vendedor (total)', -(pyl.egresos_ml.envio_total ?? pyl.egresos_ml.envio_vendedor ?? 0)],
     ...(pyl.egresos_ml.envios_flex_manual > 0 ? [
       ['   └ API ML', '', -pyl.egresos_ml.envio_vendedor],
