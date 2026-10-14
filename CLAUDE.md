@@ -58,7 +58,7 @@ This is a **single-file Node.js/Express backend** (`server.js`) + **single-file 
 
 | Table | Purpose |
 |---|---|
-| `clients` | ML accounts (one per MercadoLibre seller). `servicio` (`programa` = 4-month program, `mensual` = recurring) + `inicio_programa` (DATE) are Guido-only: served by `GET /api/clients/programa` / `PATCH /api/clients/:id/programa`, never by `/api/clients`. Shown as the **Programa** column in Clientes (stage 1 = months 1-2, stage 2 = months 3-4, days left) |
+| `clients` | ML accounts (one per MercadoLibre seller). `servicio` (`programa` = 4-month program, `mensual` = recurring) + `inicio_programa` (DATE) are Guido-only: served by `GET /api/clients/programa` / `PATCH /api/clients/:id/programa`, never by `/api/clients`. Shown as a badge next to the active account name in the topbar (stage 1 = months 1-2, stage 2 = months 3-4, days left; click = edit) |
 | `users` | Dashboard users with role and optional `client_id` binding |
 | `sessions` | Active login sessions (7-day TTL) |
 | `user_permissions` | Per-user section access flags |

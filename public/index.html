@@ -974,6 +974,8 @@ tr.fam-hijo > td { background: rgba(99,102,241,.025); }
       </div>
       <!-- Cuenta activa: siempre a la vista, para saber sobre qué cuenta se está trabajando -->
       <div id="cuentaActivaBadge" style="display:none;align-items:center;gap:7px;padding:6px 14px;border-radius:10px;font-size:13px;font-weight:700;white-space:nowrap;max-width:280px;overflow:hidden;text-overflow:ellipsis"></div>
+      <!-- Programa de 4 meses / servicio mensual de la cuenta activa: sólo Guido. Click = editar -->
+      <div id="programaBadge" onclick="editarPrograma(activeClientId)" style="display:none;align-items:center;padding:6px 12px;border-radius:10px;font-size:12px;font-weight:700;white-space:nowrap;cursor:pointer"></div>
       <div class="header-user" style="display:flex;align-items:center;gap:10px">
         <div id="accountSelectorWrap" style="display:none;position:relative">
           <input id="accountSelectorInput" type="text" autocomplete="off" spellcheck="false"
@@ -2928,6 +2930,7 @@ function renderCuentaActivaBadge() {
     el.innerHTML = '⚠️ Sin cuenta seleccionada';
     el.title = 'Elegí una cuenta en el buscador';
   }
+  renderProgramaBadge();
 }
 
 // El input muestra el nombre de la cuenta activa cuando no se está buscando
@@ -3171,15 +3174,15 @@ function _copyVincularLink(btn) {
 
 // ── Programa de 4 meses (sólo Guido) ─────────────────────────────────────
 // Etapa 1 = meses 1-2, etapa 2 = meses 3-4. Mensual = servicio recurrente, sin fin.
-let _puedeVerPrograma = false;
-let _programa = {};   // client_id → { servicio, inicio_programa }
+var _puedeVerPrograma = false;
+var _programa = {};   // client_id → { servicio, inicio_programa }
 
 async function loadPrograma() {
   if (!_puedeVerPrograma) return;
   const rows = await apiCall('GET', '/api/clients/programa');
   if (!Array.isArray(rows)) return;
   _programa = Object.fromEntries(rows.map(r => [r.id, r]));
-  renderClientsList();
+  renderProgramaBadge();
 }
 
 // Suma n meses a un 'YYYY-MM-DD' (si el día no existe en ese mes, el último del mes).
@@ -3192,36 +3195,44 @@ function diasEntre(a, b) {
   return Math.round((dART(b) - dART(a)) / 86400000);
 }
 
+// texto = lo que se lee en la barra de arriba; titulo = el detalle al pasar el mouse.
 function estadoPrograma(p) {
-  if (!p || !p.servicio) return null;
-  if (p.servicio === 'mensual') return { texto: '🔁 Cliente de servicio mensual', color: '#0369a1', bg: '#e0f2fe', borde: '#7dd3fc' };
-  if (!p.inicio_programa) return { texto: 'Programa · falta fecha de inicio', color: '#b45309', bg: '#fef3c7', borde: '#fcd34d' };
+  if (!p || !p.servicio) return { texto: '📅 Cargar programa', titulo: 'Sin dato: click para cargar servicio y fecha de inicio', color: 'var(--muted)', bg: 'transparent', borde: 'var(--border)' };
+  if (p.servicio === 'mensual') return { texto: '🔁 Cliente de servicio mensual', titulo: 'Servicio recurrente, sin fecha de fin', color: '#0369a1', bg: '#e0f2fe', borde: '#7dd3fc' };
+  if (!p.inicio_programa) return { texto: 'Programa · falta fecha de inicio', titulo: 'Click para cargar la fecha', color: '#b45309', bg: '#fef3c7', borde: '#fcd34d' };
   const hoy = ymd();
   const ini = p.inicio_programa;
   const fin = sumarMeses(ini, 4);
   const fmt = x => dART(x).toLocaleDateString('es-AR', { timeZone: ART_TZ });
-  if (hoy < ini) return { texto: `⏳ Arranca el ${fmt(ini)}`, color: '#475569', bg: '#f1f5f9', borde: '#cbd5e1' };
-  if (hoy >= fin) return { texto: `🏁 Programa terminado el ${fmt(fin)} (inició ${fmt(ini)})`, color: '#b91c1c', bg: '#fee2e2', borde: '#fca5a5' };
+  if (hoy < ini) return { texto: `⏳ Programa arranca el ${fmt(ini)}`, titulo: '', color: '#475569', bg: '#f1f5f9', borde: '#cbd5e1' };
+  if (hoy >= fin) return { texto: '🏁 Programa terminado', titulo: `Inició el ${fmt(ini)}, terminó el ${fmt(fin)}`, color: '#b91c1c', bg: '#fee2e2', borde: '#fca5a5' };
   let mes = 1;
   while (mes < 4 && hoy >= sumarMeses(ini, mes)) mes++;
   const etapa1 = mes <= 2;
-  const extra = etapa1 ? ` · etapa 2 en ${diasEntre(hoy, sumarMeses(ini, 2))} días` : '';
+  const extra = etapa1 ? ` · la etapa 2 arranca en ${diasEntre(hoy, sumarMeses(ini, 2))} días` : '';
   return {
-    texto: `${etapa1 ? '1️⃣ Primeros 2 meses' : '2️⃣ Segundos 2 meses'} · mes ${mes} de 4 · quedan ${diasEntre(hoy, fin)} días (termina ${fmt(fin)})${extra}`,
-    titulo: `Inició el ${fmt(ini)}`,
+    texto: `${etapa1 ? '1️⃣ Primeros 2 meses' : '2️⃣ Segundos 2 meses'} · mes ${mes}/4 · quedan ${diasEntre(hoy, fin)} días`,
+    titulo: `Inició el ${fmt(ini)} · termina el ${fmt(fin)}${extra}`,
     color: etapa1 ? '#15803d' : '#9a3412', bg: etapa1 ? '#dcfce7' : '#ffedd5', borde: etapa1 ? '#86efac' : '#fdba74'
   };
 }
 
-function celdaPrograma(c) {
-  const e = estadoPrograma(_programa[c.id]);
-  const badge = e
-    ? `<span title="${e.titulo || ''}" style="background:${e.bg};color:${e.color};border:1px solid ${e.borde};border-radius:8px;padding:2px 8px;font-size:11px;font-weight:700;display:inline-block;line-height:1.4">${e.texto}</span>`
-    : '<span style="color:var(--muted);font-size:11px">Sin dato</span>';
-  return `<td style="min-width:220px">${badge} <button class="sync-btn" style="padding:1px 6px;font-size:11px" title="Editar servicio / fecha de inicio" onclick="editarPrograma(${c.id})">📅</button></td>`;
+// Badge al lado del nombre de la cuenta activa, en la barra de arriba.
+function renderProgramaBadge() {
+  const el = document.getElementById('programaBadge');
+  if (!el) return;
+  if (!_puedeVerPrograma || !activeClientId) { el.style.display = 'none'; return; }
+  const e = estadoPrograma(_programa[activeClientId]);
+  el.style.display = 'flex';
+  el.style.background = e.bg;
+  el.style.color = e.color;
+  el.style.border = `1px solid ${e.borde}`;
+  el.textContent = e.texto;
+  el.title = (e.titulo ? e.titulo + '\n' : '') + 'Click para editar';
 }
 
 async function editarPrograma(id) {
+  if (!id) return;
   const c = allClients.find(x => x.id === id);
   const p = _programa[id] || {};
   const tipo = prompt(`Servicio de "${c?.name}":\n\n  p = Programa de 4 meses\n  m = Servicio mensual\n  (vacío = sin dato)`,
@@ -3243,7 +3254,7 @@ async function editarPrograma(id) {
   if (r && r.ok) {
     _programa[id] = r;
     showToast('✅ Guardado');
-    renderClientsList();
+    renderProgramaBadge();
   }
 }
 
@@ -3304,7 +3315,6 @@ function renderClientsList() {
     return `<tr${esProspecto ? ' style="background:rgba(109,40,217,0.04)"' : esEx ? ' style="background:rgba(100,116,139,0.06);opacity:.75"' : ''}>
       <td style="font-weight:600">${c.name}</td>
       <td>${tipoBadge}</td>
-      ${_puedeVerPrograma ? celdaPrograma(c) : ''}
       <td>${connected}</td>
       <td style="color:var(--muted);font-size:11px">${c.ml_user_id || '—'}</td>
       <td style="color:var(--muted);font-size:11px">${expires}</td>
@@ -3330,7 +3340,7 @@ function renderClientsList() {
     </div>` : '';
 
   el.innerHTML = warningBanner + infoTipos + `<div style="overflow-x:auto"><table>
-    <thead><tr><th>Cliente</th><th>Tipo</th>${_puedeVerPrograma ? '<th>Programa</th>' : ''}<th>Estado</th><th>ML User ID</th><th>Token expira</th><th>Renovación</th><th>Acciones</th></tr></thead>
+    <thead><tr><th>Cliente</th><th>Tipo</th><th>Estado</th><th>ML User ID</th><th>Token expira</th><th>Renovación</th><th>Acciones</th></tr></thead>
     <tbody>${rows}</tbody>
   </table></div>`;
 }
