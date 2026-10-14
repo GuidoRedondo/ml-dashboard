@@ -17185,11 +17185,11 @@ app.patch('/api/clients/:id/nombre', requireAuth, requireAdmin, async (req, res)
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
-// Programa de 4 meses: dato comercial que sólo ve Guido. Mismo gate que "Sincronizar
-// minutas" (MINUTAS_SYNC_USUARIOS), salvo que se defina PROGRAMA_USUARIOS.
+// Programa de 4 meses: dato comercial que sólo ve Guido. PROGRAMA_USUARIOS lo cambia;
+// sin la variable, sólo el usuario "guido".
 function puedeVerPrograma(user) {
   if (user?.role !== 'admin') return false;
-  const lista = String(process.env.PROGRAMA_USUARIOS || process.env.MINUTAS_SYNC_USUARIOS || '')
+  const lista = String(process.env.PROGRAMA_USUARIOS || 'guido')
     .split(',').map(x => x.trim().toLowerCase()).filter(Boolean);
   return lista.includes(String(user.username || '').toLowerCase());
 }

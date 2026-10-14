@@ -279,7 +279,7 @@ asistente virtual de Mercado Libre". There is no field for it — it's the text.
 | `SLACK_IDS` | No | JSON `{ "dashboard username": "Slack member ID" }` for mentions (keys are case-insensitive). Missing person = message with their name, no mention |
 | `MINUTAS_SYNC_USUARIOS` | No | Usernames that see the "Sincronizar ahora" button in Minutas (Guido only). Unset = nobody |
 | `MINUTAS_ROUTINE_URL` / `MINUTAS_ROUTINE_TOKEN` | No | Endpoint and bearer token of Claude's minutas routine, used by `/api/minutas/sync-now`. Unset = 503 |
-| `PROGRAMA_USUARIOS` | No | Usernames (admins) that see the 4-month program column. Unset = falls back to `MINUTAS_SYNC_USUARIOS` |
+| `PROGRAMA_USUARIOS` | No | Usernames (admins) that see the 4-month program column. Unset = only `guido` |
 | `RAILWAY_PUBLIC_DOMAIN` / `SELF_URL` | No | Enables keep-alive self-ping |
 
 ## Deployment
