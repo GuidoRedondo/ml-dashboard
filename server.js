@@ -364,6 +364,14 @@ async function initDB() {
       generated_at TIMESTAMP DEFAULT NOW(),
       UNIQUE(client_id, mes)
     );
+    -- P&L por semana (lunes a domingo). semana = el lunes. Lo llena el cron de los lunes.
+    CREATE TABLE IF NOT EXISTS reporte_semanal (
+      client_id    INTEGER NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+      semana       DATE NOT NULL,
+      data         JSONB DEFAULT '{}',
+      generated_at TIMESTAMPTZ DEFAULT NOW(),
+      PRIMARY KEY (client_id, semana)
+    );
     CREATE TABLE IF NOT EXISTS full_stock_config (
       id                SERIAL PRIMARY KEY,
       client_id         INTEGER NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
@@ -8352,8 +8360,22 @@ app.post('/api/reporte/gastos', requireAuth, async (req, res) => {
 app.get('/api/reporte/pyl', requireAuth, async (req, res) => {
   try {
     const { client_id, date_from, date_to } = req.query;
+    res.json(await calcularPyL(client_id, date_from, date_to));
+  } catch(e) {
+    if (e.status) return res.status(e.status).json({ error: e.message });
+    console.error('[REPORTE PYL]', e.message, e.stack);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// El P&L de un rango. Lo usan /api/reporte/pyl (mensual, guarda el snapshot en
+// reporte_financiero) y el P&L semanal (guardarSnapshot:false: una semana no puede pisar
+// el snapshot del mes). Errores esperables salen con .status.
+async function calcularPyL(client_id, date_from, date_to, { guardarSnapshot = true } = {}) {
+  const errPyl = (status, msg) => Object.assign(new Error(msg), { status });
+  {
     const token = await getClientToken(parseInt(client_id));
-    if (!token) return res.status(403).json({ error: 'Sin token' });
+    if (!token) throw errPyl(403, 'Sin token');
     const headers = { 'Authorization': `Bearer ${token}` };
 
     const clientRes = await pool.query('SELECT ml_user_id, name, tasa_iibb_pct, condicion_iva FROM clients WHERE id=$1', [client_id]);
@@ -8361,7 +8383,7 @@ app.get('/api/reporte/pyl', requireAuth, async (req, res) => {
     const tasaIibb = parseFloat(clientRes.rows[0]?.tasa_iibb_pct) || 0;
     const condicionIva = clientRes.rows[0]?.condicion_iva || 'responsable_inscripto';
     const esMonotributista = condicionIva === 'monotributista';
-    if (!uid) return res.status(400).json({ error: 'Cliente sin ML User ID' });
+    if (!uid) throw errPyl(400, 'Cliente sin ML User ID');
 
     const fmt = d => new Date(d).toISOString().slice(0,19) + '.000-00:00';
     const { orders } = await fetchOrdersForPyL(uid, headers, fmt(date_from + 'T00:00:00'), fmt(date_to + 'T23:59:59'));
@@ -8682,7 +8704,7 @@ app.get('/api/reporte/pyl', requireAuth, async (req, res) => {
     };
 
     // Guardar snapshot del P&L en la tabla reporte_financiero
-    try {
+    if (guardarSnapshot) try {
       await pool.query(`
         INSERT INTO reporte_financiero (client_id, mes, data, generated_at)
         VALUES ($1, $2, $3, NOW())
@@ -8692,8 +8714,109 @@ app.get('/api/reporte/pyl', requireAuth, async (req, res) => {
       console.error('[REPORTE PYL] Error guardando snapshot:', saveErr.message);
     }
 
-    res.json(pyl);
-  } catch(e) { console.error('[REPORTE PYL]', e.message, e.stack); res.status(500).json({ error: e.message }); }
+    return pyl;
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════
+// P&L SEMANAL — lunes a domingo, calculado solo cada lunes
+// ════════════════════════════════════════════════════════════════════
+// Mismo cálculo que el mensual (calcularPyL) sobre una semana cerrada. Los gastos fijos y
+// el Flex manual entran prorrateados por días (mesesDelRango). Se guarda sin el detalle por
+// publicación para que la tabla no pese. Cada lunes se recalculan las DOS últimas semanas:
+// cancelaciones y mediaciones mueven la semana anterior durante varios días.
+
+// Lunes ('YYYY-MM-DD') de la semana de un día dado.
+function lunesDe(s) {
+  const d = new Date(s + 'T12:00:00');
+  return ymdShift(s, -((d.getDay() + 6) % 7));
+}
+// Las n últimas semanas CERRADAS, de la más vieja a la más nueva.
+function semanasCerradas(n) {
+  const lunesActual = lunesDe(ymd());
+  const out = [];
+  for (let i = n; i >= 1; i--) out.push(ymdShift(lunesActual, -7 * i));
+  return out;
+}
+
+async function calcularPylSemana(clientId, lunes) {
+  const domingo = ymdShift(lunes, 6);
+  const pyl = await calcularPyL(clientId, lunes, domingo, { guardarSnapshot: false });
+  const { items_detalle, ...resumen } = pyl;
+  resumen.items_con_venta = (items_detalle || []).length;
+  await pool.query(`
+    INSERT INTO reporte_semanal (client_id, semana, data, generated_at)
+    VALUES ($1, $2, $3, NOW())
+    ON CONFLICT (client_id, semana) DO UPDATE SET data=$3, generated_at=NOW()
+  `, [clientId, lunes, JSON.stringify(resumen)]);
+  return resumen;
+}
+
+let _pylSemanalCorriendo = false;
+async function runPylSemanal({ semanas = 2 } = {}) {
+  if (_pylSemanalCorriendo) return { ok: 0, fail: 0, saltado: 'ya hay una corrida en curso' };
+  _pylSemanalCorriendo = true;
+  let ok = 0, fail = 0;
+  try {
+    const clientes = (await pool.query(
+      `SELECT id, name FROM clients WHERE active = true AND access_token IS NOT NULL
+         AND tipo_cuenta = 'cliente' ORDER BY name`)).rows;
+    // En serie: cada P&L pega bastante a ML (órdenes, envíos, cupones, PADS).
+    for (const c of clientes) {
+      for (const lunes of semanasCerradas(semanas)) {
+        try { await calcularPylSemana(c.id, lunes); ok++; }
+        catch (e) { fail++; console.warn(`[PYL-SEMANAL] ${c.name} ${lunes}: ${e.message}`); }
+      }
+    }
+  } finally { _pylSemanalCorriendo = false; }
+  console.log(`[PYL-SEMANAL] terminado: ${ok} ok, ${fail} con error`);
+  return { ok, fail };
+}
+
+// GET /api/reporte/semanal?client_id=&semanas=8 — las semanas guardadas (más nueva primero)
+// y cuáles de las últimas cerradas todavía no están calculadas.
+app.get('/api/reporte/semanal', requireAuth, async (req, res) => {
+  try {
+    const clientId = parseInt(req.query.client_id);
+    if (req.user.role === 'cliente' && req.user.client_id !== clientId) return res.status(403).json({ error: 'Sin acceso' });
+    const n = Math.min(Math.max(parseInt(req.query.semanas) || 8, 1), 26);
+    const esperadas = semanasCerradas(n);
+    const r = await pool.query(
+      `SELECT to_char(semana, 'YYYY-MM-DD') AS semana, data, generated_at FROM reporte_semanal
+        WHERE client_id = $1 AND semana >= $2::date ORDER BY semana DESC`,
+      [clientId, esperadas[0]]);
+    const hay = new Set(r.rows.map(x => x.semana));
+    res.json({ semanas: r.rows, faltan: esperadas.filter(s => !hay.has(s)), lunes_actual: lunesDe(ymd()) });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// POST /api/reporte/semanal/calcular { client_id, semana: 'YYYY-MM-DD' (un lunes) }
+// Calcula una semana a mano. El front llama de a una para mostrar el avance y no
+// chocar con el timeout de una request larga.
+app.post('/api/reporte/semanal/calcular', requireAuth, async (req, res) => {
+  try {
+    const clientId = parseInt(req.body.client_id);
+    if (req.user.role === 'cliente' && req.user.client_id !== clientId) return res.status(403).json({ error: 'Sin acceso' });
+    const semana = String(req.body.semana || '');
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(semana) || lunesDe(semana) !== semana) {
+      return res.status(400).json({ error: 'semana tiene que ser un lunes (YYYY-MM-DD)' });
+    }
+    if (semana >= lunesDe(ymd())) return res.status(400).json({ error: 'La semana todavía no cerró' });
+    const data = await calcularPylSemana(clientId, semana);
+    res.json({ ok: true, semana, data });
+  } catch(e) {
+    if (e.status) return res.status(e.status).json({ error: e.message });
+    console.error('[PYL-SEMANAL]', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.all('/api/reporte/semanal/cron', async (req, res) => {
+  const secret = process.env.CRON_SECRET;
+  const provided = req.query.secret || req.headers['x-cron-secret'];
+  if (secret && provided !== secret) return res.status(403).json({ error: 'forbidden' });
+  res.json({ ok: true, mensaje: 'P&L semanal lanzado en background' });
+  runPylSemanal().catch(e => console.error('[PYL-SEMANAL] error:', e.message));
 });
 
 // GET /api/reporte/devoluciones-analisis — análisis de cancelaciones y devoluciones por SKU
@@ -18839,6 +18962,14 @@ initDB().then(() => {
       runPanelMetricasDiario().catch(e => console.error('[PANEL-METRICAS][cron] Error:', e.message));
     }, { timezone: ART });
     console.log('[CRON] Métricas del Panel de Clientes programadas: 00:00 ART');
+
+    // Lunes 10:00 ART — P&L de las dos últimas semanas cerradas de cada cliente. Después de
+    // todos los jobs de la madrugada que también llaman a ML (billing, envíos, reclamos,
+    // ciclo de vida, experiencia, alertas de las 8).
+    nodeCron.schedule('0 10 * * 1', () => {
+      runPylSemanal().catch(e => console.error('[PYL-SEMANAL][cron] Error:', e.message));
+    }, { timezone: ART });
+    console.log('[CRON] P&L semanal programado: lunes 10:00 ART');
 
     // 23:45 ART — cierre del día en Seguimiento. Tarde a propósito: agarra el día casi completo.
     nodeCron.schedule('45 23 * * *', () => {

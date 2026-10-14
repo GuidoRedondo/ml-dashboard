@@ -68,6 +68,7 @@ This is a **single-file Node.js/Express backend** (`server.js`) + **single-file 
 | `cotizacion_usd_hist` | Log of manual dollar rate changes per client |
 | `gastos_fijos` | Fixed monthly expenses per client |
 | `reporte_financiero` | Cached financial report JSONB blobs |
+| `reporte_semanal` | Weekly P&L (Monday–Sunday), key = the Monday. Same calculation as the monthly one (`calcularPyL` with `guardarSnapshot:false`, so a week never overwrites the month snapshot), stored without `items_detalle`. Monday 10:00 ART cron recalculates the last two closed weeks of every `tipo_cuenta='cliente'`. Shown in Reporte Financiero → **📅 Semanal** |
 | `full_stock_config` | Suggested stock quantities per item |
 | `bitacora` | CRM-style task/note log per client |
 | `panel_metricas_diarias` | One row per client per day (revenue, orders, units, visits, ad spend/sales) written by the 00:00 ART cron; backs the fast Panel de Clientes view |
@@ -90,7 +91,7 @@ This is a **single-file Node.js/Express backend** (`server.js`) + **single-file 
 - **Listings**: `GET /api/items-full`, `GET /api/categorias-ventas`
 - **Diagnóstico mensual**: `GET /api/diagnostico`, `POST /api/diagnostico/calcular`, `POST /api/diagnostico/manuales`
 - **Precios (CM objetivo)**: `GET /api/precios`, `PUT /api/precios/objetivo`, `PUT /api/precios/objetivo-item`, `GET /api/tarifas` (`?bandas=1` returns all 27 weight bands)
-- **Reporte financiero (P&L)**: `GET /api/reporte/items-vendidos`, `GET /api/reporte/items-activos`, `POST /api/reporte/costos`, `GET|POST /api/reporte/gastos`, `GET /api/reporte/pyl`, `GET /api/reporte/devoluciones-analisis`, `GET /api/reporte/meses-disponibles`, `GET /api/reporte/comparar`
+- **Reporte financiero (P&L)**: `GET /api/reporte/items-vendidos`, `GET /api/reporte/items-activos`, `POST /api/reporte/costos`, `GET|POST /api/reporte/gastos`, `GET /api/reporte/pyl`, `GET /api/reporte/devoluciones-analisis`, `GET /api/reporte/meses-disponibles`, `GET /api/reporte/comparar`, `GET /api/reporte/semanal` (last N closed weeks + which are missing), `POST /api/reporte/semanal/calcular` (one Monday at a time), `GET|POST /api/reporte/semanal/cron`
 - **Logística / Full Stock**: `GET /api/logistica`, `GET /api/logistica/full-stock`, `PUT /api/logistica/full-stock-global`, `PUT /api/logistica/full-stock/:item_id`
 - **Competencia**: `GET /api/competencia`, `GET /api/competencia/item`, `GET /api/competencia/categorias`, `GET /api/competencia/diagnostico`
 - **Panel de Clientes (vista rápida)**: `GET /api/panel/metricas`, `GET /api/panel/metricas/hoy`, `POST /api/panel/metricas/backfill`, `GET|POST /api/panel/metricas/cron`
