@@ -3169,6 +3169,84 @@ function _copyVincularLink(btn) {
   }).catch(() => { inp.select(); document.execCommand('copy'); });
 }
 
+// ── Programa de 4 meses (sólo Guido) ─────────────────────────────────────
+// Etapa 1 = meses 1-2, etapa 2 = meses 3-4. Mensual = servicio recurrente, sin fin.
+let _puedeVerPrograma = false;
+let _programa = {};   // client_id → { servicio, inicio_programa }
+
+async function loadPrograma() {
+  if (!_puedeVerPrograma) return;
+  const rows = await apiCall('GET', '/api/clients/programa');
+  if (!Array.isArray(rows)) return;
+  _programa = Object.fromEntries(rows.map(r => [r.id, r]));
+  renderClientsList();
+}
+
+// Suma n meses a un 'YYYY-MM-DD' (si el día no existe en ese mes, el último del mes).
+function sumarMeses(s, n) {
+  const [y, m, d] = s.split('-').map(Number);
+  const ultimo = new Date(y, m - 1 + n + 1, 0).getDate();
+  return ymd(new Date(y, m - 1 + n, Math.min(d, ultimo), 12));
+}
+function diasEntre(a, b) {
+  return Math.round((dART(b) - dART(a)) / 86400000);
+}
+
+function estadoPrograma(p) {
+  if (!p || !p.servicio) return null;
+  if (p.servicio === 'mensual') return { texto: '🔁 Cliente de servicio mensual', color: '#0369a1', bg: '#e0f2fe', borde: '#7dd3fc' };
+  if (!p.inicio_programa) return { texto: 'Programa · falta fecha de inicio', color: '#b45309', bg: '#fef3c7', borde: '#fcd34d' };
+  const hoy = ymd();
+  const ini = p.inicio_programa;
+  const fin = sumarMeses(ini, 4);
+  const fmt = x => dART(x).toLocaleDateString('es-AR', { timeZone: ART_TZ });
+  if (hoy < ini) return { texto: `⏳ Arranca el ${fmt(ini)}`, color: '#475569', bg: '#f1f5f9', borde: '#cbd5e1' };
+  if (hoy >= fin) return { texto: `🏁 Programa terminado el ${fmt(fin)} (inició ${fmt(ini)})`, color: '#b91c1c', bg: '#fee2e2', borde: '#fca5a5' };
+  let mes = 1;
+  while (mes < 4 && hoy >= sumarMeses(ini, mes)) mes++;
+  const etapa1 = mes <= 2;
+  const extra = etapa1 ? ` · etapa 2 en ${diasEntre(hoy, sumarMeses(ini, 2))} días` : '';
+  return {
+    texto: `${etapa1 ? '1️⃣ Primeros 2 meses' : '2️⃣ Segundos 2 meses'} · mes ${mes} de 4 · quedan ${diasEntre(hoy, fin)} días (termina ${fmt(fin)})${extra}`,
+    titulo: `Inició el ${fmt(ini)}`,
+    color: etapa1 ? '#15803d' : '#9a3412', bg: etapa1 ? '#dcfce7' : '#ffedd5', borde: etapa1 ? '#86efac' : '#fdba74'
+  };
+}
+
+function celdaPrograma(c) {
+  const e = estadoPrograma(_programa[c.id]);
+  const badge = e
+    ? `<span title="${e.titulo || ''}" style="background:${e.bg};color:${e.color};border:1px solid ${e.borde};border-radius:8px;padding:2px 8px;font-size:11px;font-weight:700;display:inline-block;line-height:1.4">${e.texto}</span>`
+    : '<span style="color:var(--muted);font-size:11px">Sin dato</span>';
+  return `<td style="min-width:220px">${badge} <button class="sync-btn" style="padding:1px 6px;font-size:11px" title="Editar servicio / fecha de inicio" onclick="editarPrograma(${c.id})">📅</button></td>`;
+}
+
+async function editarPrograma(id) {
+  const c = allClients.find(x => x.id === id);
+  const p = _programa[id] || {};
+  const tipo = prompt(`Servicio de "${c?.name}":\n\n  p = Programa de 4 meses\n  m = Servicio mensual\n  (vacío = sin dato)`,
+    p.servicio === 'mensual' ? 'm' : p.servicio === 'programa' ? 'p' : '');
+  if (tipo === null) return;
+  const t = tipo.trim().toLowerCase();
+  const servicio = t.startsWith('p') ? 'programa' : t.startsWith('m') ? 'mensual' : null;
+  let inicio = null;
+  if (servicio === 'programa') {
+    const actual = p.inicio_programa ? p.inicio_programa.split('-').reverse().join('/') : '';
+    const f = prompt('Fecha de inicio del programa (dd/mm/aaaa):', actual);
+    if (f === null) return;
+    const m = f.trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})$/);
+    if (!m) { showToast('❌ Fecha inválida, usá dd/mm/aaaa'); return; }
+    const anio = m[3].length === 2 ? '20' + m[3] : m[3];
+    inicio = `${anio}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`;
+  }
+  const r = await apiCall('PATCH', `/api/clients/${id}/programa`, { servicio, inicio_programa: inicio });
+  if (r && r.ok) {
+    _programa[id] = r;
+    showToast('✅ Guardado');
+    renderClientsList();
+  }
+}
+
 function renderClientsList() {
   _updateVincularLink();
   const el = document.getElementById('clientsAdminContent');
@@ -3226,6 +3304,7 @@ function renderClientsList() {
     return `<tr${esProspecto ? ' style="background:rgba(109,40,217,0.04)"' : esEx ? ' style="background:rgba(100,116,139,0.06);opacity:.75"' : ''}>
       <td style="font-weight:600">${c.name}</td>
       <td>${tipoBadge}</td>
+      ${_puedeVerPrograma ? celdaPrograma(c) : ''}
       <td>${connected}</td>
       <td style="color:var(--muted);font-size:11px">${c.ml_user_id || '—'}</td>
       <td style="color:var(--muted);font-size:11px">${expires}</td>
@@ -3251,7 +3330,7 @@ function renderClientsList() {
     </div>` : '';
 
   el.innerHTML = warningBanner + infoTipos + `<div style="overflow-x:auto"><table>
-    <thead><tr><th>Cliente</th><th>Tipo</th><th>Estado</th><th>ML User ID</th><th>Token expira</th><th>Renovación</th><th>Acciones</th></tr></thead>
+    <thead><tr><th>Cliente</th><th>Tipo</th>${_puedeVerPrograma ? '<th>Programa</th>' : ''}<th>Estado</th><th>ML User ID</th><th>Token expira</th><th>Renovación</th><th>Acciones</th></tr></thead>
     <tbody>${rows}</tbody>
   </table></div>`;
 }
@@ -15459,6 +15538,8 @@ function initApp() {
     // applyPermissions para que nada lo vuelva a mostrar.
     const minNavEl = document.getElementById('nav-minutas');
     if (minNavEl) minNavEl.style.display = me?.minutas === true ? '' : 'none';
+    // Programa de 4 meses / servicio mensual: sólo Guido (lo decide el backend).
+    if (me?.programa === true) { _puedeVerPrograma = true; loadPrograma(); }
   });
 
   // Load clients from server

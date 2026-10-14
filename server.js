@@ -635,6 +635,38 @@ async function initDB() {
       FOR EACH ROW EXECUTE FUNCTION product_costs_hist_fn();
   `);
 
+  // Programa de 4 meses vs servicio mensual. Sólo lo ve Guido (puedeVerPrograma).
+  // servicio: 'programa' | 'mensual' | NULL (sin dato). inicio_programa: día que arrancó.
+  // La primera vez que se crea la columna se carga la planilla de clientes del 14/10/2026,
+  // por nombre; lo que no matchee se completa a mano desde Clientes.
+  const yaHabiaServicio = (await pool.query(
+    `SELECT 1 FROM information_schema.columns WHERE table_name='clients' AND column_name='servicio'`)).rowCount > 0;
+  await pool.query(`
+    ALTER TABLE clients ADD COLUMN IF NOT EXISTS servicio VARCHAR(10);
+    ALTER TABLE clients ADD COLUMN IF NOT EXISTS inicio_programa DATE;
+  `);
+  if (!yaHabiaServicio) {
+    const planilla = [
+      ['EC Group%', 'mensual'], ['Imago%', 'mensual'], ['LT Repuesto%', 'mensual'], ['Ab Fitness%', 'mensual'],
+      ['Makom%', 'mensual'], ['Ralkar%', 'mensual'], ['Viuma%', 'mensual'], ['White Salud%', 'mensual'],
+      ['La Casa L%', 'mensual'], ['Aquamarket%', 'mensual'], ['Luminocity%', 'mensual'], ['Primer Luna%', 'mensual'],
+      ['Vale Doble%', 'mensual'], ['Bimall%', 'mensual'], ['Soymanu%', 'mensual'],
+      ['La Palometa%', 'programa', '2026-08-01'], ['Redfish%', 'programa', '2026-07-14'],
+      ['Bonafide%', 'programa', '2026-08-13'], ['Shlonak%', 'programa', '2026-08-10'],
+      ['Indumentaria%', 'programa', '2026-09-02'], ['Ventas Nove%', 'programa', '2026-09-01'],
+      ['Solus%', 'programa', '2026-09-11'], ['MB Group%', 'programa', '2026-09-01'],
+      ['Climafix%', 'programa', '2026-09-09'], ['Babylon%', 'programa', '2026-09-03'],
+      ['Tandil%', 'programa', '2026-09-03'], ['Innovate%', 'programa', '2026-10-06'],
+      ['ZZ Pro%', 'programa', '2026-10-09'],
+    ];
+    for (const [patron, servicio, inicio] of planilla) {
+      const r = await pool.query(
+        `UPDATE clients SET servicio=$2, inicio_programa=$3 WHERE name ILIKE $1 AND servicio IS NULL RETURNING name`,
+        [patron, servicio, inicio || null]);
+      console.log(`[PROGRAMA] ${patron} → ${r.rows.map(x => x.name).join(', ') || 'SIN MATCH'}`);
+    }
+  }
+
   // Tabla de informes mensuales
   await pool.query(`
     CREATE TABLE IF NOT EXISTS informes_mensuales (
@@ -1024,7 +1056,9 @@ app.get('/api/me', requireAuth, async (req, res) => {
       // decide si muestra el menú; el backend igual corta con 403.
       minutas: require('./backend_minutas').puedeVerMinutas(req.user),
       // 'admin' (ve todo y asigna) | 'miembro' (sólo sus tareas asignadas) | null
-      minutas_rol: require('./backend_minutas').rolMinutas(req.user)
+      minutas_rol: require('./backend_minutas').rolMinutas(req.user),
+      // Programa de 4 meses / servicio mensual por cliente: sólo Guido
+      programa: puedeVerPrograma(req.user)
     });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
@@ -17147,6 +17181,44 @@ app.patch('/api/clients/:id/nombre', requireAuth, requireAdmin, async (req, res)
       [name, req.params.id]);
     if (!r.rowCount) return res.status(404).json({ error: 'El cliente no existe' });
     console.log(`[CLIENTES] ${req.user?.username} renombró cliente ${req.params.id} a '${name}'`);
+    res.json({ ok: true, ...r.rows[0] });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// Programa de 4 meses: dato comercial que sólo ve Guido. Mismo gate que "Sincronizar
+// minutas" (MINUTAS_SYNC_USUARIOS), salvo que se defina PROGRAMA_USUARIOS.
+function puedeVerPrograma(user) {
+  if (user?.role !== 'admin') return false;
+  const lista = String(process.env.PROGRAMA_USUARIOS || process.env.MINUTAS_SYNC_USUARIOS || '')
+    .split(',').map(x => x.trim().toLowerCase()).filter(Boolean);
+  return lista.includes(String(user.username || '').toLowerCase());
+}
+
+app.get('/api/clients/programa', requireAuth, async (req, res) => {
+  if (!puedeVerPrograma(req.user)) return res.status(403).json({ error: 'Sin acceso' });
+  try {
+    const r = await pool.query(
+      `SELECT id, servicio, to_char(inicio_programa, 'YYYY-MM-DD') AS inicio_programa FROM clients`);
+    res.json(r.rows);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+app.patch('/api/clients/:id/programa', requireAuth, async (req, res) => {
+  if (!puedeVerPrograma(req.user)) return res.status(403).json({ error: 'Sin acceso' });
+  try {
+    const servicio = req.body.servicio || null;
+    if (servicio !== null && !['programa', 'mensual'].includes(servicio)) {
+      return res.status(400).json({ error: "servicio debe ser 'programa' o 'mensual'" });
+    }
+    const inicio = servicio === 'programa' ? (req.body.inicio_programa || null) : null;
+    if (servicio === 'programa' && !/^\d{4}-\d{2}-\d{2}$/.test(inicio || '')) {
+      return res.status(400).json({ error: 'Falta la fecha de inicio (YYYY-MM-DD)' });
+    }
+    const r = await pool.query(
+      `UPDATE clients SET servicio=$1, inicio_programa=$2 WHERE id=$3
+       RETURNING id, servicio, to_char(inicio_programa, 'YYYY-MM-DD') AS inicio_programa`,
+      [servicio, inicio, req.params.id]);
+    if (!r.rowCount) return res.status(404).json({ error: 'El cliente no existe' });
     res.json({ ok: true, ...r.rows[0] });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
