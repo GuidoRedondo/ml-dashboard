@@ -973,9 +973,11 @@ tr.fam-hijo > td { background: rgba(99,102,241,.025); }
         </div>
       </div>
       <!-- Cuenta activa: siempre a la vista, para saber sobre qué cuenta se está trabajando -->
-      <div id="cuentaActivaBadge" style="display:none;align-items:center;gap:7px;padding:6px 14px;border-radius:10px;font-size:13px;font-weight:700;white-space:nowrap;max-width:280px;overflow:hidden;text-overflow:ellipsis"></div>
-      <!-- Programa de 4 meses / servicio mensual de la cuenta activa: sólo Guido. Click = editar -->
-      <div id="programaBadge" onclick="editarPrograma(activeClientId)" style="display:none;align-items:center;padding:6px 12px;border-radius:10px;font-size:12px;font-weight:700;white-space:nowrap;cursor:pointer"></div>
+      <div style="display:flex;flex-direction:column;align-items:center;gap:3px">
+        <div id="cuentaActivaBadge" style="display:none;align-items:center;gap:7px;padding:6px 14px;border-radius:10px;font-size:13px;font-weight:700;white-space:nowrap;max-width:280px;overflow:hidden;text-overflow:ellipsis"></div>
+        <!-- Programa de 4 meses / servicio mensual de la cuenta activa: sólo Guido. Click = editar -->
+        <div id="programaBadge" onclick="editarPrograma(activeClientId)" style="display:none;align-items:center;padding:1px 8px;border-radius:6px;font-size:10px;font-weight:600;white-space:nowrap;cursor:pointer;line-height:1.5"></div>
+      </div>
       <div class="header-user" style="display:flex;align-items:center;gap:10px">
         <div id="accountSelectorWrap" style="display:none;position:relative">
           <input id="accountSelectorInput" type="text" autocomplete="off" spellcheck="false"
