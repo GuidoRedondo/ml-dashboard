@@ -186,6 +186,11 @@ Each one was a real bug that moved a client's margin by several points:
   day) on the server and `costoPeriodo(i)` / `costoEnDia()` on the front — never
   `product_costs.costo_unit` directly. Forward-looking views (Precios, promos, simulador, stock)
   use the current cost.
+- **Commission is shown split** into percentage (category fee + instalments) and fixed fee per
+  unit (`separarCargoFijo`): the fixed part comes from the invoice (`CVFF`, gross) when the sale is
+  billed, otherwise from what the same listing paid in the same price tier in a billed sale, and
+  only as a last resort from the tariff table at the reference weight (flagged as estimated).
+  Percentage = commission − fixed, so the two lines always add up to `egresos_ml.comision`.
 - **Monthly manual amounts are prorated by days** (`mesesDelRango`): Flex bolo, fixed costs.
 - **Items without cost get an estimated CMV** at the ratio CMV/revenue of the items that have
   one (`cmvRatioCubierto`), flagged as estimated. Zero CMV inflated margins by ~8 points.
