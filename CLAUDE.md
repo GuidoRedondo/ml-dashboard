@@ -27,7 +27,7 @@ There are no tests or linting scripts configured.
 | Section | What it does |
 |---|---|
 | **Dashboard** | Main overview with weekly evolution chart |
-| **Rentabilidad** | 6 KPI cards, CMV loaded from DB (`product_costs`), import/export Excel for bulk cost updates. Sub-tab **Precios**: whole catalogue with CMV, variable costs (expandable breakdown), current price and the price needed to hit a target contribution margin — global per client or per listing, measured on price or on cost. Also stock coverage per listing (stock ÷ 30-day sales pace, same thresholds as the Stock section), sortable and filterable |
+| **Rentabilidad** | 6 KPI cards, CMV loaded from DB (`product_costs`), import/export Excel for bulk cost updates. Sub-tab **Precios**: whole catalogue with CMV, variable costs (expandable breakdown), current price and the price needed to hit a target contribution margin — global per client or per listing, measured on price or on cost. Also stock coverage per listing (stock ÷ 30-day sales pace, same thresholds as the Stock section), sortable and filterable. Sub-tab **CMV**: active listings searchable by SKU, MLA or title, with the cost (ARS or USD) and VAT rate editable per row — saves through `POST /api/reporte/costos` (optional "rige desde" date), same table the P&L reads |
 | **Publicidad** | Ad performance with TACOS, ROAS, spend; sub-tab **Anuncios** shows per-item metrics via ML PADS API |
 | **Escalabilidad** | Composite score 0–100 with traffic-light indicator (green/yellow/red) |
 | **Competencia** | Two tabs: **Mis Categorías** (seller's own categories) and **Mercado** (market-wide search) |

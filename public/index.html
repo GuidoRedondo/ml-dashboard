@@ -1416,6 +1416,7 @@ tr.fam-hijo > td { background: rgba(99,102,241,.025); }
         <div style="display:flex;gap:6px">
           <button id="rentTabAnalisis" onclick="switchRentTab('analisis')" class="sync-btn" style="background:var(--accent)">📊 Análisis</button>
           <button id="rentTabLoQuePaso" onclick="switchRentTab('loquepaso')" class="sync-btn" title="P&amp;L real por producto del período seleccionado: envío que pagaste, publicidad PADS, IVA e IIBB">📆 Lo que pasó</button>
+          <button id="rentTabCmv" onclick="switchRentTab('cmv')" class="sync-btn" title="Buscá una publicación por SKU o MLA y cargale el costo a mano">🧾 CMV</button>
           <button id="rentTabPrecios" onclick="switchRentTab('precios')" class="sync-btn" title="A qué precio hay que vender cada publicación para llegar a la contribución marginal que buscás, con los costos reales de Mercado Libre">💲 Precios</button>
           <button id="rentTabSimulador" onclick="switchRentTab('simulador')" class="sync-btn">🧮 Simulador</button>
           <button id="rentTabDescuentos" onclick="switchRentTab('descuentos')" class="sync-btn">🏷️ Descuentos</button>
@@ -1428,6 +1429,7 @@ tr.fam-hijo > td { background: rgba(99,102,241,.025); }
       <div id="dolarCostosPanel" style="display:none;margin-bottom:18px"></div>
       <div id="rentabilidadContent"><div style="color:var(--muted);font-size:13px;padding:20px;text-align:center">Sincronizá primero para ver los datos</div></div>
       <div id="loQuePasoContent" style="display:none"></div>
+      <div id="cmvContent" style="display:none"></div>
       <div id="preciosContent" style="display:none"></div>
       <div id="simuladorContent" style="display:none"></div>
       <div id="descuentosContent" style="display:none"></div>
@@ -3076,6 +3078,7 @@ async function onAccountSelect(value) {
   _catVentasLoaded = false;
   window._abcFilter = 'todos';
   resetPrecios();
+  resetCmv();
   const syncBtn = document.getElementById('syncBtn');
   if (syncBtn) syncBtn.style.display = '';
   syncCondicionIvaSelectores();
@@ -3096,6 +3099,7 @@ async function selectClient(clientId, el) {
   _recData = null; _recHilos = {}; _recAbiertoId = null; _recMes = null;
   _expData = null;
   resetPrecios();
+  resetCmv();
   document.querySelectorAll('#clientSelector .nav-item').forEach(n => n.classList.remove('active'));
   if (el) el.classList.add('active');
   acsMostrarActiva();
@@ -8962,6 +8966,7 @@ function perfFilterMode(idx) {
 function switchRentTab(tab) {
   document.getElementById('rentabilidadContent').style.display = tab === 'analisis'   ? '' : 'none';
   document.getElementById('loQuePasoContent').style.display    = tab === 'loquepaso'  ? '' : 'none';
+  document.getElementById('cmvContent').style.display          = tab === 'cmv'        ? '' : 'none';
   document.getElementById('preciosContent').style.display      = tab === 'precios'    ? '' : 'none';
   document.getElementById('simuladorContent').style.display    = tab === 'simulador'  ? '' : 'none';
   document.getElementById('descuentosContent').style.display   = tab === 'descuentos' ? '' : 'none';
@@ -8970,6 +8975,7 @@ function switchRentTab(tab) {
   document.getElementById('combosContent').style.display       = tab === 'combos'     ? '' : 'none';
   document.getElementById('rentTabAnalisis').style.background   = tab === 'analisis'   ? 'var(--accent)' : 'var(--surface2)';
   document.getElementById('rentTabLoQuePaso').style.background  = tab === 'loquepaso'  ? 'var(--accent)' : 'var(--surface2)';
+  document.getElementById('rentTabCmv').style.background        = tab === 'cmv'        ? 'var(--accent)' : 'var(--surface2)';
   document.getElementById('rentTabPrecios').style.background    = tab === 'precios'    ? 'var(--accent)' : 'var(--surface2)';
   document.getElementById('rentTabSimulador').style.background  = tab === 'simulador'  ? 'var(--accent)' : 'var(--surface2)';
   document.getElementById('rentTabDescuentos').style.background = tab === 'descuentos' ? 'var(--accent)' : 'var(--surface2)';
@@ -8977,12 +8983,215 @@ function switchRentTab(tab) {
   document.getElementById('rentTabUmbrales').style.background   = tab === 'umbrales'   ? 'var(--accent)' : 'var(--surface2)';
   document.getElementById('rentTabCombos').style.background     = tab === 'combos'     ? 'var(--accent)' : 'var(--surface2)';
   if (tab === 'loquepaso')  loadLoQuePaso(false);
+  if (tab === 'cmv')        loadCmv();
   if (tab === 'precios')    loadPrecios();
   if (tab === 'simulador')  loadSimulador();
   if (tab === 'descuentos') loadDescuentos();
   if (tab === 'fees')       initVerificadorFees();
   if (tab === 'umbrales')   loadUmbrales();
   if (tab === 'combos')     loadCombos();
+}
+
+// ── CMV — carga de costos a mano, buscando por SKU o MLA ──────────────────────
+// Lista las publicaciones activas (items-activos) con el costo guardado en product_costs
+// y deja escribirlo fila por fila. Guarda en la misma tabla que lee el P&L, con el mismo
+// endpoint que el import de Excel: el cambio rige desde hoy (o desde la fecha elegida),
+// así que los meses cerrados no se mueven.
+window._cmvData     = null;
+window._cmvClientId = null;
+let _cmvBusqueda = '';
+let _cmvFiltro   = 'todos';   // todos | sin | con
+let _cmvLimite   = 200;
+let _cmvVigente  = '';        // 'YYYY-MM-DD' o vacío = rige desde hoy
+
+function resetCmv() {
+  window._cmvData = null; window._cmvClientId = null;
+  _cmvBusqueda = ''; _cmvFiltro = 'todos'; _cmvLimite = 200; _cmvVigente = '';
+  const panel = document.getElementById('cmvContent');
+  if (panel && panel.style.display !== 'none') loadCmv();
+}
+
+async function loadCmv(force) {
+  const cont = document.getElementById('cmvContent');
+  const client = getActiveClient();
+  if (!cont) return;
+  if (!client) { cont.innerHTML = '<div style="color:var(--muted);padding:30px;text-align:center">Seleccioná una cuenta</div>'; return; }
+  if (!force && window._cmvData && window._cmvClientId === client.id) { renderCmv(); return; }
+  cont.innerHTML = `<div style="color:var(--muted);padding:40px;text-align:center">Trayendo las publicaciones activas…<br>
+    <span style="font-size:11px">En cuentas grandes puede tardar un par de minutos.</span></div>`;
+  const r = await apiCall('GET', `/api/reporte/items-activos?client_id=${client.id}`).catch(() => null);
+  if (getActiveClient()?.id !== client.id) return;   // cambiaron de cuenta mientras cargaba
+  if (!r || r.error || !Array.isArray(r.items)) {
+    cont.innerHTML = `<div style="color:#ff5252;padding:30px;text-align:center">No se pudieron traer las publicaciones${r && r.error ? ' — ' + _cmvEsc(r.error) : ' (¿token de ML vencido?)'}.
+      <div style="margin-top:12px"><button class="sync-btn" onclick="loadCmv(true)">🔄 Reintentar</button></div></div>`;
+    return;
+  }
+  window._cmvData = r.items;
+  window._cmvClientId = client.id;
+  renderCmv();
+}
+
+const _cmvEsc = s => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+const _cmvFmt = n => n == null || n === '' ? '—' : '$' + Math.round(n).toLocaleString('es-AR');
+const _cmvTieneCosto = i => (parseFloat(i.costo_unit) || 0) > 0;
+const _cmvNorm = s => String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/-/g, '');
+
+// Busca en MLA (con o sin "MLA", con o sin guión), SKU y título. Varias palabras = todas tienen que estar.
+function _cmvFiltrar() {
+  const terminos = _cmvNorm(_cmvBusqueda).split(/[\s,;]+/).filter(Boolean);
+  return (window._cmvData || []).filter(i => {
+    if (_cmvFiltro === 'sin' && _cmvTieneCosto(i)) return false;
+    if (_cmvFiltro === 'con' && !_cmvTieneCosto(i)) return false;
+    if (!terminos.length) return true;
+    const heno = `${_cmvNorm(i.mla_id)} ${_cmvNorm(i.sku)} ${_cmvNorm(i.title)}`;
+    return terminos.every(t => heno.includes(t));
+  });
+}
+
+function _cmvKpisHtml() {
+  const data = window._cmvData || [];
+  const conCosto = data.filter(_cmvTieneCosto).length;
+  const pct = data.length ? Math.round(conCosto / data.length * 100) : 0;
+  const colorPct = pct >= 90 ? '#00e676' : pct >= 60 ? '#ff9100' : '#ff5252';
+  return `
+      <div class="kpi-card"><div class="kpi-label">Publicaciones activas</div><div class="kpi-value">${data.length}</div></div>
+      <div class="kpi-card"><div class="kpi-label">Con costo cargado</div><div class="kpi-value" style="color:${colorPct}">${conCosto} <span style="font-size:14px">(${pct}%)</span></div></div>
+      <div class="kpi-card"><div class="kpi-label">Sin costo</div><div class="kpi-value" style="color:${data.length - conCosto ? '#ff5252' : 'var(--text)'}">${data.length - conCosto}</div></div>`;
+}
+
+function _cmvRatioHtml(i) {
+  const costo = parseFloat(i.costo_unit) || 0;
+  const ratio = costo > 0 && i.price > 0 ? costo / i.price * 100 : null;
+  if (ratio == null) return '<span style="color:var(--muted)">—</span>';
+  const color = ratio >= 100 ? '#ff5252' : ratio >= 70 ? '#ff9100' : 'var(--text)';
+  return `<span style="color:${color};font-weight:${ratio >= 70 ? 700 : 400}">${ratio.toFixed(0)}%</span>`;
+}
+
+function renderCmv() {
+  const cont = document.getElementById('cmvContent');
+  if (!cont || !window._cmvData) return;
+  const btnF = (k, txt) => `<button class="sync-btn" onclick="_cmvSetFiltro('${k}')"
+      style="background:${_cmvFiltro === k ? 'var(--accent)' : 'var(--surface2)'}">${txt}</button>`;
+  cont.innerHTML = `
+    <div id="cmvKpis" class="kpi-grid" style="margin-bottom:16px">${_cmvKpisHtml()}</div>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px">
+      <input id="cmvBuscador" type="search" placeholder="🔎 Buscar por SKU, MLA o título…" value="${_cmvEsc(_cmvBusqueda)}"
+        oninput="_cmvBuscar(this.value)" autocomplete="off"
+        style="flex:1;min-width:240px;padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px;font-family:var(--font)">
+      ${btnF('todos', 'Todas')}${btnF('sin', '⚠️ Sin costo')}${btnF('con', '✅ Con costo')}
+      <label style="font-size:11px;color:var(--muted);display:flex;align-items:center;gap:6px"
+        title="Vacío = el costo nuevo rige desde hoy. Con fecha, los días anteriores a esa fecha conservan el costo viejo. Una publicación que nunca tuvo costo lo aplica para atrás igual.">
+        Rige desde <input id="cmvVigente" type="date" max="${ymd()}" value="${_cmvVigente}" onchange="_cmvVigente=this.value"
+          style="padding:5px 6px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:12px">
+      </label>
+      <button class="sync-btn" onclick="loadCmv(true)" title="Vuelve a traer las publicaciones de ML">🔄</button>
+    </div>
+    <div id="cmvTabla"></div>
+    <div style="font-size:11px;color:var(--muted);margin-top:10px">El costo se guarda al salir de la celda (Enter o Tab). Es el CMV unitario sin IVA que usa el P&amp;L.
+      Si lo cargás en USD, el costo en pesos sale de la cotización de <b>💵 Costos en USD</b>. Sólo aparecen publicaciones activas.</div>`;
+  _cmvRenderTabla();
+}
+
+function _cmvRenderTabla() {
+  const wrap = document.getElementById('cmvTabla');
+  if (!wrap) return;
+  const filas = _cmvFiltrar();
+  if (!filas.length) {
+    wrap.innerHTML = `<div style="color:var(--muted);padding:30px;text-align:center">${_cmvBusqueda ? 'Nada coincide con "' + _cmvEsc(_cmvBusqueda) + '".' : 'No hay publicaciones en este filtro.'}</div>`;
+    return;
+  }
+  const th = (txt, al) => `<th style="padding:9px 8px;text-align:${al || 'right'};font-size:11px;font-weight:600;white-space:nowrap;position:sticky;top:0;background:var(--surface2);color:var(--muted)">${txt}</th>`;
+  const td = 'padding:6px 8px;border-bottom:1px solid var(--border)';
+  const inp = 'padding:4px 6px;border-radius:6px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:12px;text-align:right;outline:none';
+  const visibles = filas.slice(0, _cmvLimite);
+  wrap.innerHTML = `
+    <div style="overflow-x:auto;border:1px solid var(--border);border-radius:10px">
+    <table style="width:100%;border-collapse:collapse;font-size:12px">
+      <thead><tr>${th('MLA', 'left')}${th('SKU', 'left')}${th('Título', 'left')}${th('Precio')}${th('Stock')}${th('Costo ARS')}${th('Costo USD')}${th('IVA')}${th('Costo / precio')}</tr></thead>
+      <tbody>${visibles.map(i => {
+        const costo = parseFloat(i.costo_unit) || 0;
+        const alic = parseFloat(i.alicuota_iva) || 21;
+        return `<tr id="cmvFila_${i.mla_id}" style="${costo > 0 ? '' : 'background:rgba(255,82,82,.06)'}">
+          <td style="${td};white-space:nowrap"><a href="https://articulo.mercadolibre.com.ar/MLA-${i.mla_id.replace(/^MLA/i, '')}" target="_blank" rel="noopener" style="color:var(--text)">${i.mla_id}</a></td>
+          <td style="${td};white-space:nowrap">${_cmvEsc(i.sku) || '<span style="color:var(--muted)">—</span>'}</td>
+          <td style="${td};max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${_cmvEsc(i.title)}">${_cmvEsc(i.title)}</td>
+          <td style="${td};text-align:right;white-space:nowrap">${_cmvFmt(i.price)}</td>
+          <td style="${td};text-align:right">${i.stock ?? '—'}</td>
+          <td style="${td};text-align:right"><input id="cmvArs_${i.mla_id}" type="number" min="0" step="0.01" value="${costo > 0 ? costo : ''}" placeholder="sin costo"
+              style="${inp};width:110px;font-weight:700" onkeydown="if(event.key==='Enter')this.blur()"
+              onchange="guardarCostoCmv('${i.mla_id}', {costo_unit: this.value})"></td>
+          <td style="${td};text-align:right"><input type="number" min="0" step="0.01" value="${i.costo_usd ?? ''}" placeholder="—"
+              style="${inp};width:80px" onkeydown="if(event.key==='Enter')this.blur()"
+              onchange="guardarCostoCmv('${i.mla_id}', {costo_usd: this.value})"></td>
+          <td style="${td};text-align:right"><select style="${inp}" onchange="guardarCostoCmv('${i.mla_id}', {alicuota_iva: this.value})">
+              <option value="21" ${alic === 21 ? 'selected' : ''}>21%</option>
+              <option value="10.5" ${alic === 10.5 ? 'selected' : ''}>10,5%</option></select></td>
+          <td id="cmvRatio_${i.mla_id}" style="${td};text-align:right">${_cmvRatioHtml(i)}</td>
+        </tr>`;
+      }).join('')}</tbody>
+    </table></div>
+    ${filas.length > visibles.length ? `<div style="text-align:center;margin-top:10px;font-size:12px;color:var(--muted)">
+      Mostrando ${visibles.length} de ${filas.length}. <button class="sync-btn" style="margin-left:8px" onclick="_cmvLimite+=200;_cmvRenderTabla()">Ver 200 más</button></div>` : ''}`;
+}
+
+let _cmvBuscarTimer = null;
+function _cmvBuscar(v) {
+  _cmvBusqueda = v;
+  _cmvLimite = 200;
+  clearTimeout(_cmvBuscarTimer);
+  _cmvBuscarTimer = setTimeout(_cmvRenderTabla, 150);
+}
+function _cmvSetFiltro(f) { _cmvFiltro = f; _cmvLimite = 200; renderCmv(); }
+
+// cambio = {costo_unit} | {costo_usd} | {alicuota_iva}. Siempre manda el costo en pesos de la
+// fila; costo_usd sólo cuando lo tocaron (si no viene, el server deja la publicación en
+// dólares mientras el costo en pesos no cambie, y la pasa a pesos si cambió).
+async function guardarCostoCmv(mla, cambio) {
+  const client = getActiveClient();
+  if (!client) { showToast('Seleccioná una cuenta'); return; }
+  const fila = (window._cmvData || []).find(i => i.mla_id === mla);
+  if (!fila) return;
+  const num = v => { const n = parseFloat(String(v ?? '').replace(',', '.')); return Number.isFinite(n) && n > 0 ? n : 0; };
+  const costoAntes = parseFloat(fila.costo_unit) || 0;
+  const payload = {
+    mla_id: mla, title: fila.title,
+    costo_unit: 'costo_unit' in cambio ? num(cambio.costo_unit) : costoAntes,
+    alicuota_iva: 'alicuota_iva' in cambio ? parseFloat(cambio.alicuota_iva) : (parseFloat(fila.alicuota_iva) || 21),
+    notas: fila.notas || '',
+  };
+  if ('costo_usd' in cambio) payload.costo_usd = num(cambio.costo_usd) || '';
+  const body = { client_id: client.id, costos: [payload] };
+  const desde = _cmvVigente;
+  if (desde) body.vigente_desde = desde;
+  const r = await apiCall('POST', '/api/reporte/costos', body).catch(() => null);
+  if (!r || r.error) { showToast('⚠️ No se pudo guardar el costo de ' + mla + (r && r.error ? ': ' + r.error : '')); _cmvRenderTabla(); return; }
+  if (r.sin_cotizacion) { showToast('⚠️ ' + r.aviso); _cmvRenderTabla(); return; }
+
+  // Mismo criterio que el server para saber si quedó en dólares.
+  const usd = 'costo_usd' in cambio ? (num(cambio.costo_usd) || null)
+            : (payload.costo_unit === costoAntes ? (fila.costo_usd ?? null) : null);
+  if (usd && 'costo_usd' in cambio) {
+    const d = await apiCall('GET', `/api/costos/dolar?client_id=${client.id}`).catch(() => null);
+    if (d?.cotizacion) fila.costo_unit = Math.round(usd * d.cotizacion * 100) / 100;
+  } else {
+    fila.costo_unit = payload.costo_unit;
+  }
+  fila.costo_usd = usd;
+  fila.alicuota_iva = payload.alicuota_iva;
+  fila.has_cost = true;
+  // Precios tiene su propia copia del CMV: que la vea al toque.
+  if (window._prcData && window._prcClientId === client.id) {
+    const p = window._prcData.find(x => x.id === mla);
+    if (p) { p.cmv = parseFloat(fila.costo_unit) || 0; p.hasCMV = p.cmv > 0; }
+  }
+  // Sin re-render de la tabla: se carga de corrido con Tab y redibujarla perdía el foco.
+  // Con el filtro "Sin costo" la fila queda a la vista hasta el próximo cambio de filtro.
+  const k = document.getElementById('cmvKpis'); if (k) k.innerHTML = _cmvKpisHtml();
+  const rc = document.getElementById('cmvRatio_' + mla); if (rc) rc.innerHTML = _cmvRatioHtml(fila);
+  const tr = document.getElementById('cmvFila_' + mla); if (tr) tr.style.background = _cmvTieneCosto(fila) ? '' : 'rgba(255,82,82,.06)';
+  const ia = document.getElementById('cmvArs_' + mla); if (ia && document.activeElement !== ia) ia.value = _cmvTieneCosto(fila) ? fila.costo_unit : '';
+  showToast('💾 ' + mla + ': costo ' + _cmvFmt(fila.costo_unit) + (usd ? ` (US$ ${usd})` : '')
+    + (desde ? ' desde el ' + desde.split('-').reverse().join('/') : ''));
 }
 
 // ── LO QUE PASÓ — P&L real por producto del período ───────────────────────────
