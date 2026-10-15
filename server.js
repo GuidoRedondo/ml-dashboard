@@ -3940,6 +3940,10 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
       effectiveDays = days;
     }
 
+    // Tiempo por etapa: en cuentas grandes (Tandil, ~2.800 órdenes/mes) esta vista tardaba
+    // 3 minutos y no se sabía dónde. Se loguea y viaja en la respuesta como tiempos_ms.
+    const _t0 = Date.now(), tiempos = {};
+    const marca = k => { tiempos[k] = Date.now() - _t0; };
     const [curData, prevData, itemsData] = await Promise.all([
       fetchAllOrders(uid, headers, fmt(curFrom), fmt(curTo)),
       fetchAllOrders(uid, headers, fmt(prevFrom), fmt(prevTo)),
@@ -3960,6 +3964,7 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
 
     const soldItemIds = Object.keys(salesByItem);
     let topItems = [];
+    marca('ordenes');
 
     // Totales de visitas — vía endpoint agregado de usuario (cuenta TODO el
     // catálogo, no solo ítems con ventas). Antes sumábamos per-item sobre
@@ -3992,7 +3997,9 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
 
     // ── IMPORTE RECIBIDO CALCULATION ──────────────────────────────────────────
     // Fetch shipping costs for all current orders
+    marca('visitas');
     const shippingCostMap = await fetchShippingCosts(curData.orders, headers);
+    marca('envios');
 
     let totalPaidAmount    = 0; // what buyers actually paid
     let totalSaleFee       = 0; // ML commission
@@ -4182,6 +4189,7 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
     });
 
     // ── RENTABILIDAD ─────────────────────────────────────────────────────────
+    marca('agregados');
     // Cancelled orders (for anulaciones y reembolsos)
     let totalCancelled = 0, cancelledCount = 0;
     try {
@@ -4290,6 +4298,7 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
     // Fetch SKU for all items in byItem
     const byItemIds = Object.keys(byItem);
     const skuMapDash = {};
+    marca('cancelados_y_publi');
     const manualSkuDash = await loadSkuManual(clientId);
     for (let i = 0; i < byItemIds.length; i += 20) {
       const batch = byItemIds.slice(i, i + 20);
@@ -4322,6 +4331,7 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
     // Calcular CMV desde product_costs
     let cmv_total_dash = 0, cmv_cubierto_dash = 0;
     // Cada venta al costo del día en que se vendió (costos en dólares / cambios de costo).
+    marca('skus');
     const costosDash = await cargarCostos(clientId);
     const costsMapDash = costosDelPeriodo(costosDash, curData.orders);
     const alicMapDash = costosDash.alic;
@@ -4605,7 +4615,10 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
       ? diasCerrados.reduce((s, v) => s + v, 0) / diasCerrados.length
       : null;
 
+    marca('total');
+    console.log(`[DASHBOARD TIEMPOS] client=${clientId} ordenes=${curData.orders.length} items=${soldItemIds.length}`, JSON.stringify(tiempos));
     res.json({
+      tiempos_ms: tiempos,
       user,
       stats: {
         total_orders: curData.orders.length, total_amount: curData.amount,
