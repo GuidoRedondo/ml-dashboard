@@ -2016,6 +2016,7 @@ async function fetchVisits(itemIds, days, headers) {
 // las que no están en la caché vigente; dos pedidos de la misma cuenta y ventana se
 // esperan en vez de duplicar las llamadas (ML responde 429 enseguida).
 const VISITAS_CACHE_HORAS = 6;
+const VISITAS_DASH_ESPERA_MS = 20000;
 const _visitasVuelo = new Map();
 async function visitasItemsCacheadas(clientId, ids, dias, headers) {
   const clave = clientId + '|' + dias;
@@ -3978,12 +3979,16 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
 
     // Visitas per-item (solo ítems con ventas) — usado para la conversión por
     // producto en topItems. El total no se calcula sumando esto.
+    // Es una llamada a ML por publicación: en Tandil (678 publicaciones con ventas) eran 83 de
+    // los 100 s de la vista, y el cliente la abandonaba creyendo que no andaba. Salen de
+    // visitas_items_cache (6 h, la misma que usa Publicaciones); si no están y ML tarda más de
+    // VISITAS_DASH_ESPERA_MS, la vista sale sin ellas (conversión por producto "—") y la caché
+    // se sigue llenando de fondo, así la próxima carga ya las trae.
     if (soldItemIds.length > 0) {
-      const allVisitsMap = {};
-      for (let i = 0; i < soldItemIds.length; i += 20) {
-        const batch = soldItemIds.slice(i, i + 20);
-        Object.assign(allVisitsMap, await fetchVisits(batch, effectiveDays, headers));
-      }
+      const pedido = visitasItemsCacheadas(clientId, soldItemIds, effectiveDays, headers).catch(() => ({}));
+      const allVisitsMap = await Promise.race([
+        pedido, new Promise(ok => setTimeout(() => ok({}), VISITAS_DASH_ESPERA_MS)),
+      ]);
       topItems = Object.values(salesByItem).map(item => {
         const curVisits = allVisitsMap[item.id] || 0;
         const conv = curVisits > 0 ? ((item.units / curVisits) * 100).toFixed(1) : '0.0';
