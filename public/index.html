@@ -8994,19 +8994,23 @@ function switchRentTab(tab) {
 
 // ── CMV — carga de costos a mano, buscando por SKU o MLA ──────────────────────
 // Lista las publicaciones activas (items-activos) con el costo guardado en product_costs
-// y deja escribirlo fila por fila. Guarda en la misma tabla que lee el P&L, con el mismo
-// endpoint que el import de Excel: el cambio rige desde hoy (o desde la fecha elegida),
-// así que los meses cerrados no se mueven.
+// y deja escribirlo fila por fila, o bajar la planilla, completarla y subirla. Guarda en la
+// misma tabla que lee el P&L, con el mismo endpoint que el import de Excel: el cambio rige
+// desde hoy (o desde la fecha elegida), así que los meses cerrados no se mueven.
+//
+// Un SKU es un producto: el costo que se carga en una publicación se copia a todas las
+// publicaciones activas con el mismo SKU (a mano y desde la planilla).
 window._cmvData     = null;
 window._cmvClientId = null;
 let _cmvBusqueda = '';
 let _cmvFiltro   = 'todos';   // todos | sin | con
 let _cmvLimite   = 200;
 let _cmvVigente  = '';        // 'YYYY-MM-DD' o vacío = rige desde hoy
+let _cmvImport   = null;      // planilla leída, esperando confirmación
 
 function resetCmv() {
   window._cmvData = null; window._cmvClientId = null;
-  _cmvBusqueda = ''; _cmvFiltro = 'todos'; _cmvLimite = 200; _cmvVigente = '';
+  _cmvBusqueda = ''; _cmvFiltro = 'todos'; _cmvLimite = 200; _cmvVigente = ''; _cmvImport = null;
   const panel = document.getElementById('cmvContent');
   if (panel && panel.style.display !== 'none') loadCmv();
 }
@@ -9028,6 +9032,7 @@ async function loadCmv(force) {
   }
   window._cmvData = r.items;
   window._cmvClientId = client.id;
+  _cmvImport = null;
   renderCmv();
 }
 
@@ -9035,6 +9040,14 @@ const _cmvEsc = s => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').
 const _cmvFmt = n => n == null || n === '' ? '—' : '$' + Math.round(n).toLocaleString('es-AR');
 const _cmvTieneCosto = i => (parseFloat(i.costo_unit) || 0) > 0;
 const _cmvNorm = s => String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/-/g, '');
+const _cmvSkuKey = s => String(s ?? '').trim().toUpperCase();
+
+// Publicaciones activas por SKU (sin SKU no agrupa nada).
+function _cmvPorSku() {
+  const m = {};
+  (window._cmvData || []).forEach(i => { const k = _cmvSkuKey(i.sku); if (k) (m[k] = m[k] || []).push(i); });
+  return m;
+}
 
 // Busca en MLA (con o sin "MLA", con o sin guión), SKU y título. Varias palabras = todas tienen que estar.
 function _cmvFiltrar() {
@@ -9074,20 +9087,25 @@ function renderCmv() {
       style="background:${_cmvFiltro === k ? 'var(--accent)' : 'var(--surface2)'}">${txt}</button>`;
   cont.innerHTML = `
     <div id="cmvKpis" class="kpi-grid" style="margin-bottom:16px">${_cmvKpisHtml()}</div>
+    <div id="cmvImportPanel">${_cmvImportHtml()}</div>
     <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px">
       <input id="cmvBuscador" type="search" placeholder="🔎 Buscar por SKU, MLA o título…" value="${_cmvEsc(_cmvBusqueda)}"
         oninput="_cmvBuscar(this.value)" autocomplete="off"
         style="flex:1;min-width:240px;padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px;font-family:var(--font)">
       ${btnF('todos', 'Todas')}${btnF('sin', '⚠️ Sin costo')}${btnF('con', '✅ Con costo')}
       <label style="font-size:11px;color:var(--muted);display:flex;align-items:center;gap:6px"
-        title="Vacío = el costo nuevo rige desde hoy. Con fecha, los días anteriores a esa fecha conservan el costo viejo. Una publicación que nunca tuvo costo lo aplica para atrás igual.">
+        title="Vacío = el costo nuevo rige desde hoy. Con fecha, los días anteriores a esa fecha conservan el costo viejo. Una publicación que nunca tuvo costo lo aplica para atrás igual. Vale para lo que cargues a mano y para la planilla.">
         Rige desde <input id="cmvVigente" type="date" max="${ymd()}" value="${_cmvVigente}" onchange="_cmvVigente=this.value"
           style="padding:5px 6px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:12px">
       </label>
+      <button class="sync-btn" onclick="bajarPlanillaCmv()" title="Baja lo que estás viendo (mismo filtro y búsqueda) para completarlo en Excel">📥 Bajar planilla</button>
+      <label class="sync-btn" style="cursor:pointer" title="Subí la planilla completada. Antes de guardar te muestra qué va a cambiar">📤 Subir planilla
+        <input type="file" accept=".xlsx,.xls,.csv" style="display:none" onchange="subirPlanillaCmv(this)"></label>
       <button class="sync-btn" onclick="loadCmv(true)" title="Vuelve a traer las publicaciones de ML">🔄</button>
     </div>
     <div id="cmvTabla"></div>
     <div style="font-size:11px;color:var(--muted);margin-top:10px">El costo se guarda al salir de la celda (Enter o Tab). Es el CMV unitario sin IVA que usa el P&amp;L.
+      <b>Lo que cargás en una publicación se copia a todas las que tienen el mismo SKU</b> (el ×N al lado del SKU dice cuántas son).
       Si lo cargás en USD, el costo en pesos sale de la cotización de <b>💵 Costos en USD</b>. Sólo aparecen publicaciones activas.</div>`;
   _cmvRenderTabla();
 }
@@ -9100,6 +9118,7 @@ function _cmvRenderTabla() {
     wrap.innerHTML = `<div style="color:var(--muted);padding:30px;text-align:center">${_cmvBusqueda ? 'Nada coincide con "' + _cmvEsc(_cmvBusqueda) + '".' : 'No hay publicaciones en este filtro.'}</div>`;
     return;
   }
+  const porSku = _cmvPorSku();
   const th = (txt, al) => `<th style="padding:9px 8px;text-align:${al || 'right'};font-size:11px;font-weight:600;white-space:nowrap;position:sticky;top:0;background:var(--surface2);color:var(--muted)">${txt}</th>`;
   const td = 'padding:6px 8px;border-bottom:1px solid var(--border)';
   const inp = 'padding:4px 6px;border-radius:6px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:12px;text-align:right;outline:none';
@@ -9111,19 +9130,24 @@ function _cmvRenderTabla() {
       <tbody>${visibles.map(i => {
         const costo = parseFloat(i.costo_unit) || 0;
         const alic = parseFloat(i.alicuota_iva) || 21;
+        const n = (porSku[_cmvSkuKey(i.sku)] || []).length;
+        const skuHtml = i.sku
+          ? `<span style="cursor:pointer" onclick="_cmvBuscarSku('${_cmvEsc(i.sku)}')" title="Ver todas las publicaciones con este SKU">${_cmvEsc(i.sku)}</span>`
+            + (n > 1 ? ` <span style="font-size:10px;font-weight:700;padding:1px 5px;border-radius:6px;background:var(--surface2);color:var(--muted)" title="${n} publicaciones activas con este SKU: el costo se carga en todas juntas">×${n}</span>` : '')
+          : '<span style="color:var(--muted)">—</span>';
         return `<tr id="cmvFila_${i.mla_id}" style="${costo > 0 ? '' : 'background:rgba(255,82,82,.06)'}">
           <td style="${td};white-space:nowrap"><a href="https://articulo.mercadolibre.com.ar/MLA-${i.mla_id.replace(/^MLA/i, '')}" target="_blank" rel="noopener" style="color:var(--text)">${i.mla_id}</a></td>
-          <td style="${td};white-space:nowrap">${_cmvEsc(i.sku) || '<span style="color:var(--muted)">—</span>'}</td>
+          <td style="${td};white-space:nowrap">${skuHtml}</td>
           <td style="${td};max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${_cmvEsc(i.title)}">${_cmvEsc(i.title)}</td>
           <td style="${td};text-align:right;white-space:nowrap">${_cmvFmt(i.price)}</td>
           <td style="${td};text-align:right">${i.stock ?? '—'}</td>
           <td style="${td};text-align:right"><input id="cmvArs_${i.mla_id}" type="number" min="0" step="0.01" value="${costo > 0 ? costo : ''}" placeholder="sin costo"
               style="${inp};width:110px;font-weight:700" onkeydown="if(event.key==='Enter')this.blur()"
               onchange="guardarCostoCmv('${i.mla_id}', {costo_unit: this.value})"></td>
-          <td style="${td};text-align:right"><input type="number" min="0" step="0.01" value="${i.costo_usd ?? ''}" placeholder="—"
+          <td style="${td};text-align:right"><input id="cmvUsd_${i.mla_id}" type="number" min="0" step="0.01" value="${i.costo_usd ?? ''}" placeholder="—"
               style="${inp};width:80px" onkeydown="if(event.key==='Enter')this.blur()"
               onchange="guardarCostoCmv('${i.mla_id}', {costo_usd: this.value})"></td>
-          <td style="${td};text-align:right"><select style="${inp}" onchange="guardarCostoCmv('${i.mla_id}', {alicuota_iva: this.value})">
+          <td style="${td};text-align:right"><select id="cmvIva_${i.mla_id}" style="${inp}" onchange="guardarCostoCmv('${i.mla_id}', {alicuota_iva: this.value})">
               <option value="21" ${alic === 21 ? 'selected' : ''}>21%</option>
               <option value="10.5" ${alic === 10.5 ? 'selected' : ''}>10,5%</option></select></td>
           <td id="cmvRatio_${i.mla_id}" style="${td};text-align:right">${_cmvRatioHtml(i)}</td>
@@ -9141,57 +9165,253 @@ function _cmvBuscar(v) {
   clearTimeout(_cmvBuscarTimer);
   _cmvBuscarTimer = setTimeout(_cmvRenderTabla, 150);
 }
+function _cmvBuscarSku(sku) {
+  _cmvBusqueda = sku; _cmvFiltro = 'todos'; _cmvLimite = 200;
+  renderCmv();
+}
 function _cmvSetFiltro(f) { _cmvFiltro = f; _cmvLimite = 200; renderCmv(); }
 
-// cambio = {costo_unit} | {costo_usd} | {alicuota_iva}. Siempre manda el costo en pesos de la
-// fila; costo_usd sólo cuando lo tocaron (si no viene, el server deja la publicación en
-// dólares mientras el costo en pesos no cambie, y la pasa a pesos si cambió).
-async function guardarCostoCmv(mla, cambio) {
+// Redibuja una fila en su lugar (inputs, ratio, fondo) sin tocar el resto de la tabla:
+// se carga de corrido con Tab y redibujar todo perdía el foco.
+function _cmvPintarFila(i) {
+  const tieneCosto = _cmvTieneCosto(i);
+  const ia = document.getElementById('cmvArs_' + i.mla_id);
+  if (ia && document.activeElement !== ia) ia.value = tieneCosto ? i.costo_unit : '';
+  const iu = document.getElementById('cmvUsd_' + i.mla_id);
+  if (iu && document.activeElement !== iu) iu.value = i.costo_usd ?? '';
+  const iv = document.getElementById('cmvIva_' + i.mla_id);
+  if (iv) iv.value = String(parseFloat(i.alicuota_iva) || 21);
+  const rc = document.getElementById('cmvRatio_' + i.mla_id); if (rc) rc.innerHTML = _cmvRatioHtml(i);
+  const tr = document.getElementById('cmvFila_' + i.mla_id); if (tr) tr.style.background = tieneCosto ? '' : 'rgba(255,82,82,.06)';
+}
+
+// Manda los costos al server y, si salió bien, actualiza las filas en memoria y en pantalla.
+// cambios = [{ fila, costo_unit, costo_usd (null = pesos), alicuota_iva }]
+async function _cmvGuardar(cambios) {
   const client = getActiveClient();
-  if (!client) { showToast('Seleccioná una cuenta'); return; }
+  if (!client) { showToast('Seleccioná una cuenta'); return null; }
+  const body = {
+    client_id: client.id,
+    // costo_usd va siempre: vacío deja la publicación en pesos, un número la dolariza.
+    costos: cambios.map(c => ({ mla_id: c.fila.mla_id, title: c.fila.title, costo_unit: c.costo_unit,
+      costo_usd: c.costo_usd || '', alicuota_iva: c.alicuota_iva, notas: c.notas ?? c.fila.notas ?? '' })),
+  };
+  if (_cmvVigente) body.vigente_desde = _cmvVigente;
+  const r = await apiCall('POST', '/api/reporte/costos', body).catch(() => null);
+  if (!r || r.error) return { error: (r && r.error) || 'No se pudo guardar' };
+
+  // Las dolarizadas: el costo en pesos lo calculó el server con la cotización del cliente.
+  let cot = null;
+  if (cambios.some(c => c.costo_usd)) {
+    const d = await apiCall('GET', `/api/costos/dolar?client_id=${client.id}`).catch(() => null);
+    cot = d?.cotizacion || null;
+  }
+  cambios.forEach(c => {
+    if (c.costo_usd && !cot) return;   // el server no la guardó (sin cotización)
+    const f = c.fila;
+    f.costo_unit = c.costo_usd ? Math.round(c.costo_usd * cot * 100) / 100 : c.costo_unit;
+    f.costo_usd = c.costo_usd || null;
+    f.alicuota_iva = c.alicuota_iva;
+    if (c.notas != null) f.notas = c.notas;
+    f.has_cost = true;
+    // Precios tiene su propia copia del CMV: que la vea al toque.
+    if (window._prcData && window._prcClientId === client.id) {
+      const p = window._prcData.find(x => x.id === f.mla_id);
+      if (p) { p.cmv = parseFloat(f.costo_unit) || 0; p.hasCMV = p.cmv > 0; }
+    }
+    _cmvPintarFila(f);
+  });
+  const k = document.getElementById('cmvKpis'); if (k) k.innerHTML = _cmvKpisHtml();
+  return r;
+}
+
+// cambio = {costo_unit} | {costo_usd} | {alicuota_iva}. El resultado se copia a todas las
+// publicaciones activas con el mismo SKU: es el mismo producto, tiene el mismo costo.
+async function guardarCostoCmv(mla, cambio) {
   const fila = (window._cmvData || []).find(i => i.mla_id === mla);
   if (!fila) return;
-  const num = v => { const n = parseFloat(String(v ?? '').replace(',', '.')); return Number.isFinite(n) && n > 0 ? n : 0; };
-  const costoAntes = parseFloat(fila.costo_unit) || 0;
-  const payload = {
-    mla_id: mla, title: fila.title,
-    costo_unit: 'costo_unit' in cambio ? num(cambio.costo_unit) : costoAntes,
-    alicuota_iva: 'alicuota_iva' in cambio ? parseFloat(cambio.alicuota_iva) : (parseFloat(fila.alicuota_iva) || 21),
-    notas: fila.notas || '',
-  };
-  if ('costo_usd' in cambio) payload.costo_usd = num(cambio.costo_usd) || '';
-  const body = { client_id: client.id, costos: [payload] };
-  const desde = _cmvVigente;
-  if (desde) body.vigente_desde = desde;
-  const r = await apiCall('POST', '/api/reporte/costos', body).catch(() => null);
-  if (!r || r.error) { showToast('⚠️ No se pudo guardar el costo de ' + mla + (r && r.error ? ': ' + r.error : '')); _cmvRenderTabla(); return; }
-  if (r.sin_cotizacion) { showToast('⚠️ ' + r.aviso); _cmvRenderTabla(); return; }
+  const num = v => usdDeCelda(v) || 0;
+  let costoUnit = parseFloat(fila.costo_unit) || 0;
+  let usd = fila.costo_usd || null;
+  if ('costo_unit' in cambio) { costoUnit = num(cambio.costo_unit); usd = null; }   // escribió pesos → pasa a pesos
+  if ('costo_usd' in cambio)  { usd = num(cambio.costo_usd) || null; }
+  const alic = 'alicuota_iva' in cambio ? parseFloat(cambio.alicuota_iva) : (parseFloat(fila.alicuota_iva) || 21);
 
-  // Mismo criterio que el server para saber si quedó en dólares.
-  const usd = 'costo_usd' in cambio ? (num(cambio.costo_usd) || null)
-            : (payload.costo_unit === costoAntes ? (fila.costo_usd ?? null) : null);
-  if (usd && 'costo_usd' in cambio) {
-    const d = await apiCall('GET', `/api/costos/dolar?client_id=${client.id}`).catch(() => null);
-    if (d?.cotizacion) fila.costo_unit = Math.round(usd * d.cotizacion * 100) / 100;
-  } else {
-    fila.costo_unit = payload.costo_unit;
+  const sku = _cmvSkuKey(fila.sku);
+  const filas = sku ? (_cmvPorSku()[sku] || [fila]) : [fila];
+  const r = await _cmvGuardar(filas.map(f => ({ fila: f, costo_unit: costoUnit, costo_usd: usd, alicuota_iva: alic })));
+  if (!r || r.error) { showToast('⚠️ No se pudo guardar el costo de ' + mla + (r?.error ? ': ' + r.error : '')); _cmvPintarFila(fila); return; }
+  if (r.sin_cotizacion) { showToast('⚠️ ' + r.aviso); _cmvPintarFila(fila); return; }
+  const otras = filas.length - 1;
+  showToast('💾 ' + (sku ? 'SKU ' + fila.sku : mla) + ': costo ' + _cmvFmt(fila.costo_unit) + (usd ? ` (US$ ${usd})` : '')
+    + (otras ? ` — en ${filas.length} publicaciones` : '')
+    + (_cmvVigente ? ' desde el ' + _cmvVigente.split('-').reverse().join('/') : ''));
+}
+
+// ── Planilla: bajar y subir ──
+// Las columnas son las mismas que lee la subida, así el archivo hace ida y vuelta sin tocarle nada.
+function bajarPlanillaCmv() {
+  const filas = _cmvFiltrar();
+  if (!filas.length) { showToast('No hay filas para bajar'); return; }
+  const rows = filas.map(i => ({
+    'MLA': i.mla_id,
+    'SKU': i.sku || '',
+    'Título': i.title || '',
+    'Precio': i.price || '',
+    'Stock': i.stock ?? '',
+    'Costo ARS': _cmvTieneCosto(i) ? parseFloat(i.costo_unit) : '',
+    'Costo USD': i.costo_usd ?? '',
+    'IVA %': parseFloat(i.alicuota_iva) || 21,
+    'Notas': i.notas || '',
+  }));
+  const ws = XLSX.utils.json_to_sheet(rows);
+  ws['!cols'] = [{ wch: 15 }, { wch: 16 }, { wch: 55 }, { wch: 11 }, { wch: 8 }, { wch: 12 }, { wch: 11 }, { wch: 7 }, { wch: 25 }];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'CMV');
+  const nombre = String(getActiveClient()?.name || 'cliente').replace(/[^\w\-]+/g, '_');
+  XLSX.writeFile(wb, `CMV_${nombre}_${ymd()}.xlsx`);
+  showToast(`📥 ${filas.length} publicaciones. Completá "Costo ARS" (o "Costo USD") y subila. Con un SKU sin MLA alcanza: se carga en todas sus publicaciones`);
+}
+
+// Lee la planilla y arma qué va a cambiar, sin guardar: lo muestra para confirmar.
+// Cada fila trae MLA, SKU o los dos. Reglas:
+//  - Fila con MLA y costo → ese costo para esa publicación.
+//  - Fila con SKU y costo → ese costo para todas las publicaciones activas con el SKU que la
+//    planilla no traiga con su propio costo. Si el mismo SKU viene con costos distintos, no se
+//    copia a ninguna y se avisa (las filas con MLA explícito se guardan igual).
+//  - Sólo se guardan las publicaciones cuyo costo, moneda o IVA cambia.
+async function subirPlanillaCmv(input) {
+  const file = input.files[0];
+  input.value = '';
+  if (!file || !window._cmvData) return;
+  try {
+    const wb = XLSX.read(await file.arrayBuffer(), { type: 'array' });
+    const raw = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, defval: '' });
+    const hRow = raw.slice(0, 8).findIndex(r => r.some(c => /^(mla|sku)/i.test(String(c).trim())));
+    if (hRow < 0) { showToast('❌ No encontré los encabezados: la planilla tiene que tener columna MLA o SKU'); return; }
+    const h = raw[hRow].map(x => String(x || '').toLowerCase().trim());
+    const col = pred => h.findIndex(pred);
+    const cMla  = col(x => x.startsWith('mla') || x === 'publicación' || x === 'item_id');
+    const cSku  = col(x => x.startsWith('sku'));
+    const cUsd  = col(x => x.includes('usd') || x.includes('dólar') || x.includes('dolar'));
+    const cArs  = col((x, i) => i !== cUsd && (x.includes('costo') || x.includes('cmv')));
+    const cIva  = col(x => x.includes('iva') || x.includes('alícuota') || x.includes('alicuota'));
+    const cNota = col(x => x.includes('nota'));
+    if (cMla < 0 && cSku < 0) { showToast('❌ Falta la columna MLA o SKU'); return; }
+    if (cArs < 0 && cUsd < 0) { showToast('❌ Falta la columna de costo ("Costo ARS" o "Costo USD")'); return; }
+
+    const porMla = Object.fromEntries(window._cmvData.map(i => [i.mla_id, i]));
+    const porSku = _cmvPorSku();
+    const directos = {};          // mla → valor
+    const skuValores = {};        // SKU → [valor, ...]
+    const noActivas = [], skuDesconocidos = new Set();
+    raw.slice(hRow + 1).forEach(r => {
+      const mla = cMla >= 0 ? String(r[cMla] || '').trim().toUpperCase().replace(/^MLA-?/, 'MLA') : '';
+      const sku = cSku >= 0 ? _cmvSkuKey(r[cSku]) : '';
+      const usd = cUsd >= 0 ? usdDeCelda(r[cUsd]) : null;
+      const ars = cArs >= 0 ? (usdDeCelda(r[cArs]) || 0) : 0;
+      if (!(ars > 0 || usd > 0) || (!mla.startsWith('MLA') && !sku)) return;
+      const iva = cIva >= 0 ? parseFloat(String(r[cIva]).replace(/[%\s]/g, '').replace(',', '.')) : NaN;
+      const v = { costo_unit: usd ? 0 : ars, costo_usd: usd || null,
+                  alicuota_iva: [10.5, 21].includes(iva) ? iva : null,
+                  notas: cNota >= 0 ? String(r[cNota] || '').trim() : null,
+                  mla: mla.startsWith('MLA') ? mla : null };
+      if (mla.startsWith('MLA')) {
+        directos[mla] = v;
+        if (!porMla[mla]) noActivas.push(mla);
+      }
+      if (sku) {
+        (skuValores[sku] = skuValores[sku] || []).push(v);
+        if (!porSku[sku]) skuDesconocidos.add(sku);
+      }
+    });
+
+    const mismoValor = (a, b) => a.costo_usd === b.costo_usd && (a.costo_usd || a.costo_unit === b.costo_unit);
+    // ¿El valor v deja a la publicación f como ya está?
+    const igualA = (f, v) => (v.costo_usd ? f.costo_usd === v.costo_usd : (!f.costo_usd && (parseFloat(f.costo_unit) || 0) === v.costo_unit))
+      && (v.alicuota_iva ?? (parseFloat(f.alicuota_iva) || 21)) === (parseFloat(f.alicuota_iva) || 21)
+      && (v.notas == null || v.notas === (f.notas || ''));
+
+    // Valor de cada SKU. La planilla bajada trae el costo actual en todas las filas: si en un
+    // SKU de 3 publicaciones cambiaron una sola, manda la que cambió (las otras dos traen el
+    // costo viejo, no son una decisión). Si cambiaron varias a valores distintos, es conflicto.
+    const conflictos = [];
+    const skuUnico = {};
+    Object.entries(skuValores).forEach(([sku, vs]) => {
+      const nuevos = vs.filter(v => !v.mla || !porMla[v.mla] || !igualA(porMla[v.mla], v));
+      if (!nuevos.length) return;   // nada nuevo para este SKU
+      if (nuevos.every(v => mismoValor(v, nuevos[0]))) skuUnico[sku] = nuevos[0];
+      else conflictos.push(sku);
+    });
+
+    // Destino por publicación: el valor de su SKU si lo hay, si no su fila explícita.
+    const cambios = [];
+    let porSkuN = 0, sinCambio = 0;
+    window._cmvData.forEach(f => {
+      const vSku = skuUnico[_cmvSkuKey(f.sku)];
+      const v = vSku || directos[f.mla_id];
+      if (!v) return;
+      const viaSku = !!vSku && (!directos[f.mla_id] || !mismoValor(directos[f.mla_id], vSku));
+      const alic = v.alicuota_iva ?? (parseFloat(f.alicuota_iva) || 21);
+      if (igualA(f, v)) { sinCambio++; return; }
+      if (viaSku) porSkuN++;
+      cambios.push({ fila: f, costo_unit: v.costo_unit, costo_usd: v.costo_usd, alicuota_iva: alic, notas: v.notas, viaSku });
+    });
+    // MLA que no están activas: se guardan igual (el P&L las usa si vendieron).
+    noActivas.forEach(mla => {
+      const v = directos[mla];
+      cambios.push({ fila: { mla_id: mla, title: '', notas: '' }, costo_unit: v.costo_unit, costo_usd: v.costo_usd,
+                     alicuota_iva: v.alicuota_iva ?? 21, notas: v.notas, noActiva: true });
+    });
+
+    _cmvImport = { archivo: file.name, cambios, porSkuN, sinCambio, conflictos, noActivas, skuDesconocidos: [...skuDesconocidos] };
+    const p = document.getElementById('cmvImportPanel');
+    if (p) p.innerHTML = _cmvImportHtml();
+  } catch (e) {
+    console.error('[CMV PLANILLA]', e);
+    showToast('❌ No se pudo leer la planilla: ' + e.message);
   }
-  fila.costo_usd = usd;
-  fila.alicuota_iva = payload.alicuota_iva;
-  fila.has_cost = true;
-  // Precios tiene su propia copia del CMV: que la vea al toque.
-  if (window._prcData && window._prcClientId === client.id) {
-    const p = window._prcData.find(x => x.id === mla);
-    if (p) { p.cmv = parseFloat(fila.costo_unit) || 0; p.hasCMV = p.cmv > 0; }
+}
+
+function _cmvImportHtml() {
+  const imp = _cmvImport;
+  if (!imp) return '';
+  const lista = (arr, max = 12) => arr.slice(0, max).map(_cmvEsc).join(', ') + (arr.length > max ? ` y ${arr.length - max} más` : '');
+  const cambian = imp.cambios.length;
+  const muestra = imp.cambios.filter(c => !c.noActiva).slice(0, 8).map(c => {
+    const antes = _cmvTieneCosto(c.fila) ? _cmvFmt(c.fila.costo_unit) + (c.fila.costo_usd ? ` (US$ ${c.fila.costo_usd})` : '') : 'sin costo';
+    const despues = c.costo_usd ? `US$ ${c.costo_usd}` : _cmvFmt(c.costo_unit);
+    return `<div>${c.fila.mla_id}${c.fila.sku ? ' · ' + _cmvEsc(c.fila.sku) : ''}: ${antes} → <b>${despues}</b>${c.viaSku ? ' <span style="color:var(--muted)">(por SKU)</span>' : ''}</div>`;
+  }).join('');
+  return `<div style="background:var(--surface);border:1px solid var(--accent);border-radius:12px;padding:14px 16px;margin-bottom:14px;font-size:12px">
+    <div style="font-weight:700;font-size:13px;margin-bottom:6px">📤 ${_cmvEsc(imp.archivo)}</div>
+    ${cambian
+      ? `<div><b>${cambian}</b> publicaciones cambian de costo${imp.porSkuN ? `, <b>${imp.porSkuN}</b> de ellas completadas por SKU` : ''}.
+           ${imp.sinCambio ? `<span style="color:var(--muted)">${imp.sinCambio} quedan igual.</span>` : ''}
+           ${_cmvVigente ? `Rigen desde el <b>${_cmvVigente.split('-').reverse().join('/')}</b>.` : 'Rigen desde hoy.'}</div>
+         <div style="margin:8px 0;color:var(--muted);line-height:1.6">${muestra}${cambian > 8 ? `<div>…</div>` : ''}</div>`
+      : `<div>No hay costos nuevos: ${imp.sinCambio ? `las ${imp.sinCambio} publicaciones de la planilla ya tienen ese costo.` : 'la planilla no trae ningún costo cargado.'}</div>`}
+    ${imp.conflictos.length ? `<div style="color:#ff9100;margin-top:4px">⚠️ SKU con costos distintos en la planilla, no se copiaron a sus publicaciones: ${lista(imp.conflictos)}</div>` : ''}
+    ${imp.noActivas.length ? `<div style="color:var(--muted);margin-top:4px">${imp.noActivas.length} MLA no están activas; su costo se guarda igual: ${lista(imp.noActivas, 6)}</div>` : ''}
+    ${imp.skuDesconocidos.length ? `<div style="color:var(--muted);margin-top:4px">SKU sin publicaciones activas (no se cargó nada): ${lista(imp.skuDesconocidos)}</div>` : ''}
+    <div style="display:flex;gap:8px;margin-top:10px">
+      ${cambian ? `<button class="sync-btn" style="background:var(--accent);color:#292929;font-weight:700" onclick="confirmarPlanillaCmv(this)">💾 Guardar ${cambian} costos</button>` : ''}
+      <button class="sync-btn" onclick="_cmvImport=null;document.getElementById('cmvImportPanel').innerHTML=''">${cambian ? 'Cancelar' : 'Cerrar'}</button>
+    </div></div>`;
+}
+
+async function confirmarPlanillaCmv(btn) {
+  if (!_cmvImport?.cambios.length) return;
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Guardando…'; }
+  const r = await _cmvGuardar(_cmvImport.cambios);
+  if (!r || r.error) {
+    showToast('❌ No se guardó la planilla' + (r?.error ? ': ' + r.error : ''));
+    if (btn) { btn.disabled = false; btn.textContent = `💾 Guardar ${_cmvImport.cambios.length} costos`; }
+    return;
   }
-  // Sin re-render de la tabla: se carga de corrido con Tab y redibujarla perdía el foco.
-  // Con el filtro "Sin costo" la fila queda a la vista hasta el próximo cambio de filtro.
-  const k = document.getElementById('cmvKpis'); if (k) k.innerHTML = _cmvKpisHtml();
-  const rc = document.getElementById('cmvRatio_' + mla); if (rc) rc.innerHTML = _cmvRatioHtml(fila);
-  const tr = document.getElementById('cmvFila_' + mla); if (tr) tr.style.background = _cmvTieneCosto(fila) ? '' : 'rgba(255,82,82,.06)';
-  const ia = document.getElementById('cmvArs_' + mla); if (ia && document.activeElement !== ia) ia.value = _cmvTieneCosto(fila) ? fila.costo_unit : '';
-  showToast('💾 ' + mla + ': costo ' + _cmvFmt(fila.costo_unit) + (usd ? ` (US$ ${usd})` : '')
-    + (desde ? ' desde el ' + desde.split('-').reverse().join('/') : ''));
+  _cmvImport = null;
+  const p = document.getElementById('cmvImportPanel'); if (p) p.innerHTML = '';
+  showToast(r.aviso ? '⚠️ ' + r.aviso : `✅ ${r.saved} costos guardados`);
 }
 
 // ── LO QUE PASÓ — P&L real por producto del período ───────────────────────────
