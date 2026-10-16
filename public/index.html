@@ -1851,6 +1851,7 @@ tr.fam-hijo > td { background: rgba(99,102,241,.025); }
         </label>
         <button id="reportePylBtn" onclick="generarPyL()" style="padding:7px 16px;background:#16a34a;color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;display:none">⚡ Generar P&L</button>
         <button id="reporteExcelBtn" onclick="exportarReporteExcel()" style="padding:7px 16px;background:#6366f1;color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;display:none">📥 Descargar Excel</button>
+        <button id="reportePdfBtn" onclick="exportarPyLPDF()" style="padding:7px 16px;background:#292929;color:#fff952;border:none;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer;display:none">📄 P&L en PDF</button>
       </div>
       <!-- Tabs -->
       <div style="display:flex;gap:4px;margin-bottom:16px">
@@ -21961,6 +21962,7 @@ async function generarPyL() {
       loadCompararReporte();
     }
     document.getElementById('reporteExcelBtn').style.display = '';
+    document.getElementById('reportePdfBtn').style.display = '';
   } catch(e) {
     el.innerHTML = `<div style="color:var(--muted);padding:40px">Error: ${e.message}</div>`;
   } finally {
@@ -22193,6 +22195,135 @@ function renderPyL(pyl) {
 
     </div>
   </div>`
+}
+
+// P&L del período en UNA hoja A4, para mandar al cliente. Mismas líneas y mismos
+// totales que el panel y el Excel: los sumandos de egresos_ml.total, sin recalcular nada.
+function exportarPyLPDF() {
+  const pyl = _reportePyl;
+  if (!pyl) { showToast('Generá el P&L primero'); return; }
+  const e = pyl.egresos_ml || {};
+  const fac = pyl.ingresos?.facturacion || 0;
+  const esc = v => _escHtml(v);
+  const fmt = v => (v < 0 ? '−$' : '$') + Math.abs(Math.round(v || 0)).toLocaleString('es-AR');
+  const pct = v => fac > 0 ? ((v || 0) / fac * 100).toFixed(1) + '%' : '';
+  // signo: los egresos se muestran en negativo, como en el Excel
+  const R = (lbl, v, o = {}) => `<tr class="${o.bold ? 'bold' : ''}${o.sub ? ' sub' : ''}">
+      <td class="lbl">${lbl}</td><td>${fmt(v)}</td><td class="mut">${o.sinPct ? '' : pct(v)}</td></tr>`;
+  const S = lbl => `<tr class="sec"><td colspan="3">${lbl}</td></tr>`;
+
+  const desde = dART(pyl.periodo.from), hasta = dART(pyl.periodo.to);
+  const fmtDia = d => d.toLocaleDateString('es-AR', { timeZone: ART_TZ, day: '2-digit', month: '2-digit', year: 'numeric' });
+  const [py, pm] = pyl.periodo.to.slice(0, 10).split('-').map(Number);
+  const mesCompleto = pyl.periodo.from.slice(0, 7) === pyl.periodo.to.slice(0, 7)
+    && pyl.periodo.from.slice(8, 10) === '01' && +pyl.periodo.to.slice(8, 10) === new Date(py, pm, 0).getDate();
+  const periodoTxt = mesCompleto
+    ? desde.toLocaleDateString('es-AR', { timeZone: ART_TZ, month: 'long', year: 'numeric' })
+    : `${fmtDia(desde)} al ${fmtDia(hasta)}`;
+  const hoy = new Date().toLocaleDateString('es-AR', { timeZone: ART_TZ, day: '2-digit', month: 'long', year: 'numeric' });
+
+  // Gastos fijos: los 6 más grandes y el resto agrupado, para que entre en la hoja
+  const gf = [...(pyl.gastos_fijos?.items || [])].sort((a, b) => parseFloat(b.monto) - parseFloat(a.monto));
+  const gfTop = gf.slice(0, 6), gfResto = gf.slice(6).reduce((a, g) => a + (parseFloat(g.monto) || 0), 0);
+  const imp = pyl.impuestos_manuales?.items || [];
+  const envio = e.envio_total ?? e.envio_vendedor ?? 0;
+  const cm = pyl.utilidad_antes_gf;
+
+  const kpi = (lbl, val, sub, neg) => `<div class="kpi${neg ? ' neg' : ''}"><div class="kpi-l">${lbl}</div><div class="kpi-v">${val}</div><div class="kpi-s">${sub}</div></div>`;
+  const kpis = `<div class="kpis">
+    ${kpi('Facturación', fmt(fac), `${(pyl.ordenes || 0).toLocaleString('es-AR')} ventas`)}
+    ${kpi('Recibido de ML', (pyl.margenes?.pct_recibido ?? 0).toFixed(1) + '%', fmt(pyl.resultado_neto_ml), pyl.resultado_neto_ml < 0)}
+    ${kpi('Contribución marginal', pct(cm) || '—', fmt(cm), cm < 0)}
+    ${kpi('Utilidad final', fmt(pyl.utilidad_final), 'margen ' + (pyl.margenes?.margen ?? 0).toFixed(1) + '%', pyl.utilidad_final < 0)}
+  </div>`;
+
+  const tabla = `<table>
+    <thead><tr><th>Concepto</th><th>Monto</th><th>% fact.</th></tr></thead>
+    <tbody>
+      ${S('Ingresos')}
+      ${R('Facturación productos', fac)}
+      ${pyl.ingresos?.envio_comprador ? R('Ingreso por envío Flex', pyl.ingresos.envio_comprador) : ''}
+      ${R('Total ingresos', pyl.ingresos?.total, { bold: true })}
+      ${S('Lo que se va en Mercado Libre')}
+      ${R('Comisión ML', -e.comision)}
+      ${e.comision_cargo_fijo != null ? R('└ Porcentaje (comisión + cuotas)', -(e.comision_porcentaje || 0), { sub: true }) + R('└ Cargo fijo por unidad', -e.comision_cargo_fijo, { sub: true }) : ''}
+      ${envio ? R('Envíos a cargo del vendedor', -envio) : ''}
+      ${e.publicidad ? R('Publicidad', -e.publicidad) : ''}
+      ${e.costos_full > 0 ? R('Costos FULL', -e.costos_full) : ''}
+      ${e.impuestos ? R('Impuestos / retenciones', -e.impuestos) : ''}
+      ${e.reembolsos ? R('Reembolsos', -e.reembolsos) : ''}
+      ${e.cupones_vendedor ? R('Cupones del vendedor', -e.cupones_vendedor) : ''}
+      ${e.iva_neto ? R('IVA neto (débito − crédito)', -e.iva_neto) : ''}
+      ${iibbPyl(pyl) > 0 ? R(esc(iibbLabel(pyl)), -iibbPyl(pyl)) : ''}
+      ${R('Total egresos ML', -e.total, { bold: true })}
+      ${R('Resultado neto ML', pyl.resultado_neto_ml, { bold: true })}
+      ${S('Mercadería')}
+      ${R('Costo de mercadería vendida (CMV)' + (pyl.cmv?.estimado ? ' *' : ''), -pyl.cmv?.total)}
+      ${R('Contribución marginal', cm, { bold: true })}
+      ${S('Gastos fijos')}
+      ${gfTop.map(g => R(esc(g.concepto), -parseFloat(g.monto), { sub: true })).join('')}
+      ${gfResto ? R(`Otros (${gf.length - 6})`, -gfResto, { sub: true }) : ''}
+      ${R('Total gastos fijos', -(pyl.gastos_fijos?.total || 0), { bold: true })}
+      ${imp.length ? S('Impuestos') + R('Total impuestos', -(pyl.impuestos_manuales.total || 0), { bold: true }) : ''}
+      <tr class="final"><td class="lbl">Utilidad final</td><td>${fmt(pyl.utilidad_final)}</td><td>${pct(pyl.utilidad_final)}</td></tr>
+    </tbody></table>`;
+
+  const notas = [];
+  if (pyl.cmv?.estimado) notas.push(`* CMV parcial: ${pyl.cmv.cubierto} de ${pyl.cmv.total_items} productos tienen costo cargado; el resto se estimó a la misma proporción.`);
+  if (pyl.facturacion_ml && !pyl.facturacion_ml.disponible) notas.push('La factura de ML de este período todavía no está sincronizada: faltan costos FULL y percepciones, y el IIBB va estimado. La utilidad puede estar sobrestimada.');
+  if (iibbFalta(pyl)) notas.push('IIBB no computado: el cliente no tiene tasa cargada.');
+
+  const html = `<!DOCTYPE html><html lang="es"><head><meta charset="utf-8">
+    <title>P&L ${esc(pyl.cliente)} — ${esc(periodoTxt)}</title>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@600;700;800&display=swap" rel="stylesheet">
+    <style>
+      @page { size: A4; margin: 10mm; }
+      * { box-sizing:border-box; -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+      body { font-family:'Plus Jakarta Sans',sans-serif; font-weight:700; color:#292929; background:#f4f1e8; margin:0; }
+      .hoja { max-width:190mm; margin:0 auto; padding:6mm 0; }
+      .head { background:#fff952; border:5px solid #292929; box-shadow:8px 8px 0 #292929; padding:14px 18px; display:flex; justify-content:space-between; align-items:flex-end; gap:12px; }
+      .brand { font-size:9px; letter-spacing:2px; text-transform:uppercase; background:#292929; color:#fff952; padding:4px 8px; display:inline-block; }
+      .head h1 { font-size:26px; margin:8px 0 0; line-height:1.05; font-weight:800; }
+      .head .per { text-align:right; font-size:12px; }
+      .head .per b { display:block; font-size:16px; text-transform:capitalize; }
+      .kpis { display:grid; grid-template-columns:repeat(4,1fr); gap:10px; margin:16px 0; }
+      .kpi { background:#fffdf5; border:4px solid #292929; box-shadow:5px 5px 0 #292929; padding:8px 10px; }
+      .kpi-l { font-size:8.5px; text-transform:uppercase; letter-spacing:.5px; }
+      .kpi-v { font-size:17px; font-weight:800; margin-top:3px; }
+      .kpi-s { font-size:9.5px; color:#6b6758; }
+      .kpi.neg .kpi-v { color:#c0262d; }
+      table { width:100%; border-collapse:separate; border-spacing:0; font-size:10.5px; border:4px solid #292929; box-shadow:6px 6px 0 #292929; background:#fffdf5; }
+      thead th { background:#292929; color:#fff952; padding:6px 10px; text-align:right; font-weight:800; }
+      thead th:first-child { text-align:left; }
+      td { padding:3.5px 10px; text-align:right; border-top:1px solid #d9d4c3; white-space:nowrap; }
+      td.lbl { text-align:left; white-space:normal; }
+      td.mut { color:#8a8676; width:60px; }
+      tr.sub td { font-weight:600; color:#5a5648; font-size:9.5px; }
+      tr.sub td.lbl { padding-left:22px; }
+      tr.bold td { font-weight:800; background:#fbf7d9; border-top:2px solid #292929; }
+      tr.sec td { background:#292929; color:#fff952; font-weight:800; text-transform:uppercase; letter-spacing:.06em; font-size:9px; text-align:left; padding:4px 10px; }
+      tr.final td { background:#fff952; font-weight:800; font-size:13px; border-top:4px solid #292929; padding:7px 10px; }
+      .notas { margin-top:14px; font-size:9px; color:#5a5648; line-height:1.45; }
+      .foot { margin-top:12px; padding-top:8px; border-top:4px solid #292929; font-size:9px; display:flex; justify-content:space-between; }
+      @media print { .hoja { padding:0; } body { background:#f4f1e8; } }
+    </style></head><body>
+    <div class="hoja">
+      <div class="head">
+        <div><div class="brand">Negocio Redondo · Método Redondo™</div><h1>Estado de resultados<br>${esc(pyl.cliente)}</h1></div>
+        <div class="per">Período<b>${esc(periodoTxt)}</b></div>
+      </div>
+      ${kpis}
+      ${tabla}
+      ${notas.length ? `<div class="notas">${notas.map(n => '• ' + esc(n)).join('<br>')}</div>` : ''}
+      <div class="foot"><span>Negocio Redondo LATAM · app.negocioredondolatam.com</span><span>Generado el ${hoy}</span></div>
+    </div>
+    <scr` + `ipt>window.onload=()=>{setTimeout(()=>window.print(),500)}</scr` + `ipt>
+  </body></html>`;
+
+  const win = window.open('', '_blank');
+  if (!win) { showToast('Permití las ventanas emergentes para exportar el PDF'); return; }
+  win.document.write(html);
+  win.document.close();
 }
 
 async function exportarReporteExcel() {
