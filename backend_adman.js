@@ -703,6 +703,42 @@ module.exports = (app, { pool, requireAuth, requireAdmin, getClientToken, ML_API
     } catch (e) { err(res, e); }
   });
 
+  // Vista de UNA cuenta, solo lectura: lo que ve el cliente en "Agentes de Publicidad".
+  // Admin/consultores ven cualquier cuenta; un cliente, solo la suya y solo si Guido le
+  // habilitó la sección (permiso opt-in 'adman-cuenta' en true). Nunca consulta AdMan.
+  app.get('/api/adman/cuenta', requireAuth, async (req, res) => {
+    try {
+      const clientId = parseInt(req.query.client_id);
+      if (!clientId) return res.status(400).json({ error: 'client_id requerido' });
+      if (!['admin', 'consultant', 'colaborador'].includes(req.user.role)) {
+        if (parseInt(req.user.client_id) !== clientId) return res.status(403).json({ error: 'Sin acceso' });
+        const p = await pool.query(`SELECT enabled FROM user_permissions WHERE user_id=$1 AND section='adman-cuenta'`, [req.user.id]);
+        if (!p.rows.length || p.rows[0].enabled !== true) return res.status(403).json({ error: 'Sección no habilitada' });
+      }
+      const cuenta = await pool.query(
+        `SELECT adman_cust_id::text AS adman_cust_id, nickname, activo FROM adman_cuentas WHERE client_id=$1 ORDER BY activo DESC NULLS LAST LIMIT 1`, [clientId]);
+      if (!cuenta.rows.length || cuenta.rows[0].activo === false) return res.json({ conectada: false });
+      const cols = `a.alert_id::text AS alert_id, a.flow_nombre, a.flow_tipo, a.entity_type, a.entity_name, a.accion,
+        a.accion_cambio, a.operador, a.valor_previo, a.valor_nuevo, a.metricas, a.pila, a.motivo, a.estado,
+        a.created_at_adman, a.primera_vez, a.decidida_en, a.mla, a.mla_opciones, a.promocion, a.clasif`;
+      const [corrida, pendientes, decididas] = await Promise.all([
+        pool.query(`SELECT COALESCE(fin, inicio) AS fecha FROM adman_corridas WHERE estado IN ('ok','parcial') ORDER BY id DESC LIMIT 1`),
+        pool.query(`SELECT ${cols} FROM adman_alertas a WHERE a.client_id=$1
+          AND a.estado IN ('pendiente','enviando','fallida','sin_confirmar') ORDER BY a.flow_nombre, a.entity_name`, [clientId]),
+        pool.query(`SELECT ${cols} FROM adman_alertas a WHERE a.client_id=$1
+          AND a.estado IN ('aprobada','desestimada') AND a.decidida_en > NOW() - INTERVAL '30 days'
+          ORDER BY a.decidida_en DESC LIMIT 300`, [clientId]),
+      ]);
+      res.json({
+        conectada: true,
+        nickname: cuenta.rows[0].nickname,
+        ultima_corrida: corrida.rows[0] ? corrida.rows[0].fecha : null,
+        pendientes: pendientes.rows,
+        decididas: decididas.rows,
+      });
+    } catch (e) { err(res, e); }
+  });
+
   // Aprobar o desestimar: { decision: 'aprobar'|'desestimar', alert_ids: [...] }
   app.post('/api/adman/decisiones', requireAuth, requireAdmin, async (req, res) => {
     try {

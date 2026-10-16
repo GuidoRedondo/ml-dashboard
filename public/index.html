@@ -695,10 +695,10 @@ tbody td {
 .plan-btn-danger:hover { background: #C04828; color: #fff; }
 
 /* ── Alertas AdMan (backend_adman.js) — paleta de marca de la spec ───────────── */
-#page-adman-alertas { --adm-crema:#f4f1e8; --adm-tinta:#292929; --adm-amarillo:#fff952;
+#page-adman-alertas, #page-adman-cuenta { --adm-crema:#f4f1e8; --adm-tinta:#292929; --adm-amarillo:#fff952;
   --adm-verde:#0f6b5c; --adm-naranja:#c2410c; --adm-rojo:#b42318; --adm-gris:#6b7280;
   font-family:'Plus Jakarta Sans',var(--font); background:var(--adm-crema); color:var(--adm-tinta); }
-#page-adman-alertas h2 { font-family:'Plus Jakarta Sans',var(--font); font-weight:800; margin:0; }
+#page-adman-alertas h2, #page-adman-cuenta h2 { font-family:'Plus Jakarta Sans',var(--font); font-weight:800; margin:0; }
 .adm-btn { font-family:inherit; font-weight:700; font-size:12px; padding:7px 12px; border-radius:8px;
   border:2px solid var(--adm-tinta); background:#fff; color:var(--adm-tinta); cursor:pointer; white-space:nowrap; }
 .adm-btn:disabled { opacity:.45; cursor:not-allowed; }
@@ -856,6 +856,9 @@ tr.fam-hijo > td { background: rgba(99,102,241,.025); }
       </div>
       <div class="nav-item" data-page="ads" onclick="showPage('ads',this)">
         <span class="nav-icon">📣</span> Publicidad
+      </div>
+      <div class="nav-item" data-page="adman-cuenta" style="display:none" onclick="showPage('adman-cuenta',this);loadAdmanCuenta()">
+        <span class="nav-icon">🤖</span> Agentes de Publicidad
       </div>
       <div class="nav-item" data-page="diagnostico" onclick="showPage('diagnostico',this);initDiagnosticoMensual()">
         <span class="nav-icon">🩺</span> Diagnóstico
@@ -2113,6 +2116,10 @@ tr.fam-hijo > td { background: rgba(99,102,241,.025); }
       <div id="adm-root"><div style="padding:20px;color:#6b7280">Cargando…</div></div>
     </div>
 
+    <div class="page" id="page-adman-cuenta">
+      <div id="admc-root"><div style="padding:20px;color:#6b7280">Cargando…</div></div>
+    </div>
+
     <div class="page" id="page-decisiones-publi">
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px;flex-wrap:wrap">
         <h2 style="margin:0;font-family:var(--font-b);flex:1">⚡ Motor de Decisiones — Publicidad</h2>
@@ -3107,6 +3114,7 @@ async function selectClient(clientId, el) {
   await loadDashboardData();
   if (_repTabActiva === 'reclamos') loadReclamos();
   if (_repTabActiva === 'experiencia') loadExperiencia();
+  if (document.getElementById('page-adman-cuenta')?.classList.contains('active')) loadAdmanCuenta();
 }
 
 async function loadDashboardData() {
@@ -15864,6 +15872,8 @@ const SECCIONES = [
   { id: 'informe-mensual',  label: '📄 Informe Mensual',      optIn: true },
   { id: 'impacto-costos',   label: '⚠️ Impacto Costos 1/9',    optIn: true },
   { id: 'decisiones-publi', label: '🎛️ Motor de Publicidad',   optIn: true },
+  // Alertas de los agentes de AdMan de SU cuenta, solo lectura (backend: /api/adman/cuenta).
+  { id: 'adman-cuenta',     label: '🤖 Agentes de Publicidad', optIn: true },
 ];
 
 // Secciones que requieren permiso explícito (ver comentario arriba).
@@ -29695,6 +29705,70 @@ async function admCorrer() {
   const b = document.getElementById('adm-correr');
   if (b) { b.disabled = true; b.textContent = 'Corrida en curso…'; }
   admSeguirCorrida();
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+//  AGENTES DE PUBLICIDAD — las alertas de AdMan de UNA cuenta, solo lectura.
+//  Es lo que ve el cliente cuando Guido le habilita la sección (permiso opt-in
+//  'adman-cuenta' en Usuarios). Mismos datos que el panel interno, sin botones:
+//  las decisiones se siguen tomando desde Alertas AdMan. Backend: /api/adman/cuenta.
+// ════════════════════════════════════════════════════════════════════════════
+let _admcVerTodas = false;
+const ADMC_ESTADO = {
+  aprobada: '<span class="adm-tag ok">Aplicada</span>',
+  desestimada: '<span class="adm-tag desestimar">Descartada</span>',
+};
+const admcEntidad = t => t === 'campaign' ? 'Campaña' : t === 'item' ? 'Publicación' : t === 'promotion' ? 'Promoción' : admEsc(t || '');
+
+async function loadAdmanCuenta() {
+  const root = document.getElementById('admc-root');
+  const client = getActiveClient();
+  if (!client || !client.id) { root.innerHTML = '<div class="adm-vacio">Elegí una cuenta.</div>'; return; }
+  root.innerHTML = '<div style="padding:20px;color:#6b7280">Cargando…</div>';
+  const r = await apiCall('GET', `/api/adman/cuenta?client_id=${client.id}`);
+  if (!r || r.error) { root.innerHTML = `<div class="adm-vacio">No se pudo cargar: ${admEsc(r && r.error || 'sin permiso')}</div>`; return; }
+  if (!r.conectada) {
+    root.innerHTML = `<h2>🤖 Agentes de Publicidad</h2>
+      <div class="adm-vacio" style="margin-top:14px">Esta cuenta todavía no tiene agentes de publicidad activos.</div>`;
+    return;
+  }
+  const fila = (a, decidida) => `<tr>
+      <td><b>${admEsc(a.flow_nombre || '—')}</b><div class="sub">${admFecha(a.created_at_adman || a.primera_vez)}</div></td>
+      <td>${admEsc(a.entity_name || '—')}${admMla(a)}<div class="sub">${admcEntidad(a.entity_type)}</div></td>
+      <td>${admAccionTexto(a)}</td>
+      <td>${admMetricas(a)}</td>
+      <td>${decidida ? (ADMC_ESTADO[a.estado] || '') + `<div class="sub">${admFecha(a.decidida_en)}</div>` : admPilaTag(a.pila)}
+        <div class="sub">${admEsc(a.motivo || '')}</div></td>
+    </tr>`;
+  const tabla = (lista, decidida) => `<div style="overflow-x:auto"><table class="adm-tabla">
+    <thead><tr><th>Agente</th><th>Campaña / publicación</th><th>Qué propone</th><th>Métricas</th><th>${decidida ? 'Resultado' : 'Nuestra lectura'}</th></tr></thead>
+    <tbody>${lista.map(a => fila(a, decidida)).join('')}</tbody></table></div>`;
+
+  const pend = r.pendientes || [], dec = r.decididas || [];
+  const aplicadas = dec.filter(a => a.estado === 'aprobada').length;
+  const decVista = _admcVerTodas ? dec : dec.slice(0, 30);
+  root.innerHTML = `
+    <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+      <h2 style="flex:1">🤖 Agentes de Publicidad</h2>
+      <button class="adm-btn" onclick="loadAdmanCuenta()">Actualizar</button>
+    </div>
+    <div style="font-size:12px;margin-top:6px">
+      Cuenta <b>${admEsc(r.nickname || client.name || '')}</b> · Última lectura de los agentes: <b>${admFecha(r.ultima_corrida)}</b>
+    </div>
+    <div class="adm-cards">
+      <div class="adm-card"><div class="t">Pendientes</div><div class="n">${pend.length}</div><div class="d">Cambios que proponen los agentes, en revisión</div></div>
+      <div class="adm-card" style="border-color:#0f6b5c"><div class="t" style="color:#0f6b5c">Aplicadas · 30 días</div><div class="n">${aplicadas}</div><div class="d">Se ejecutaron en la cuenta</div></div>
+      <div class="adm-card"><div class="t" style="color:#6b7280">Descartadas · 30 días</div><div class="n">${dec.length - aplicadas}</div><div class="d">Se revisaron y no se aplicaron</div></div>
+    </div>
+    <div class="adm-block">
+      <h3>Propuestas pendientes <span class="adm-tag revisar">${pend.length}</span></h3>
+      ${pend.length ? tabla(pend, false) : '<div class="adm-vacio">No hay propuestas pendientes de los agentes.</div>'}
+    </div>
+    <div class="adm-block">
+      <h3>Decididas en los últimos 30 días <span class="adm-tag ok">${dec.length}</span></h3>
+      ${dec.length ? tabla(decVista, true) : '<div class="adm-vacio">Todavía no hay decisiones en los últimos 30 días.</div>'}
+      ${dec.length > 30 ? `<button class="adm-btn" style="margin-top:8px" onclick="_admcVerTodas=!_admcVerTodas;loadAdmanCuenta()">${_admcVerTodas ? 'Ver menos' : `Ver las ${dec.length}`}</button>` : ''}
+    </div>`;
 }
 
 // Deep link (/admin/alertas redirige a /?page=adman-alertas). Va acá y no en initApp():
