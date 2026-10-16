@@ -29287,6 +29287,36 @@ let _medFiltro = 'todas';        // todas | sin_caja | de_mas | de_menos | adver
 let _medLog = 'todas';           // todas | colecta | full | flex
 let _medBusqueda = '';
 let _medLimite = 200;
+let _medOrden = { col: null, dir: -1 };  // click en el encabezado; col null = orden del servidor (mayor diferencia primero)
+
+// Valor por el que ordena cada columna. Los vacíos van siempre al final.
+const _MED_ORDEN = {
+  titulo:     i => (i.title || '').toLowerCase(),
+  vendidas:   i => i.unidades_30d || 0,
+  declarado:  i => i.declarado?.facturable_kg,
+  ml:         i => i.ml?.facturable_kg,
+  caja:       i => i.caja?.facturable_kg,
+  facturable: i => i.caja?.facturable_kg ?? i.ml?.facturable_kg,
+  cobrado:    i => i.cobrado_unit,
+  estimado:   i => i.caja ? i.estimado_unit : null,
+  diferencia: i => i.diferencia_30d,
+  banda:      i => i.proxima?.posible ? (i.proxima.ahorro_unit || 0) : null,
+};
+function ordenarMedidas(col) {
+  if (_medOrden.col === col) _medOrden.dir = -_medOrden.dir;
+  else _medOrden = { col, dir: col === 'titulo' ? 1 : -1 };
+  _medPintarTabla();
+}
+function _medOrdenar(filas) {
+  const f = _MED_ORDEN[_medOrden.col];
+  if (!f) return filas;
+  const d = _medOrden.dir;
+  return filas.map(i => [i, f(i)]).sort(([, a], [, b]) => {
+    const va = a == null || a === '', vb = b == null || b === '';
+    if (va || vb) return va === vb ? 0 : va ? 1 : -1;
+    return (typeof a === 'string' ? a.localeCompare(b, 'es') : a - b) * d;
+  }).map(([i]) => i);
+}
 let _medSel = new Set();         // item_ids tildados para mandar a ML
 let _medImport = null;           // planilla leída, esperando confirmación
 let _medReq = 0;
@@ -29487,23 +29517,29 @@ function _medPintarTabla() {
     _medPintarSelBar();
     return;
   }
-  const th = (t, right, title) => `<th style="padding:8px 8px;text-align:${right ? 'right' : 'left'};font-size:11px;font-weight:600;color:var(--muted);white-space:nowrap" ${title ? `title="${_medEsc(title)}"` : ''}>${t}</th>`;
-  const visibles = filas.slice(0, _medLimite);
+  const th = (t, right, title, col) => {
+    const activo = col && _medOrden.col === col;
+    const flecha = activo ? (_medOrden.dir > 0 ? ' ▲' : ' ▼') : (col ? ' <span style="opacity:.35">↕</span>' : '');
+    return `<th style="padding:8px 8px;text-align:${right ? 'right' : 'left'};font-size:11px;font-weight:600;color:${activo ? 'var(--text)' : 'var(--muted)'};white-space:nowrap;${col ? 'cursor:pointer;user-select:none' : ''}"
+      ${col ? `onclick="ordenarMedidas('${col}')"` : ''} ${title ? `title="${_medEsc(title + (col ? ' · Click para ordenar' : ''))}"` : ''}>${t}${flecha}</th>`;
+  };
+  const visibles = _medOrdenar(filas).slice(0, _medLimite);
   const elegibles = visibles.filter(i => !i.envio_ml.no_aplica && !i.envio_ml.bloqueo);
   const todasTildadas = elegibles.length && elegibles.every(i => _medSel.has(i.id));
   el.innerHTML = `<div style="overflow-x:auto;background:var(--surface);border:1px solid var(--border);border-radius:12px">
     <table style="width:100%;border-collapse:collapse;font-size:12px">
       <thead><tr>
         <th style="padding:8px"><input type="checkbox" ${todasTildadas ? 'checked' : ''} ${elegibles.length ? '' : 'disabled'} onchange="_medTildarTodas(this.checked)" title="Tildar las que se pueden mandar a ML"></th>
-        ${th('Publicación')}
-        ${th('Declarado en ML', false, 'SELLER_PACKAGE_* de la publicación')}
-        ${th('Usado por ML', false, 'Medidas del último envío de colecta o FULL: con éstas cobró ML')}
-        ${th('Tu caja (cm · g)', false, 'Largo, ancho, alto en cm y peso en gramos de la caja con la que despachás')}
-        ${th('Peso facturable', true, 'El mayor entre el físico y el volumétrico (L×A×H ÷ 4000). ML / tu caja')}
-        ${th('Cobrado x u.', true, 'Promedio de lo que ML cobró por unidad en los últimos 30 días')}
-        ${th('Con tu caja x u.', true, 'Tarifa de ML con el peso facturable de tu caja y el precio actual')}
-        ${th('Diferencia 30 d', true, 'Cobrado menos lo que habría salido con tu caja. Positivo = pagaste de más')}
-        ${th('Bajar de banda', false, 'Cuánto achicar la caja para caer en la banda de peso anterior')}
+        ${th('Publicación', false, 'Título', 'titulo')}
+        ${th('Vendidas 30 d', true, 'Unidades despachadas por colecta o FULL en los últimos 30 días', 'vendidas')}
+        ${th('Declarado en ML', false, 'SELLER_PACKAGE_* de la publicación. Ordena por peso facturable', 'declarado')}
+        ${th('Usado por ML', false, 'Medidas del último envío de colecta o FULL: con éstas cobró ML. Ordena por peso facturable', 'ml')}
+        ${th('Tu caja (cm · g)', false, 'Largo, ancho, alto en cm y peso en gramos de la caja con la que despachás. Ordena por peso facturable', 'caja')}
+        ${th('Peso facturable', true, 'El mayor entre el físico y el volumétrico (L×A×H ÷ 4000). ML / tu caja', 'facturable')}
+        ${th('Cobrado x u.', true, 'Promedio de lo que ML cobró por unidad en los últimos 30 días', 'cobrado')}
+        ${th('Con tu caja x u.', true, 'Tarifa de ML con el peso facturable de tu caja y el precio actual', 'estimado')}
+        ${th('Diferencia 30 d', true, 'Cobrado menos lo que habría salido con tu caja. Positivo = pagaste de más', 'diferencia')}
+        ${th('Bajar de banda', false, 'Cuánto achicar la caja para caer en la banda de peso anterior. Ordena por ahorro por envío', 'banda')}
         ${th('En ML')}
       </tr></thead>
       <tbody>${visibles.map(_medFilaHtml).join('')}</tbody>
@@ -29553,11 +29589,11 @@ function _medFilaHtml(i) {
       <div style="color:var(--muted);font-size:11px;margin-top:2px">
         ${i.permalink ? `<a href="${_medEsc(i.permalink)}" target="_blank" rel="noopener" style="color:var(--muted)">${i.id}</a>` : i.id}
         · ${sku} · <span style="color:${logColor};font-weight:600">${_MED_LOG[i.logistica] || i.logistica}</span> · ${_medMoney(i.price)}
-        ${i.envios_30d ? ` · ${i.unidades_30d} u. en 30 d` : ''}
       </div>
       ${i.caja && i.caja.origen === 'sku' ? `<div style="font-size:10px;color:var(--muted)">Caja copiada por SKU</div>` : ''}
       ${(i.advertencias_ml || []).map(a => `<div style="margin-top:4px;font-size:11px;line-height:1.35;padding:3px 7px;border-radius:6px;background:${a.codigo === 'ficha_no_entra' ? 'rgba(217,119,6,.12);color:#b45309' : 'rgba(220,38,38,.1);color:#dc2626'}">${_MED_ADV[a.codigo] || '⚠️'} ${_medEsc(a.texto)}</div>`).join('')}
     </td>
+    <td style="${td};text-align:right;white-space:nowrap;font-weight:600">${i.unidades_30d ? i.unidades_30d.toLocaleString('es-AR') : '<span style="color:var(--muted);font-weight:400">0</span>'}</td>
     <td style="${td};white-space:nowrap">${_medCaja(i.declarado)}</td>
     <td style="${td};white-space:nowrap">${i.ml ? _medCaja(i.ml) + (origen ? `<div style="font-size:10px;color:var(--muted)" title="${origen.title}">${origen.label}</div>` : (i.ml.origen ? `<div style="font-size:10px;color:var(--muted)">${_medEsc(i.ml.origen)}</div>` : '')) : '<span style="color:var(--muted)">sin envíos en 90 d</span>'}</td>
     <td style="${td};white-space:nowrap">${inp('largo', c.largo, 'L')} ${inp('ancho', c.ancho, 'A')} ${inp('alto', c.alto, 'H')} ${inp('peso_g', c.peso_g, 'g')}</td>
