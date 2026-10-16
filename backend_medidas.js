@@ -39,6 +39,7 @@
 
 const fetch = require('node-fetch');
 const TARIFAS = require('./backend_impacto_costos').tarifas;
+const { tarifaMayorista } = require('./backend_envios');
 
 const CATALOGO_TTL_MS = 12 * 60 * 60 * 1000;
 const DIAS_COBRO      = 30;   // ventana de lo cobrado / estimado
@@ -355,8 +356,11 @@ module.exports = (app, { pool, requireAuth, getClientToken, ML_API, extractSku, 
         u.envios++;
         u.unidades += l.cantidad || 1;
         u.cobrado += cobrado * parte;
+        // Precio por cantidad: el paquete entero se tarifa junto (ver backend_envios.js)
         u.lineas.push({ precio: l.precio_unit || 0, cantidad: l.cantidad || 1, esquema: esquemaPorFecha(e.fecha),
-                        cobrado: cobrado * parte, logistica: e.logistica });
+                        cobrado: cobrado * parte, logistica: e.logistica,
+                        mayorista: l.mayorista ? { lineas, idx: lineas.indexOf(l), item_id: l.item_id } : null });
+        if (l.mayorista) { u.envios_mayoristas = (u.envios_mayoristas || 0) + 1; u.cobrado_mayorista = (u.cobrado_mayorista || 0) + cobrado * parte; }
       }
     }
     return out;
@@ -388,6 +392,8 @@ module.exports = (app, { pool, requireAuth, getClientToken, ML_API, extractSku, 
       envios_30d: u.envios, unidades_30d: u.unidades,
       cobrado_30d: Math.round(u.cobrado),
       cobrado_unit: u.unidades ? Math.round(u.cobrado / u.unidades) : null,
+      envios_mayoristas_30d: u.envios_mayoristas || 0,
+      cobrado_mayorista_30d: Math.round(u.cobrado_mayorista || 0),
       estimado_30d: null, diferencia_30d: null, estimado_unit: null,
       proxima: null, estado_ml: 'sin_caja',
     };
@@ -395,7 +401,9 @@ module.exports = (app, { pool, requireAuth, getClientToken, ML_API, extractSku, 
       const fact = cajaF.facturable_kg;
       fila.estimado_unit = it.price >= TARIFAS.UMBRAL_ENVIO_GRATIS ? TARIFAS.costoEnvio(it.price, fact) : 0;
       if (u.lineas.length) {
-        const est = u.lineas.reduce((a, l) => a + TARIFAS.costoEnvioLinea(l.precio, fact, l.cantidad, l.esquema), 0);
+        const est = u.lineas.reduce((a, l) => a + (l.mayorista
+          ? tarifaMayorista(l.mayorista.lineas, l.esquema, x => x.item_id === l.mayorista.item_id ? fact : x.facturable_kg).partes[l.mayorista.idx]
+          : TARIFAS.costoEnvioLinea(l.precio, fact, l.cantidad, l.esquema)), 0);
         fila.estimado_30d = Math.round(est);
         fila.diferencia_30d = Math.round(u.cobrado - est);
       }

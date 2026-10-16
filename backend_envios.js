@@ -52,6 +52,29 @@ function esquemaPorFecha(fecha) {
   return fecha && new Date(fecha) < new Date(`${TARIFAS.VIGENCIA}T00:00:00-03:00`) ? 'actual' : 'sep';
 }
 
+// ── Precio por cantidad (venta mayorista) ──
+// Verificado 16/10/2026 en INDUMENTARIASEGURA: en una orden con tag `price_per_quantity`
+// ML arma UN paquete y lo tarifa con el TOTAL del pedido como precio y el peso de todas
+// las unidades sumado — aunque cada unidad valga menos de $33.000. 31 de 32 envíos
+// cerraron exacto así; tarifados por unidad daban $0 y salían como "cobro de más".
+// Sin ese tag, varias unidades baratas no pagan envío (489 de 489).
+function esMayorista(lineas, ordenes) {
+  const ppq = (ordenes || []).some(o => (o.tags || []).includes('price_per_quantity'));
+  if (!ppq || !lineas.length) return false;
+  const total = lineas.reduce((a, l) => a + (l.precio_unit || 0) * (l.cantidad || 1), 0);
+  return total >= TARIFAS.UMBRAL_ENVIO_GRATIS && lineas.every(l => (l.precio_unit || 0) < TARIFAS.UMBRAL_ENVIO_GRATIS);
+}
+
+// Costo de un envío mayorista con el peso facturable de cada línea que dé `factDe`.
+// Devuelve el total y la parte de cada línea (por peso), para repartir lo cobrado.
+function tarifaMayorista(lineas, esquema, factDe = l => l.facturable_kg) {
+  const total = lineas.reduce((a, l) => a + (l.precio_unit || 0) * (l.cantidad || 1), 0);
+  const kgs = lineas.map(l => (factDe(l) || 0) * (l.cantidad || 1));
+  const kg = kgs.reduce((a, b) => a + b, 0);
+  const costo = TARIFAS.costoEnvio(total, kg, esquema);
+  return { costo, partes: kgs.map(k => kg > 0 ? costo * k / kg : costo / lineas.length) };
+}
+
 // ════════════════════════════════════════════════════════════════════
 // AUDITORÍA DE UN ENVÍO (pura: no toca ML ni la base)
 // ════════════════════════════════════════════════════════════════════
@@ -105,6 +128,14 @@ function auditarEnvio({ shipment, costs, items, ordenes }) {
       tabla, tabla_fisico: tablaFis,
     };
   });
+
+  // Venta con precio por cantidad: un solo cargo por el paquete entero
+  if (!faltanMedidas && esMayorista(lineas, ordenes)) {
+    const conFact = tarifaMayorista(lineas, esquema);
+    const conFis = tarifaMayorista(lineas, esquema, l => (l.peso_g > 0 ? l.peso_g / 1000 : l.facturable_kg));
+    lineas.forEach((l, i) => { l.mayorista = true; l.tabla = conFact.partes[i]; l.tabla_fisico = conFis.partes[i]; });
+    esperado = conFact.costo; esperadoFisico = conFis.costo;
+  }
 
   let estado;
   if (shipment.status === 'cancelled') estado = 'cancelado';
@@ -169,6 +200,37 @@ async function crearTablas(pool) {
   `);
 }
 
+// Los envíos guardados antes de la regla mayorista no tienen el tag de la orden. La señal
+// equivalente (verificada 32 de 32): ML cobró, cada unidad vale menos de $33.000 y el total
+// del paquete pasa el umbral — sin precio por cantidad eso no se cobra nunca. Idempotente:
+// las filas ya marcadas no se vuelven a tocar.
+async function migrarMayoristas(pool) {
+  const r = await pool.query(`
+    SELECT client_id, shipment_id, fecha, cobrado, lineas FROM envios_auditoria
+     WHERE cobrado > 0 AND logistica IN ('colecta', 'full') AND estado IN ('cobro_de_mas', 'cobro_de_menos', 'cierra')
+       AND jsonb_array_length(lineas) > 0
+       AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(lineas) l WHERE (l->>'precio_unit')::numeric >= $1)
+       AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(lineas) l WHERE l->>'mayorista' = 'true')
+       AND (SELECT SUM((l->>'precio_unit')::numeric * COALESCE((l->>'cantidad')::numeric, 1))
+              FROM jsonb_array_elements(lineas) l) >= $1`, [TARIFAS.UMBRAL_ENVIO_GRATIS]);
+  let n = 0;
+  for (const row of r.rows) {
+    const lineas = row.lineas;
+    if (lineas.some(l => l.facturable_kg == null)) continue;
+    const esquema = esquemaPorFecha(row.fecha);
+    const conFact = tarifaMayorista(lineas, esquema);
+    const conFis = tarifaMayorista(lineas, esquema, l => (l.peso_g > 0 ? l.peso_g / 1000 : l.facturable_kg));
+    lineas.forEach((l, i) => { l.mayorista = true; l.tabla = conFact.partes[i]; l.tabla_fisico = conFis.partes[i]; });
+    const cobrado = Math.round(parseFloat(row.cobrado));
+    const estado = cobrado === conFact.costo ? 'cierra' : cobrado > conFact.costo ? 'cobro_de_mas' : 'cobro_de_menos';
+    await pool.query(`UPDATE envios_auditoria SET lineas=$3, esperado=$4, esperado_fisico=$5, estado=$6
+                       WHERE client_id=$1 AND shipment_id=$2`,
+      [row.client_id, row.shipment_id, JSON.stringify(lineas), conFact.costo, conFis.costo, estado]);
+    n++;
+  }
+  if (n) console.log(`[ENVIOS] ${n} envíos con precio por cantidad recalculados como un solo paquete`);
+}
+
 // ════════════════════════════════════════════════════════════════════
 // RESUMEN PARA LA PANTALLA (lee de la base)
 // ════════════════════════════════════════════════════════════════════
@@ -221,7 +283,9 @@ function resumir(rows, medidasReales = {}) {
       const mr = medidasReales[l.item_id];
       const factReal = mr ? TARIFAS.pesoFacturableKg(mr) : null;
       if (factReal != null) {
-        const real = TARIFAS.costoEnvioLinea(l.precio_unit, factReal, l.cantidad, esquemaPorFecha(r.fecha));
+        const real = l.mayorista
+          ? tarifaMayorista(lineas, esquemaPorFecha(r.fecha), x => x.item_id === l.item_id ? factReal : x.facturable_kg).partes[lineas.indexOf(l)]
+          : TARIFAS.costoEnvioLinea(l.precio_unit, factReal, l.cantidad, esquemaPorFecha(r.fecha));
         p.medidas_reales = mr;
         p.facturable_real_kg = +factReal.toFixed(3);
         p.cobrado_con_medidas_reales = (p.cobrado_con_medidas_reales || 0) + real;
@@ -239,6 +303,7 @@ function resumir(rows, medidasReales = {}) {
       precio_unit_prom: p.unidades ? Math.round(_precios / p.unidades) : 0,
       cobrado_por_unidad: p.unidades ? Math.round(p.cobrado / p.unidades) : 0,
       pagado_de_mas: p.pagado_de_mas == null ? null : Math.round(p.pagado_de_mas),
+      cobrado_con_medidas_reales: p.cobrado_con_medidas_reales == null ? null : Math.round(p.cobrado_con_medidas_reales),
     };
   }).sort((a, b) => b.cobrado - a.cobrado);
 
@@ -525,6 +590,7 @@ module.exports = (app, { pool, requireAuth, requireConsultor, requireAdmin, getC
   crearTablas(pool)
     .then(() => {
       console.log('[ENVIOS] Tablas listas');
+      migrarMayoristas(pool).catch(e => console.error('[ENVIOS] migración mayoristas:', e.message));
       if (nodeCron) {
         // 04:00 ART — después de la facturación (02:00) y antes del Ciclo de Vida (06:00).
         nodeCron.schedule('0 4 * * *', () => {
@@ -541,3 +607,5 @@ module.exports = (app, { pool, requireAuth, requireConsultor, requireAdmin, getC
 module.exports.auditarEnvio = auditarEnvio;
 module.exports.esquemaPorFecha = esquemaPorFecha;
 module.exports.resumir = resumir;
+module.exports.esMayorista = esMayorista;
+module.exports.tarifaMayorista = tarifaMayorista;
