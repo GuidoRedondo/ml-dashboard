@@ -137,7 +137,12 @@ function controlEnvioML(it, caja) {
     // Igual que el chequeo de medidas de envío: si la ficha mide más del doble que la caja
     // casi siempre es el producto desplegado; se avisa, no se bloquea.
     if (efectivo > mayor + 0.01) {
-      if (!f.tramos && efectivo > mayor * 2) {
+      // MAX_LENGTH y compañía son la medida extendida de un producto extensible (un barral
+      // de 1,05 a 2 m viaja cerrado): se avisa, no se bloquea.
+      if (/^MAX_/.test(f.atributo)) {
+        out.avisos.push({ codigo: 'ficha_extendida',
+          texto: `La ficha dice ${Math.round(f.cm)} cm de máximo (${f.atributo}) y tu caja ${Math.round(mayor)} cm. Si el producto viaja cerrado está bien; ML puede marcarla para revisar` });
+      } else if (!f.tramos && efectivo > mayor * 2) {
         out.avisos.push({ codigo: 'ficha_sospechosa',
           texto: `La ficha dice ${Math.round(f.cm)} cm (${f.atributo}) y tu caja ${Math.round(mayor)} cm: revisá si es la medida del producto desplegado` });
       } else {
