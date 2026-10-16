@@ -1165,9 +1165,11 @@ app.get('/api/admin/uso', requireAuth, requireAdmin, async (req, res) => {
         FROM requests_lentas r LEFT JOIN clients c ON c.id = r.client_id
         ORDER BY r.ts DESC LIMIT 40`),
       pool.query(`
-        SELECT to_char(date_trunc('hour', ts), 'HH24:00') AS hora, COUNT(*)::int AS veces
-        FROM requests_lentas WHERE ts > NOW() - INTERVAL '24 hours'
-        GROUP BY date_trunc('hour', ts), 2 ORDER BY date_trunc('hour', ts)`),
+        SELECT to_char(h, 'HH24:00') AS hora, veces FROM (
+          SELECT date_trunc('hour', ts) AS h, COUNT(*)::int AS veces
+          FROM requests_lentas WHERE ts > NOW() - INTERVAL '24 hours'
+          GROUP BY 1
+        ) x ORDER BY h`),
     ]);
     const mem = process.memoryUsage();
     res.json({
