@@ -29283,7 +29283,7 @@ function renderImpactoCostos(r) {
 // ════════════════════════════════════════════════════════════════════════════
 
 let _medData = null;
-let _medFiltro = 'todas';        // todas | sin_caja | de_mas | de_menos | distinta | mandar
+let _medFiltro = 'todas';        // todas | sin_caja | de_mas | de_menos | advertencia | distinta | mandar
 let _medLog = 'todas';           // todas | colecta | full | flex
 let _medBusqueda = '';
 let _medLimite = 200;
@@ -29379,6 +29379,7 @@ function _medFiltrar() {
     // diferencia_30d = lo que cobró ML − lo mismo tarifado con tu caja
     if (_medFiltro === 'de_mas' && !((i.diferencia_30d || 0) >= 1)) return false;
     if (_medFiltro === 'de_menos' && !((i.diferencia_30d || 0) <= -1)) return false;
+    if (_medFiltro === 'advertencia' && !(i.advertencias_ml || []).length) return false;
     if (_medFiltro === 'distinta' && i.estado_ml !== 'distinta') return false;
     if (_medFiltro === 'mandar' && (i.envio_ml.no_aplica || i.envio_ml.bloqueo)) return false;
     if (q && !(`${i.id} ${i.sku || ''} ${i.title || ''}`.toLowerCase().includes(q))) return false;
@@ -29439,6 +29440,7 @@ function _medChipsHtml(r) {
       ${chip('sin_caja', 'Sin caja', r.sin_caja)}
       ${chip('de_mas', '🔴 ML cobra de más', items.filter(i => (i.diferencia_30d || 0) >= 1).length, 'ML cobró más de lo que costaría con tu caja: declarándola, el envío baja')}
       ${chip('de_menos', '🟢 ML cobra de menos', items.filter(i => (i.diferencia_30d || 0) <= -1).length, 'ML cobró menos de lo que costaría con tu caja: tu caja es más grande que la que usa ML')}
+      ${chip('advertencia', '⚠️ Con advertencia de ML', items.filter(i => (i.advertencias_ml || []).length).length, 'ML le sacó Mercado Envíos por las medidas, cobró un cargo por diferencia de medidas, o el producto de la ficha no entra en el paquete declarado (lo que ML marca como medidas y peso para revisar)')}
       ${chip('distinta', 'Distinta a lo declarado', r.distintas)}
       ${chip('mandar', 'Para mandar a ML', r.para_mandar)}`;
 }
@@ -29552,6 +29554,7 @@ function _medFilaHtml(i) {
         ${i.envios_30d ? ` · ${i.unidades_30d} u. en 30 d` : ''}
       </div>
       ${i.caja && i.caja.origen === 'sku' ? `<div style="font-size:10px;color:var(--muted)">Caja copiada por SKU</div>` : ''}
+      ${(i.advertencias_ml || []).map(a => `<div style="margin-top:4px;font-size:11px;line-height:1.35;padding:3px 7px;border-radius:6px;background:${a.codigo === 'ficha_no_entra' ? 'rgba(217,119,6,.12);color:#b45309' : 'rgba(220,38,38,.1);color:#dc2626'}">${_MED_ADV[a.codigo] || '⚠️'} ${_medEsc(a.texto)}</div>`).join('')}
     </td>
     <td style="${td};white-space:nowrap">${_medCaja(i.declarado)}</td>
     <td style="${td};white-space:nowrap">${i.ml ? _medCaja(i.ml) + (origen ? `<div style="font-size:10px;color:var(--muted)" title="${origen.title}">${origen.label}</div>` : (i.ml.origen ? `<div style="font-size:10px;color:var(--muted)">${_medEsc(i.ml.origen)}</div>` : '')) : '<span style="color:var(--muted)">sin envíos en 90 d</span>'}</td>
@@ -29565,6 +29568,7 @@ function _medFilaHtml(i) {
   </tr>`;
 }
 const _MED_LADO = { largo: 'Largo', ancho: 'Ancho', alto: 'Alto' };
+const _MED_ADV = { sin_me: '🚫', cargo_medidas: '💸', ficha_no_entra: '⚠️' };
 
 function _medReemplazarItems(nuevos) {
   const porId = Object.fromEntries((nuevos || []).map(x => [x.id, x]));
@@ -29668,9 +29672,10 @@ function bajarPlanillaMedidas() {
     'Ancho cm': i.caja?.ancho ?? '',
     'Alto cm': i.caja?.alto ?? '',
     'Peso g': i.caja?.peso_g ?? '',
+    'Advertencia ML': (i.advertencias_ml || []).map(a => a.texto).join(' / '),
   }));
   const ws = XLSX.utils.json_to_sheet(rows);
-  ws['!cols'] = [{ wch: 15 }, { wch: 16 }, { wch: 50 }, { wch: 9 }, { wch: 10 }, { wch: 26 }, { wch: 26 }, { wch: 9 }, { wch: 9 }, { wch: 9 }, { wch: 9 }];
+  ws['!cols'] = [{ wch: 15 }, { wch: 16 }, { wch: 50 }, { wch: 9 }, { wch: 10 }, { wch: 26 }, { wch: 26 }, { wch: 9 }, { wch: 9 }, { wch: 9 }, { wch: 9 }, { wch: 60 }];
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Cajas');
   const nombre = String(getActiveClient()?.name || 'cliente').replace(/[^\w\-]+/g, '_');

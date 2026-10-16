@@ -42,6 +42,8 @@ const TARIFAS = require('./backend_impacto_costos').tarifas;
 const { tarifaMayorista } = require('./backend_envios');
 
 const CATALOGO_TTL_MS = 12 * 60 * 60 * 1000;
+const CATALOGO_VERSION = 2;   // subirla cuando itemDeML guarda un campo nuevo: fuerza rearmar
+const DIAS_CARGOS      = 90;  // cargos CPY de la factura que se muestran como advertencia
 const DIAS_COBRO      = 30;   // ventana de lo cobrado / estimado
 const DIAS_MEDIDAS    = 90;   // hasta dónde se busca el último envío con medidas de ML
 const ME2_LADO_MAX_CM = 150;  // arriba de esto la publicación pierde Mercado Envíos
@@ -169,6 +171,28 @@ function controlEnvioML(it, caja) {
   return out;
 }
 
+// Advertencias de ML sobre las medidas de una publicación. ML no expone la marca
+// "medidas y peso para revisar" del panel (se probaron 16 rutas); lo que sí se ve:
+//   sin_me          tag lost_me2_by_dimensions: ML ya le sacó Mercado Envíos por las medidas
+//   cargo_medidas   cargos CPY de la factura ("diferencias en medidas y peso del paquete")
+//   ficha_no_entra  el producto de la ficha no entra en el paquete declarado: es el chequeo
+//                   que dispara la marca del panel (ver memoria ficha vs paquete), calculado acá
+function advertenciasML(it, cargo) {
+  const out = [];
+  if (it.sin_me_por_medidas) out.push({ codigo: 'sin_me',
+    texto: 'ML le sacó Mercado Envíos por las medidas: no ofrece envío gratis ni FULL hasta que se corrijan' });
+  if (cargo && cargo.monto > 0) out.push({ codigo: 'cargo_medidas', monto: Math.round(cargo.monto), cargos: cargo.cargos,
+    texto: `ML cobró $${Math.round(cargo.monto).toLocaleString('es-AR')} por diferencias de medidas y peso (${cargo.cargos} cargo${cargo.cargos > 1 ? 's' : ''} en ${DIAS_CARGOS} días)` });
+  const d = it.declarado, f = it.ficha;
+  if (completa(d) && f && f.cm && !/^MAX_/.test(f.atributo)) {
+    const mayor = Math.max(d.largo, d.ancho, d.alto);
+    const efectivo = (f.tramos && f.atributo === 'TOTAL_LENGTH') ? f.cm / f.tramos : f.cm;
+    if (efectivo > mayor + 0.01 && (f.tramos || efectivo <= mayor * 2)) out.push({ codigo: 'ficha_no_entra',
+      texto: `El producto de la ficha mide ${Math.round(efectivo)} cm${f.tramos ? ' por tramo' : ''} (${f.atributo}) y no entra en el paquete declarado de ${Math.round(mayor)} cm: es lo que ML marca como "medidas y peso para revisar"` });
+  }
+  return out;
+}
+
 // ════════════════════════════════════════════════════════════════════
 // BASE
 // ════════════════════════════════════════════════════════════════════
@@ -265,6 +289,7 @@ module.exports = (app, { pool, requireAuth, getClientToken, ML_API, extractSku, 
       logistic_type: shp.logistic_type || null,
       logistica: LOGISTICA[shp.logistic_type] || (shp.mode === 'me2' ? 'colecta' : 'otro'),
       shipping_mode: shp.mode || null,
+      sin_me_por_medidas: (shp.tags || []).includes('lost_me2_by_dimensions'),
       declarado: Object.values(declarado).some(v => v != null) ? declarado : null,
       ficha: ficha ? { atributo: ficha.id, cm: r1(ficha.cm), tramos: medidasFicha.secciones(body) } : null,
     };
@@ -294,7 +319,7 @@ module.exports = (app, { pool, requireAuth, getClientToken, ML_API, extractSku, 
         }
       }));
     }
-    const data = { ml_user_id: me.id, items };
+    const data = { ml_user_id: me.id, items, version: CATALOGO_VERSION };
     await pool.query(`
       INSERT INTO medidas_catalogo (client_id, data, generado) VALUES ($1, $2, NOW())
       ON CONFLICT (client_id) DO UPDATE SET data=$2, generado=NOW()`, [clientId, JSON.stringify(data)]);
@@ -304,7 +329,8 @@ module.exports = (app, { pool, requireAuth, getClientToken, ML_API, extractSku, 
   async function catalogo(clientId, refrescar = false) {
     if (!refrescar) {
       const r = await pool.query('SELECT data, generado FROM medidas_catalogo WHERE client_id=$1', [clientId]);
-      if (r.rows.length && Date.now() - new Date(r.rows[0].generado).getTime() < CATALOGO_TTL_MS) {
+      if (r.rows.length && r.rows[0].data.version === CATALOGO_VERSION
+          && Date.now() - new Date(r.rows[0].generado).getTime() < CATALOGO_TTL_MS) {
         return { ...r.rows[0].data, generado: r.rows[0].generado, cacheado: true };
       }
     }
@@ -441,11 +467,27 @@ module.exports = (app, { pool, requireAuth, getClientToken, ML_API, extractSku, 
              para_mandar: paraMandar, bloqueadas };
   }
 
+  // Cargos por diferencia de medidas de la factura real (billing_detalle, cron de backend_billing.js).
+  // Las bonificaciones que los revierten restan.
+  async function cargosMedidas(clientId) {
+    const r = await pool.query(`
+      SELECT item_id,
+             SUM(CASE WHEN detail_sub_type = 'CPY' THEN ABS(monto) ELSE -ABS(monto) END) AS monto,
+             COUNT(*) FILTER (WHERE detail_sub_type = 'CPY') AS cargos
+        FROM billing_detalle
+       WHERE client_id = $1 AND item_id IS NOT NULL AND fecha >= CURRENT_DATE - $2::int
+         AND (detail_sub_type = 'CPY' OR (detail_sub_type LIKE 'B%' AND concepto ILIKE '%medidas%'))
+       GROUP BY item_id`, [clientId, DIAS_CARGOS]).catch(() => ({ rows: [] }));
+    const out = {};
+    r.rows.forEach(x => { out[x.item_id] = { monto: parseFloat(x.monto) || 0, cargos: parseInt(x.cargos) || 0 }; });
+    return out;
+  }
+
   async function filasDe(clientId, { refrescar = false, soloIds = null } = {}) {
-    const [cat, uso, cj] = await Promise.all([catalogo(clientId, refrescar), usoML(clientId), cajas(clientId)]);
+    const [cat, uso, cj, cargos] = await Promise.all([catalogo(clientId, refrescar), usoML(clientId), cajas(clientId), cargosMedidas(clientId)]);
     let items = cat.items || [];
     if (soloIds) { const s = new Set(soloIds); items = items.filter(i => s.has(i.id)); }
-    return { cat, filas: items.map(it => armarFila(it, uso[it.id], cj[it.id])) };
+    return { cat, filas: items.map(it => ({ ...armarFila(it, uso[it.id], cj[it.id]), advertencias_ml: advertenciasML(it, cargos[it.id]) })) };
   }
 
   // ── Guardar cajas ─────────────────────────────────────────────────────────
@@ -722,4 +764,4 @@ module.exports = (app, { pool, requireAuth, getClientToken, ML_API, extractSku, 
   return { catalogo, proximaBanda, controlEnvioML };
 };
 
-module.exports._test = { proximaBanda, controlEnvioML, mismaCaja, conFacturable, banda };
+module.exports._test = { advertenciasML, proximaBanda, controlEnvioML, mismaCaja, conFacturable, banda };
