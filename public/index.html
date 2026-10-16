@@ -22200,13 +22200,19 @@ function renderPyL(pyl) {
 // P&L del período en UNA hoja A4, para mandar al cliente. Mismas líneas y mismos
 // totales que el panel y el Excel: los sumandos de egresos_ml.total, sin recalcular nada.
 async function exportarPyLPDF() {
+  try { await _exportarPyLPDF(); }
+  catch (err) { console.error('[PDF P&L]', err); showToast('⚠ No se pudo armar el PDF: ' + (err?.message || err)); }
+}
+async function _exportarPyLPDF() {
   const pyl = _reportePyl;
   if (!pyl) { showToast('Generá el P&L primero'); return; }
   const e = pyl.egresos_ml || {};
-  const fac = pyl.ingresos?.facturacion || 0;
+  const fac = parseFloat(pyl.ingresos?.facturacion) || 0;
   const esc = v => _escHtml(v);
-  const fmt = v => (v < 0 ? '−$' : '$') + Math.abs(Math.round(v || 0)).toLocaleString('es-AR');
-  const pct = v => fac > 0 ? ((v || 0) / fac * 100).toFixed(1) + '%' : '';
+  // El P&L trae algunos valores como texto (los márgenes llegan '68.1'): todo pasa por num()
+  const num = v => parseFloat(v) || 0;
+  const fmt = v => (num(v) < 0 ? '−$' : '$') + Math.abs(Math.round(num(v))).toLocaleString('es-AR');
+  const pct = v => fac > 0 ? (num(v) / fac * 100).toFixed(1) + '%' : '';
   // signo: los egresos se muestran en negativo, como en el Excel
   const R = (lbl, v, o = {}) => `<tr class="${o.bold ? 'bold' : ''}${o.sub ? ' sub' : ''}">
       <td class="lbl">${lbl}</td><td>${fmt(v)}</td><td class="mut">${o.sinPct ? '' : pct(v)}</td></tr>`;
@@ -22233,9 +22239,9 @@ async function exportarPyLPDF() {
   const kpi = (lbl, val, sub, neg) => `<div class="kpi${neg ? ' neg' : ''}"><div class="kpi-l">${lbl}</div><div class="kpi-v">${val}</div><div class="kpi-s">${sub}</div></div>`;
   const kpis = `<div class="kpis">
     ${kpi('Facturación', fmt(fac), `${(pyl.ordenes || 0).toLocaleString('es-AR')} ventas`)}
-    ${kpi('Recibido de ML', (pyl.margenes?.pct_recibido ?? 0).toFixed(1) + '%', fmt(pyl.resultado_neto_ml), pyl.resultado_neto_ml < 0)}
+    ${kpi('Recibido de ML', num(pyl.margenes?.pct_recibido).toFixed(1) + '%', fmt(pyl.resultado_neto_ml), pyl.resultado_neto_ml < 0)}
     ${kpi('Contribución marginal', pct(cm) || '—', fmt(cm), cm < 0)}
-    ${kpi('Utilidad final', fmt(pyl.utilidad_final), 'margen ' + (pyl.margenes?.margen ?? 0).toFixed(1) + '%', pyl.utilidad_final < 0)}
+    ${kpi('Utilidad final', fmt(pyl.utilidad_final), 'margen ' + num(pyl.margenes?.margen).toFixed(1) + '%', pyl.utilidad_final < 0)}
   </div>`;
 
   const tabla = `<table>
