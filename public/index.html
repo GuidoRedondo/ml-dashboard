@@ -925,6 +925,9 @@ tr.fam-hijo > td { background: rgba(99,102,241,.025); }
       <div class="nav-item" data-page="tokens" onclick="showPage('tokens',this);loadTokenStatus()">
         <span class="nav-icon">🔑</span> Tokens
       </div>
+      <div class="nav-item" id="nav-uso" data-page="uso" style="display:none" onclick="showPage('uso',this);loadUsoApp()">
+        <span class="nav-icon">📶</span> Uso de la app
+      </div>
       <div class="nav-item" data-page="alertas" onclick="showPage('alertas',this);loadCentroInteligencia()">
         <span class="nav-icon">🔔</span> Centro de Inteligencia
       </div>
@@ -1958,6 +1961,15 @@ tr.fam-hijo > td { background: rgba(99,102,241,.025); }
       <div id="tokenStatusContent"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Cargando...</div></div>
     </div>
 
+    <div class="page" id="page-uso">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px">
+        <h2 style="margin:0;font-family:var(--font-b);flex:1">📶 Uso de la app</h2>
+        <span id="usoAppTime" style="font-size:12px;color:var(--muted)"></span>
+        <button class="sync-btn" onclick="loadUsoApp()">🔄 Actualizar</button>
+      </div>
+      <div id="usoAppContent"><div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">Cargando...</div></div>
+    </div>
+
     <!-- CLIENTES ADMIN -->
     <div class="page" id="page-clientes">
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px">
@@ -2811,7 +2823,8 @@ async function apiCall(method, path, body) {
   const opts = {
     method,
     credentials: 'include',
-    headers: { 'Content-Type': 'application/json', 'x-session-id': sid }
+    headers: { 'Content-Type': 'application/json', 'x-session-id': sid,
+               'x-page': (document.querySelector('.page.active')?.id || '').replace('page-', '') }
   };
   if (body) opts.body = JSON.stringify(body);
   const r = await fetch(url, opts);
@@ -15930,6 +15943,8 @@ function applyPermissions() {
   document.querySelectorAll('[data-page="usuarios"],[data-page="clientes"],[data-page="tokens"],[data-page="panel-consultores"],[data-page="hotsale-report"]').forEach(el => {
     el.style.display = isGestion ? '' : 'none';
   });
+  const navUso = document.getElementById('nav-uso');
+  if (navUso) navUso.style.display = role === 'admin' ? '' : 'none';
 
   // Ocultar secciones según permisos para clientes
   if (role === 'cliente') {
@@ -26583,6 +26598,72 @@ async function eliminarUsuario(id, username) {
     showToast('✅ Usuario eliminado');
     await loadUsuarios();
   } catch(e) { showToast(`❌ Error: ${e.message}`); }
+}
+
+// ── USO DE LA APP ─────────────────────────────────────────────────────────────
+let _usoAppInterval = null;
+async function loadUsoApp() {
+  const el = document.getElementById('usoAppContent');
+  if (!el) return;
+  try {
+    const d = await apiCall('GET', '/api/admin/uso');
+    if (!d || d.error) { el.innerHTML = `<div style="color:var(--muted);padding:40px">${_escHtml(d?.error || 'Sin permiso')}</div>`; return; }
+    renderUsoApp(d);
+    if (!_usoAppInterval) {
+      _usoAppInterval = setInterval(() => {
+        if (document.getElementById('page-uso').classList.contains('active')) loadUsoApp();
+        else { clearInterval(_usoAppInterval); _usoAppInterval = null; }
+      }, 30000);
+    }
+  } catch (e) {
+    el.innerHTML = `<div style="color:var(--muted);padding:40px">Error: ${_escHtml(e.message)}</div>`;
+  }
+}
+
+function renderUsoApp(d) {
+  const el = document.getElementById('usoAppContent');
+  const t = document.getElementById('usoAppTime');
+  if (t) t.textContent = 'Actualizado: ' + new Date(d.server_time).toLocaleTimeString('es-AR', { timeZone: ART_TZ });
+  const hace = s => s < 60 ? 'recién' : s < 3600 ? `hace ${Math.round(s / 60)} min` : `hace ${(s / 3600).toFixed(1)} hs`;
+  const seg = ms => (ms / 1000).toFixed(1) + ' s';
+  const hora = v => new Date(v).toLocaleTimeString('es-AR', { timeZone: ART_TZ, hour: '2-digit', minute: '2-digit' });
+  const online = d.usuarios.filter(u => u.hace_seg <= 300);
+  const lentas24 = d.lentas_por_ruta.reduce((a, r) => a + r.veces, 0);
+  const card = (lbl, val, sub) => `<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:14px 16px">
+      <div style="font-size:11px;color:var(--muted);font-weight:700;letter-spacing:.5px">${lbl}</div>
+      <div style="font-size:26px;font-weight:800;font-family:var(--font-b);margin-top:4px">${val}</div>
+      <div style="font-size:12px;color:var(--muted)">${sub}</div></div>`;
+  const th = 'style="text-align:left;padding:8px 10px;font-size:11px;color:var(--muted);border-bottom:1px solid var(--border)"';
+  const td = 'style="padding:7px 10px;font-size:13px;border-bottom:1px solid var(--border)"';
+  const tabla = (cols, filas, vacio) => filas.length
+    ? `<div style="overflow-x:auto;background:var(--surface);border:1px solid var(--border);border-radius:12px"><table style="width:100%;border-collapse:collapse">
+        <tr>${cols.map(c => `<th ${th}>${c}</th>`).join('')}</tr>${filas.map(f => `<tr>${f.map(v => `<td ${td}>${v}</td>`).join('')}</tr>`).join('')}</table></div>`
+    : `<div style="color:var(--muted);font-size:13px;padding:16px;background:var(--surface);border:1px solid var(--border);border-radius:12px">${vacio}</div>`;
+  const h3 = txt => `<h3 style="font-family:var(--font-b);font-size:15px;margin:22px 0 10px">${txt}</h3>`;
+
+  el.innerHTML = `
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px">
+      ${card('CONECTADOS AHORA', online.length, 'actividad en los últimos 5 min')}
+      ${card('USARON LA APP HOY', d.usuarios.length, 'usuarios distintos')}
+      ${card('REQUESTS LENTAS 24 HS', lentas24, 'más de ' + seg(d.servidor.umbral_lenta_ms))}
+      ${card('SERVIDOR', d.servidor.memoria_mb + ' MB', `${d.servidor.requests_en_curso} requests en curso · arriba hace ${d.servidor.uptime_min} min`)}
+    </div>
+    ${h3('👥 Quién usó la app hoy')}
+    ${tabla(['', 'Usuario', 'Rol', 'Última actividad', 'Sección', 'Cuenta'],
+      d.usuarios.map(u => [u.hace_seg <= 300 ? '🟢' : '⚪', _escHtml(u.username), _escHtml(u.role || ''), hace(u.hace_seg),
+        _escHtml(u.last_page || u.last_path || '—'), _escHtml(u.cliente || '—')]),
+      'Nadie registró actividad hoy (el registro arranca con este deploy).')}
+    ${h3('🐢 Qué está lento (últimas 24 hs, ordenado por tiempo total perdido)')}
+    ${tabla(['Ruta', 'Veces', 'Promedio', 'Máximo', 'Cuentas'],
+      d.lentas_por_ruta.map(r => [`<code>${_escHtml(r.ruta)}</code>`, r.veces, seg(r.prom_ms), seg(r.max_ms), r.cuentas]),
+      'Ninguna request tardó más de ' + seg(d.servidor.umbral_lenta_ms) + ' en las últimas 24 hs.')}
+    ${d.lentas_por_hora.length ? h3('🕐 Requests lentas por hora') + `<div style="display:flex;gap:6px;flex-wrap:wrap">${d.lentas_por_hora.map(h =>
+      `<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:6px 10px;font-size:12px"><b>${h.hora}</b> · ${h.veces}</div>`).join('')}</div>` : ''}
+    ${h3('📋 Últimas requests lentas')}
+    ${tabla(['Hora', 'Ruta', 'Tardó', 'Estado', 'Usuario', 'Cuenta', 'En paralelo'],
+      d.lentas_ultimas.map(r => [hora(r.ts), `<code>${_escHtml(r.metodo + ' ' + r.ruta)}</code>`, seg(r.ms),
+        r.status === 499 ? 'cortada' : r.status, _escHtml(r.username || '—'), _escHtml(r.cliente || '—'), r.en_curso]),
+      'Todavía no hay requests lentas registradas.')}`;
 }
 
 async function loadTokenStatus() {

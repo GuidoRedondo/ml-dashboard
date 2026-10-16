@@ -285,6 +285,23 @@ async function initDB() {
       created_at TIMESTAMP DEFAULT NOW(),
       expires_at TIMESTAMP DEFAULT NOW() + INTERVAL '7 days'
     );
+    -- Uso de la app: última actividad de cada sesión (se escribe como mucho 1 vez por minuto)
+    ALTER TABLE sessions ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ;
+    ALTER TABLE sessions ADD COLUMN IF NOT EXISTS last_page VARCHAR(60);
+    ALTER TABLE sessions ADD COLUMN IF NOT EXISTS last_path VARCHAR(200);
+    ALTER TABLE sessions ADD COLUMN IF NOT EXISTS last_client_id INTEGER;
+    CREATE TABLE IF NOT EXISTS requests_lentas (
+      id         SERIAL PRIMARY KEY,
+      ts         TIMESTAMPTZ DEFAULT NOW(),
+      metodo     VARCHAR(8),
+      ruta       VARCHAR(200),
+      ms         INTEGER,
+      status     INTEGER,
+      username   VARCHAR(100),
+      client_id  INTEGER,
+      en_curso   INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_requests_lentas_ts ON requests_lentas(ts);
     -- El FK viejo de sessions no tenía ON DELETE CASCADE: bloqueaba eliminar usuarios
     DO $$ BEGIN
       ALTER TABLE sessions DROP CONSTRAINT IF EXISTS sessions_user_id_fkey;
@@ -984,11 +1001,55 @@ if (process.env.RAILWAY_PUBLIC_DOMAIN || process.env.SELF_URL) {
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
   res.header('Access-Control-Allow-Credentials', 'true');
-  res.header('Access-Control-Allow-Headers', 'Content-Type, x-session-id');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, x-session-id, x-page');
   res.header('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
   if (req.method === 'OPTIONS') return res.sendStatus(200);
   next();
 });
+// ── USO DE LA APP: requests en curso + log de requests lentas ──────────────────
+// Solo /api. Se guarda la ruta como patrón (/api/items/:id), nunca la URL: lleva el session_id.
+const REQ_LENTA_MS = 3000;
+let reqEnCurso = 0;
+app.use((req, res, next) => {
+  if (!req.path.startsWith('/api/')) return next();
+  const t0 = Date.now();
+  const concurrentes = ++reqEnCurso;
+  let cerrado = false;
+  const fin = () => {
+    if (cerrado) return;
+    cerrado = true;
+    reqEnCurso--;
+    const ms = Date.now() - t0;
+    if (ms < REQ_LENTA_MS) return;
+    const ruta = req.route ? (req.baseUrl || '') + req.route.path : req.path;
+    const cid = parseInt(req.query.client_id || (req.body && req.body.client_id)) || null;
+    pool.query(
+      'INSERT INTO requests_lentas (metodo, ruta, ms, status, username, client_id, en_curso) VALUES ($1,$2,$3,$4,$5,$6,$7)',
+      [req.method, String(ruta).slice(0, 200), ms, res.writableFinished ? res.statusCode : 499, req.user?.username || null, cid, concurrentes]
+    ).catch(() => {});
+  };
+  res.on('finish', fin);
+  res.on('close', fin);
+  next();
+});
+setInterval(() => {
+  pool.query("DELETE FROM requests_lentas WHERE ts < NOW() - INTERVAL '14 days'").catch(() => {});
+}, 6 * 60 * 60 * 1000);
+
+const _lastSeenWrite = new Map();
+function marcarActividad(sessionId, req) {
+  const now = Date.now();
+  if (now - (_lastSeenWrite.get(sessionId) || 0) < 60000) return;
+  if (_lastSeenWrite.size > 5000) _lastSeenWrite.clear();
+  _lastSeenWrite.set(sessionId, now);
+  const page = String(req.headers['x-page'] || '').slice(0, 60) || null;
+  const cid = parseInt(req.query.client_id || (req.body && req.body.client_id)) || null;
+  pool.query(
+    'UPDATE sessions SET last_seen_at = NOW(), last_page = COALESCE($2, last_page), last_path = $3, last_client_id = COALESCE($4, last_client_id) WHERE id = $1',
+    [sessionId, page, req.path.slice(0, 200), cid]
+  ).catch(() => {});
+}
+
 app.use(cookieParser());
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
@@ -1003,6 +1064,7 @@ async function requireAuth(req, res, next) {
   );
   if (!result.rows.length) return res.status(401).json({ error: 'Sesión expirada' });
   req.user = result.rows[0];
+  marcarActividad(sessionId, req);
   next();
 }
 
@@ -1081,6 +1143,49 @@ const requireConsultor = (req, res, next) => {
   if (req.user?.role === 'cliente') return res.status(403).json({ error: 'Sección solo para consultores' });
   next();
 };
+
+// Uso de la app: quién está conectado, quién entró hoy y qué requests tardan
+app.get('/api/admin/uso', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const [usuarios, porRuta, ultimas, porHora] = await Promise.all([
+      pool.query(`
+        SELECT DISTINCT ON (u.id) u.username, u.role, s.last_seen_at, s.last_page, s.last_path,
+               c.name AS cliente, EXTRACT(EPOCH FROM (NOW() - s.last_seen_at))::int AS hace_seg
+        FROM sessions s JOIN users u ON u.id = s.user_id
+        LEFT JOIN clients c ON c.id = s.last_client_id
+        WHERE s.last_seen_at >= CURRENT_DATE
+        ORDER BY u.id, s.last_seen_at DESC`),
+      pool.query(`
+        SELECT ruta, COUNT(*)::int AS veces, ROUND(AVG(ms))::int AS prom_ms, MAX(ms) AS max_ms,
+               COUNT(DISTINCT client_id)::int AS cuentas
+        FROM requests_lentas WHERE ts > NOW() - INTERVAL '24 hours'
+        GROUP BY ruta ORDER BY COUNT(*) * AVG(ms) DESC LIMIT 25`),
+      pool.query(`
+        SELECT r.ts, r.metodo, r.ruta, r.ms, r.status, r.username, r.en_curso, c.name AS cliente
+        FROM requests_lentas r LEFT JOIN clients c ON c.id = r.client_id
+        ORDER BY r.ts DESC LIMIT 40`),
+      pool.query(`
+        SELECT to_char(date_trunc('hour', ts), 'HH24:00') AS hora, COUNT(*)::int AS veces
+        FROM requests_lentas WHERE ts > NOW() - INTERVAL '24 hours'
+        GROUP BY date_trunc('hour', ts), 2 ORDER BY date_trunc('hour', ts)`),
+    ]);
+    const mem = process.memoryUsage();
+    res.json({
+      server_time: new Date().toISOString(),
+      usuarios: usuarios.rows.sort((a, b) => a.hace_seg - b.hace_seg),
+      lentas_por_ruta: porRuta.rows,
+      lentas_ultimas: ultimas.rows,
+      lentas_por_hora: porHora.rows,
+      servidor: {
+        requests_en_curso: reqEnCurso,
+        memoria_mb: Math.round(mem.rss / 1048576),
+        heap_mb: Math.round(mem.heapUsed / 1048576),
+        uptime_min: Math.round(process.uptime() / 60),
+        umbral_lenta_ms: REQ_LENTA_MS,
+      },
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
 
 // Listar usuarios
 app.get('/api/users', requireAuth, requireAdmin, async (req, res) => {

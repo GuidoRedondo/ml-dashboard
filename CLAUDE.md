@@ -40,6 +40,7 @@ There are no tests or linting scripts configured.
 | **Diagnóstico Mensual** | Last 3 months of KPI snapshots side-by-side; manual fields stored in `manuales` JSONB column |
 | **Bitácora** | CRM-style task/note log per client |
 | **Tokens** | OAuth token status page per client (expiry, refresh availability) |
+| **Uso de la app** | Admin only. Who is connected now (activity in the last 5 min), who used the app today (section + account they were on) and which API routes took more than 3 s in the last 24 h, with how many requests were running in parallel. Server memory and requests in flight |
 | **Minutas** | Weekly client meetings (Gemini notes) and the tasks that came out of them, grouped by client. Two roles (`rolMinutas`): **admin** (`MINUTAS_USUARIOS` + dashboard role `admin`) sees everything, assigns tasks and edits due dates; **miembro** (`MINUTAS_MIEMBROS`) sees only the tasks assigned to them ("Mis tareas") and can only change their status — enforced in the backend too. Amanda is `admin` in the dashboard but `miembro` in Minutas: the dashboard role does not decide this. Assigning and closing tasks sends Slack messages (see below). The dashboard does not process meetings: Claude's scheduled task sends the result to `/api/minutas/ingest` |
 
 ## Architecture
@@ -62,7 +63,8 @@ This is a **single-file Node.js/Express backend** (`server.js`) + **single-file 
 |---|---|
 | `clients` | ML accounts (one per MercadoLibre seller). `servicio` (`programa` = 4-month program, `mensual` = recurring) + `inicio_programa` (DATE) are Guido-only: served by `GET /api/clients/programa` / `PATCH /api/clients/:id/programa`, never by `/api/clients`. Shown as a badge next to the active account name in the topbar (stage 1 = months 1-2, stage 2 = months 3-4, days left; click = edit) |
 | `users` | Dashboard users with role and optional `client_id` binding |
-| `sessions` | Active login sessions (7-day TTL) |
+| `sessions` | Active login sessions (7-day TTL). `last_seen_at` / `last_page` / `last_path` / `last_client_id` are written by `requireAuth` at most once a minute per session (`marcarActividad`); `last_page` comes from the `x-page` header that `apiCall` sends |
+| `requests_lentas` | Every `/api` request that took 3 s or more: route pattern (never the URL — it carries `session_id`), ms, status (499 = the browser cut it), user, account, requests in flight when it started. Pruned after 14 days |
 | `user_permissions` | Per-user section access flags |
 | `diagnostico_mensual` | Monthly KPI snapshots per client |
 | `product_costs` | Per-item **current** cost (`costo_unit`, pesos) for P&L calculation. `costo_usd` set = the item is priced in dollars and `costo_unit` = `costo_usd` × `clients.cotizacion_usd` |
@@ -105,6 +107,7 @@ This is a **single-file Node.js/Express backend** (`server.js`) + **single-file 
 - **Facturación real** (`backend_billing.js`): `GET /api/billing/resumen`, `GET /api/billing/estado`, `POST /api/billing/sync`, `POST /api/billing/backfill`, `GET|POST /api/billing/cron`
 - **Minutas** (`backend_minutas.js`): `POST /api/minutas/ingest` and `GET /api/minutas/ingest/ids` (header `x-minutas-secret`, no session), `GET /api/minutas`, `PATCH /api/minutas/tareas/:id` (admin + `MINUTAS_USUARIOS`). `/api/me` returns `minutas: true|false`. `PATCH /api/minutas/tareas/:id` takes `estado`, `vence`, `asignada_a`, `prioritaria` from an admin and only `estado` (on their own tasks; others → 404, any other field → 403) from a miembro. `POST /api/minutas/avisos-vencimiento` (header `x-minutas-secret`, `?forzar=1` skips the same-day dedupe) sends the due-date reminders. `GET /minutas` redirects to `/?page=minutas` (deep link used in Slack). `POST /api/minutas/sync-now` fires Claude's routine by hand (admin + `MINUTAS_SYNC_USUARIOS`; the routine token never reaches the front; 5-minute lock read from table `minutas_sync`; routine errors come back as 502 because a 401 would send the front to the login)
 - **Costos en dólares**: `GET|PUT /api/costos/dolar` (manual rate per client; PUT re-prices every item with `costo_usd`, effective from today). `POST /api/reporte/costos` accepts `costo_usd`, and an optional body `vigente_desde` (`YYYY-MM-DD`, not future) that makes the new costs effective from that day instead of today — days before it keep the old cost. An item with no previous real cost ignores it (its first cost still applies backwards)
+- **Uso de la app**: `GET /api/admin/uso` (admin)
 - **Other**: `GET /api/promociones`, `GET /api/preguntas`, `GET /api/devoluciones`, `GET /api/bitacora`, `POST /api/bitacora`, `PUT|DELETE /api/bitacora/:id`, `GET /api/proxy-ml`, `GET /api/item-fees`
 - **Debug**: `GET /api/debug/shipping|item|billing|order|app-token`
 
