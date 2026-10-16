@@ -29283,7 +29283,7 @@ function renderImpactoCostos(r) {
 // ════════════════════════════════════════════════════════════════════════════
 
 let _medData = null;
-let _medFiltro = 'todas';        // todas | sin_caja | de_mas | de_menos | advertencia | ficha | distinta | mandar
+let _medFiltro = 'todas';        // todas | pagamos | sin_caja | de_mas | de_menos | advertencia | ficha | distinta | mandar
 let _medLog = 'todas';           // todas | colecta | full | flex
 let _medBusqueda = '';
 let _medLimite = 200;
@@ -29405,6 +29405,7 @@ function _medFiltrar() {
   const q = _medBusqueda.trim().toLowerCase();
   return (_medData?.items || []).filter(i => {
     if (_medLog !== 'todas' && i.logistica !== _medLog) return false;
+    if (_medFiltro === 'pagamos' && !(i.cobrado_30d > 0)) return false;
     if (_medFiltro === 'sin_caja' && i.caja) return false;
     // diferencia_30d = lo que cobró ML − lo mismo tarifado con tu caja
     if (_medFiltro === 'de_mas' && !((i.diferencia_30d || 0) >= 1)) return false;
@@ -29468,6 +29469,7 @@ function _medChipsHtml(r) {
   const items = _medData?.items || [];
   return `
       ${chip('todas', 'Todas', r.total)}
+      ${chip('pagamos', '💰 Envío pagado por nosotros', items.filter(i => i.cobrado_30d > 0).length, 'Publicaciones a las que ML les cobró envío en los últimos 30 días (colecta o FULL): las de $33.000 o más y las ventas mayoristas con precio por cantidad. Debajo de $33.000 el envío lo paga el comprador')}
       ${chip('sin_caja', 'Sin caja', r.sin_caja)}
       ${chip('de_mas', '🔴 ML cobra de más', items.filter(i => (i.diferencia_30d || 0) >= 1).length, 'ML cobró más de lo que costaría con tu caja: declarándola, el envío baja')}
       ${chip('de_menos', '🟢 ML cobra de menos', items.filter(i => (i.diferencia_30d || 0) <= -1).length, 'ML cobró menos de lo que costaría con tu caja: tu caja es más grande que la que usa ML')}
