@@ -29283,7 +29283,7 @@ function renderImpactoCostos(r) {
 // ════════════════════════════════════════════════════════════════════════════
 
 let _medData = null;
-let _medFiltro = 'todas';        // todas | sin_caja | de_mas | de_menos | advertencia | distinta | mandar
+let _medFiltro = 'todas';        // todas | sin_caja | de_mas | de_menos | advertencia | ficha | distinta | mandar
 let _medLog = 'todas';           // todas | colecta | full | flex
 let _medBusqueda = '';
 let _medLimite = 200;
@@ -29379,7 +29379,8 @@ function _medFiltrar() {
     // diferencia_30d = lo que cobró ML − lo mismo tarifado con tu caja
     if (_medFiltro === 'de_mas' && !((i.diferencia_30d || 0) >= 1)) return false;
     if (_medFiltro === 'de_menos' && !((i.diferencia_30d || 0) <= -1)) return false;
-    if (_medFiltro === 'advertencia' && !(i.advertencias_ml || []).length) return false;
+    if (_medFiltro === 'advertencia' && !(i.advertencias_ml || []).some(a => a.fuente === 'ml')) return false;
+    if (_medFiltro === 'ficha' && !(i.advertencias_ml || []).some(a => a.codigo === 'ficha_no_entra')) return false;
     if (_medFiltro === 'distinta' && i.estado_ml !== 'distinta') return false;
     if (_medFiltro === 'mandar' && (i.envio_ml.no_aplica || i.envio_ml.bloqueo)) return false;
     if (q && !(`${i.id} ${i.sku || ''} ${i.title || ''}`.toLowerCase().includes(q))) return false;
@@ -29440,7 +29441,8 @@ function _medChipsHtml(r) {
       ${chip('sin_caja', 'Sin caja', r.sin_caja)}
       ${chip('de_mas', '🔴 ML cobra de más', items.filter(i => (i.diferencia_30d || 0) >= 1).length, 'ML cobró más de lo que costaría con tu caja: declarándola, el envío baja')}
       ${chip('de_menos', '🟢 ML cobra de menos', items.filter(i => (i.diferencia_30d || 0) <= -1).length, 'ML cobró menos de lo que costaría con tu caja: tu caja es más grande que la que usa ML')}
-      ${chip('advertencia', '⚠️ Con advertencia de ML', items.filter(i => (i.advertencias_ml || []).length).length, 'ML le sacó Mercado Envíos por las medidas, cobró un cargo por diferencia de medidas, o el producto de la ficha no entra en el paquete declarado (lo que ML marca como medidas y peso para revisar)')}
+      ${chip('advertencia', '🚫 Con advertencia de ML', items.filter(i => (i.advertencias_ml || []).some(a => a.fuente === 'ml')).length, 'Lo que dice ML: le sacó Mercado Envíos a la publicación por las medidas, o cobró un cargo por diferencia de medidas y peso en los últimos 90 días')}
+      ${chip('ficha', '📏 Ficha más grande que el paquete', items.filter(i => (i.advertencias_ml || []).some(a => a.codigo === 'ficha_no_entra')).length, 'Cálculo del dashboard, no un aviso de ML: la medida del producto en la ficha es mayor que el lado mayor del paquete declarado. Es lo que ML mira para marcar medidas y peso para revisar, pero da falsos positivos con productos que viajan doblados o desarmados')}
       ${chip('distinta', 'Distinta a lo declarado', r.distintas)}
       ${chip('mandar', 'Para mandar a ML', r.para_mandar)}`;
 }

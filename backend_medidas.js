@@ -179,16 +179,18 @@ function controlEnvioML(it, caja) {
 //                   que dispara la marca del panel (ver memoria ficha vs paquete), calculado acá
 function advertenciasML(it, cargo) {
   const out = [];
-  if (it.sin_me_por_medidas) out.push({ codigo: 'sin_me',
+  if (it.sin_me_por_medidas) out.push({ codigo: 'sin_me', fuente: 'ml',
     texto: 'ML le sacó Mercado Envíos por las medidas: no ofrece envío gratis ni FULL hasta que se corrijan' });
-  if (cargo && cargo.monto > 0) out.push({ codigo: 'cargo_medidas', monto: Math.round(cargo.monto), cargos: cargo.cargos,
+  if (cargo && cargo.monto > 0) out.push({ codigo: 'cargo_medidas', fuente: 'ml', monto: Math.round(cargo.monto), cargos: cargo.cargos,
     texto: `ML cobró $${Math.round(cargo.monto).toLocaleString('es-AR')} por diferencias de medidas y peso (${cargo.cargos} cargo${cargo.cargos > 1 ? 's' : ''} en ${DIAS_CARGOS} días)` });
   const d = it.declarado, f = it.ficha;
   if (completa(d) && f && f.cm && !/^MAX_/.test(f.atributo)) {
     const mayor = Math.max(d.largo, d.ancho, d.alto);
     const efectivo = (f.tramos && f.atributo === 'TOTAL_LENGTH') ? f.cm / f.tramos : f.cm;
-    if (efectivo > mayor + 0.01 && (f.tramos || efectivo <= mayor * 2)) out.push({ codigo: 'ficha_no_entra',
-      texto: `El producto de la ficha mide ${Math.round(efectivo)} cm${f.tramos ? ' por tramo' : ''} (${f.atributo}) y no entra en el paquete declarado de ${Math.round(mayor)} cm: es lo que ML marca como "medidas y peso para revisar"` });
+    // Cálculo propio, no un dato de ML: en REDFISHOK da ~550 contra ~50 reales (productos que
+    // viajan doblados o desarmados). Va aparte de las advertencias firmes.
+    if (efectivo > mayor + 0.01 && (f.tramos || efectivo <= mayor * 2)) out.push({ codigo: 'ficha_no_entra', fuente: 'calculo',
+      texto: `La ficha dice ${Math.round(efectivo)} cm${f.tramos ? ' por tramo' : ''} (${f.atributo}) y el paquete declarado ${Math.round(mayor)} cm. Si el producto no viaja doblado o desarmado, ML puede marcarla "medidas y peso para revisar"` });
   }
   return out;
 }
