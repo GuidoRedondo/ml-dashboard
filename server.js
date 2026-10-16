@@ -11328,6 +11328,16 @@ const enviosAuditoria = require('./backend_envios')(app, {
   pool, requireAuth, requireConsultor, requireAdmin, getClientToken, ML_API, nodeCron, ART, ymd, ymdShift
 });
 
+// Medida paquetes — módulo aparte (backend_medidas.js). Por publicación activa pone lado a
+// lado lo declarado en ML, las medidas con que ML cobró los envíos y la caja que mide el
+// vendedor; estima el envío con esa caja contra lo cobrado y la manda a ML con controles.
+// Reusa el chequeo de ficha vs paquete de acá (_fichaMayor, _secciones).
+require('./backend_medidas')(app, {
+  pool, requireAuth, getClientToken, ML_API, extractSku, loadSkuManual, fetchAllActiveItemIds,
+  medidasFicha: { fichaMayor: i => _fichaMayor(i), secciones: i => _secciones(i),
+                  attrCm: (i, id) => _attrCm(i, id), attrG: (i, id) => _attrG(i, id) },
+});
+
 // GET /api/tarifas — escalas vigentes de cargo fijo, para que el front no tenga su
 // propia copia. Antes las tenía escritas a mano en tres lugares distintos (y encima
 // con montos que no coincidían entre sí), así que cada cambio de tarifario de ML

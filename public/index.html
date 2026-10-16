@@ -872,6 +872,9 @@ tr.fam-hijo > td { background: rgba(99,102,241,.025); }
       <div class="nav-item" data-page="logistica" onclick="showPage('logistica',this);loadLogistica()">
         <span class="nav-icon">🚚</span> Logística
       </div>
+      <div class="nav-item" data-page="medidas" style="display:none" onclick="showPage('medidas',this);loadMedidas()">
+        <span class="nav-icon">📐</span> Medida paquetes
+      </div>
       <div class="nav-item" data-page="stock" onclick="showPage('stock',this);loadStock()">
         <span class="nav-icon">📦</span> Stock
       </div>
@@ -2120,6 +2123,22 @@ tr.fam-hijo > td { background: rgba(99,102,241,.025); }
       <div id="admc-root"><div style="padding:20px;color:#6b7280">Cargando…</div></div>
     </div>
 
+    <div class="page" id="page-medidas">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;flex-wrap:wrap">
+        <h2 style="margin:0;font-family:var(--font-b);flex:1">📐 Medida paquetes</h2>
+        <span id="medEstado" style="font-size:11px;color:var(--muted)"></span>
+        <button class="sync-btn" onclick="loadMedidas(true)" title="Vuelve a bajar las publicaciones activas de ML (lo declarado y la ficha). Sin esto se usa la copia de las últimas 12 h">🔄 Actualizar con ML</button>
+        <button class="sync-btn" onclick="bajarPlanillaMedidas()" title="Baja lo que estás viendo para completar las cajas en Excel">📥 Bajar planilla</button>
+        <label class="sync-btn" style="cursor:pointer" title="Subí la planilla completada. Antes de guardar te muestra qué va a cambiar">📤 Subir planilla
+          <input type="file" accept=".xlsx,.xls,.csv" style="display:none" onchange="subirPlanillaMedidas(this)"></label>
+      </div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:16px;line-height:1.5">
+        ML cobra el envío por el mayor entre el peso físico y el volumétrico (largo × ancho × alto ÷ 4000), con <b>sus</b> medidas: casi nunca son las de tu caja.
+        Cargá la caja real de cada producto y te decimos cuánto tendría que costar cada envío contra lo que ML te cobró en los últimos 30 días.
+      </div>
+      <div id="medidasContent"><div style="color:var(--muted);padding:40px;text-align:center">Cargando…</div></div>
+    </div>
+
     <div class="page" id="page-decisiones-publi">
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px;flex-wrap:wrap">
         <h2 style="margin:0;font-family:var(--font-b);flex:1">⚡ Motor de Decisiones — Publicidad</h2>
@@ -3115,6 +3134,7 @@ async function selectClient(clientId, el) {
   if (_repTabActiva === 'reclamos') loadReclamos();
   if (_repTabActiva === 'experiencia') loadExperiencia();
   if (document.getElementById('page-adman-cuenta')?.classList.contains('active')) loadAdmanCuenta();
+  if (document.getElementById('page-medidas')?.classList.contains('active')) loadMedidas();
 }
 
 async function loadDashboardData() {
@@ -15874,6 +15894,8 @@ const SECCIONES = [
   { id: 'decisiones-publi', label: '🎛️ Motor de Publicidad',   optIn: true },
   // Alertas de los agentes de AdMan de SU cuenta, solo lectura (backend: /api/adman/cuenta).
   { id: 'adman-cuenta',     label: '🤖 Agentes de Publicidad', optIn: true },
+  // Cajas reales, estimación del envío y envío de medidas a ML (backend: /api/medidas).
+  { id: 'medidas',          label: '📐 Medida paquetes',       optIn: true },
 ];
 
 // Secciones que requieren permiso explícito (ver comentario arriba).
@@ -29163,6 +29185,478 @@ function renderImpactoCostos(r) {
 
   el.innerHTML = kpis + bloqueCuenta + bloqueZona + bloqueNeg + bloqueSubir +
                  bloqueTop + opor + bloqueNotas;
+}
+</script>
+<script>
+// ════════════════════════════════════════════════════════════════════════════
+//  MEDIDA PAQUETES — backend: backend_medidas.js
+//
+//  Una fila por publicación activa con tres juegos de medidas del paquete: lo declarado
+//  en ML, lo que ML usó para cobrar el último envío (con su origen) y la caja que mide el
+//  vendedor. Con la caja se re-tarifa cada envío de los últimos 30 días y se compara contra
+//  lo cobrado. La caja se carga en la fila (se copia a todas las del mismo SKU) o por
+//  planilla, y se puede mandar a ML con los controles del backend.
+//
+//  Al abrir lee /api/medidas, que sale de la base (catálogo cacheado 12 h + envíos del cron):
+//  no le pega a ML salvo con "Actualizar con ML".
+// ════════════════════════════════════════════════════════════════════════════
+
+let _medData = null;
+let _medFiltro = 'todas';        // todas | sin_caja | diferencia | distinta | mandar
+let _medLog = 'todas';           // todas | colecta | full | flex
+let _medBusqueda = '';
+let _medLimite = 200;
+let _medSel = new Set();         // item_ids tildados para mandar a ML
+let _medImport = null;           // planilla leída, esperando confirmación
+let _medReq = 0;
+
+const _MED_LOG = { colecta: 'Colecta', full: 'FULL', flex: 'Flex', otro: 'Otro' };
+const _MED_ORIGEN = {
+  bmp: { label: 'Base de ML', title: 'ML las sacó de su base maestra porque no había medidas declaradas' },
+  fd:  { label: 'Medido FULL', title: 'ML midió el paquete en su depósito' },
+};
+const _MED_NO_APLICA = {
+  sin_caja:   'Cargá la caja primero',
+  full:       'FULL: ML usa su propia medición. Si no coincide con tu caja, pedí que la vuelvan a medir desde el panel',
+  sin_ventas: 'Sin ventas: ML no deja cambiar las medidas por API. Cargalas desde el panel de la publicación',
+  igual:      'ML ya tiene declarada esta misma caja',
+};
+
+const _medEsc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const _medMoney = v => v == null ? '—' : (v < 0 ? '−$' : '$') + Math.abs(Math.round(v)).toLocaleString('es-AR');
+const _medKg = v => v == null ? '—' : (+v).toLocaleString('es-AR', { maximumFractionDigits: 2 }) + ' kg';
+const _medNum = v => (+v).toLocaleString('es-AR', { maximumFractionDigits: 1 });
+const _medCaja = m => (m && m.largo && m.ancho && m.alto)
+  ? `${_medNum(m.largo)}×${_medNum(m.ancho)}×${_medNum(m.alto)} cm` + (m.peso_g ? ` · ${Math.round(m.peso_g).toLocaleString('es-AR')} g` : '')
+  : (m && m.peso_g ? `sin medidas · ${Math.round(m.peso_g).toLocaleString('es-AR')} g` : '—');
+const _medSkuKey = s => String(s ?? '').trim().toUpperCase();
+
+function resetMedidas() {
+  _medData = null; _medFiltro = 'todas'; _medLog = 'todas'; _medBusqueda = ''; _medLimite = 200;
+  _medSel = new Set(); _medImport = null;
+}
+
+async function loadMedidas(refrescar) {
+  const el = document.getElementById('medidasContent');
+  const client = getActiveClient();
+  if (!el) return;
+  if (!client || !client.id) {
+    el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">Sin cuenta conectada — seleccioná una cuenta en el topbar</div>';
+    return;
+  }
+  if (_medData && _medData.client_id !== client.id) resetMedidas();
+  const req = ++_medReq;
+  el.innerHTML = `<div style="color:var(--muted);font-size:13px;padding:40px;text-align:center">⏳ ${refrescar || !_medData
+    ? 'Trayendo las publicaciones activas… la primera vez (o con “Actualizar con ML”) en cuentas grandes tarda un par de minutos'
+    : 'Cargando…'}</div>`;
+  try {
+    const d = await apiCall('GET', `/api/medidas?client_id=${client.id}${refrescar ? '&refresh=1' : ''}`);
+    if (req !== _medReq) return;
+    if (!d || d.error) {
+      el.innerHTML = `<div style="color:var(--muted);padding:40px;text-align:center">${_medEsc((d && d.error) || 'No se pudo cargar')}</div>`;
+      return;
+    }
+    _medData = d;
+    renderMedidas();
+  } catch (e) {
+    if (req !== _medReq) return;
+    el.innerHTML = `<div style="color:var(--muted);padding:40px;text-align:center">Error: ${_medEsc(e.message)}</div>`;
+  }
+}
+
+// Mismo cálculo que resumir() del backend, para que las tarjetas se muevan al cargar una caja
+// sin volver a pedir todo.
+function _medResumen(items) {
+  const base = () => ({ publicaciones: 0, con_envios: 0, con_caja: 0, cobrado_30d: 0, cobrado_con_caja: 0, estimado_con_caja: 0, diferencia_30d: 0 });
+  const r = { colecta: base(), full: base(), flex: base(), otro: base(), total: items.length, sin_caja: 0, con_caja: 0, distintas: 0, para_mandar: 0, bloqueadas: 0 };
+  items.forEach(f => {
+    const g = r[f.logistica] || r.otro;
+    g.publicaciones++;
+    if (f.envios_30d) g.con_envios++;
+    if (f.caja) g.con_caja++;
+    g.cobrado_30d += f.cobrado_30d || 0;
+    if (f.diferencia_30d != null) { g.cobrado_con_caja += f.cobrado_30d; g.estimado_con_caja += f.estimado_30d; g.diferencia_30d += f.diferencia_30d; }
+    if (f.caja) r.con_caja++; else r.sin_caja++;
+    if (f.estado_ml === 'distinta') r.distintas++;
+    if (f.envio_ml.bloqueo) r.bloqueadas++; else if (!f.envio_ml.no_aplica) r.para_mandar++;
+  });
+  ['colecta', 'full', 'flex', 'otro'].forEach(k => { r[k].diferencia_anual = Math.round(r[k].diferencia_30d * 365 / (_medData?.dias_cobro || 30)); });
+  return r;
+}
+
+function _medPorSku() {
+  const m = {};
+  (_medData?.items || []).forEach(i => { const k = _medSkuKey(i.sku); if (k) (m[k] = m[k] || []).push(i); });
+  return m;
+}
+
+function _medFiltrar() {
+  const q = _medBusqueda.trim().toLowerCase();
+  return (_medData?.items || []).filter(i => {
+    if (_medLog !== 'todas' && i.logistica !== _medLog) return false;
+    if (_medFiltro === 'sin_caja' && i.caja) return false;
+    if (_medFiltro === 'diferencia' && !(Math.abs(i.diferencia_30d || 0) >= 1)) return false;
+    if (_medFiltro === 'distinta' && i.estado_ml !== 'distinta') return false;
+    if (_medFiltro === 'mandar' && (i.envio_ml.no_aplica || i.envio_ml.bloqueo)) return false;
+    if (q && !(`${i.id} ${i.sku || ''} ${i.title || ''}`.toLowerCase().includes(q))) return false;
+    return true;
+  });
+}
+
+function setMedFiltro(f) { _medFiltro = f; _medLimite = 200; renderMedidas(); }
+function setMedLog(l) { _medLog = l; _medLimite = 200; renderMedidas(); }
+function buscarMedidas(v) {
+  _medBusqueda = v; _medLimite = 200;
+  clearTimeout(buscarMedidas._t);
+  buscarMedidas._t = setTimeout(() => { _medPintarTabla(); }, 200);
+}
+function _medBuscarSku(sku) {
+  _medBusqueda = sku; _medFiltro = 'todas'; _medLimite = 200;
+  renderMedidas();
+}
+
+function renderMedidas() {
+  const d = _medData;
+  const el = document.getElementById('medidasContent');
+  if (!d || !el) return;
+  const est = document.getElementById('medEstado');
+  if (est) {
+    const f = v => v ? new Date(v).toLocaleString('es-AR', { timeZone: ART_TZ, day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '—';
+    est.textContent = `Publicaciones de ML: ${f(d.generado)} · envíos: ${f(d.envios_sync)}`;
+  }
+  const chip = (id, label, n) => `<button class="sync-btn" onclick="setMedFiltro('${id}')"
+      style="padding:5px 11px;font-size:12px;${_medFiltro === id ? 'background:var(--accent);color:#292929;font-weight:700' : ''}">${label}${n != null ? ` <b>${n}</b>` : ''}</button>`;
+  const r = d.resumen = _medResumen(d.items);
+  el.innerHTML = `
+    <div id="medCards">${_medCardsHtml(r)}</div>
+    <div id="medImportPanel">${_medImportHtml()}</div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin:14px 0 10px">
+      ${chip('todas', 'Todas', r.total)}
+      ${chip('sin_caja', 'Sin caja', r.sin_caja)}
+      ${chip('diferencia', 'Con diferencia', null)}
+      ${chip('distinta', 'Distinta a lo declarado', r.distintas)}
+      ${chip('mandar', 'Para mandar a ML', r.para_mandar)}
+      <select onchange="setMedLog(this.value)" style="padding:6px 8px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:12px">
+        ${['todas', 'colecta', 'full', 'flex'].map(l => `<option value="${l}" ${_medLog === l ? 'selected' : ''}>${l === 'todas' ? 'Toda logística' : _MED_LOG[l]}</option>`).join('')}
+      </select>
+      <input type="search" placeholder="Buscar MLA, SKU o título" value="${_medEsc(_medBusqueda)}" oninput="buscarMedidas(this.value)"
+        style="flex:1;min-width:180px;padding:7px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:12px">
+    </div>
+    <div id="medSelBar"></div>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:8px">
+      Cargá largo, ancho y alto en <b>cm</b> y el peso en <b>gramos</b>: se guarda solo al completar las cuatro. Lo que cargás en una publicación se copia a todas las que tienen el mismo SKU (el ×N al lado del SKU dice cuántas son).
+      Borrar las cuatro borra la caja. Flex no entra en la comparación: cobra por zona y las medidas no mueven el monto.
+    </div>
+    <div id="medTabla"></div>`;
+  _medPintarTabla();
+}
+
+function _medCardsHtml(r) {
+  const card = (titulo, valor, sub, color) => `
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:14px 16px;min-width:190px;flex:1">
+      <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em">${titulo}</div>
+      <div style="font-size:22px;font-weight:800;margin-top:4px;color:${color || 'var(--text)'}">${valor}</div>
+      <div style="font-size:11px;color:var(--muted);margin-top:4px;line-height:1.4">${sub || ''}</div>
+    </div>`;
+  const c = r.colecta, f = r.full;
+  const dif = c.diferencia_30d;
+  const colorDif = dif > 0 ? '#dc2626' : dif < 0 ? '#16a34a' : 'var(--text)';
+  return `<div style="display:flex;gap:10px;flex-wrap:wrap">
+    ${card('Envíos colecta · 30 días', _medMoney(c.cobrado_30d), `Lo que ML cobró en ${c.con_envios} publicaciones con envíos`)}
+    ${card('Con tus cajas', c.con_caja ? _medMoney(c.estimado_con_caja) : '—',
+      c.con_caja ? `Lo mismo tarifado con tu caja. ML cobró ${_medMoney(c.cobrado_con_caja)} en esas publicaciones` : 'Cargá cajas para estimar')}
+    ${card(dif >= 0 ? 'Pagado de más' : 'Pagado de menos', c.con_caja ? _medMoney(Math.abs(dif)) : '—',
+      c.con_caja ? `${_medMoney(Math.abs(c.diferencia_anual))} proyectado a un año. ${dif > 0 ? 'Declarando la caja real lo recuperás desde el próximo envío' : dif < 0 ? 'Ojo: tu caja es más grande que la que ML usa. Si mandás esta, pagás más' : ''}` : '', colorDif)}
+    ${card('FULL · 30 días', f.con_caja ? _medMoney(f.diferencia_30d) : _medMoney(f.cobrado_30d),
+      f.con_caja ? `Diferencia contra la medición de ML en ${f.con_caja} publicaciones. En FULL se reclama pidiendo que la vuelvan a medir` : `Cobrado en FULL. ML mide en su depósito: cargá la caja para ver si te midió de más`)}
+    ${card('Sin caja cargada', `${r.sin_caja} de ${r.total}`, `${r.bloqueadas ? `${r.bloqueadas} con caja que ML rechazaría. ` : ''}${r.para_mandar} listas para mandar a ML`, r.sin_caja ? '#d97706' : '#16a34a')}
+  </div>`;
+}
+
+function _medPintarCards() {
+  if (!_medData) return;
+  _medData.resumen = _medResumen(_medData.items);
+  const el = document.getElementById('medCards');
+  if (el) el.innerHTML = _medCardsHtml(_medData.resumen);
+}
+
+function _medPintarTabla() {
+  const el = document.getElementById('medTabla');
+  if (!el) return;
+  const filas = _medFiltrar();
+  if (!filas.length) {
+    el.innerHTML = '<div style="color:var(--muted);padding:30px;text-align:center;font-size:13px">No hay publicaciones con este filtro</div>';
+    _medPintarSelBar();
+    return;
+  }
+  const th = (t, right, title) => `<th style="padding:8px 8px;text-align:${right ? 'right' : 'left'};font-size:11px;font-weight:600;color:var(--muted);white-space:nowrap" ${title ? `title="${_medEsc(title)}"` : ''}>${t}</th>`;
+  const visibles = filas.slice(0, _medLimite);
+  const elegibles = visibles.filter(i => !i.envio_ml.no_aplica && !i.envio_ml.bloqueo);
+  const todasTildadas = elegibles.length && elegibles.every(i => _medSel.has(i.id));
+  el.innerHTML = `<div style="overflow-x:auto;background:var(--surface);border:1px solid var(--border);border-radius:12px">
+    <table style="width:100%;border-collapse:collapse;font-size:12px">
+      <thead><tr>
+        <th style="padding:8px"><input type="checkbox" ${todasTildadas ? 'checked' : ''} ${elegibles.length ? '' : 'disabled'} onchange="_medTildarTodas(this.checked)" title="Tildar las que se pueden mandar a ML"></th>
+        ${th('Publicación')}
+        ${th('Declarado en ML', false, 'SELLER_PACKAGE_* de la publicación')}
+        ${th('Usado por ML', false, 'Medidas del último envío de colecta o FULL: con éstas cobró ML')}
+        ${th('Tu caja (cm · g)', false, 'Largo, ancho, alto en cm y peso en gramos de la caja con la que despachás')}
+        ${th('Peso facturable', true, 'El mayor entre el físico y el volumétrico (L×A×H ÷ 4000). ML / tu caja')}
+        ${th('Cobrado x u.', true, 'Promedio de lo que ML cobró por unidad en los últimos 30 días')}
+        ${th('Con tu caja x u.', true, 'Tarifa de ML con el peso facturable de tu caja y el precio actual')}
+        ${th('Diferencia 30 d', true, 'Cobrado menos lo que habría salido con tu caja. Positivo = pagaste de más')}
+        ${th('Bajar de banda', false, 'Cuánto achicar la caja para caer en la banda de peso anterior')}
+        ${th('En ML')}
+      </tr></thead>
+      <tbody>${visibles.map(_medFilaHtml).join('')}</tbody>
+    </table></div>
+    ${filas.length > _medLimite ? `<div style="text-align:center;margin:12px"><button class="sync-btn" onclick="_medLimite+=200;_medPintarTabla()">Ver más (${filas.length - _medLimite} restantes)</button></div>` : ''}`;
+  _medPintarSelBar();
+}
+
+function _medFilaHtml(i) {
+  const td = 'padding:8px;border-top:1px solid var(--border);vertical-align:top';
+  const n = (_medPorSku()[_medSkuKey(i.sku)] || []).length;
+  const sku = i.sku
+    ? `<span style="cursor:pointer;text-decoration:underline dotted" data-sku="${_medEsc(i.sku)}" onclick="_medBuscarSku(this.dataset.sku)" title="Ver todas las publicaciones con este SKU">${_medEsc(i.sku)}</span>`
+      + (n > 1 ? ` <span style="font-size:10px;font-weight:700;padding:1px 5px;border-radius:6px;background:var(--surface2);color:var(--muted)" title="${n} publicaciones activas con este SKU: la caja se carga en todas juntas">×${n}</span>` : '')
+    : '<span style="color:var(--muted)">sin SKU</span>';
+  const logColor = { colecta: '#2563eb', full: '#16a34a', flex: '#9333ea' }[i.logistica] || 'var(--muted)';
+  const origen = i.ml && _MED_ORIGEN[i.ml.origen];
+  const inp = (k, v, ph) => `<input id="med_${k}_${i.id}" type="number" min="0" step="${k === 'peso_g' ? '1' : '0.1'}" value="${v ?? ''}" placeholder="${ph}"
+      onchange="_medCambioCaja('${i.id}')" onkeydown="if(event.key==='Enter')this.blur()"
+      style="width:${k === 'peso_g' ? 62 : 48}px;padding:4px 5px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:12px">`;
+  const c = i.caja || {};
+  const dif = i.diferencia_30d;
+  const difColor = dif > 0 ? '#dc2626' : dif < 0 ? '#16a34a' : 'var(--muted)';
+  let banda = '<span style="color:var(--muted)">—</span>';
+  const p = i.proxima;
+  if (p && p.posible) {
+    banda = `${_MED_LADO[p.lado] || p.lado} de ${_medNum(p.de)} a <b>${_medNum(p.a)} cm</b> → hasta ${_medNum(p.banda_kg)} kg`
+      + (p.ahorro_unit ? `<div style="color:#16a34a">−${_medMoney(p.ahorro_unit)} por envío</div>` : `<div style="color:var(--muted)">debajo de $33.000 el envío lo paga el comprador</div>`);
+  } else if (p && p.motivo === 'peso') {
+    banda = `<span style="color:var(--muted)">Manda el peso físico: achicar la caja no cambia la banda</span>`;
+  }
+  const ctl = i.envio_ml;
+  let enMl;
+  if (!i.caja) enMl = '<span style="color:var(--muted)">—</span>';
+  else if (ctl.no_aplica === 'igual') enMl = '<span style="color:#16a34a;font-weight:600">✓ Igual</span>';
+  else if (ctl.bloqueo) enMl = `<span style="color:#dc2626;font-weight:600" title="${_medEsc(ctl.bloqueo.texto)}">⛔ No entra</span><div style="color:var(--muted);font-size:11px;max-width:180px">${_medEsc(ctl.bloqueo.texto)}</div>`;
+  else if (ctl.no_aplica) enMl = `<span style="color:#d97706;font-weight:600">Distinta</span><div style="color:var(--muted);font-size:11px;max-width:180px">${_medEsc(_MED_NO_APLICA[ctl.no_aplica] || ctl.no_aplica)}</div>`
+    + (ctl.no_aplica === 'sin_ventas' ? `<a href="https://www.mercadolibre.com.ar/publicaciones/${i.id}/modificar/envio" target="_blank" rel="noopener" style="font-size:11px">Abrir en ML ↗</a>` : '');
+  else enMl = `<button class="sync-btn" style="padding:3px 9px;font-size:11px" onclick="mandarMedidasML(['${i.id}'])">📨 Mandar a ML</button>`
+    + (ctl.avisos.length ? `<div style="color:#d97706;font-size:11px;max-width:180px" title="${_medEsc(ctl.avisos.map(a => a.texto).join('\n'))}">⚠️ ${ctl.avisos.length === 1 ? 'Pide confirmar' : ctl.avisos.length + ' avisos'}</div>` : '')
+    + (i.caja.enviado_ml_at ? `<div style="color:var(--muted);font-size:10px">Mandada ${new Date(i.caja.enviado_ml_at).toLocaleDateString('es-AR', { timeZone: ART_TZ })}</div>` : '');
+  const puedeTildar = !ctl.no_aplica && !ctl.bloqueo;
+  return `<tr id="medFila_${i.id}" style="${!i.caja && i.envios_30d ? 'background:rgba(217,119,6,.05)' : ''}">
+    <td style="${td}"><input type="checkbox" ${_medSel.has(i.id) ? 'checked' : ''} ${puedeTildar ? '' : 'disabled'} onchange="_medTildar('${i.id}', this.checked)"></td>
+    <td style="${td};min-width:220px;max-width:320px">
+      <div style="font-weight:600;line-height:1.3">${_medEsc(i.title)}</div>
+      <div style="color:var(--muted);font-size:11px;margin-top:2px">
+        ${i.permalink ? `<a href="${_medEsc(i.permalink)}" target="_blank" rel="noopener" style="color:var(--muted)">${i.id}</a>` : i.id}
+        · ${sku} · <span style="color:${logColor};font-weight:600">${_MED_LOG[i.logistica] || i.logistica}</span> · ${_medMoney(i.price)}
+        ${i.envios_30d ? ` · ${i.unidades_30d} u. en 30 d` : ''}
+      </div>
+      ${i.caja && i.caja.origen === 'sku' ? `<div style="font-size:10px;color:var(--muted)">Caja copiada por SKU</div>` : ''}
+    </td>
+    <td style="${td};white-space:nowrap">${_medCaja(i.declarado)}</td>
+    <td style="${td};white-space:nowrap">${i.ml ? _medCaja(i.ml) + (origen ? `<div style="font-size:10px;color:var(--muted)" title="${origen.title}">${origen.label}</div>` : (i.ml.origen ? `<div style="font-size:10px;color:var(--muted)">${_medEsc(i.ml.origen)}</div>` : '')) : '<span style="color:var(--muted)">sin envíos en 90 d</span>'}</td>
+    <td style="${td};white-space:nowrap">${inp('largo', c.largo, 'L')} ${inp('ancho', c.ancho, 'A')} ${inp('alto', c.alto, 'H')} ${inp('peso_g', c.peso_g, 'g')}</td>
+    <td style="${td};text-align:right;white-space:nowrap">${_medKg(i.ml?.facturable_kg)}<div style="font-weight:700">${_medKg(i.caja?.facturable_kg)}</div></td>
+    <td style="${td};text-align:right;white-space:nowrap">${_medMoney(i.cobrado_unit)}${i.envios_30d ? `<div style="font-size:10px;color:var(--muted)">${i.envios_30d} envíos</div>` : ''}</td>
+    <td style="${td};text-align:right;white-space:nowrap">${i.caja ? (i.estimado_unit ? _medMoney(i.estimado_unit) : '<span style="color:var(--muted)" title="Debajo de $33.000 el envío lo paga el comprador">$0</span>') : '—'}</td>
+    <td style="${td};text-align:right;white-space:nowrap;font-weight:700;color:${difColor}">${dif == null ? '<span style="color:var(--muted);font-weight:400">—</span>' : _medMoney(dif)}</td>
+    <td style="${td};font-size:11px;min-width:150px">${banda}</td>
+    <td style="${td};white-space:nowrap">${enMl}</td>
+  </tr>`;
+}
+const _MED_LADO = { largo: 'Largo', ancho: 'Ancho', alto: 'Alto' };
+
+function _medReemplazarItems(nuevos) {
+  const porId = Object.fromEntries((nuevos || []).map(x => [x.id, x]));
+  _medData.items = _medData.items.map(x => porId[x.id] || x);
+  (nuevos || []).forEach(x => {
+    if (x.envio_ml.no_aplica || x.envio_ml.bloqueo) _medSel.delete(x.id);
+    const tr = document.getElementById('medFila_' + x.id);
+    if (tr) tr.outerHTML = _medFilaHtml(x);
+  });
+  _medPintarCards();
+  _medPintarSelBar();
+}
+
+// Se guarda cuando están las cuatro medidas, o cuando se borran las cuatro.
+async function _medCambioCaja(itemId) {
+  const client = getActiveClient();
+  if (!client) return;
+  const val = k => (document.getElementById(`med_${k}_${itemId}`)?.value || '').trim();
+  const body = { client_id: client.id, item_id: itemId, largo: val('largo'), ancho: val('ancho'), alto: val('alto'), peso_g: val('peso_g') };
+  const vals = [body.largo, body.ancho, body.alto, body.peso_g];
+  const llenas = vals.filter(v => v !== '').length;
+  if (llenas > 0 && llenas < 4) return;   // a medio cargar: espera
+  const fila = _medData.items.find(x => x.id === itemId);
+  if (llenas === 0 && !fila?.caja) return;
+  const r = await apiCall('PUT', '/api/medidas', body);
+  if (!r || r.error) { showToast('❌ ' + ((r && r.error) || 'No se pudo guardar la caja')); return; }
+  // Si el foco ya pasó a otro input de las filas que se repintan, se lo devuelve
+  const foco = document.activeElement?.id;
+  _medReemplazarItems(r.items);
+  if (foco && document.getElementById(foco)) document.getElementById(foco).focus();
+  const otras = r.publicaciones - 1;
+  showToast(r.borrado ? `🗑️ Caja borrada${otras ? ` en ${r.publicaciones} publicaciones del SKU` : ''}`
+    : `💾 Caja guardada${otras ? ` en ${r.publicaciones} publicaciones del SKU ${fila?.sku || ''}` : ''}`);
+}
+
+// ── Selección y envío a ML ──
+
+function _medTildar(id, on) { if (on) _medSel.add(id); else _medSel.delete(id); _medPintarSelBar(); }
+function _medTildarTodas(on) {
+  _medFiltrar().slice(0, _medLimite).forEach(i => {
+    if (i.envio_ml.no_aplica || i.envio_ml.bloqueo) return;
+    if (on) _medSel.add(i.id); else _medSel.delete(i.id);
+  });
+  _medPintarTabla();
+}
+function _medPintarSelBar() {
+  const el = document.getElementById('medSelBar');
+  if (!el) return;
+  const n = _medSel.size;
+  el.innerHTML = n ? `<div style="display:flex;gap:10px;align-items:center;background:var(--surface);border:1px solid var(--accent);border-radius:10px;padding:8px 12px;margin-bottom:10px;font-size:12px">
+      <b>${n}</b> publicaciones tildadas
+      <button class="sync-btn" style="background:var(--accent);color:#292929;font-weight:700" onclick="mandarMedidasML([..._medSel])">📨 Mandar ${n} a ML</button>
+      <button class="sync-btn" onclick="_medSel.clear();_medPintarTabla()">Destildar</button>
+    </div>` : '';
+}
+
+async function mandarMedidasML(ids, confirmarAvisos) {
+  const client = getActiveClient();
+  if (!client || !ids.length) return;
+  const filas = ids.map(id => _medData.items.find(x => x.id === id)).filter(Boolean);
+  if (!confirmarAvisos) {
+    const conAvisos = filas.filter(f => f.envio_ml.avisos.length);
+    const texto = filas.length === 1
+      ? `Vas a cambiar las medidas del paquete de ${filas[0].id} en Mercado Libre a ${_medCaja(filas[0].caja)}.`
+      : `Vas a cambiar las medidas del paquete de ${filas.length} publicaciones en Mercado Libre.`;
+    const avisos = conAvisos.length
+      ? '\n\n⚠️ ' + (filas.length === 1 ? conAvisos[0].envio_ml.avisos.map(a => a.texto).join('\n⚠️ ')
+        : `${conAvisos.length} tienen avisos (por ejemplo, la caja es más chica que la que ML viene usando). Revisalos en la columna "En ML".`)
+        + '\n\nDeclarar una caja más chica que la real es lo que ML sanciona. ¿La mediste?'
+      : '';
+    if (!confirm(texto + avisos + '\n\n¿Mandar?')) return;
+    confirmarAvisos = conAvisos.length > 0;
+  }
+  showToast(`📨 Mandando ${ids.length} a Mercado Libre…`);
+  const r = await apiCall('POST', '/api/medidas/enviar-ml', { client_id: client.id, item_ids: ids, confirmar_avisos: !!confirmarAvisos });
+  if (!r || r.error) { showToast('❌ ' + ((r && r.error) || 'No se pudo mandar a ML')); return; }
+  ids.forEach(id => _medSel.delete(id));
+  _medReemplazarItems(r.items);
+  const fallas = r.resultados.filter(x => !x.ok);
+  if (!fallas.length) { showToast(`✅ ${r.enviadas} publicaciones actualizadas en ML`); return; }
+  const detalle = fallas.slice(0, 6).map(x => `${x.item_id}: ${x.texto || _MED_NO_APLICA[x.motivo] || x.motivo}`).join('\n');
+  showToast(`${r.enviadas ? `✅ ${r.enviadas} actualizadas · ` : ''}⚠️ ${fallas.length} no se mandaron`);
+  alert(`${r.enviadas} publicaciones actualizadas en ML.\n\n${fallas.length} no se mandaron:\n${detalle}${fallas.length > 6 ? `\n… y ${fallas.length - 6} más` : ''}`);
+}
+
+// ── Planilla: bajar y subir ──
+// Las columnas de medidas son las mismas que lee la subida; "Declarado en ML" y "Usado por ML"
+// son informativas (no tienen "largo/ancho/alto/peso" en el encabezado y no se leen).
+function bajarPlanillaMedidas() {
+  const filas = _medFiltrar();
+  if (!filas.length) { showToast('No hay filas para bajar'); return; }
+  const rows = filas.map(i => ({
+    'MLA': i.id,
+    'SKU': i.sku || '',
+    'Título': i.title || '',
+    'Logística': _MED_LOG[i.logistica] || i.logistica,
+    'Precio': i.price || '',
+    'Declarado en ML': _medCaja(i.declarado),
+    'Usado por ML': i.ml ? _medCaja(i.ml) : '',
+    'Largo cm': i.caja?.largo ?? '',
+    'Ancho cm': i.caja?.ancho ?? '',
+    'Alto cm': i.caja?.alto ?? '',
+    'Peso g': i.caja?.peso_g ?? '',
+  }));
+  const ws = XLSX.utils.json_to_sheet(rows);
+  ws['!cols'] = [{ wch: 15 }, { wch: 16 }, { wch: 50 }, { wch: 9 }, { wch: 10 }, { wch: 26 }, { wch: 26 }, { wch: 9 }, { wch: 9 }, { wch: 9 }, { wch: 9 }];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Cajas');
+  const nombre = String(getActiveClient()?.name || 'cliente').replace(/[^\w\-]+/g, '_');
+  XLSX.writeFile(wb, `Medidas_${nombre}_${ymd()}.xlsx`);
+  showToast(`📥 ${filas.length} publicaciones. Completá largo, ancho, alto (cm) y peso (g) y subila. Con un SKU sin MLA alcanza: se carga en todas sus publicaciones`);
+}
+
+async function subirPlanillaMedidas(input) {
+  const file = input.files[0];
+  input.value = '';
+  const client = getActiveClient();
+  if (!file || !client || !_medData) return;
+  try {
+    const wb = XLSX.read(await file.arrayBuffer(), { type: 'array' });
+    const raw = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, defval: '' });
+    const hRow = raw.slice(0, 8).findIndex(r => r.some(c => /^(mla|sku)/i.test(String(c).trim())));
+    if (hRow < 0) { showToast('❌ No encontré los encabezados: la planilla tiene que tener columna MLA o SKU'); return; }
+    const h = raw[hRow].map(x => String(x || '').toLowerCase().trim());
+    const col = pred => h.findIndex(pred);
+    const cMla = col(x => x.startsWith('mla') || x === 'publicación' || x === 'item_id');
+    const cSku = col(x => x.startsWith('sku'));
+    const cL = col(x => x.startsWith('largo')), cA = col(x => x.startsWith('ancho')), cH = col(x => x.startsWith('alto'));
+    const cP = col(x => x.startsWith('peso'));
+    if (cMla < 0 && cSku < 0) { showToast('❌ Falta la columna MLA o SKU'); return; }
+    if ([cL, cA, cH, cP].some(c => c < 0)) { showToast('❌ Faltan columnas: Largo cm, Ancho cm, Alto cm y Peso g'); return; }
+    // Peso en kg (encabezado "Peso kg") se pasa a gramos
+    const pesoKg = /kg/.test(h[cP]);
+    const celda = v => { const s = String(v ?? '').trim().replace(',', '.'); return s === '' ? '' : s; };
+    const filas = raw.slice(hRow + 1).map(r => ({
+      mla: cMla >= 0 ? String(r[cMla] || '').trim() : '',
+      sku: cSku >= 0 ? String(r[cSku] || '').trim() : '',
+      largo: celda(r[cL]), ancho: celda(r[cA]), alto: celda(r[cH]),
+      peso_g: pesoKg && celda(r[cP]) !== '' ? String(parseFloat(celda(r[cP])) * 1000) : celda(r[cP]),
+    })).filter(f => f.mla || f.sku);
+    const prev = await apiCall('POST', '/api/medidas/importar', { client_id: client.id, filas });
+    if (!prev || prev.error) { showToast('❌ ' + ((prev && prev.error) || 'No se pudo leer la planilla')); return; }
+    _medImport = { archivo: file.name, filas, ...prev };
+    const p = document.getElementById('medImportPanel');
+    if (p) p.innerHTML = _medImportHtml();
+  } catch (e) {
+    console.error('[MEDIDAS PLANILLA]', e);
+    showToast('❌ No se pudo leer la planilla: ' + e.message);
+  }
+}
+
+function _medImportHtml() {
+  const imp = _medImport;
+  if (!imp) return '';
+  const lista = (arr, max = 12) => arr.slice(0, max).map(_medEsc).join(', ') + (arr.length > max ? ` y ${arr.length - max} más` : '');
+  const muestra = (imp.muestra || []).map(c => `<div>${c.item_id}${c.sku ? ' · ' + _medEsc(c.sku) : ''}: ${c.antes ? _medCaja(c.antes) : 'sin caja'} → <b>${_medCaja(c.caja)}</b>${c.via_sku ? ' <span style="color:var(--muted)">(por SKU)</span>' : ''}</div>`).join('');
+  return `<div style="background:var(--surface);border:1px solid var(--accent);border-radius:12px;padding:14px 16px;margin-top:14px;font-size:12px">
+    <div style="font-weight:700;font-size:13px;margin-bottom:6px">📤 ${_medEsc(imp.archivo)}</div>
+    ${imp.cambios
+      ? `<div><b>${imp.cambios}</b> publicaciones cambian de caja${imp.por_sku ? `, <b>${imp.por_sku}</b> de ellas completadas por SKU` : ''}.
+           ${imp.sin_cambio ? `<span style="color:var(--muted)">${imp.sin_cambio} quedan igual.</span>` : ''}</div>
+         <div style="margin:8px 0;color:var(--muted);line-height:1.6">${muestra}${imp.cambios > (imp.muestra || []).length ? '<div>…</div>' : ''}</div>`
+      : `<div>No hay cajas nuevas: ${imp.sin_cambio ? `las ${imp.sin_cambio} publicaciones de la planilla ya tienen esa caja.` : 'la planilla no trae ninguna caja completa.'}</div>`}
+    ${imp.conflictos.length ? `<div style="color:#d97706;margin-top:4px">⚠️ SKU con cajas distintas en la planilla, no se copiaron: ${lista(imp.conflictos)}</div>` : ''}
+    ${imp.invalidas.length ? `<div style="color:#dc2626;margin-top:4px">⚠️ ${imp.invalidas.length} filas con medidas inválidas, no se cargan: ${imp.invalidas.slice(0, 5).map(x => `fila ${x.fila} (${_medEsc(x.ref)}): ${_medEsc(x.error)}`).join(' · ')}</div>` : ''}
+    ${imp.no_activas.length ? `<div style="color:var(--muted);margin-top:4px">MLA que no están activas (no se cargan): ${lista(imp.no_activas, 6)}</div>` : ''}
+    ${imp.sku_desconocidos.length ? `<div style="color:var(--muted);margin-top:4px">SKU sin publicaciones activas (no se cargó nada): ${lista(imp.sku_desconocidos)}</div>` : ''}
+    <div style="display:flex;gap:8px;margin-top:10px">
+      ${imp.cambios ? `<button class="sync-btn" style="background:var(--accent);color:#292929;font-weight:700" onclick="confirmarPlanillaMedidas(this)">💾 Guardar ${imp.cambios} cajas</button>` : ''}
+      <button class="sync-btn" onclick="_medImport=null;document.getElementById('medImportPanel').innerHTML=''">${imp.cambios ? 'Cancelar' : 'Cerrar'}</button>
+    </div></div>`;
+}
+
+async function confirmarPlanillaMedidas(btn) {
+  const client = getActiveClient();
+  if (!_medImport?.cambios || !client) return;
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Guardando…'; }
+  const r = await apiCall('POST', '/api/medidas/importar', { client_id: client.id, filas: _medImport.filas, confirmar: true });
+  if (!r || r.error) {
+    showToast('❌ No se guardó la planilla' + (r?.error ? ': ' + r.error : ''));
+    if (btn) { btn.disabled = false; btn.textContent = `💾 Guardar ${_medImport.cambios} cajas`; }
+    return;
+  }
+  _medImport = null;
+  showToast(`✅ ${r.guardadas} cajas guardadas`);
+  loadMedidas();
 }
 </script>
 <script>
