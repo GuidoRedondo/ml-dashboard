@@ -22199,7 +22199,7 @@ function renderPyL(pyl) {
 
 // P&L del período en UNA hoja A4, para mandar al cliente. Mismas líneas y mismos
 // totales que el panel y el Excel: los sumandos de egresos_ml.total, sin recalcular nada.
-function exportarPyLPDF() {
+async function exportarPyLPDF() {
   const pyl = _reportePyl;
   if (!pyl) { showToast('Generá el P&L primero'); return; }
   const e = pyl.egresos_ml || {};
@@ -22212,14 +22212,15 @@ function exportarPyLPDF() {
       <td class="lbl">${lbl}</td><td>${fmt(v)}</td><td class="mut">${o.sinPct ? '' : pct(v)}</td></tr>`;
   const S = lbl => `<tr class="sec"><td colspan="3">${lbl}</td></tr>`;
 
-  const desde = dART(pyl.periodo.from), hasta = dART(pyl.periodo.to);
-  const fmtDia = d => d.toLocaleDateString('es-AR', { timeZone: ART_TZ, day: '2-digit', month: '2-digit', year: 'numeric' });
+  // Desde el texto 'YYYY-MM-DD', sin pasar por Date: no hay zona horaria que corra el día
+  const fmtDia = v => String(v).slice(0, 10).split('-').reverse().join('/');
   const [py, pm] = pyl.periodo.to.slice(0, 10).split('-').map(Number);
   const mesCompleto = pyl.periodo.from.slice(0, 7) === pyl.periodo.to.slice(0, 7)
     && pyl.periodo.from.slice(8, 10) === '01' && +pyl.periodo.to.slice(8, 10) === new Date(py, pm, 0).getDate();
+  const MESES = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
   const periodoTxt = mesCompleto
-    ? desde.toLocaleDateString('es-AR', { timeZone: ART_TZ, month: 'long', year: 'numeric' })
-    : `${fmtDia(desde)} al ${fmtDia(hasta)}`;
+    ? `${MESES[pm - 1]} de ${py}`
+    : `${fmtDia(pyl.periodo.from)} al ${fmtDia(pyl.periodo.to)}`;
   const hoy = new Date().toLocaleDateString('es-AR', { timeZone: ART_TZ, day: '2-digit', month: 'long', year: 'numeric' });
 
   // Gastos fijos: los 6 más grandes y el resto agrupado, para que entre en la hoja
@@ -22273,57 +22274,92 @@ function exportarPyLPDF() {
   if (pyl.facturacion_ml && !pyl.facturacion_ml.disponible) notas.push('La factura de ML de este período todavía no está sincronizada: faltan costos FULL y percepciones, y el IIBB va estimado. La utilidad puede estar sobrestimada.');
   if (iibbFalta(pyl)) notas.push('IIBB no computado: el cliente no tiene tasa cargada.');
 
-  const html = `<!DOCTYPE html><html lang="es"><head><meta charset="utf-8">
-    <title>P&L ${esc(pyl.cliente)} — ${esc(periodoTxt)}</title>
-    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@600;700;800&display=swap" rel="stylesheet">
-    <style>
-      @page { size: A4; margin: 10mm; }
-      * { box-sizing:border-box; -webkit-print-color-adjust:exact; print-color-adjust:exact; }
-      body { font-family:'Plus Jakarta Sans',sans-serif; font-weight:700; color:#292929; background:#f4f1e8; margin:0; }
-      .hoja { max-width:190mm; margin:0 auto; padding:6mm 0; }
-      .head { background:#fff952; border:5px solid #292929; box-shadow:8px 8px 0 #292929; padding:14px 18px; display:flex; justify-content:space-between; align-items:flex-end; gap:12px; }
-      .brand { font-size:9px; letter-spacing:2px; text-transform:uppercase; background:#292929; color:#fff952; padding:4px 8px; display:inline-block; }
-      .head h1 { font-size:26px; margin:8px 0 0; line-height:1.05; font-weight:800; }
-      .head .per { text-align:right; font-size:12px; }
-      .head .per b { display:block; font-size:16px; text-transform:capitalize; }
-      .kpis { display:grid; grid-template-columns:repeat(4,1fr); gap:10px; margin:16px 0; }
-      .kpi { background:#fffdf5; border:4px solid #292929; box-shadow:5px 5px 0 #292929; padding:8px 10px; }
-      .kpi-l { font-size:8.5px; text-transform:uppercase; letter-spacing:.5px; }
-      .kpi-v { font-size:17px; font-weight:800; margin-top:3px; }
-      .kpi-s { font-size:9.5px; color:#6b6758; }
-      .kpi.neg .kpi-v { color:#c0262d; }
-      table { width:100%; border-collapse:separate; border-spacing:0; font-size:10.5px; border:4px solid #292929; box-shadow:6px 6px 0 #292929; background:#fffdf5; }
-      thead th { background:#292929; color:#fff952; padding:6px 10px; text-align:right; font-weight:800; }
-      thead th:first-child { text-align:left; }
-      td { padding:3.5px 10px; text-align:right; border-top:1px solid #d9d4c3; white-space:nowrap; }
-      td.lbl { text-align:left; white-space:normal; }
-      td.mut { color:#8a8676; width:60px; }
-      tr.sub td { font-weight:600; color:#5a5648; font-size:9.5px; }
-      tr.sub td.lbl { padding-left:22px; }
-      tr.bold td { font-weight:800; background:#fbf7d9; border-top:2px solid #292929; }
-      tr.sec td { background:#292929; color:#fff952; font-weight:800; text-transform:uppercase; letter-spacing:.06em; font-size:9px; text-align:left; padding:4px 10px; }
-      tr.final td { background:#fff952; font-weight:800; font-size:13px; border-top:4px solid #292929; padding:7px 10px; }
-      .notas { margin-top:14px; font-size:9px; color:#5a5648; line-height:1.45; }
-      .foot { margin-top:12px; padding-top:8px; border-top:4px solid #292929; font-size:9px; display:flex; justify-content:space-between; }
-      @media print { .hoja { padding:0; } body { background:#f4f1e8; } }
-    </style></head><body>
-    <div class="hoja">
-      <div class="head">
-        <div><div class="brand">Negocio Redondo · Método Redondo™</div><h1>Estado de resultados<br>${esc(pyl.cliente)}</h1></div>
-        <div class="per">Período<b>${esc(periodoTxt)}</b></div>
-      </div>
-      ${kpis}
-      ${tabla}
-      ${notas.length ? `<div class="notas">${notas.map(n => '• ' + esc(n)).join('<br>')}</div>` : ''}
-      <div class="foot"><span>Negocio Redondo LATAM · app.negocioredondolatam.com</span><span>Generado el ${hoy}</span></div>
+  // Descarga directa del .pdf (html2pdf, cargado sólo cuando se usa): sin ventana
+  // emergente ni diálogo de impresión, que el navegador bloqueaba.
+  const css = `
+    #pylPdf { box-sizing:border-box; width:182mm; font-family:'Plus Jakarta Sans',sans-serif; font-weight:700; color:#292929; background:#f4f1e8; padding:4mm; }
+    #pylPdf * { box-sizing:border-box; }
+    #pylPdf .head { background:#fff952; border:5px solid #292929; box-shadow:8px 8px 0 #292929; padding:14px 18px; display:flex; justify-content:space-between; align-items:flex-end; gap:12px; }
+    #pylPdf .brand { font-size:9px; letter-spacing:2px; text-transform:uppercase; background:#292929; color:#fff952; padding:4px 8px; display:inline-block; }
+    #pylPdf h1 { font-size:26px; margin:8px 0 0; line-height:1.05; font-weight:800; font-family:inherit; color:#292929; }
+    #pylPdf .per { text-align:right; font-size:12px; }
+    #pylPdf .per b { display:block; font-size:16px; }
+    #pylPdf .kpis { display:grid; grid-template-columns:repeat(4,1fr); gap:10px; margin:16px 0; }
+    #pylPdf .kpi { background:#fffdf5; border:4px solid #292929; box-shadow:5px 5px 0 #292929; padding:8px 10px; }
+    #pylPdf .kpi-l { font-size:8.5px; text-transform:uppercase; letter-spacing:.5px; }
+    #pylPdf .kpi-v { font-size:17px; font-weight:800; margin-top:3px; }
+    #pylPdf .kpi-s { font-size:9.5px; color:#6b6758; }
+    #pylPdf .kpi.neg .kpi-v { color:#c0262d; }
+    #pylPdf table { width:100%; border-collapse:separate; border-spacing:0; font-size:10.5px; border:4px solid #292929; box-shadow:6px 6px 0 #292929; background:#fffdf5; }
+    #pylPdf thead th { background:#292929; color:#fff952; padding:6px 10px; text-align:right; font-weight:800; }
+    #pylPdf thead th:first-child { text-align:left; }
+    #pylPdf td { padding:3.5px 10px; text-align:right; border-top:1px solid #d9d4c3; white-space:nowrap; color:#292929; }
+    #pylPdf td.lbl { text-align:left; white-space:normal; }
+    #pylPdf td.mut { color:#8a8676; width:60px; }
+    #pylPdf tr.sub td { font-weight:600; color:#5a5648; font-size:9.5px; }
+    #pylPdf tr.sub td.lbl { padding-left:22px; }
+    #pylPdf tr.bold td { font-weight:800; background:#fbf7d9; border-top:2px solid #292929; }
+    #pylPdf tr.sec td { background:#292929; color:#fff952; font-weight:800; text-transform:uppercase; letter-spacing:.06em; font-size:9px; text-align:left; padding:4px 10px; }
+    #pylPdf tr.final td { background:#fff952; font-weight:800; font-size:13px; border-top:4px solid #292929; padding:7px 10px; }
+    #pylPdf .notas { margin-top:14px; font-size:9px; color:#5a5648; line-height:1.45; }
+    #pylPdf .foot { margin-top:12px; padding-top:8px; border-top:4px solid #292929; font-size:9px; display:flex; justify-content:space-between; }`;
+  const cuerpo = `<style>${css}</style>
+    <div class="head">
+      <div><div class="brand">Negocio Redondo · Método Redondo™</div><h1>Estado de resultados<br>${esc(pyl.cliente)}</h1></div>
+      <div class="per">Período<b>${esc(periodoTxt)}</b></div>
     </div>
-    <scr` + `ipt>window.onload=()=>{setTimeout(()=>window.print(),500)}</scr` + `ipt>
-  </body></html>`;
+    ${kpis}
+    ${tabla}
+    ${notas.length ? `<div class="notas">${notas.map(n => '• ' + esc(n)).join('<br>')}</div>` : ''}
+    <div class="foot"><span>Negocio Redondo LATAM · app.negocioredondolatam.com</span><span>Generado el ${hoy}</span></div>`;
 
-  const win = window.open('', '_blank');
-  if (!win) { showToast('Permití las ventanas emergentes para exportar el PDF'); return; }
-  win.document.write(html);
-  win.document.close();
+  const btn = document.getElementById('reportePdfBtn');
+  const txtBtn = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Armando PDF...'; }
+  // Fuera de pantalla pero renderizado: html2canvas no saca foto de algo con display:none
+  const host = document.createElement('div');
+  host.style.cssText = 'position:fixed;left:-10000px;top:0;z-index:-1';
+  host.innerHTML = `<div id="pylPdf">${cuerpo}</div>`;
+  document.body.appendChild(host);
+  const nombre = `PyL_${String(pyl.cliente || 'cliente').replace(/[^\w\-]+/g, '_')}_${pyl.periodo.from.slice(0, 7)}.pdf`;
+  try {
+    await cargarHtml2Pdf();
+    if (!document.querySelector('link[href*="Plus+Jakarta+Sans"]')) {
+      const l = document.createElement('link');
+      l.rel = 'stylesheet';
+      l.href = 'https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@600;700;800&display=swap';
+      document.head.appendChild(l);
+    }
+    if (document.fonts?.ready) await document.fonts.ready;
+    await window.html2pdf().set({
+      margin: [8, 10, 8, 10],
+      filename: nombre,
+      image: { type: 'jpeg', quality: 0.95 },
+      html2canvas: { scale: 2, backgroundColor: '#f4f1e8', useCORS: true, scrollX: 0, scrollY: 0 },
+      jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
+      pagebreak: { mode: 'avoid-all' },
+    }).from(host.firstElementChild).save();
+  } catch (err) {
+    showToast('⚠ No se pudo armar el PDF: ' + (err?.message || err));
+  } finally {
+    host.remove();
+    if (btn) { btn.disabled = false; btn.textContent = txtBtn; }
+  }
+}
+
+let _html2pdfPromise = null;
+function cargarHtml2Pdf() {
+  if (window.html2pdf) return Promise.resolve();
+  if (!_html2pdfPromise) {
+    _html2pdfPromise = new Promise((ok, mal) => {
+      const sc = document.createElement('script');
+      sc.src = 'https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js';
+      sc.onload = () => ok();
+      sc.onerror = () => { _html2pdfPromise = null; mal(new Error('no cargó la librería de PDF')); };
+      document.head.appendChild(sc);
+    });
+  }
+  return _html2pdfPromise;
 }
 
 async function exportarReporteExcel() {
