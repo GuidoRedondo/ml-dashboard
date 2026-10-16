@@ -662,9 +662,14 @@ module.exports = (app, { pool, requireAuth, getClientToken, ML_API, extractSku, 
         }
         console.log(`[MEDIDAS ENVIAR] ${req.user.username} → ${f.id} ${status} ${fmt(c.largo)}x${fmt(c.ancho)}x${fmt(c.alto)} ${Math.round(c.peso_g)}g`);
         const sinVentas = causa && /not_modifiable/i.test(causa);
+        // 401 = token vencido; 403 PolicyAgent = ML no le deja escribir a la app en esta cuenta
+        const sinPermiso = !ok && (status === 401 || status === 403);
         resultados.push({ item_id: f.id, ok, status,
-          motivo: ok ? null : (sinVentas ? 'sin_ventas' : 'ml_rechazo'),
-          texto: ok ? null : (sinVentas ? 'ML no deja cambiar las medidas de esta publicación por API: cargalas desde el panel' : causa) });
+          motivo: ok ? null : (sinVentas ? 'sin_ventas' : sinPermiso ? 'sin_permiso' : 'ml_rechazo'),
+          texto: ok ? null : (sinVentas ? 'ML no deja cambiar las medidas de esta publicación por API: cargalas desde el panel'
+            : status === 401 ? 'ML rechazó el token de la cuenta (401): reconectala en Tokens'
+            : status === 403 ? `ML no le da permiso de escritura a la app en esta cuenta (403${causa ? ': ' + causa : ''})`
+            : causa) });
       };
       for (let i = 0; i < aMandar.length; i += 3) await Promise.all(aMandar.slice(i, i + 3).map(mandar));
 
@@ -679,16 +684,29 @@ module.exports = (app, { pool, requireAuth, getClientToken, ML_API, extractSku, 
     } catch (e) { err(res, e, 'ENVIAR'); }
   });
 
-  // Historial de lo mandado a ML de una publicación.
+  // Historial de lo mandado a ML: de una publicación (item_id) o de toda la cuenta.
+  // Sin client_id y con rol staff: los últimos envíos de todas las cuentas (diagnóstico).
   app.get('/api/medidas/historial', requireAuth, async (req, res) => {
     try {
       const clientId = parseInt(req.query.client_id);
-      if (!clientId || !req.query.item_id) return res.status(400).json({ error: 'Falta client_id o item_id' });
+      if (!clientId) {
+        if (!ROLES_STAFF.includes(req.user.role)) return res.status(400).json({ error: 'Falta client_id' });
+        const r = await pool.query(`
+          SELECT e.client_id, c.name AS cliente, e.item_id, e.largo, e.ancho, e.alto, e.peso_g, e.ok, e.status,
+                 e.respuesta, e.enviado_by, e.enviado_at
+            FROM medidas_envios_ml e LEFT JOIN clients c ON c.id = e.client_id
+           ORDER BY e.enviado_at DESC LIMIT 100`);
+        return res.json({ envios: r.rows });
+      }
       if (!(await acceso(req, clientId))) return res.status(404).json({ error: 'Sin acceso a esta cuenta' });
-      const r = await pool.query(`
-        SELECT largo, ancho, alto, peso_g, antes, ok, status, respuesta, avisos, enviado_by, enviado_at
-          FROM medidas_envios_ml WHERE client_id=$1 AND item_id=$2 ORDER BY enviado_at DESC LIMIT 50`,
-        [clientId, req.query.item_id]);
+      const r = req.query.item_id
+        ? await pool.query(`
+          SELECT item_id, largo, ancho, alto, peso_g, antes, ok, status, respuesta, avisos, enviado_by, enviado_at
+            FROM medidas_envios_ml WHERE client_id=$1 AND item_id=$2 ORDER BY enviado_at DESC LIMIT 50`,
+          [clientId, req.query.item_id])
+        : await pool.query(`
+          SELECT item_id, largo, ancho, alto, peso_g, antes, ok, status, respuesta, avisos, enviado_by, enviado_at
+            FROM medidas_envios_ml WHERE client_id=$1 ORDER BY enviado_at DESC LIMIT 100`, [clientId]);
       res.json({ envios: r.rows });
     } catch (e) { err(res, e, 'HISTORIAL'); }
   });

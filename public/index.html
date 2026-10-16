@@ -29202,7 +29202,7 @@ function renderImpactoCostos(r) {
 // ════════════════════════════════════════════════════════════════════════════
 
 let _medData = null;
-let _medFiltro = 'todas';        // todas | sin_caja | diferencia | distinta | mandar
+let _medFiltro = 'todas';        // todas | sin_caja | de_mas | de_menos | distinta | mandar
 let _medLog = 'todas';           // todas | colecta | full | flex
 let _medBusqueda = '';
 let _medLimite = 200;
@@ -29295,7 +29295,9 @@ function _medFiltrar() {
   return (_medData?.items || []).filter(i => {
     if (_medLog !== 'todas' && i.logistica !== _medLog) return false;
     if (_medFiltro === 'sin_caja' && i.caja) return false;
-    if (_medFiltro === 'diferencia' && !(Math.abs(i.diferencia_30d || 0) >= 1)) return false;
+    // diferencia_30d = lo que cobró ML − lo mismo tarifado con tu caja
+    if (_medFiltro === 'de_mas' && !((i.diferencia_30d || 0) >= 1)) return false;
+    if (_medFiltro === 'de_menos' && !((i.diferencia_30d || 0) <= -1)) return false;
     if (_medFiltro === 'distinta' && i.estado_ml !== 'distinta') return false;
     if (_medFiltro === 'mandar' && (i.envio_ml.no_aplica || i.envio_ml.bloqueo)) return false;
     if (q && !(`${i.id} ${i.sku || ''} ${i.title || ''}`.toLowerCase().includes(q))) return false;
@@ -29324,18 +29326,12 @@ function renderMedidas() {
     const f = v => v ? new Date(v).toLocaleString('es-AR', { timeZone: ART_TZ, day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '—';
     est.textContent = `Publicaciones de ML: ${f(d.generado)} · envíos: ${f(d.envios_sync)}`;
   }
-  const chip = (id, label, n) => `<button class="sync-btn" onclick="setMedFiltro('${id}')"
-      style="padding:5px 11px;font-size:12px;${_medFiltro === id ? 'background:var(--accent);color:#292929;font-weight:700' : ''}">${label}${n != null ? ` <b>${n}</b>` : ''}</button>`;
   const r = d.resumen = _medResumen(d.items);
   el.innerHTML = `
     <div id="medCards">${_medCardsHtml(r)}</div>
     <div id="medImportPanel">${_medImportHtml()}</div>
     <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin:14px 0 10px">
-      ${chip('todas', 'Todas', r.total)}
-      ${chip('sin_caja', 'Sin caja', r.sin_caja)}
-      ${chip('diferencia', 'Con diferencia', null)}
-      ${chip('distinta', 'Distinta a lo declarado', r.distintas)}
-      ${chip('mandar', 'Para mandar a ML', r.para_mandar)}
+      <span id="medChips" style="display:contents">${_medChipsHtml(r)}</span>
       <select onchange="setMedLog(this.value)" style="padding:6px 8px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:12px">
         ${['todas', 'colecta', 'full', 'flex'].map(l => `<option value="${l}" ${_medLog === l ? 'selected' : ''}>${l === 'todas' ? 'Toda logística' : _MED_LOG[l]}</option>`).join('')}
       </select>
@@ -29349,6 +29345,21 @@ function renderMedidas() {
     </div>
     <div id="medTabla"></div>`;
   _medPintarTabla();
+}
+
+// Filtros. "Cobra de más / de menos" compara lo que cobró ML contra lo mismo tarifado con tu caja,
+// así que sólo cuentan las publicaciones con caja cargada y envíos en los últimos 30 días.
+function _medChipsHtml(r) {
+  const chip = (id, label, n, title) => `<button class="sync-btn" onclick="setMedFiltro('${id}')" ${title ? `title="${title}"` : ''}
+      style="padding:5px 11px;font-size:12px;${_medFiltro === id ? 'background:var(--accent);color:#292929;font-weight:700' : ''}">${label}${n != null ? ` <b>${n}</b>` : ''}</button>`;
+  const items = _medData?.items || [];
+  return `
+      ${chip('todas', 'Todas', r.total)}
+      ${chip('sin_caja', 'Sin caja', r.sin_caja)}
+      ${chip('de_mas', '🔴 ML cobra de más', items.filter(i => (i.diferencia_30d || 0) >= 1).length, 'ML cobró más de lo que costaría con tu caja: declarándola, el envío baja')}
+      ${chip('de_menos', '🟢 ML cobra de menos', items.filter(i => (i.diferencia_30d || 0) <= -1).length, 'ML cobró menos de lo que costaría con tu caja: tu caja es más grande que la que usa ML')}
+      ${chip('distinta', 'Distinta a lo declarado', r.distintas)}
+      ${chip('mandar', 'Para mandar a ML', r.para_mandar)}`;
 }
 
 function _medCardsHtml(r) {
@@ -29376,6 +29387,8 @@ function _medCardsHtml(r) {
 function _medPintarCards() {
   if (!_medData) return;
   _medData.resumen = _medResumen(_medData.items);
+  const ch = document.getElementById('medChips');
+  if (ch) ch.innerHTML = _medChipsHtml(_medData.resumen);
   const el = document.getElementById('medCards');
   if (el) el.innerHTML = _medCardsHtml(_medData.resumen);
 }
