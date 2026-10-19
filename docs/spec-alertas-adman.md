@@ -25,16 +25,16 @@ El backend se conecta al servidor MCP de AdMan como cliente MCP, con el SDK ofic
 
 | Herramienta MCP | Uso |
 | --- | --- |
-| `getMarketplaceaccounts` | Lista de cuentas y `custId` (paginado) |
-| `getMarketplaceflowsCustId` | Agentes por cuenta; `pendingAlerts > 0` indica qué consultar |
-| `getMarketplaceflowsCustIdFlowIdalerts` | Alertas pendientes de un agente (`itemsPerPage` hasta 50, paginar) |
-| `postMarketplaceflowsCustIdFlowIdalertsresolve` | Aceptar o rechazar: body `{"action": "accept" o "reject", "alertIds": [...]}`, hasta 50 ids |
-| `getMarketplaceflowsCustIdFlowIdchanges` | Cambios ya aplicados por cada agente (detalle por cuenta) |
-| `getMarketplaceadsCustIdcampaigns` | Campañas, presupuesto y ROAS objetivo |
-| `getMarketplaceadsCustIdCampaignIdmetrics` | Métricas por campaña en la ventana |
-| `getMarketplaceadsCustIdproductAdsmetrics` | Ventas e inversión por publicación (para ponderar pisos y alertas por MLA) |
-| `patchMarketplaceadsCustIdCampaignIdroas` | Acción propia: subir ROAS objetivo al piso |
-| `postMarketplaceadsCustIdadgroupsAdgroupIdmove` | Acción propia: mover una publicación de campaña |
+| `get_accounts` | Lista de cuentas y `custId` (paginado) |
+| `get_agents` | Agentes por cuenta; `pendingAlerts > 0` indica qué consultar |
+| `get_agent_alerts` | Alertas pendientes de un agente (`itemsPerPage` hasta 50, paginar) |
+| `accept_agent_alerts` / `reject_agent_alerts` | Aceptar o rechazar (dos herramientas desde el 19/10/2026): body `{"alertIds": [...]}`, hasta 50 ids |
+| `get_agent_changes` | Cambios ya aplicados por cada agente (detalle por cuenta) |
+| `get_campaigns` | Campañas, presupuesto y ROAS objetivo |
+| `get_campaign_metrics` | Métricas por campaña en la ventana |
+| `get_product_ads_metrics` | Ventas e inversión por publicación (para ponderar pisos y alertas por MLA) |
+| `update_campaign_roas` | Acción propia: subir ROAS objetivo al piso |
+| `move_adgroup` | Acción propia: mover una publicación de campaña |
 
 Antes de programar, listar las herramientas con `tools/list` y confirmar parámetros exactos: los nombres de arriba son los que expone hoy el MCP.
 
@@ -76,7 +76,7 @@ ROAS_{equilibrio} = \frac{1}{CM} \qquad ROAS_{piso} = \frac{1}{CM - m}
 
 Ejemplo: CM 30% y m = 10 puntos → equilibrio 3,3 y piso 5,0. Con CM 18% → equilibrio 5,6 y piso 12,5.
 
-**Por campaña.** Promedio ponderado por `ventas_ads` de cada MLA en la ventana (datos de `getMarketplaceadsCustIdproductAdsmetrics`):
+**Por campaña.** Promedio ponderado por `ventas_ads` de cada MLA en la ventana (datos de `get_product_ads_metrics`):
 
 ```latex
 Piso_{campa\tilde{n}a} = \frac{\sum ventas\_ads_i \times piso_i}{\sum ventas\_ads_i}
@@ -134,7 +134,7 @@ El dashboard genera sus propias alertas cruzando el ROAS real con la CM, algo qu
 - Solo se evalúan entidades con el mínimo de datos de la ventana ($20.000 de inversión o 3 ventas por ads).
 - Una alerta abierta no se duplica: se actualiza con los números del día y conserva `abierta_desde`. Se cierra sola cuando la condición deja de cumplirse.
 - MLA sin CMV no genera alertas de margen; se lista aparte en el detalle por cuenta como "falta CMV".
-- Aprobar una alerta propia ejecuta la acción con `patchMarketplaceadsCustIdCampaignIdroas` o `postMarketplaceadsCustIdadgroupsAdgroupIdmove`. Para "sacar de la campaña", confirmar en `tools/list` qué herramienta pausa o quita un anuncio puntual; si no hay, la acción queda como tarea manual.
+- Aprobar una alerta propia ejecuta la acción con `update_campaign_roas` o `move_adgroup`. Para "sacar de la campaña", confirmar en `tools/list` qué herramienta pausa o quita un anuncio puntual; si no hay, la acción queda como tarea manual.
 
 ## Pantallas
 
@@ -181,7 +181,7 @@ Riesgo del horario: el 30/9 AdMan generó alertas con `createdAt` entre 03:07 y 
 
 **Ejecución de decisiones:**
 
-- Aprobar o desestimar una alerta de AdMan llama a `postMarketplaceflowsCustIdFlowIdalertsresolve` con `accept` o `reject`. El lote se agrupa por cuenta y agente, hasta 50 ids por llamada.
+- Aprobar o desestimar una alerta de AdMan llama a `accept_agent_alerts` o `reject_agent_alerts`. El lote se agrupa por cuenta y agente, hasta 50 ids por llamada.
 - La respuesta trae `resolved` y `failed` (`not_found`, `already_resolved`, `execution_failed`). Cada id queda con su estado en `adman_alertas` y su registro en `decisiones_log`; los fallidos se muestran en rojo con el motivo.
 - Nunca se ejecuta nada sin el clic del usuario. El botón masivo pide confirmación.
 
