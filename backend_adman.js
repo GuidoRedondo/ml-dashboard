@@ -703,31 +703,44 @@ module.exports = (app, { pool, requireAuth, requireAdmin, getClientToken, ML_API
     } catch (e) { err(res, e); }
   });
 
-  // Vista de UNA cuenta, solo lectura: lo que ve el cliente en "Agentes de Publicidad".
-  // Admin/consultores ven cualquier cuenta; un cliente, solo la suya y solo si Guido le
-  // habilitó la sección (permiso opt-in 'adman-cuenta' en true). Nunca consulta AdMan.
+  // Quién puede ver y gestionar "Agentes de Publicidad" de una cuenta: admin y consultores,
+  // cualquiera; un cliente, solo la suya y solo si Guido le habilitó la sección (permiso
+  // opt-in 'adman-cuenta' en true). Devuelve null si puede, o el error para responder.
+  async function accesoCuenta(req, clientId) {
+    if (!clientId) return { status: 400, error: 'client_id requerido' };
+    if (['admin', 'consultant', 'colaborador'].includes(req.user.role)) return null;
+    if (parseInt(req.user.client_id) !== clientId) return { status: 403, error: 'Sin acceso' };
+    const p = await pool.query(`SELECT enabled FROM user_permissions WHERE user_id=$1 AND section='adman-cuenta'`, [req.user.id]);
+    if (!p.rows.length || p.rows[0].enabled !== true) return { status: 403, error: 'Sección no habilitada' };
+    return null;
+  }
+
+  // Vista de UNA cuenta: lo que ve el cliente en "Agentes de Publicidad". Mismas pilas que
+  // el panel interno y los mismos botones (POST /api/adman/decisiones con client_id).
+  // Nunca consulta AdMan.
   app.get('/api/adman/cuenta', requireAuth, async (req, res) => {
     try {
       const clientId = parseInt(req.query.client_id);
-      if (!clientId) return res.status(400).json({ error: 'client_id requerido' });
-      if (!['admin', 'consultant', 'colaborador'].includes(req.user.role)) {
-        if (parseInt(req.user.client_id) !== clientId) return res.status(403).json({ error: 'Sin acceso' });
-        const p = await pool.query(`SELECT enabled FROM user_permissions WHERE user_id=$1 AND section='adman-cuenta'`, [req.user.id]);
-        if (!p.rows.length || p.rows[0].enabled !== true) return res.status(403).json({ error: 'Sección no habilitada' });
-      }
+      const sinAcceso = await accesoCuenta(req, clientId);
+      if (sinAcceso) return res.status(sinAcceso.status).json({ error: sinAcceso.error });
       const cuenta = await pool.query(
         `SELECT adman_cust_id::text AS adman_cust_id, nickname, activo FROM adman_cuentas WHERE client_id=$1 ORDER BY activo DESC NULLS LAST LIMIT 1`, [clientId]);
       if (!cuenta.rows.length || cuenta.rows[0].activo === false) return res.json({ conectada: false });
-      const cols = `a.alert_id::text AS alert_id, a.flow_nombre, a.flow_tipo, a.entity_type, a.entity_name, a.accion,
-        a.accion_cambio, a.operador, a.valor_previo, a.valor_nuevo, a.metricas, a.pila, a.motivo, a.estado,
-        a.created_at_adman, a.primera_vez, a.decidida_en, a.mla, a.mla_opciones, a.promocion, a.clasif`;
-      const [corrida, pendientes, decididas] = await Promise.all([
+      const cols = `a.alert_id::text AS alert_id, a.adman_cust_id::text AS adman_cust_id, a.flow_nombre, a.flow_tipo,
+        a.entity_type, a.entity_name, a.accion, a.accion_cambio, a.operador, a.valor_previo, a.valor_nuevo, a.metricas,
+        a.pila, a.motivo, a.estado, a.motivo_fallo, a.lote_id, a.created_at_adman, a.primera_vez, a.decidida_en,
+        a.mla, a.mla_opciones, a.promocion, a.clasif, l.usuario AS decidida_por`;
+      const desde = `FROM adman_alertas a LEFT JOIN adman_lotes l ON l.id=a.lote_id WHERE a.client_id=$1`;
+      const [corrida, pendientes, decididas, lotes] = await Promise.all([
         pool.query(`SELECT COALESCE(fin, inicio) AS fecha FROM adman_corridas WHERE estado IN ('ok','parcial') ORDER BY id DESC LIMIT 1`),
-        pool.query(`SELECT ${cols} FROM adman_alertas a WHERE a.client_id=$1
+        pool.query(`SELECT ${cols} ${desde}
           AND a.estado IN ('pendiente','enviando','fallida','sin_confirmar') ORDER BY a.flow_nombre, a.entity_name`, [clientId]),
-        pool.query(`SELECT ${cols} FROM adman_alertas a WHERE a.client_id=$1
+        pool.query(`SELECT ${cols} ${desde}
           AND a.estado IN ('aprobada','desestimada') AND a.decidida_en > NOW() - INTERVAL '30 days'
           ORDER BY a.decidida_en DESC LIMIT 300`, [clientId]),
+        // Lotes en curso con alertas de esta cuenta: para retomar el progreso tras recargar.
+        pool.query(`SELECT l.* FROM adman_lotes l WHERE l.estado='en_curso'
+          AND EXISTS (SELECT 1 FROM adman_alertas a WHERE a.lote_id=l.id AND a.client_id=$1) ORDER BY l.id`, [clientId]),
       ]);
       res.json({
         conectada: true,
@@ -735,14 +748,24 @@ module.exports = (app, { pool, requireAuth, requireAdmin, getClientToken, ML_API
         ultima_corrida: corrida.rows[0] ? corrida.rows[0].fecha : null,
         pendientes: pendientes.rows,
         decididas: decididas.rows,
+        lotes_en_curso: lotes.rows,
       });
     } catch (e) { err(res, e); }
   });
 
-  // Aprobar o desestimar: { decision: 'aprobar'|'desestimar', alert_ids: [...] }
-  app.post('/api/adman/decisiones', requireAuth, requireAdmin, async (req, res) => {
+  // Aprobar o desestimar: { decision: 'aprobar'|'desestimar', alert_ids: [...], client_id? }
+  // Sin client_id es el panel interno: solo admin. Con client_id es "Agentes de Publicidad":
+  // quien puede ver esa cuenta puede decidir, y solo se toman alertas de esa cuenta.
+  app.post('/api/adman/decisiones', requireAuth, async (req, res) => {
     try {
       const { decision } = req.body || {};
+      const clientId = req.body && req.body.client_id != null ? parseInt(req.body.client_id) : null;
+      if (clientId == null) {
+        if (req.user.role !== 'admin') return res.status(403).json({ error: 'Solo admins' });
+      } else {
+        const sinAcceso = await accesoCuenta(req, clientId);
+        if (sinAcceso) return res.status(sinAcceso.status).json({ error: sinAcceso.error });
+      }
       const ids = [...new Set(((req.body || {}).alert_ids || []).map(String))].filter(x => /^\d+$/.test(x));
       if (!['aprobar', 'desestimar'].includes(decision)) return res.status(400).json({ error: 'decision tiene que ser aprobar o desestimar' });
       if (!ids.length) return res.status(400).json({ error: 'No hay alertas' });
@@ -756,15 +779,20 @@ module.exports = (app, { pool, requireAuth, requireAdmin, getClientToken, ML_API
       const tomadas = await pool.query(`
         UPDATE adman_alertas SET lote_id=$1, decision=$2, motivo_fallo=NULL
         WHERE alert_id = ANY($3::bigint[]) AND estado = ANY($4::text[])
+          AND ($5::int IS NULL OR client_id = $5)
           AND (lote_id IS NULL OR lote_id NOT IN (SELECT id FROM adman_lotes WHERE estado='en_curso' AND id<>$1))
         RETURNING alert_id::text AS alert_id, adman_cust_id::text AS adman_cust_id, flow_id, client_id`,
-        [loteId, decision, ids, ESTADOS_DECIDIBLES]);
+        [loteId, decision, ids, ESTADOS_DECIDIBLES, clientId]);
       const tomadasIds = new Set(tomadas.rows.map(r => r.alert_id));
       const omitidas = ids.filter(id => !tomadasIds.has(id));
       let motivos = {};
       if (omitidas.length) {
-        const r = await pool.query(`SELECT alert_id::text AS id, estado FROM adman_alertas WHERE alert_id = ANY($1::bigint[])`, [omitidas]);
-        r.rows.forEach(x => { motivos[x.id] = ESTADOS_DECIDIBLES.includes(x.estado) ? 'ya está en otro lote en curso' : `está ${x.estado}`; });
+        const r = await pool.query(`SELECT alert_id::text AS id, estado, client_id FROM adman_alertas WHERE alert_id = ANY($1::bigint[])`, [omitidas]);
+        r.rows.forEach(x => {
+          // Una alerta de otra cuenta se informa como inexistente: no se cuenta nada de ella.
+          if (clientId != null && x.client_id !== clientId) return;
+          motivos[x.id] = ESTADOS_DECIDIBLES.includes(x.estado) ? 'ya está en otro lote en curso' : `está ${x.estado}`;
+        });
       }
       const omitidasDet = omitidas.map(id => ({ alert_id: id, motivo: motivos[id] || 'no existe' }));
       if (!tomadas.rows.length) {
@@ -779,9 +807,17 @@ module.exports = (app, { pool, requireAuth, requireAdmin, getClientToken, ML_API
   });
 
   // Progreso y resultado alerta por alerta de un lote.
-  app.get('/api/adman/lotes/:id', requireAuth, requireAdmin, async (req, res) => {
+  // Con ?client_id= (vista "Agentes de Publicidad") solo se ven las alertas de esa cuenta.
+  app.get('/api/adman/lotes/:id', requireAuth, async (req, res) => {
     try {
       const id = parseInt(req.params.id);
+      const clientId = req.query.client_id != null ? parseInt(req.query.client_id) : null;
+      if (clientId == null) {
+        if (req.user.role !== 'admin') return res.status(403).json({ error: 'Solo admins' });
+      } else {
+        const sinAcceso = await accesoCuenta(req, clientId);
+        if (sinAcceso) return res.status(sinAcceso.status).json({ error: sinAcceso.error });
+      }
       const lote = await pool.query('SELECT * FROM adman_lotes WHERE id=$1', [id]);
       if (!lote.rows.length) return res.status(404).json({ error: 'Lote inexistente' });
       const alertas = await pool.query(`
@@ -789,7 +825,8 @@ module.exports = (app, { pool, requireAuth, requireAdmin, getClientToken, ML_API
                (SELECT d.resultado FROM decisiones_log d WHERE d.origen='adman' AND d.ref_id=a.alert_id::text AND d.lote_id=$1
                 ORDER BY d.id DESC LIMIT 1) AS resultado
         FROM adman_alertas a LEFT JOIN adman_cuentas c ON c.adman_cust_id=a.adman_cust_id
-        WHERE a.lote_id=$1 ORDER BY c.nickname, a.entity_name`, [id]);
+        WHERE a.lote_id=$1 AND ($2::int IS NULL OR a.client_id = $2) ORDER BY c.nickname, a.entity_name`, [id, clientId]);
+      if (clientId != null && !alertas.rows.length) return res.status(404).json({ error: 'Lote inexistente' });
       res.json({ lote: lote.rows[0], alertas: alertas.rows });
     } catch (e) { err(res, e); }
   });

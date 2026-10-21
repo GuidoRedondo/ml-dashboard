@@ -15906,7 +15906,7 @@ const SECCIONES = [
   { id: 'informe-mensual',  label: '📄 Informe Mensual',      optIn: true },
   { id: 'impacto-costos',   label: '⚠️ Impacto Costos 1/9',    optIn: true },
   { id: 'decisiones-publi', label: '🎛️ Motor de Publicidad',   optIn: true },
-  // Alertas de los agentes de AdMan de SU cuenta, solo lectura (backend: /api/adman/cuenta).
+  // Alertas de los agentes de AdMan de SU cuenta, con Aprobar/Desestimar (backend: /api/adman/cuenta).
   { id: 'adman-cuenta',     label: '🤖 Agentes de Publicidad', optIn: true },
   // Cajas reales, estimación del envío y envío de medidas a ML (backend: /api/medidas).
   { id: 'medidas',          label: '📐 Medida paquetes',       optIn: true },
@@ -29983,6 +29983,10 @@ async function confirmarPlanillaMedidas(btn) {
 // ════════════════════════════════════════════════════════════════════════════
 
 const _adm = {
+  // 'panel' = Alertas AdMan (todas las cuentas, solo admin); 'cuenta' = Agentes de
+  // Publicidad (una cuenta, la ve el cliente). Las dos usan las mismas tablas y botones.
+  modo: 'panel',
+  clientId: null,          // en modo 'cuenta', la cuenta que se está mirando
   data: null,
   filtroCliente: '',
   filtroTipo: '',
@@ -30101,13 +30105,26 @@ function admEstadoTag(a) {
 const admDecidible = a => a.estado === 'pendiente' || a.estado === 'fallida';
 
 function admFiltradas() {
-  return ((_adm.data && _adm.data.alertas) || []).filter(a =>
+  const todas = (_adm.data && _adm.data.alertas) || [];
+  if (_adm.modo === 'cuenta') return todas;   // una sola cuenta: sin filtros
+  return todas.filter(a =>
     (!_adm.filtroCliente || a.nickname === _adm.filtroCliente) &&
     (!_adm.filtroTipo || a.accion === _adm.filtroTipo) &&
     (!_adm.filtroGravedad || (a.clasif && a.clasif.gravedad) === _adm.filtroGravedad));
 }
 
+// Cambiar de vista (o de cuenta) arranca de cero: la selección y los lotes en pantalla
+// eran de lo que se estaba mirando antes.
+function admModo(modo, clientId = null) {
+  if (_adm.modo === modo && _adm.clientId === clientId) return;
+  _adm.modo = modo; _adm.clientId = clientId;
+  _adm.sel.clear(); _adm.abiertas.clear(); _adm.gruposAbiertos.clear(); _adm.lotes = {};
+  _adm.data = null;
+}
+const admRecargar = () => _adm.modo === 'cuenta' ? loadAdmanCuenta() : loadAdmanPanel();
+
 async function loadAdmanPanel() {
+  admModo('panel');
   const r = await apiCall('GET', '/api/adman/panel');
   const root = document.getElementById('adm-root');
   if (!r || r.error) { root.innerHTML = `<div class="adm-vacio">No se pudo cargar el panel: ${admEsc(r && r.error || 'sin permiso')}</div>`; return; }
@@ -30124,6 +30141,7 @@ async function loadAdmanPanel() {
 }
 
 function admRender() {
+  if (_adm.modo === 'cuenta') return admcRender();
   const d = _adm.data; if (!d) return;
   const root = document.getElementById('adm-root');
   const c = d.corrida;
@@ -30218,15 +30236,19 @@ function admTabla(lista) {
     <thead><tr>
       <th style="width:28px"><input type="checkbox" ${todasSel ? 'checked' : ''} ${decidiblesVista.length ? '' : 'disabled'}
         onchange='admSelVarias(${JSON.stringify(decidiblesVista)}, this.checked)' title="Seleccionar todas las de este bloque"></th>
-      <th>Cuenta</th><th>Campaña / publicación</th><th>Acción sugerida</th><th>Métricas</th><th>Motivo</th><th style="width:220px"></th>
+      <th>${_adm.modo === 'cuenta' ? 'Agente' : 'Cuenta'}</th><th>Campaña / publicación</th><th>Acción sugerida</th><th>Métricas</th><th>${_adm.modo === 'cuenta' ? 'Nuestra lectura' : 'Motivo'}</th><th style="width:220px"></th>
     </tr></thead><tbody>${filas.join('')}</tbody></table></div>`;
 }
+
+const admColCuenta = a => _adm.modo === 'cuenta'
+  ? `<b>${admEsc(a.flow_nombre || '—')}</b><div class="sub">${admFecha(a.created_at_adman || a.primera_vez)}</div>`
+  : `<b>${admEsc(a.nickname || '—')}</b><div class="sub">${admEsc(a.flow_nombre || '')}</div>`;
 
 function admFila(a) {
   const id = a.alert_id, dec = admDecidible(a), abierta = _adm.abiertas.has(id);
   return `<tr class="${_adm.sel.has(id) ? 'sel' : ''}">
       <td><input type="checkbox" ${_adm.sel.has(id) ? 'checked' : ''} ${dec ? '' : 'disabled'} onchange="admSel('${id}', this.checked)"></td>
-      <td><b>${admEsc(a.nickname || '—')}</b><div class="sub">${admEsc(a.flow_nombre || '')}</div></td>
+      <td>${admColCuenta(a)}</td>
       <td>${admEsc(a.entity_name || '—')}${admMla(a)}<div class="sub">${a.entity_type === 'campaign' ? 'Campaña' : a.entity_type === 'item' ? 'Publicación' : a.entity_type === 'promotion' ? 'Promoción' : admEsc(a.entity_type)}</div></td>
       <td>${admAccionTexto(a)}</td>
       <td>${admMetricas(a)}</td>
@@ -30251,7 +30273,7 @@ function admFilaGrupo(g) {
   const conProblema = g.filter(a => a.estado !== 'pendiente');
   return `<tr class="${todasSel ? 'sel' : ''}">
       <td><input type="checkbox" ${todasSel ? 'checked' : ''} ${ids.length ? '' : 'disabled'} onchange='admSelVarias(${JSON.stringify(ids)}, this.checked)'></td>
-      <td><b>${admEsc(g[0].nickname || '—')}</b><div class="sub">${admEsc(g[0].flow_nombre || '')}</div></td>
+      <td>${admColCuenta(g[0])}</td>
       <td><b>${g.length} publicaciones</b><div class="sub">Pausa por stock</div></td>
       <td>Pausar anuncios${regla ? `<div class="sub">Regla del agente: ${admEsc(regla)}</div>` : ''}</td>
       <td><span class="sub">—</span></td>
@@ -30433,22 +30455,24 @@ function admSeguirClasif() {
     const r = await apiCall('GET', '/api/adman/config');
     if (r && !r.clasificacion_en_curso) {
       clearInterval(_adm.pollClasif); _adm.pollClasif = null;
-      loadAdmanPanel();
+      admRecargar();
     }
   }, 5000);
 }
 
 async function admEnviar(decision, ids) {
-  const r = await apiCall('POST', '/api/adman/decisiones', { decision, alert_ids: ids });
+  const body = { decision, alert_ids: ids };
+  if (_adm.modo === 'cuenta') body.client_id = _adm.clientId;
+  const r = await apiCall('POST', '/api/adman/decisiones', body);
   if (!r || r.error) {
     showToast('No se envió: ' + ((r && r.error) || 'sin permiso'));
     if (r && r.omitidas && r.omitidas.length) console.warn('[ADMAN] omitidas', r.omitidas);
-    loadAdmanPanel();
+    admRecargar();
     return;
   }
   ids.forEach(id => _adm.sel.delete(id));
   _adm.lotes[r.lote_id] = { lote: { id: r.lote_id, decision, estado: 'en_curso', total: r.total, procesadas: 0 }, alertas: [], omitidas: r.omitidas };
-  await loadAdmanPanel();
+  await admRecargar();
   admSeguirLotes();
 }
 
@@ -30491,14 +30515,14 @@ function admSeguirLotes() {
     const vivos = Object.values(_adm.lotes).filter(x => x.lote.estado === 'en_curso');
     for (const x of Object.values(_adm.lotes)) {
       if (x.lote.estado !== 'en_curso' && x.alertas.length) continue;
-      const r = await apiCall('GET', `/api/adman/lotes/${x.lote.id}`);
+      const r = await apiCall('GET', `/api/adman/lotes/${x.lote.id}${_adm.modo === 'cuenta' ? '?client_id=' + _adm.clientId : ''}`);
       if (r && r.lote) { x.lote = r.lote; x.alertas = r.alertas; }
     }
     const el = document.getElementById('adm-lotes');
     if (el) el.innerHTML = admLotesHtml();
     if (!Object.values(_adm.lotes).some(x => x.lote.estado === 'en_curso')) {
       clearInterval(_adm.pollLotes); _adm.pollLotes = null;
-      if (vivos.length) loadAdmanPanel();   // refrescar las pilas con el resultado
+      if (vivos.length) admRecargar();   // refrescar las pilas con el resultado
     }
   }, 2000);
 }
@@ -30514,10 +30538,11 @@ async function admCorrer() {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-//  AGENTES DE PUBLICIDAD — las alertas de AdMan de UNA cuenta, solo lectura.
-//  Es lo que ve el cliente cuando Guido le habilita la sección (permiso opt-in
-//  'adman-cuenta' en Usuarios). Mismos datos que el panel interno, sin botones:
-//  las decisiones se siguen tomando desde Alertas AdMan. Backend: /api/adman/cuenta.
+//  AGENTES DE PUBLICIDAD — las alertas de AdMan de UNA cuenta, con los mismos botones
+//  que el panel interno. Es lo que ve el cliente cuando Guido le habilita la sección
+//  (permiso opt-in 'adman-cuenta' en Usuarios). Backend: /api/adman/cuenta, y las
+//  decisiones van a /api/adman/decisiones con client_id (solo toma alertas de esa cuenta).
+//  Sin "Correr ahora" ni Criterios: eso sigue siendo del panel interno.
 // ════════════════════════════════════════════════════════════════════════════
 let _admcVerTodas = false;
 const ADMC_ESTADO = {
@@ -30530,50 +30555,93 @@ async function loadAdmanCuenta() {
   const root = document.getElementById('admc-root');
   const client = getActiveClient();
   if (!client || !client.id) { root.innerHTML = '<div class="adm-vacio">Elegí una cuenta.</div>'; return; }
-  root.innerHTML = '<div style="padding:20px;color:#6b7280">Cargando…</div>';
+  admModo('cuenta', client.id);
+  if (!_adm.data) root.innerHTML = '<div style="padding:20px;color:#6b7280">Cargando…</div>';
   const r = await apiCall('GET', `/api/adman/cuenta?client_id=${client.id}`);
+  if (_adm.modo !== 'cuenta' || _adm.clientId !== client.id) return;   // cambió de cuenta mientras cargaba
   if (!r || r.error) { root.innerHTML = `<div class="adm-vacio">No se pudo cargar: ${admEsc(r && r.error || 'sin permiso')}</div>`; return; }
   if (!r.conectada) {
+    _adm.data = null;
     root.innerHTML = `<h2>🤖 Agentes de Publicidad</h2>
       <div class="adm-vacio" style="margin-top:14px">Esta cuenta todavía no tiene agentes de publicidad activos.</div>`;
     return;
   }
-  const fila = (a, decidida) => `<tr>
-      <td><b>${admEsc(a.flow_nombre || '—')}</b><div class="sub">${admFecha(a.created_at_adman || a.primera_vez)}</div></td>
-      <td>${admEsc(a.entity_name || '—')}${admMla(a)}<div class="sub">${admcEntidad(a.entity_type)}</div></td>
-      <td>${admAccionTexto(a)}</td>
-      <td>${admMetricas(a)}</td>
-      <td>${decidida ? (ADMC_ESTADO[a.estado] || '') + `<div class="sub">${admFecha(a.decidida_en)}</div>` : admPilaTag(a.pila)}
-        <div class="sub">${admEsc(a.motivo || '')}</div></td>
-    </tr>`;
-  const tabla = (lista, decidida) => `<div style="overflow-x:auto"><table class="adm-tabla">
-    <thead><tr><th>Agente</th><th>Campaña / publicación</th><th>Qué propone</th><th>Métricas</th><th>${decidida ? 'Resultado' : 'Nuestra lectura'}</th></tr></thead>
-    <tbody>${lista.map(a => fila(a, decidida)).join('')}</tbody></table></div>`;
+  // Mismo formato que /api/adman/panel, para que las tablas y el modal sirvan tal cual.
+  (r.pendientes || []).forEach(a => { a.nickname = r.nickname; });
+  _adm.data = { ...r, alertas: r.pendientes || [] };
+  const vivas = new Set(_adm.data.alertas.filter(admDecidible).map(a => a.alert_id));
+  [..._adm.sel].forEach(id => { if (!vivas.has(id)) _adm.sel.delete(id); });
+  (r.lotes_en_curso || []).forEach(l => { if (!_adm.lotes[l.id]) _adm.lotes[l.id] = { lote: l, alertas: [] }; });
+  admcRender();
+  if (Object.values(_adm.lotes).some(x => x.lote.estado === 'en_curso')) admSeguirLotes();
+}
 
-  const pend = r.pendientes || [], dec = r.decididas || [];
+function admcRender() {
+  const root = document.getElementById('admc-root');
+  const d = _adm.data; if (!root || !d) return;
+  const todas = d.alertas;
+  const porPila = p => todas.filter(a => a.pila === p && a.estado !== 'enviando');
+  const recomendadas = todas.filter(a => (a.pila === 'aceptar' || a.pila === 'desestimar') && admDecidible(a));
+  const bloque = (titulo, tag, lista, vacio) => `
+    <div class="adm-block">
+      <h3>${titulo} <span class="adm-tag ${tag}">${lista.length}</span></h3>
+      ${lista.length ? admTabla(lista) : `<div class="adm-vacio">${vacio}</div>`}
+    </div>`;
+
+  const dec = d.decididas || [];
   const aplicadas = dec.filter(a => a.estado === 'aprobada').length;
   const decVista = _admcVerTodas ? dec : dec.slice(0, 30);
+  const filaDec = a => `<tr>
+      <td>${admFecha(a.decidida_en)}</td>
+      <td><b>${admEsc(a.flow_nombre || '—')}</b></td>
+      <td>${admEsc(a.entity_name || '—')}${admMla(a)}<div class="sub">${admcEntidad(a.entity_type)}</div></td>
+      <td>${admAccionTexto(a)}</td>
+      <td>${ADMC_ESTADO[a.estado] || ''}${a.decidida_por ? `<div class="sub">por ${admEsc(a.decidida_por)}</div>` : ''}</td>
+    </tr>`;
+
   root.innerHTML = `
     <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
       <h2 style="flex:1">🤖 Agentes de Publicidad</h2>
       <button class="adm-btn" onclick="loadAdmanCuenta()">Actualizar</button>
     </div>
     <div style="font-size:12px;margin-top:6px">
-      Cuenta <b>${admEsc(r.nickname || client.name || '')}</b> · Última lectura de los agentes: <b>${admFecha(r.ultima_corrida)}</b>
+      Cuenta <b>${admEsc(d.nickname || '')}</b> · Última lectura de los agentes: <b>${admFecha(d.ultima_corrida)}</b>
     </div>
+    <div class="sub" style="margin-top:6px;max-width:760px">Los agentes proponen cambios en tu publicidad. Al lado de cada propuesta va nuestra lectura:
+      <b>Aceptar</b> (conviene), <b>Desestimar</b> (no conviene) o <b>Revisar</b> (hay que mirarla). Aprobar ejecuta el cambio en Mercado Libre; desestimar lo descarta sin tocar nada.</div>
+
     <div class="adm-cards">
-      <div class="adm-card"><div class="t">Pendientes</div><div class="n">${pend.length}</div><div class="d">Cambios que proponen los agentes, en revisión</div></div>
-      <div class="adm-card" style="border-color:#0f6b5c"><div class="t" style="color:#0f6b5c">Aplicadas · 30 días</div><div class="n">${aplicadas}</div><div class="d">Se ejecutaron en la cuenta</div></div>
-      <div class="adm-card"><div class="t" style="color:#6b7280">Descartadas · 30 días</div><div class="n">${dec.length - aplicadas}</div><div class="d">Se revisaron y no se aplicaron</div></div>
+      <div class="adm-card" style="border-color:#0f6b5c"><div class="t" style="color:#0f6b5c">Aceptar</div><div class="n">${porPila('aceptar').length}</div><div class="d">Arriba del piso de rentabilidad o pausa por stock</div></div>
+      <div class="adm-card"><div class="t" style="color:#6b7280">Desestimar</div><div class="n">${porPila('desestimar').length}</div><div class="d">Pierde plata o el freno no es la plata</div></div>
+      <div class="adm-card" style="border-color:#c2410c"><div class="t" style="color:#c2410c">Revisar</div><div class="n">${porPila('revisar').length}</div><div class="d">Zona gris, falta el costo del producto o agentes en conflicto</div></div>
+      <div class="adm-card"><div class="t">Últimos 30 días</div><div class="n">${aplicadas}</div><div class="d">aplicadas · ${dec.length - aplicadas} descartadas</div></div>
     </div>
-    <div class="adm-block">
-      <h3>Propuestas pendientes <span class="adm-tag revisar">${pend.length}</span></h3>
-      ${pend.length ? tabla(pend, false) : '<div class="adm-vacio">No hay propuestas pendientes de los agentes.</div>'}
+
+    <div id="adm-lotes">${admLotesHtml()}</div>
+
+    <div class="adm-bar">
+      <button class="adm-btn ok" ${recomendadas.length ? '' : 'disabled'} onclick="admConfirmarRecomendado()">Aprobar todo lo recomendado (${recomendadas.length})</button>
     </div>
+
+    ${_adm.sel.size ? `
+      <div class="adm-selbar adm-bar">
+        <b>${_adm.sel.size} seleccionada(s)</b>
+        <button class="adm-btn ok" onclick="admConfirmar('aprobar',[..._adm.sel])">Aprobar selección</button>
+        <button class="adm-btn no" onclick="admConfirmar('desestimar',[..._adm.sel])">Desestimar selección</button>
+        <button class="adm-btn" onclick="_adm.sel.clear();admRender()">Limpiar</button>
+      </div>` : ''}
+
+    ${bloque('Recomendado aceptar', 'aceptar', todas.filter(a => a.pila === 'aceptar'), 'Nada para aceptar.')}
+    ${bloque('Recomendado desestimar', 'desestimar', todas.filter(a => a.pila === 'desestimar'), 'Nada para desestimar.')}
+    ${bloque('Para revisar', 'revisar', todas.filter(a => a.pila !== 'aceptar' && a.pila !== 'desestimar'), 'No hay propuestas para revisar.')}
+
     <div class="adm-block">
       <h3>Decididas en los últimos 30 días <span class="adm-tag ok">${dec.length}</span></h3>
-      ${dec.length ? tabla(decVista, true) : '<div class="adm-vacio">Todavía no hay decisiones en los últimos 30 días.</div>'}
-      ${dec.length > 30 ? `<button class="adm-btn" style="margin-top:8px" onclick="_admcVerTodas=!_admcVerTodas;loadAdmanCuenta()">${_admcVerTodas ? 'Ver menos' : `Ver las ${dec.length}`}</button>` : ''}
+      ${dec.length ? `<div style="overflow-x:auto"><table class="adm-tabla">
+        <thead><tr><th>Cuándo</th><th>Agente</th><th>Campaña / publicación</th><th>Qué proponía</th><th>Resultado</th></tr></thead>
+        <tbody>${decVista.map(filaDec).join('')}</tbody></table></div>`
+        : '<div class="adm-vacio">Todavía no hay decisiones en los últimos 30 días.</div>'}
+      ${dec.length > 30 ? `<button class="adm-btn" style="margin-top:8px" onclick="_admcVerTodas=!_admcVerTodas;admcRender()">${_admcVerTodas ? 'Ver menos' : `Ver las ${dec.length}`}</button>` : ''}
     </div>`;
 }
 
@@ -30597,7 +30665,7 @@ function admSeguirCorrida() {
     if (el) el.textContent = ` · corrida en curso (${Math.round((Date.now() - t0) / 1000)} s)`;
     if (r && !r.en_curso) {
       clearInterval(_adm.pollCorrida); _adm.pollCorrida = null;
-      loadAdmanPanel();
+      admRecargar();
     }
   }, 5000);
 }
