@@ -5759,6 +5759,17 @@ function campanaCuotas(detail) {
   return vals.length ? vals.join('+') : (st.value_name || null);
 }
 
+// Tags del plan de cuotas para pedirle a listing_prices la comisión de ESE plan. Sin el tag
+// ML devuelve la Premium estándar (+12,9) para cualquier Premium, y Precios cobraba igual una
+// de 3 cuotas que una de 12. Verificado el 22/10/2026 en 4 categorías y contra lo facturado:
+// Premium 3x +8,5 / estándar o 6x +12,9 / 9x +17,3 / 12x +20,8; Clásica pcj-co-funded +5.
+// Los mshops_* son de Mercado Shops y no cambian la comisión de una venta en ML.
+// '' = sin plan que mandar.
+function tagsCuotasML(campana) {
+  if (!campana) return '';
+  return String(campana).split('+').filter(t => t && !t.startsWith('mshops_')).join(',');
+}
+
 // ── Escaleras de precio ───────────────────────────────────────────────────────
 // El mismo producto publicado varias veces a distinto precio (mismo user_product_id):
 // la barata al contado, la cara con cuotas sin interés que se bancan con ese precio de
@@ -7611,6 +7622,7 @@ async function traerItemsActivos(clientId, { withFees = false } = {}) {
         // duplicaba el cargo fijo e inflaba la comisión: una Clásica de precio
         // bajo se veía ~24% (14.35% real + fijo), "como si tuviera cuotas".
         let comPct = null, envioUnit = null, comSource = null, envioSource = null;
+        const tagsCuotas = tagsCuotasML(campanaCuotas(b));
         if (withFees && b.listing_type_id && price > 0) {
           try {
             const lp = new URLSearchParams({
@@ -7622,6 +7634,7 @@ async function traerItemsActivos(clientId, { withFees = false } = {}) {
               billable_weight: b.shipping?.dimensions?.weight || 500,
             });
             if (b.category_id) lp.set('category_id', b.category_id);
+            if (tagsCuotas) lp.set('tags', tagsCuotas);
             const lpData = await fetch(`${ML_API}/sites/MLA/listing_prices?${lp}`, { headers }).then(r => r.json()).catch(() => null);
             if (lpData && !lpData.error) {
               const pctFee   = lpData.sale_fee_details?.percentage_fee;
@@ -7662,7 +7675,9 @@ async function traerItemsActivos(clientId, { withFees = false } = {}) {
 
         itemsMap[b.id]   = { mla_id: b.id, title: b.title, sku, price, original_price: precioLista, stock: b.available_quantity, listing_type_id: b.listing_type_id, category_id: b.category_id, logistic_type: b.shipping?.logistic_type || 'cross_docking', shipping_mode: b.shipping?.mode || 'me2', shipping_weight: b.shipping?.dimensions?.weight || 500, peso_kg: pesoKg, peso_source: pesoKg == null ? 'default' : (TARIFAS_ML.pesoDeItemKg(b) != null ? 'ficha' : 'envio'), com_pct: comPct, envio_unit: envioUnit, com_source: comSource, envio_source: envioSource,
           // Campaña de cuotas sin interés (3x_campaign, ahora-12…) o null = no está en ninguna.
-          campana_cuotas: campanaCuotas(b) };
+          campana_cuotas: campanaCuotas(b),
+          // Plan con el que se pidió com_pct. undefined en un caché viejo = pedida sin plan.
+          com_tags: tagsCuotas };
       } catch(e) {}
     }));
   }
@@ -7879,6 +7894,44 @@ async function completarCuotasCache(clientId, data) {
   return nuevo;
 }
 
+// Cachés armados antes de mandar el plan de cuotas a listing_prices: la comisión de las
+// publicaciones con plan se pidió sin él. Se repide sólo esa, una vez por combinación de
+// categoría × tipo × plan (el % no depende del precio), y se marca com_tags en todas.
+async function completarComisionCuotas(clientId, data) {
+  const items = data.items || [];
+  if (!items.some(i => i.com_tags === undefined && i.campana_cuotas !== undefined)) return data;
+  const token = await getClientToken(clientId);
+  if (!token) return data;
+  const headers = { 'Authorization': `Bearer ${token}` };
+  const claveDe = i => `${i.category_id}|${i.listing_type_id}|${tagsCuotasML(i.campana_cuotas)}`;
+  const faltan = items.filter(i => i.com_tags === undefined && i.campana_cuotas !== undefined
+    && tagsCuotasML(i.campana_cuotas) && i.com_pct != null && i.category_id && i.listing_type_id);
+  const muestras = [...new Map(faltan.map(i => [claveDe(i), i])).values()];
+  const pct = {};
+  for (let k = 0; k < muestras.length; k += 5) {
+    await Promise.all(muestras.slice(k, k + 5).map(async i => {
+      try {
+        const qs = new URLSearchParams({ price: Math.round(i.price || 0), currency_id: 'ARS',
+          listing_type_id: i.listing_type_id, category_id: i.category_id, tags: tagsCuotasML(i.campana_cuotas) });
+        const d = await getJsonML(`${ML_API}/sites/MLA/listing_prices?${qs}`, headers);
+        const obj = Array.isArray(d) ? d[0] : d;
+        const v = obj?.sale_fee_details?.percentage_fee;
+        if (v != null) pct[claveDe(i)] = parseFloat(parseFloat(v).toFixed(2));
+      } catch (_) { /* queda sin marcar y se reintenta en la próxima lectura */ }
+    }));
+  }
+  const nuevo = { ...data, items: items.map(i => {
+    if (i.com_tags !== undefined || i.campana_cuotas === undefined) return i;
+    const tags = tagsCuotasML(i.campana_cuotas);
+    if (!tags) return { ...i, com_tags: '' };
+    const v = pct[claveDe(i)];
+    return v != null ? { ...i, com_pct: v, com_tags: tags } : i;
+  }) };
+  await pool.query('UPDATE precios_cache SET data=$2 WHERE client_id=$1', [clientId, JSON.stringify(nuevo)])
+    .catch(e => console.error('[PRECIOS COMISION CUOTAS]', e.message));
+  return nuevo;
+}
+
 app.get('/api/precios', requireAuth, async (req, res) => {
   try {
     const clientId = parseInt(req.query.client_id);
@@ -7928,6 +7981,7 @@ app.get('/api/precios', requireAuth, async (req, res) => {
       const row = hit.rows[0];
       if (row && (Date.now() - new Date(row.fetched_at).getTime()) < PRECIOS_TTL_MS) {
         row.data = await completarCuotasCache(clientId, row.data);
+        row.data = await completarComisionCuotas(clientId, row.data);
         // Los costos guardados SÍ se releen sobre el caché: el CMV y el objetivo por
         // producto se cargan desde esta misma pantalla y tienen que verse al instante.
         const costs = await pool.query(
@@ -14020,7 +14074,7 @@ async function feesAlPrecio(item, precio, headers, cache, contador) {
   // (medido: 968 ofertas de Luminocity, todas 0), así que lo único que hacía era romper la
   // caché — cada peso distinto forzaba otra llamada y el análisis volvía a truncarse.
   // OJO: por eso el envío del vendedor no sale de acá: lo pone analizarCandidatosPromo (envioAl).
-  const key = `${item.listing_type_id}|${item.category_id}|${item.logistic_type}|${getEscalaIdx(precio)}`;
+  const key = `${item.listing_type_id}|${item.category_id}|${item.logistic_type}|${getEscalaIdx(precio)}|${item.cuotas_tags || ''}`;
   if (cache.has(key)) return cache.get(key);
   // El contador cuenta LLAMADAS REALES, no consultas: antes se incrementaba afuera en cada
   // oferta, aciertos de caché incluidos, así que el tope cortaba el análisis de una cuenta
@@ -14037,6 +14091,7 @@ async function feesAlPrecio(item, precio, headers, cache, contador) {
       billable_weight: item.peso || 500,
     });
     if (item.category_id) qs.set('category_id', item.category_id);
+    if (item.cuotas_tags) qs.set('tags', item.cuotas_tags);   // plan de cuotas: ver tagsCuotasML
     const d = await fetch(`${ML_API}/sites/MLA/listing_prices?${qs}`, { headers }).then(r => r.json());
     if (d && !d.error) {
       const pct = d.sale_fee_details?.percentage_fee;
@@ -14190,7 +14245,7 @@ async function margenPromoPublicacion(clientId, mla, precio) {
   const cRes = await pool.query('SELECT tasa_iibb_pct, condicion_iva FROM clients WHERE id=$1', [clientId]);
   const tasaIibb   = parseFloat(cRes.rows[0]?.tasa_iibb_pct) || 0;
   const esMonotrib = (cRes.rows[0]?.condicion_iva || 'responsable_inscripto') === 'monotributista';
-  const x = await fetch(`${ML_API}/items/${mla}?attributes=id,price,listing_type_id,category_id,shipping`, { headers })
+  const x = await fetch(`${ML_API}/items/${mla}?attributes=id,price,listing_type_id,category_id,shipping,sale_terms`, { headers })
     .then(r => r.json()).catch(() => null);
   if (!x || !x.id) return { sin_datos: 'ML no devolvió la publicación' };
   const cr = await pool.query('SELECT costo_unit, alicuota_iva FROM product_costs WHERE client_id=$1 AND mla_id=$2', [clientId, mla]);
@@ -14203,6 +14258,7 @@ async function margenPromoPublicacion(clientId, mla, precio) {
     listing_type_id: x.listing_type_id, category_id: x.category_id,
     logistic_type: x.shipping?.logistic_type || 'cross_docking', shipping_mode: x.shipping?.mode || 'me2',
     peso: x.shipping?.dimensions?.weight || null,
+    cuotas_tags: tagsCuotasML(campanaCuotas(x)),
   };
   const f = await feesAlPrecio(it, precio, headers, new Map(), null);
   if (f.com_pct == null) return { sin_datos: 'ML no devolvió la comisión' };
@@ -14285,7 +14341,7 @@ async function analizarCandidatosPromo(clientId) {
   for (let g = 0; g < batches.length; g += 6) {
     await Promise.all(batches.slice(g, g + 6).map(async b => {
       try {
-        const d = await fetch(`${ML_API}/items?ids=${b.join(',')}&attributes=id,title,price,listing_type_id,category_id,shipping,available_quantity,sold_quantity`, { headers })
+        const d = await fetch(`${ML_API}/items?ids=${b.join(',')}&attributes=id,title,price,listing_type_id,category_id,shipping,available_quantity,sold_quantity,sale_terms`, { headers })
           .then(r => r.json());
         (Array.isArray(d) ? d : []).forEach(r => {
           if (r.code !== 200 || !r.body) return;
@@ -14300,6 +14356,7 @@ async function analizarCandidatosPromo(clientId) {
             // 3 kg (el default de la tabla) en vez de asumir 500 g, que es la banda mas
             // barata y subestimaba el costo de todo producto sin peso cargado.
             peso: x.shipping?.dimensions?.weight || null,
+            cuotas_tags: tagsCuotasML(campanaCuotas(x)),
           };
         });
       } catch(e) {}

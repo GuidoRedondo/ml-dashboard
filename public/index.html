@@ -6323,6 +6323,7 @@ function _campanaLabel(v) {
     if (m) return m[1] + ' cuotas';
     const a = /^ahora-(\d+)$/.exec(x);
     if (a) return 'Ahora ' + a[1];
+    if (x === 'pcj-co-funded') return 'cuotas cofinanciadas';
     return x;
   }).join(' + ');
 }
@@ -11171,6 +11172,9 @@ function _prcMapItems(d) {
       alic: (i.alicuota_iva != null ? parseFloat(i.alicuota_iva) : 21) / 100,
       comPct: comPct / 100,
       comSource: i.com_pct != null ? 'ML' : 'est.',
+      // Plan de cuotas con el que ML calculó la comisión ('' = sin plan, undefined = sin dato).
+      comPlan: i.com_tags,
+      premium: ['gold_pro', 'gold_premium'].includes(i.listing_type_id),
       envioML,
       // ML casi nunca devuelve el envío en listing_prices, así que lo normal es que
       // salga de la tabla de tarifas por peso. Se marca de dónde viene para que el
@@ -11961,7 +11965,9 @@ function _prcDetalle(f) {
           <div style="font-size:10px;color:var(--muted);line-height:1.5">
             Peso: ${pesoTxt}<br>
             Alícuota IVA del producto: ${(it.alic * 100).toFixed(1)}%<br>
-            Comisión: ${it.comSource === 'ML' ? 'la real de ML' : 'estimada'}${it.comPct > 0.22 ? ' — incluye el cargo por ofrecer cuotas' : ''}<br>
+            Comisión: ${it.comSource === 'ML' ? 'la real de ML' : 'estimada'}${it.comPlan
+              ? ` — con el cargo de su plan de ${_campanaLabel(String(it.comPlan).replace(/,/g, '+'))}`
+              : (it.premium ? ' — con el cargo de cuotas de la Premium estándar' : '')}<br>
             ${it.stock != null ? 'Stock: ' + it.stock.toLocaleString('es-AR') + '<br>' : ''}
             <span style="opacity:.75">Los ajustes de comisión y envío valen para esta sesión: no se guardan.</span>
           </div>
