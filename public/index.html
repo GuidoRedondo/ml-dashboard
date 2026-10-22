@@ -26361,8 +26361,9 @@ function renderPromoCandidatos() {
       borde = '#dc2626';
     }
     const detalle = (i.ofertas || []).map(o => {
+      const env = o.envio ? ` <span style="color:var(--muted);font-size:10px">envío ${_pm(o.envio)}${o.envio_estimado ? '*' : ''}</span>` : '';
       const m = o.margen_pesos != null
-        ? `<span style="color:${o.margen_pesos > 0 ? '#16a34a' : '#dc2626'};font-weight:600">${_pm(o.margen_pesos)} (${o.margen_pct}%)</span>`
+        ? `<span style="color:${o.margen_pesos > 0 ? '#16a34a' : '#dc2626'};font-weight:600">${_pm(o.margen_pesos)} (${o.margen_pct}%)</span>${env}`
         : '<span style="color:var(--muted)">—</span>';
       const reparto = (o.meli_pct != null && o.seller_pct != null)
         ? `ML ${o.meli_pct}% + vos ${o.seller_pct}%` : '<span style="color:var(--muted)">—</span>';
@@ -26435,8 +26436,8 @@ function renderPromoCandidatos() {
       </div>`; })() : ''}
     <div style="font-size:12px;color:var(--muted);margin-bottom:10px">
       ML no deja cargar promociones por API, así que esto resuelve la decisión y la carga va a mano en el Centro de Promociones.
-      Clickeá una campaña de arriba para verla sola. El margen es por unidad, ya con comisión, IVA e IIBB, y <strong>antes de envío y publicidad</strong>:
-      sobre una venta que todavía no pasó ML no informa el costo de envío.
+      Clickeá una campaña de arriba para verla sola. El margen es por unidad, ya con comisión, IVA, IIBB y, desde $33.000, el envío gratis que pagás vos
+      (el que cobra ML por esa publicación; con * es estimado por tarifa). Es <strong>antes de publicidad</strong>.
     </div>
     ${items.length ? `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse">
       <thead><tr style="border-bottom:2px solid var(--border)">

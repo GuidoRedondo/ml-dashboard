@@ -14019,7 +14019,7 @@ async function feesAlPrecio(item, precio, headers, cache, contador) {
   // El peso NO va en la clave: listing_prices devuelve el envío del vendedor en 0 siempre
   // (medido: 968 ofertas de Luminocity, todas 0), así que lo único que hacía era romper la
   // caché — cada peso distinto forzaba otra llamada y el análisis volvía a truncarse.
-  // OJO: por eso este margen NO descuenta envío del vendedor; es margen antes de envío.
+  // OJO: por eso el envío del vendedor no sale de acá: lo pone analizarCandidatosPromo (envioAl).
   const key = `${item.listing_type_id}|${item.category_id}|${item.logistic_type}|${getEscalaIdx(precio)}`;
   if (cache.has(key)) return cache.get(key);
   // El contador cuenta LLAMADAS REALES, no consultas: antes se incrementaba afuera en cada
@@ -14168,6 +14168,21 @@ async function adsPorCampanaItem(clientId, date_from, date_to) {
 // paga el vendedor y se le pregunta a ML por la publicación (list_cost de shipping_options,
 // el más caro de CABA y Mendoza, para no aprobar con el envío barato). Debajo de $33.000 el
 // vendedor no paga envío (hasta $15.000 lo paga el comprador; de $15.000 a $32.999, ML).
+// Envío que paga el vendedor en UNA publicación: list_cost de shipping_options, el más
+// caro de CABA y Mendoza (para no aprobar una promo con el envío barato). null = ML no dio dato.
+async function envioRealPublicacion(mla, headers) {
+  const costos = await Promise.all(ENVIO_CP_SONDA.map(async z => {
+    try {
+      const r = await fetch(`${ML_API}/items/${mla}/shipping_options?zip_code=${z.cp}`, { headers });
+      if (!r.ok) return null;
+      const v = ((await r.json()).options || []).map(o => parseFloat(o.list_cost)).filter(v => Number.isFinite(v) && v > 0);
+      return v.length ? Math.min(...v) : null;
+    } catch (e) { return null; }
+  }));
+  const validos = costos.filter(v => v != null);
+  return validos.length ? Math.round(Math.max(...validos)) : null;
+}
+
 async function margenPromoPublicacion(clientId, mla, precio) {
   const token = await getClientToken(parseInt(clientId));
   if (!token) return { sin_datos: 'Sin token de ML' };
@@ -14192,17 +14207,9 @@ async function margenPromoPublicacion(clientId, mla, precio) {
   const f = await feesAlPrecio(it, precio, headers, new Map(), null);
   if (f.com_pct == null) return { sin_datos: 'ML no devolvió la comisión' };
   let envio = 0, envioSinDato = false;
-  if (precio >= 33000) {
-    const costos = await Promise.all(ENVIO_CP_SONDA.map(async z => {
-      try {
-        const r = await fetch(`${ML_API}/items/${mla}/shipping_options?zip_code=${z.cp}`, { headers });
-        if (!r.ok) return null;
-        const v = ((await r.json()).options || []).map(o => parseFloat(o.list_cost)).filter(v => Number.isFinite(v) && v > 0);
-        return v.length ? Math.min(...v) : null;
-      } catch (e) { return null; }
-    }));
-    const validos = costos.filter(v => v != null);
-    if (validos.length) envio = Math.round(Math.max(...validos)); else envioSinDato = true;
+  if (precio >= TARIFAS_ML.UMBRAL_ENVIO_GRATIS) {
+    const v = await envioRealPublicacion(mla, headers);
+    if (v != null) envio = v; else envioSinDato = true;
   }
   const r = margenEnPromo({ precio, costo, alic, comPct: f.com_pct, envio, esMonotrib, tasaIibb, pesoGr: it.peso });
   return { ...r, precio, precio_actual: x.price, costo, com_pct: f.com_pct, envio_sin_descontar: envioSinDato };
@@ -14308,6 +14315,36 @@ async function analizarCandidatosPromo(clientId) {
     alic[r.mla_id]  = parseFloat(r.alicuota_iva) || 21;
   });
 
+  // 4b. Envío del vendedor. listing_prices lo devuelve en 0 siempre (medido: 324 ofertas de
+  //     AB Fitness, todas 0), así que desde $33.000 — donde el envío gratis lo paga el
+  //     vendedor — el margen salía inflado justo en los productos caros. Se le pregunta a ML
+  //     por la publicación (mismo criterio que margenPromoPublicacion) sólo a las que tienen
+  //     CMV y algún precio, hoy o de campaña, arriba del umbral.
+  const UMBRAL_ENV = TARIFAS_ML.UMBRAL_ENVIO_GRATIS;
+  const envioReal = {};
+  const conEnvio = mlas.filter(mla => {
+    const m = meta[mla];
+    if (!m || !(costo[mla] > 0)) return false;
+    return m.precio_actual >= UMBRAL_ENV
+        || ofertasPorItem[mla].some(({ oferta }) => (parseFloat(oferta.price) || 0) >= UMBRAL_ENV);
+  });
+  for (let g = 0; g < conEnvio.length; g += 6) {
+    await Promise.all(conEnvio.slice(g, g + 6).map(async mla => {
+      envioReal[mla] = await envioRealPublicacion(mla, headers);
+    }));
+  }
+  // El list_cost es al precio de hoy. Si la campaña cae en otra banda de precio de la
+  // tarifa (o hoy está abajo de $33.000), se usa la tabla por peso y se marca estimado.
+  const envioAl = (mla, precio) => {
+    if (precio < UMBRAL_ENV) return { envio: 0, envio_estimado: false };
+    const m = meta[mla];
+    const banda = p => p >= TARIFAS_ML.ENV_CORTE_BANDA;
+    if (envioReal[mla] != null && m.precio_actual >= UMBRAL_ENV && banda(m.precio_actual) === banda(precio)) {
+      return { envio: envioReal[mla], envio_estimado: false };
+    }
+    return { envio: TARIFAS_ML.costoEnvio(precio, m.peso ? m.peso / 1000 : undefined), envio_estimado: true };
+  };
+
   // 5. Margen por oferta. Solo pedimos comisión donde hay costo: sin CMV el margen no se
   //    puede calcular igual, y son cientos de llamadas.
   const feeCache = new Map();
@@ -14329,10 +14366,11 @@ async function analizarCandidatosPromo(clientId) {
     if (tieneCosto && m.precio_actual > 0 && feeCount.n < PROMO_MAX_FEES) {
       const f0 = await feesAlPrecio(m, m.precio_actual, headers, feeCache, feeCount);
       if (f0.com_pct != null) {
-        margenHoy = margenEnPromo({
+        const e0 = envioAl(mla, m.precio_actual);
+        margenHoy = { ...margenEnPromo({
           precio: m.precio_actual, costo: costo[mla], alic: alic[mla] ?? 21,
-          comPct: f0.com_pct, envio: f0.envio, esMonotrib, tasaIibb, pesoGr: m.peso,
-        });
+          comPct: f0.com_pct, envio: e0.envio, esMonotrib, tasaIibb, pesoGr: m.peso,
+        }), envio_estimado: e0.envio_estimado };
       }
     }
     const ofertas = [];
@@ -14356,9 +14394,10 @@ async function analizarCandidatosPromo(clientId) {
       if (tieneCosto && precio > 0 && feeCount.n < PROMO_MAX_FEES) {
         const f = await feesAlPrecio(m, precio, headers, feeCache, feeCount);
         if (f.com_pct != null) {
-          Object.assign(base, { com_pct: f.com_pct }, margenEnPromo({
+          const e = envioAl(mla, precio);
+          Object.assign(base, { com_pct: f.com_pct, envio_estimado: e.envio_estimado }, margenEnPromo({
             precio, costo: costo[mla], alic: alic[mla] ?? 21,
-            comPct: f.com_pct, envio: f.envio, esMonotrib, tasaIibb, pesoGr: m.peso,
+            comPct: f.com_pct, envio: e.envio, esMonotrib, tasaIibb, pesoGr: m.peso,
           }));
           if (margenHoy) {
             base.resigna_pesos = Math.round(margenHoy.margen_pesos - base.margen_pesos);
