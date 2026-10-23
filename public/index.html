@@ -120,6 +120,30 @@ body {
 }
 .nav-icon { font-size: 15px; width: 20px; text-align: center; flex-shrink: 0; }
 
+/* Menú lateral oculto (☰ del encabezado): la pantalla queda entera para el contenido */
+.app.sidebar-oculta .sidebar { display: none; }
+.btn-menu {
+  width: 34px; height: 34px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  border: 1px solid var(--border); border-radius: 8px;
+  background: var(--surface2); color: var(--text);
+  font-size: 16px; cursor: pointer;
+}
+.btn-menu:hover { background: var(--border); }
+
+/* Barra horizontal flotante: copia del scroll de la tabla ancha que está en pantalla,
+   pegada abajo, para no tener que bajar hasta el final de la tabla para moverla. */
+#barraHorizontal {
+  position: fixed; bottom: 0; z-index: 1500; display: none;
+  overflow-x: auto; overflow-y: hidden; height: 16px;
+  background: var(--surface); border-top: 1px solid var(--border);
+  box-shadow: 0 -2px 8px rgba(0,0,0,.06);
+}
+#barraHorizontal > div { height: 1px; }
+#barraHorizontal::-webkit-scrollbar { height: 14px; }
+#barraHorizontal::-webkit-scrollbar-thumb { background: #B8BDD0; border-radius: 7px; border: 3px solid var(--surface); }
+#barraHorizontal::-webkit-scrollbar-thumb:hover { background: var(--muted); }
+
 /* ── MAIN ── */
 .main {
   flex: 1;
@@ -952,9 +976,12 @@ tr.fam-hijo > td { background: rgba(99,102,241,.025); }
 
     <!-- TOPBAR -->
     <header class="topbar">
-      <div>
-        <div class="page-title" id="pageTitle">Dashboard General</div>
-        <div class="page-subtitle" id="pageSubtitle">Resumen consolidado · <span id="currentDate"></span></div>
+      <div style="display:flex;align-items:center;gap:14px">
+        <button class="btn-menu" id="btnMenu" onclick="toggleSidebar()" title="Ocultar el menú (pantalla completa)">☰</button>
+        <div>
+          <div class="page-title" id="pageTitle">Dashboard General</div>
+          <div class="page-subtitle" id="pageSubtitle">Resumen consolidado · <span id="currentDate"></span></div>
+        </div>
       </div>
       <!-- DATE RANGE PICKER — global, visible en todas las secciones -->
       <div style="position:relative" id="globalRangePicker">
@@ -2748,6 +2775,91 @@ function getSession() {
 }
 function getSessionUser() { return _sessionUser || getCookie('ml_session_user'); }
 function getSessionRole() { return _sessionRole || getCookie('ml_session_role'); }
+
+// -- MENÚ LATERAL: se oculta con el ☰ del encabezado ----------------------------
+// Para ver tablas anchas a pantalla completa. Se recuerda en este navegador.
+function toggleSidebar(forzar) {
+  const app = document.getElementById('app');
+  if (!app) return;
+  const oculta = typeof forzar === 'boolean' ? forzar : !app.classList.contains('sidebar-oculta');
+  app.classList.toggle('sidebar-oculta', oculta);
+  const btn = document.getElementById('btnMenu');
+  if (btn) btn.title = oculta ? 'Mostrar el menú' : 'Ocultar el menú (pantalla completa)';
+  try { localStorage.setItem('sidebarOculta', oculta ? '1' : '0'); } catch (_) {}
+  _barraHorizontalAhora();
+}
+window.addEventListener('DOMContentLoaded', () => {
+  let oculta = false;
+  try { oculta = localStorage.getItem('sidebarOculta') === '1'; } catch (_) {}
+  if (oculta) toggleSidebar(true);
+});
+
+// -- BARRA HORIZONTAL FLOTANTE ------------------------------------------------
+// Las tablas anchas scrollean de costado dentro de su caja, y esa barra queda al pie de
+// la tabla: con 300 filas había que bajar hasta el final para mover a la derecha. Cuando
+// una caja con scroll horizontal está en pantalla y su pie queda abajo del borde, se
+// muestra una barra pegada abajo que la mueve (y se mueve con ella).
+const _barraH = { el: null, inner: null, cajas: [], actual: null, sync: false, raf: 0, recalc: 0 };
+function _cajasConScrollH() {
+  const page = document.querySelector('.page.active');
+  if (!page) return [];
+  const out = [];
+  page.querySelectorAll('div, section, table').forEach(e => {
+    if (e.scrollWidth <= e.clientWidth + 2 || e.clientWidth < 50) return;
+    const ox = getComputedStyle(e).overflowX;
+    if (ox === 'auto' || ox === 'scroll') out.push(e);
+  });
+  return out;
+}
+function _barraHorizontalAhora() {
+  cancelAnimationFrame(_barraH.raf);
+  _barraH.raf = requestAnimationFrame(_posicionarBarraH);
+}
+function _posicionarBarraH() {
+  const b = _barraH.el;
+  if (!b) return;
+  const vh = window.innerHeight;
+  // La caja que más se ve de las que tienen el pie (y su barra) fuera de la pantalla.
+  let mejor = null, visible = 0;
+  _barraH.cajas.forEach(c => {
+    if (!c.isConnected) return;
+    const r = c.getBoundingClientRect();
+    if (r.bottom <= vh - 4 || r.top >= vh - 60 || r.width === 0) return;
+    const v = Math.min(r.bottom, vh) - Math.max(r.top, 0);
+    if (v > visible) { visible = v; mejor = c; }
+  });
+  _barraH.actual = mejor;
+  if (!mejor) { b.style.display = 'none'; return; }
+  const r = mejor.getBoundingClientRect();
+  b.style.display = 'block';
+  b.style.left = Math.max(r.left, 0) + 'px';
+  b.style.width = mejor.clientWidth + 'px';
+  _barraH.inner.style.width = mejor.scrollWidth + 'px';
+  if (Math.abs(b.scrollLeft - mejor.scrollLeft) > 1) { _barraH.sync = true; b.scrollLeft = mejor.scrollLeft; }
+}
+function _recalcularCajasH() {
+  clearTimeout(_barraH.recalc);
+  _barraH.recalc = setTimeout(() => { _barraH.cajas = _cajasConScrollH(); _barraHorizontalAhora(); }, 300);
+}
+window.addEventListener('DOMContentLoaded', () => {
+  const b = document.createElement('div');
+  b.id = 'barraHorizontal';
+  b.innerHTML = '<div></div>';
+  document.body.appendChild(b);
+  _barraH.el = b; _barraH.inner = b.firstChild;
+  // La barra mueve la tabla...
+  b.addEventListener('scroll', () => {
+    if (_barraH.sync) { _barraH.sync = false; return; }
+    if (_barraH.actual) _barraH.actual.scrollLeft = b.scrollLeft;
+  });
+  // ...y cualquier scroll (la página, la tabla, la rueda) reubica la barra.
+  document.addEventListener('scroll', _barraHorizontalAhora, true);
+  window.addEventListener('resize', _recalcularCajasH);
+  // Cambiar de sección o de solapa a veces sólo cambia una clase: no lo ve el observer.
+  document.addEventListener('click', _recalcularCajasH, true);
+  new MutationObserver(_recalcularCajasH).observe(document.body, { childList: true, subtree: true });
+  _recalcularCajasH();
+});
 
 // -- CONTRASTE: ni letras blancas ni amarillas sobre fondo claro ---------------
 // La app nació con fondo oscuro y quedaron cientos de colores pensados para negro:
