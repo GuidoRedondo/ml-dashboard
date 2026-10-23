@@ -4299,6 +4299,15 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
     Object.entries(byItemPerMode).forEach(([mode, itemsObj]) => {
       top15ByMode[mode] = makeTop15(Object.values(itemsObj));
     });
+    // Todas las vendidas por modo (no sólo 15): el front las agrupa por familia y filtra
+    // Publicaciones por forma de entrega. Con 15 por modo una familia salía con la mitad
+    // de sus variantes y el filtro escondía todo lo que no entraba al top.
+    const itemsByMode = {};
+    Object.entries(byItemPerMode).forEach(([mode, itemsObj]) => {
+      itemsByMode[mode] = Object.values(itemsObj).map(i => ({
+        id: i.id, title: i.title, revenue: Math.round(i.revenue), units: i.units, net: Math.round(i.net), orders: i.orders,
+      }));
+    });
 
     // ── RENTABILIDAD ─────────────────────────────────────────────────────────
     marca('agregados');
@@ -4802,7 +4811,8 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
         zonas_por_item:       zonasPorItem,
         top15_revenue:        top15Revenue,
         top15_units:          top15Units,
-        top15_by_mode:        top15ByMode
+        top15_by_mode:        top15ByMode,
+        items_by_mode:        itemsByMode
       },
       rentabilidad,
       reputation: {

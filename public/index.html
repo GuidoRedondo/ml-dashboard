@@ -8287,6 +8287,9 @@ function renderPerfPublicaciones() {
   if (_perfPubModeFilter) {
     const modeItemIds = new Set();
     connected.forEach(acc => {
+      const todas = acc.data?.performance?.items_by_mode?.[_perfPubModeFilter];
+      if (todas) { todas.forEach(i => modeItemIds.add(i.id)); return; }
+      // Dashboards cacheados de antes de items_by_mode: sólo el top 15 por modo
       const modeData = acc.data?.performance?.top15_by_mode?.[_perfPubModeFilter];
       if (!modeData) return;
       [...(modeData.revenue || []), ...(modeData.units || [])].forEach(i => modeItemIds.add(i.id));
@@ -14150,7 +14153,7 @@ function loadPerformance() {
 
   const byMode = {}, byProvince = {}, byCity = {}, byHour = new Array(24).fill(0);
   const zonasPorItem = {};   // MLA -> zonas de entrega, alimenta el buscador por producto
-  const top15Rev = [], top15Units = [];
+  const vendidos = [];   // todas las publicaciones vendidas del período → rankings
   let totVisits = 0, adsImpr = 0, adsClicks = 0, adsUnits = 0, adsSalesAmt = 0;
 
   connected.forEach(acc => {
@@ -14196,17 +14199,22 @@ function loadPerformance() {
     // by_mode always shows full picture (for the pie itself)
     Object.entries(perf.by_mode || {}).forEach(([k,v]) => { byMode[k] = (byMode[k]||0) + v; });
 
-    // Top15 — filtrar por MLA si hay búsqueda
-    const modeTop = f && perf.top15_by_mode && perf.top15_by_mode[f];
-    let revItems   = modeTop ? modeTop.revenue : (perf.top15_revenue || []);
-    let unitsItems = modeTop ? modeTop.units   : (perf.top15_units   || []);
-    if (_perfMlaFilter) {
-      revItems   = revItems.filter(i => (i.id||'').toLowerCase().includes(_perfMlaFilter) || (i.titulo||i.title||'').toLowerCase().includes(_perfMlaFilter));
-      unitsItems = unitsItems.filter(i => (i.id||'').toLowerCase().includes(_perfMlaFilter) || (i.titulo||i.title||'').toLowerCase().includes(_perfMlaFilter));
-    }
-    top15Rev.push(  ...revItems);
-    top15Units.push(...unitsItems);
+    // Rankings: TODAS las vendidas, no sólo el top 15 que arma el backend, para poder
+    // agruparlas por familia (con 15 una familia salía con la mitad de sus variantes).
+    // Un dashboard cacheado de antes no trae la lista completa: ahí queda el top 15.
+    const unirTop = t => {
+      const m = new Map();
+      [...(t?.revenue || []), ...(t?.units || [])].forEach(i => m.set(i.id, i));
+      return [...m.values()];
+    };
+    let items = f
+      ? (perf.items_by_mode?.[f] || unirTop(perf.top15_by_mode?.[f]))
+      : (acc.data.rentabilidad?.by_product?.map(p => ({ id: p.id, title: p.title, revenue: p.revenue, units: p.units, net: p.neto }))
+         || unirTop({ revenue: perf.top15_revenue, units: perf.top15_units }));
+    if (_perfMlaFilter) items = items.filter(i => (i.id||'').toLowerCase().includes(_perfMlaFilter) || (i.titulo||i.title||'').toLowerCase().includes(_perfMlaFilter));
+    items.forEach(i => vendidos.push({ id: i.id, title: i.titulo || i.title || i.id, revenue: +i.revenue || 0, units: +i.units || 0, net: +i.net || 0, client_id: acc.id }));
   });
+  window._perfVendidos = vendidos;   // lo dibuja renderPerfTops()
 
   window._zonasPorItem = zonasPorItem;   // lo consume renderZonasProducto()
 
@@ -14278,7 +14286,7 @@ function loadPerformance() {
       conv_total: totalConv, conv_organica: organicConv, ctr_ads: paidCTR, conv_ads: paidConv,
       pct_ordenes_organicas: pctOrganic, pct_ordenes_ads: pctPaid,
     },
-    topRevenue: top15Rev, topUnits: top15Units,
+    topRevenue: [], topUnits: [],   // los completa renderPerfTops con lo que muestra
     byMode, byProvince, byCity, byHour, byWeekday,
     zonasPorItem,
   };
@@ -14329,9 +14337,6 @@ function loadPerformance() {
     if (!f) return items.reduce((s,i) => s + (parseFloat(i[key])||0), 0) || 1;
     return items.reduce((s,i) => s + (parseFloat(i[key])||0), 0) || 1;
   }
-
-  const totalRevenue  = top15Rev.reduce((s,i)   => s + (i.revenue||0), 0) || 1;
-  const totalUnitsAll = top15Units.reduce((s,i)  => s + (i.units||0),   0) || 1;
 
   // ── PIE CHART SVG ────────────────────────────────────────────────────────
   function pieChart(data, colors) {
@@ -14555,62 +14560,12 @@ function loadPerformance() {
       </div>`;
   }
 
-  // ── TOP 15 TABLE with % recibido + % del total + Stock ─────────────────
-  const stockMap = {};
-  if (window._pubsData && window._pubsData.length) {
-    window._pubsData.forEach(p => { stockMap[p.id] = p.available_quantity ?? null; });
-  }
-
-  function top15Table(items, sortKey, mainFmt, mainLabel, totalBase) {
-    if (!items.length) return '<div style="color:var(--muted);font-size:12px;padding:10px">Sin datos</div>';
-    const sorted = [...items].sort((a,b) => parseFloat(b[sortKey])-parseFloat(a[sortKey])).slice(0,15);
-    return `
-      <div style="overflow-x:auto">
-      <table style="width:100%;border-collapse:collapse;font-size:12px">
-        <thead>
-          <tr style="border-bottom:1px solid var(--border)">
-            <th style="text-align:left;padding:6px 4px;color:var(--muted);font-weight:600">#</th>
-            <th style="text-align:left;padding:6px 4px;color:var(--muted);font-weight:600">MLA</th>
-            <th style="text-align:left;padding:6px 4px;color:var(--muted);font-weight:600">Publicación</th>
-            <th style="text-align:right;padding:6px 4px;color:var(--muted);font-weight:600">${mainLabel}</th>
-            <th style="text-align:right;padding:6px 4px;color:var(--muted);font-weight:600">% del total</th>
-            <th style="text-align:right;padding:6px 4px;color:var(--muted);font-weight:600">% recibido</th>
-            <th style="text-align:right;padding:6px 4px;color:var(--muted);font-weight:600">Stock</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${sorted.map((item, i) => {
-            const val      = parseFloat(item[sortKey]) || 0;
-            const pctTot   = (val / totalBase * 100).toFixed(1);
-            const pctRec   = item.revenue > 0 ? ((item.net / item.revenue)*100).toFixed(1) : '—';
-            const recColor = parseFloat(pctRec) >= 60 ? '#00e676' : parseFloat(pctRec) >= 40 ? '#FFD700' : '#ff9100';
-            const stock    = stockMap[item.id];
-            const stockStr = stock == null ? '—' : stock.toLocaleString('es-AR');
-            const stockColor = stock == null ? 'var(--muted)' : stock === 0 ? '#ff5252' : stock <= 5 ? '#ff9100' : '#00e676';
-            return `<tr style="border-bottom:1px solid var(--border)">
-              <td style="padding:6px 4px;color:var(--muted)">${i+1}</td>
-              <td style="padding:6px 4px;white-space:nowrap">
-                <span style="color:var(--muted);cursor:pointer;font-size:11px" title="Click para copiar"
-                  onclick="copyMLA(this,'${item.id}')">${item.id}</span>
-              </td>
-              <td style="padding:6px 4px;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${item.title}">${item.title}</td>
-              <td style="padding:6px 4px;text-align:right;font-weight:700;color:var(--accent-ink)">${mainFmt(val)}</td>
-              <td style="padding:6px 4px;text-align:right;color:var(--muted)">${pctTot}%</td>
-              <td style="padding:6px 4px;text-align:right;font-weight:700;color:${recColor}">${pctRec}%</td>
-              <td style="padding:6px 4px;text-align:right;font-weight:700;color:${stockColor}">${stockStr}</td>
-            </tr>`;
-          }).join('')}
-        </tbody>
-      </table>
-      </div>`;
-  }
-
   const modeColors = ['#2196F3','#00e676','#FFD700','#ff9100','#e91e63','#9c27b0'];
 
   el.innerHTML = `
     ${_perfMlaFilter ? `<div style="background:rgba(99,102,241,.12);border:1px solid #6366f1;border-radius:10px;padding:10px 16px;margin-bottom:14px;font-size:13px;display:flex;align-items:center;gap:10px">
       <span>🔍 Mostrando análisis filtrado por: <strong>${_perfMlaFilter}</strong></span>
-      ${top15Rev.length === 0 ? '<span style="color:#ff5252;margin-left:8px">— Sin resultados</span>' : ''}
+      ${vendidos.length === 0 ? '<span style="color:#ff5252;margin-left:8px">— Sin resultados</span>' : ''}
     </div>` : ''}
 
     <!-- TRÁFICO + EMBUDOS -->
@@ -14737,17 +14692,8 @@ function loadPerformance() {
       ${weekdayChart(byWeekday)}
     </div>
 
-    <!-- ROW 4: Rankings por facturación y unidades -->
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
-      <div class="kpi-card" style="padding:18px">
-        <div class="kpi-label" style="margin-bottom:14px">💰 Top 15 por facturación</div>
-        ${top15Table(top15Rev, 'revenue', fmt, 'Facturación', totalRevenue)}
-      </div>
-      <div class="kpi-card" style="padding:18px">
-        <div class="kpi-label" style="margin-bottom:14px">📦 Top 15 por unidades</div>
-        ${top15Table(top15Units, 'units', n => Math.round(n).toLocaleString('es-AR'), 'Unidades', totalUnitsAll)}
-      </div>
-    </div>
+    <!-- ROW 4: Rankings por facturación y unidades (renderPerfTops) -->
+    <div id="perfTops" style="margin-bottom:12px"></div>
 
     <!-- ROW 5: Ranking por ganancia (async — el cálculo real tarda, se cachea 12h) -->
     <div id="topGananciaCard" style="margin-bottom:12px">
@@ -14761,7 +14707,111 @@ function loadPerformance() {
   // Load preguntas async after render
   setTimeout(loadPreguntasCard, 50);
   setTimeout(loadTopGanancia, 60);
+  renderPerfTops();
   renderZonasProducto('');
+}
+
+// ── TOP 15 POR FACTURACIÓN / UNIDADES ──────────────────────────────────────
+// Sale de window._perfVendidos (todas las vendidas, ya filtradas por entrega y búsqueda).
+// Se agrupa por familia ANTES de cortar el top: así una remera con 6 talles compite con
+// lo que vende la familia entera, no con lo que vende su talle más fuerte.
+// El selector de familia es uno solo para la pestaña: cambia los dos tops y el de ganancia.
+_famRender.perfAna = () => renderPerfTops();
+_famRender.perfGan = () => renderTopGanancia();
+_famRenderPanel.perfAna = _famRenderPanel.perfGan = () => { renderPerfTops(); renderTopGanancia(); };
+
+function renderPerfTops() {
+  const cont = document.getElementById('perfTops');
+  const vendidos = window._perfVendidos;
+  if (!cont || !vendidos) return;
+
+  const stockMap = {};
+  (window._pubsData || []).forEach(p => { stockMap[p.id] = p.available_quantity ?? null; });
+
+  const porCliente = {};
+  vendidos.forEach(i => (porCliente[i.client_id] = porCliente[i.client_id] || []).push(i.id));
+  Object.entries(porCliente).forEach(([c, ids]) => famCargar(parseInt(c), ids, 'perfAna'));
+
+  const fmt  = n => '$' + Math.round(n).toLocaleString('es-AR');
+  const fmtU = n => Math.round(n).toLocaleString('es-AR');
+  const esc  = t => String(t ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
+
+  // Familia: facturación, unidades, neto y stock suman; el % recibido sale de las sumas.
+  const agg = ms => {
+    const s = k => ms.reduce((t, m) => t + (m[k] || 0), 0);
+    const conStock = ms.filter(m => stockMap[m.id] != null);
+    return { id: ms[0].id, title: ms[0].title, client_id: ms[0].client_id,
+             revenue: s('revenue'), units: s('units'), net: s('net'),
+             _stock: conStock.length ? conStock.reduce((t, m) => t + stockMap[m.id], 0) : null };
+  };
+
+  const tabla = (key, mainFmt, mainLabel) => {
+    if (!vendidos.length) return { filas: [], html: '<div style="color:var(--muted);font-size:12px;padding:10px">Sin datos</div>' };
+    const total = vendidos.reduce((t, i) => t + (i[key] || 0), 0) || 1;
+    const cmp = (a, b) => (b[key] || 0) - (a[key] || 0);
+    const entradas = famAgrupar(vendidos, { idDe: i => i.id, clientDe: i => i.client_id, agg, cmp });
+    if (!_famModo) entradas.sort((a, b) => cmp(a.fila, b.fila));
+    const top = entradas.slice(0, 15);
+    const hijos = new Set(top.flatMap(e => e.fam ? e.fam.miembros : []));
+
+    const celdas = (p, stock) => {
+      const val = p[key] || 0;
+      const pctRec = p.revenue > 0 ? (p.net / p.revenue * 100).toFixed(1) : '—';
+      const recColor = parseFloat(pctRec) >= 60 ? '#00e676' : parseFloat(pctRec) >= 40 ? '#FFD700' : '#ff9100';
+      const stockColor = stock == null ? 'var(--muted)' : stock === 0 ? '#ff5252' : stock <= 5 ? '#ff9100' : '#00e676';
+      return `<td style="padding:6px 4px;text-align:right;font-weight:700;color:var(--accent-ink)">${mainFmt(val)}</td>
+        <td style="padding:6px 4px;text-align:right;color:var(--muted)">${(val / total * 100).toFixed(1)}%</td>
+        <td style="padding:6px 4px;text-align:right;font-weight:700;color:${recColor}">${pctRec}%</td>
+        <td style="padding:6px 4px;text-align:right;font-weight:700;color:${stockColor}">${stock == null ? '—' : stock.toLocaleString('es-AR')}</td>`;
+    };
+    const hija = (p, i) => `<tr style="border-bottom:1px solid var(--border)">
+        <td style="padding:6px 4px;color:var(--muted)">${hijos.has(p) ? '' : i + 1}</td>
+        <td style="padding:6px 4px;white-space:nowrap">
+          <span style="color:var(--muted);cursor:pointer;font-size:11px" title="Click para copiar" onclick="event.stopPropagation();copyMLA(this,'${p.id}')">${p.id}</span>
+        </td>
+        <td style="padding:6px 4px;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(p.title)}">${esc(p.title)}</td>
+        ${celdas(p, stockMap[p.id] ?? null)}
+      </tr>`;
+    const madre = (e, i) => `<tr ${famMadreAttrs(e, 'perfAna')} style="border-bottom:1px solid var(--border)">
+        <td style="padding:6px 4px;color:var(--muted)">${i + 1}</td>
+        <td style="padding:6px 4px;font-size:11px;color:var(--muted);white-space:nowrap">${e.fam.miembros.length} MLA</td>
+        <td style="padding:6px 4px;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${famTituloHtml(e, e.fam.miembros.map(m => m.title))}</td>
+        ${celdas(e.fila, e.fila._stock)}
+      </tr>`;
+    const th = (t, al = 'right') => `<th style="text-align:${al};padding:6px 4px;color:var(--muted);font-weight:600">${t}</th>`;
+    // Al Excel va una fila por lo que se ve: la familia con sus MLA juntos.
+    const filas = top.map(e => !e.fam ? e.fila : {
+      id: e.fam.miembros.map(m => m.id).join(', '),
+      title: e.fam.nombre || famPrefijo(e.fam.miembros.map(m => m.title)) || e.fila.title,
+      revenue: e.fila.revenue, units: e.fila.units,
+    });
+    return { filas, html: `
+      <div style="overflow-x:auto">
+      <table style="width:100%;border-collapse:collapse;font-size:12px">
+        <thead><tr style="border-bottom:1px solid var(--border)">
+          ${th('#', 'left')}${th('MLA', 'left')}${th('Publicación', 'left')}${th(mainLabel)}${th('% del total')}${th('% recibido')}${th('Stock')}
+        </tr></thead>
+        <tbody>${famFilas(top, madre, hija)}</tbody>
+      </table>
+      </div>` };
+  };
+
+  const rev = tabla('revenue', fmt, 'Facturación');
+  const uni = tabla('units', fmtU, 'Unidades');
+  if (window._perfExport) { window._perfExport.topRevenue = rev.filas; window._perfExport.topUnits = uni.filas; }
+
+  cont.innerHTML = `
+    <div style="display:flex;justify-content:flex-end;margin-bottom:8px">${famSwitchHtml('perfAna')}</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <div class="kpi-card" style="padding:18px">
+        <div class="kpi-label" style="margin-bottom:14px">💰 Top 15 por facturación</div>
+        ${rev.html}
+      </div>
+      <div class="kpi-card" style="padding:18px">
+        <div class="kpi-label" style="margin-bottom:14px">📦 Top 15 por unidades</div>
+        ${uni.html}
+      </div>
+    </div>`;
 }
 
 // ── ZONAS POR PRODUCTO ──────────────────────────────────────────────────────
@@ -14918,7 +14968,30 @@ function renderTopGanancia() {
   // Con el filtro activo se ordenan del peor al menos malo: primero el que más destruye.
   const perdedores = all.filter(i => i.margen_real < 0).sort((a,b) => a.margen_real - b.margen_real);
   const base  = window._topGanFiltro === 'pierden' ? perdedores : all;
-  const items = window._topGanTodos || window._topGanFiltro === 'pierden' ? base : base.slice(0, 15);
+
+  // Por familia: se agrupa antes de cortar el top 15. Plata, unidades y CMV suman; los
+  // porcentajes salen de las sumas. La familia no tiene puesto propio ni Δ: eso es por MLA.
+  const cliGan = getActiveClient()?.id;
+  famCargar(cliGan, all.map(i => i.mla_id), 'perfGan');
+  const cmpGan = window._topGanFiltro === 'pierden'
+    ? (a, b) => a.margen_real - b.margen_real
+    : (a, b) => b.margen_real - a.margen_real;
+  const entradasGan = famAgrupar(base, {
+    idDe: i => i.mla_id, clientDe: () => cliGan, cmp: cmpGan,
+    agg: ms => {
+      const s = k => ms.reduce((t, x) => t + (x[k] || 0), 0);
+      const units = s('units'), revenue = s('revenue'), margen = s('margen_real'), cmv = s('cmv_total');
+      return {
+        mla_id: ms[0].mla_id, title: ms[0].title, sku: famPrefijo(ms.map(x => x.sku)) || null,
+        units, revenue, margen_real: margen, cmv_total: cmv,
+        pct_ganancia: m.ganancia_total > 0 ? +(margen / m.ganancia_total * 100).toFixed(1) : 0,
+        margen_real_pct: revenue ? +(margen / revenue * 100).toFixed(1) : 0,
+        margen_x_unidad: units > 0 ? Math.round(margen / units) : 0,
+        retorno_cmv_pct: cmv > 0 ? +(margen / cmv * 100).toFixed(1) : null,
+      };
+    },
+  });
+  const entradas = window._topGanTodos || window._topGanFiltro === 'pierden' ? entradasGan : entradasGan.slice(0, 15);
 
   if (!all.length) {
     cont.innerHTML = `<div class="kpi-card" style="padding:18px">
@@ -14938,7 +15011,7 @@ function renderTopGanancia() {
       <div style="font-size:9px;color:var(--muted)">${sub}</div>
     </div>`;
 
-  const rows = items.map(p => {
+  const fila = p => {
     const neg = p.margen_real < 0;
     const color = neg ? '#ff5252' : '#00e676';
     // Δ posición: cuántos puestos mejor (o peor) rankea en ganancia que en facturación.
@@ -14970,7 +15043,26 @@ function renderTopGanancia() {
     <tr id="dgrow_${p.mla_id}" style="display:none">
       <td colspan="12" style="padding:0" id="dgcell_${p.mla_id}"></td>
     </tr>`;
-  }).join('');
+  };
+  const madre = e => {
+    const p = e.fila, ms = e.fam.miembros;
+    const color = p.margen_real < 0 ? '#ff5252' : '#00e676';
+    return `<tr ${famMadreAttrs(e, 'perfGan')} style="border-bottom:1px solid var(--border)">
+      <td></td>
+      <td style="padding:6px 4px;font-size:11px;color:var(--muted);white-space:nowrap">${ms.length} MLA</td>
+      <td style="padding:6px 4px;font-size:11px;color:var(--muted);max-width:90px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${p.sku || '—'}</td>
+      <td style="padding:6px 4px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${famTituloHtml(e, ms.map(x => x.title))}</td>
+      <td style="padding:6px 4px;text-align:right;color:var(--muted)">${p.units}</td>
+      <td style="padding:6px 4px;text-align:right;color:var(--muted)">${f(p.revenue)}</td>
+      <td style="padding:6px 4px;text-align:right;font-weight:700;color:${color}">${f(p.margen_real)}</td>
+      <td style="padding:6px 4px;text-align:right;color:${color}">${p.pct_ganancia}%</td>
+      <td style="padding:6px 4px;text-align:right;color:${p.margen_real_pct >= 20 ? '#00e676' : p.margen_real_pct >= 10 ? '#FFD700' : '#ff9100'}">${p.margen_real_pct}%</td>
+      <td style="padding:6px 4px;text-align:right;color:var(--muted)">${f(p.margen_x_unidad)}</td>
+      <td style="padding:6px 4px;text-align:right;color:var(--muted)">${p.retorno_cmv_pct != null ? p.retorno_cmv_pct + '%' : '—'}</td>
+      <td style="padding:6px 4px;text-align:right;color:var(--muted)">—</td>
+    </tr>`;
+  };
+  const rows = famFilas(entradas, madre, fila);
 
   const th = (label, align, title) =>
     `<th style="text-align:${align};padding:6px 4px;color:var(--muted);font-weight:600;white-space:nowrap"${title ? ` title="${title}"` : ''}>${label}</th>`;
@@ -14987,7 +15079,8 @@ function renderTopGanancia() {
             <span style="color:#FFD700">Click en cualquier fila para ver el desglose de dónde se fue la plata.</span>
           </div>
         </div>
-        <div style="display:flex;align-items:center;gap:8px">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          ${famSwitchHtml('perfGan')}
           ${fecha ? `<span style="font-size:10px;color:var(--muted)">${data.cached ? '💾 cache' : '✅ recién calculado'} ${fecha}</span>` : ''}
           ${perdedores.length ? `<button onclick="toggleTopGananciaPierden()" title="Filtrar los productos con ganancia negativa" style="padding:5px 12px;border:none;border-radius:6px;background:${window._topGanFiltro === 'pierden' ? '#ff5252' : 'var(--surface2)'};color:${window._topGanFiltro === 'pierden' ? '#fff' : '#ff5252'};font-size:12px;font-weight:600;cursor:pointer">
             🔴 ${window._topGanFiltro === 'pierden' ? 'Ver todos' : `Los que pierden (${perdedores.length})`}
