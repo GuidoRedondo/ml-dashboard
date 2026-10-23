@@ -9195,7 +9195,8 @@ function renderSugerido() {
         style="flex:1;min-width:220px;max-width:340px;padding:7px 12px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:12px">
       <span id="sugCount" style="font-size:12px;color:var(--muted)"></span>
       <span style="margin-left:auto;font-size:11px;color:var(--muted)">
-        ${m.activos} publicaciones activas · ${m.sin_costo ? `${m.sin_costo} sin CMV (sin plata parada)` : 'todas con CMV'}
+        ${m.activos} publicaciones activas = ${m.productos} productos (${m.agrupadas} publicaciones comparten SKU)
+        · ${m.sin_costo ? `${m.sin_costo} sin CMV (sin plata parada)` : 'todos con CMV'}
         · precios de ${m.precios_dia ? dART(m.precios_dia).toLocaleDateString('es-AR', { timeZone: ART_TZ }) : '— (abrí Precios para traerlos)'}
         · ventas y stock ${m.ciclo_desde_cache ? 'de la caché' : 'recién leídos'}
       </span>
@@ -9211,12 +9212,12 @@ function _sugRenderTabla() {
   const q = _sugBusqueda.trim().toLowerCase();
   const filas = d.items
     .filter(f => _sugFiltro ? f.estado === _sugFiltro : f.estado !== 'sana')
-    .filter(f => !q || f.mla_id.toLowerCase().includes(q) || (f.sku || '').toLowerCase().includes(q) || (f.title || '').toLowerCase().includes(q))
+    .filter(f => !q || f.publicaciones.some(p => p.mla_id.toLowerCase().includes(q)) || (f.sku || '').toLowerCase().includes(q) || (f.title || '').toLowerCase().includes(q))
     .sort((a, b) => SUG_ESTADOS[a.estado].orden - SUG_ESTADOS[b.estado].orden
       || (a.estado === 'se_acaba' ? (a.cobertura_dias ?? 0) - (b.cobertura_dias ?? 0)
                                   : (b.capital_exceso || 0) - (a.capital_exceso || 0)));
   const cnt = document.getElementById('sugCount');
-  if (cnt) cnt.textContent = `${filas.length} publicaciones${_sugFiltro ? '' : ' que piden acción (las sanas, en su tarjeta)'}`;
+  if (cnt) cnt.textContent = `${filas.length} productos${_sugFiltro ? '' : ' que piden acción (los sanos, en su tarjeta)'}`;
   if (!filas.length) { wrap.innerHTML = '<div style="padding:30px;text-align:center;color:var(--muted)">Nada en este estado.</div>'; return; }
 
   const LIM = 300;
@@ -9244,6 +9245,9 @@ function _sugRenderTabla() {
           ${td(`<span style="font-weight:700;color:${e.color};white-space:nowrap">${e.icono} ${e.label}</span>`, 'left')}
           ${td(`<a href="https://articulo.mercadolibre.com.ar/${f.mla_id.replace('MLA', 'MLA-')}" target="_blank" style="color:var(--accent-ink);text-decoration:none">${f.mla_id}</a>
                ${f.sku ? `<span style="color:var(--muted);font-size:11px"> · ${_escHtml(f.sku)}</span>` : ''}
+               ${f.publicaciones.length > 1 ? `<span style="font-size:10px;font-weight:700;padding:1px 6px;border-radius:6px;background:var(--surface2);color:var(--text);cursor:help"
+                 title="${_escHtml(f.publicaciones.map(p => `${p.mla_id} · ${p.logistica} · stock ${p.stock ?? '—'} · ${p.unidades_30d} u. en 30 d · ${p.visitas_30d ?? '—'} visitas`).join('
+'))}">+${f.publicaciones.length - 1} pub.${f.stock_compartido ? ' · mismo stock' : ''}</span>` : ''}
                <div style="font-size:11px;color:var(--muted);max-width:260px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${_escHtml(f.title || '')}">${_escHtml(f.title || '')}</div>`, 'left')}
           ${td(f.logistica, 'center')}
           ${td(_sugN(f.stock))}

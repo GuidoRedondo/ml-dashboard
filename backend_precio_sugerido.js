@@ -27,6 +27,17 @@
 //  · Cobros de FULL por publicación: billing_detalle, grupo costos_full con item_id
 //    (stock antiguo CFBA, retiro CFRS), 90 días, neteando las anulaciones (BONUS).
 //
+//  POR PRODUCTO, NO POR PUBLICACIÓN (medido en Vale Doble, 23/10/2026)
+//  Un mismo stock físico suele estar publicado varias veces (clásica + premium, copias
+//  sincronizadas por un integrador). De 111 SKUs con más de una publicación, 87 tenían
+//  todas el MISMO stock: contado por publicación, la plata parada salía $107M en vez de
+//  ~$80M, y una publicación "sin ventas" cuyo stock vende otra quedaba como que sobra.
+//  ML no lo sabe: muchas son del modelo viejo (sin user_product_id) y hay pares con el
+//  mismo SKU y stock pero distinto user_product. Así que se agrupa por SKU (el mismo
+//  criterio del CMV: un SKU es un producto), sumando ventas y visitas. Si todas tienen
+//  el mismo stock es compartido y cuenta una vez; si difieren son depósitos distintos
+//  (FULL + propio) y se suman. Sin SKU, cada publicación va sola.
+//
 //  Es beta: sólo admins (requireAdmin). No escribe nada en ML.
 
 'use strict';
@@ -73,6 +84,35 @@ function clasificar(it, { dias_reposicion, objetivo, visitasMediana }) {
       motivo: `${base}, pero con ${visitas_30d} visitas (la mediana de la cuenta es ${Math.round(visitasMediana)}): bajar el precio no lo arregla` };
   }
   return { estado: 'sobra', motivo: base };
+}
+
+// Agrupa las publicaciones de Ciclo de vida en productos (ver arriba). `items` ya trae
+// visitas_30d; skuDe(mla) da el SKU o null. Devuelve un producto por grupo, con la
+// publicación que más vende como principal.
+function agrupar(items, skuDe) {
+  const grupos = new Map();
+  items.forEach(i => {
+    const sku = skuDe(i.mla_id);
+    const k = sku ? 'sku:' + sku.trim().toLowerCase() : 'mla:' + i.mla_id;
+    if (!grupos.has(k)) grupos.set(k, { sku, pubs: [] });
+    grupos.get(k).pubs.push(i);
+  });
+  return [...grupos.values()].map(({ sku, pubs }) => {
+    pubs.sort((a, b) => b.unidades_30d - a.unidades_30d || (b.visitas_30d || 0) - (a.visitas_30d || 0));
+    const stocks = pubs.map(p => p.stock);
+    const ilegible = stocks.some(s => s == null);
+    const compartido = pubs.length > 1 && !ilegible && stocks.every(s => s === stocks[0]);
+    const stock = ilegible ? null : compartido ? stocks[0] : stocks.reduce((s, x) => s + x, 0);
+    const suma = k => pubs.reduce((s, p) => s + (p[k] || 0), 0);
+    const visitasOk = pubs.every(p => typeof p.visitas_30d === 'number');
+    const unidades_30d = suma('unidades_30d');
+    return {
+      principal: pubs[0], pubs, sku, stock, stock_compartido: compartido,
+      unidades_30d, ordenes_30d: suma('ordenes_30d'),
+      visitas_30d: visitasOk ? suma('visitas_30d') : null,
+      cobertura_dias: unidades_30d > 0 && stock != null ? +(stock / (unidades_30d / 30)).toFixed(1) : null,
+    };
+  });
 }
 
 module.exports = (app, { pool, requireAuth, requireAdmin, getClientToken, computeCicloVida,
@@ -139,34 +179,43 @@ module.exports = (app, { pool, requireAuth, requireAdmin, getClientToken, comput
       const items = ciclo.items.filter(i => activosSet.has(i.mla_id));
       const conStock = items.filter(i => i.stock > 0).map(i => i.mla_id);
       const visitas = conStock.length ? await visitasItemsCacheadas(clientId, conStock, 30, headers) : {};
-      const visitasMediana = mediana(conStock.map(id => visitas[id]).filter(v => typeof v === 'number'));
+      items.forEach(i => { i.visitas_30d = typeof visitas[i.mla_id] === 'number' ? visitas[i.mla_id] : (i.stock > 0 ? null : 0); });
 
-      const filas = items.map(i => {
-        const objetivo = objMap[i.mla_id] || objetivoGlobal;
-        const ritmo = i.unidades_30d / 30;
-        const visitas_30d = typeof visitas[i.mla_id] === 'number' ? visitas[i.mla_id] : null;
-        const { estado, motivo } = clasificar({ ...i, visitas_30d },
+      const productos = agrupar(items, mla => precioMap[mla]?.sku || null);
+      // La mediana de visitas es por producto: si no, un producto publicado tres veces
+      // pesaría triple y sus visitas se compararían contra las de una sola publicación.
+      const visitasMediana = mediana(productos.filter(g => g.stock > 0 && g.visitas_30d != null).map(g => g.visitas_30d));
+
+      const filas = productos.map(g => {
+        const i = g.principal;
+        const objetivo = Math.max(...g.pubs.map(p => objMap[p.mla_id] || objetivoGlobal));
+        const ritmo = g.unidades_30d / 30;
+        const { estado, motivo } = clasificar(g,
           { dias_reposicion: config.dias_reposicion, objetivo, visitasMediana });
         if (!estado) return null;
 
-        const cmv = costos.vigente[i.mla_id] || null;
-        const p = precioMap[i.mla_id];
+        const cmv = g.pubs.map(p => costos.vigente[p.mla_id]).find(c => c > 0) || null;
+        const precio = g.pubs.map(p => precioMap[p.mla_id]?.price).find(x => x > 0) || null;
         // Unidades por encima de lo que debería haber (objetivo × ritmo). Sin ventas, todo sobra.
-        const exceso = Math.max(0, Math.ceil((i.stock || 0) - objetivo * ritmo));
+        const exceso = Math.max(0, Math.ceil((g.stock || 0) - objetivo * ritmo));
         // Unidades que faltan para llegar vendiendo hasta la reposición.
-        const faltan = estado === 'se_acaba' ? Math.max(0, Math.ceil(config.dias_reposicion * ritmo - (i.stock || 0))) : 0;
+        const faltan = estado === 'se_acaba' ? Math.max(0, Math.ceil(config.dias_reposicion * ritmo - (g.stock || 0))) : 0;
+        const logisticas = [...new Set(g.pubs.map(p => p.logistica).filter(l => l && l !== '—'))];
         return {
-          mla_id: i.mla_id, title: i.title, sku: p?.sku || null, logistica: i.logistica, estado, motivo,
-          stock: i.stock, unidades_30d: i.unidades_30d, ritmo_dia: +ritmo.toFixed(2),
-          cobertura_dias: i.cobertura_dias, objetivo,
-          visitas_30d, conversion_pct: visitas_30d ? +(i.ordenes_30d / visitas_30d * 100).toFixed(2) : null,
-          precio: p?.price || null, cmv_unit: cmv,
-          capital: cmv ? Math.round(cmv * i.stock) : null,
+          mla_id: i.mla_id, title: i.title, sku: g.sku, logistica: logisticas.join(' + ') || '—', estado, motivo,
+          publicaciones: g.pubs.map(p => ({ mla_id: p.mla_id, stock: p.stock, unidades_30d: p.unidades_30d,
+                                            visitas_30d: p.visitas_30d, logistica: p.logistica })),
+          stock_compartido: g.stock_compartido,
+          stock: g.stock, unidades_30d: g.unidades_30d, ritmo_dia: +ritmo.toFixed(2),
+          cobertura_dias: g.cobertura_dias, objetivo,
+          visitas_30d: g.visitas_30d, conversion_pct: g.visitas_30d ? +(g.ordenes_30d / g.visitas_30d * 100).toFixed(2) : null,
+          precio, cmv_unit: cmv,
+          capital: cmv && g.stock != null ? Math.round(cmv * g.stock) : null,
           exceso_u: estado === 'sobra' || estado === 'sin_trafico' ? exceso : 0,
           capital_exceso: cmv && (estado === 'sobra' || estado === 'sin_trafico') ? Math.round(cmv * exceso) : null,
           faltan_u: faltan,
-          ventas_en_riesgo: faltan && p?.price ? Math.round(faltan * p.price) : null,
-          cobro_full_90d: fullMap[i.mla_id] ? Math.round(fullMap[i.mla_id]) : 0,
+          ventas_en_riesgo: faltan && precio ? Math.round(faltan * precio) : null,
+          cobro_full_90d: Math.round(g.pubs.reduce((s, p) => s + (fullMap[p.mla_id] || 0), 0)),
         };
       }).filter(Boolean);
 
@@ -177,6 +226,9 @@ module.exports = (app, { pool, requireAuth, requireAdmin, getClientToken, comput
         if (f.cobro_full_90d > 0) extra.push(`FULL te cobró ${fmt$(f.cobro_full_90d)} en 90 días`);
         if (f.ventas_en_riesgo) extra.push(`${fmt$(f.ventas_en_riesgo)} de ventas en riesgo hasta reponer`);
         if (extra.length) f.motivo += ' · ' + extra.join(' · ');
+        if (f.publicaciones.length > 1) {
+          f.motivo = `${f.publicaciones.length} publicaciones del SKU${f.stock_compartido ? ' con el mismo stock (cuenta una vez)' : ' (stocks sumados)'} · ` + f.motivo;
+        }
       });
 
       const resumen = {};
@@ -194,6 +246,8 @@ module.exports = (app, { pool, requireAuth, requireAdmin, getClientToken, comput
         items: filas,
         metadatos: {
           activos: activos.length,
+          productos: productos.length,
+          agrupadas: productos.filter(g => g.pubs.length > 1).reduce((s, g) => s + g.pubs.length, 0),
           visitas_mediana: visitasMediana,
           sin_costo: filas.filter(f => f.cmv_unit == null).length,
           precios_dia: precios.rows[0]?.dia || null,
@@ -229,4 +283,4 @@ module.exports = (app, { pool, requireAuth, requireAdmin, getClientToken, comput
   });
 };
 
-module.exports._test = { clasificar, mediana };
+module.exports._test = { clasificar, mediana, agrupar };
