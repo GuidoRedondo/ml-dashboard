@@ -29821,6 +29821,8 @@ function renderImpactoCostos(r) {
 let _medData = null;
 let _medFiltro = 'todas';        // todas | pagamos | sin_caja | de_mas | de_menos | advertencia | ficha | distinta | mandar
 let _medLog = 'todas';           // todas | colecta | full | flex
+let _medCaro = false;            // sólo precio >= $33.000 (el envío lo paga el vendedor); se suma a los demás filtros
+const _MED_UMBRAL = 33000;
 let _medBusqueda = '';
 let _medLimite = 200;
 let _medOrden = { col: null, dir: -1 };  // click en el encabezado; col null = orden del servidor (mayor diferencia primero)
@@ -29879,7 +29881,7 @@ const _medCaja = m => (m && m.largo && m.ancho && m.alto)
 const _medSkuKey = s => String(s ?? '').trim().toUpperCase();
 
 function resetMedidas() {
-  _medData = null; _medFiltro = 'todas'; _medLog = 'todas'; _medBusqueda = ''; _medLimite = 200;
+  _medData = null; _medFiltro = 'todas'; _medLog = 'todas'; _medCaro = false; _medBusqueda = ''; _medLimite = 200;
   _medSel = new Set(); _medImport = null;
 }
 
@@ -29941,6 +29943,7 @@ function _medFiltrar() {
   const q = _medBusqueda.trim().toLowerCase();
   return (_medData?.items || []).filter(i => {
     if (_medLog !== 'todas' && i.logistica !== _medLog) return false;
+    if (_medCaro && !((i.price || 0) >= _MED_UMBRAL)) return false;
     if (_medFiltro === 'pagamos' && !(i.cobrado_30d > 0)) return false;
     if (_medFiltro === 'sin_caja' && i.caja) return false;
     // diferencia_30d = lo que cobró ML − lo mismo tarifado con tu caja
@@ -29957,6 +29960,7 @@ function _medFiltrar() {
 
 function setMedFiltro(f) { _medFiltro = f; _medLimite = 200; renderMedidas(); }
 function setMedLog(l) { _medLog = l; _medLimite = 200; renderMedidas(); }
+function toggleMedCaro() { _medCaro = !_medCaro; _medLimite = 200; renderMedidas(); }
 function buscarMedidas(v) {
   _medBusqueda = v; _medLimite = 200;
   clearTimeout(buscarMedidas._t);
@@ -29982,6 +29986,8 @@ function renderMedidas() {
     <div id="medImportPanel">${_medImportHtml()}</div>
     <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin:14px 0 10px">
       <span id="medChips" style="display:contents">${_medChipsHtml(r)}</span>
+      <button class="sync-btn" onclick="toggleMedCaro()" title="Sólo publicaciones de $33.000 o más: desde ahí el envío gratis es obligatorio y lo paga el vendedor. Se combina con el filtro elegido"
+        style="padding:5px 11px;font-size:12px;${_medCaro ? 'background:var(--accent);color:#292929;font-weight:700' : ''}">💲 Desde $33.000 <b>${(d.items || []).filter(i => (i.price || 0) >= _MED_UMBRAL).length}</b></button>
       <select onchange="setMedLog(this.value)" style="padding:6px 8px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:12px">
         ${['todas', 'colecta', 'full', 'flex'].map(l => `<option value="${l}" ${_medLog === l ? 'selected' : ''}>${l === 'todas' ? 'Toda logística' : _MED_LOG[l]}</option>`).join('')}
       </select>
@@ -29991,7 +29997,8 @@ function renderMedidas() {
     <div id="medSelBar"></div>
     <div style="font-size:11px;color:var(--muted);margin-bottom:8px">
       Cargá largo, ancho y alto en <b>cm</b> y el peso en <b>gramos</b>: se guarda solo al completar las cuatro. Lo que cargás en una publicación se copia a todas las que tienen el mismo SKU (el ×N al lado del SKU dice cuántas son).
-      Borrar las cuatro borra la caja. Flex no entra en la comparación: cobra por zona y las medidas no mueven el monto.
+      Borrar las cuatro borra la caja. Flex no entra en la comparación: cobra por zona y las medidas no mueven el monto.<br>
+      <b>Peso facturable</b> = el peso por el que ML cobra el envío: el mayor entre lo que pesa el paquete y su tamaño pasado a kilos (largo × ancho × alto ÷ 4000). Una caja grande con algo liviano adentro paga por tamaño.
     </div>
     <div id="medTabla"></div>`;
   _medPintarTabla();
@@ -30073,7 +30080,7 @@ function _medPintarTabla() {
         ${th('Declarado en ML', false, 'SELLER_PACKAGE_* de la publicación. Ordena por peso facturable', 'declarado')}
         ${th('Usado por ML', false, 'Medidas del último envío de colecta o FULL: con éstas cobró ML. Ordena por peso facturable', 'ml')}
         ${th('Tu caja (cm · g)', false, 'Largo, ancho, alto en cm y peso en gramos de la caja con la que despachás. Ordena por peso facturable', 'caja')}
-        ${th('Peso facturable', true, 'El mayor entre el físico y el volumétrico (L×A×H ÷ 4000). ML / tu caja', 'facturable')}
+        ${th('Peso facturable', true, 'El peso por el que ML cobra el envío: el mayor entre el peso real del paquete y su tamaño pasado a kilos (L×A×H ÷ 4000). Arriba con las medidas que usó ML, abajo con tu caja. Ordena por el de tu caja (o el de ML si no hay caja)', 'facturable')}
         ${th('Cobrado x u.', true, 'Promedio de lo que ML cobró por unidad en los últimos 30 días', 'cobrado')}
         ${th('Con tu caja x u.', true, 'Tarifa de ML con el peso facturable de tu caja y el precio actual', 'estimado')}
         ${th('Diferencia 30 d', true, 'Cobrado menos lo que habría salido con tu caja. Positivo = pagaste de más', 'diferencia')}
@@ -30135,7 +30142,7 @@ function _medFilaHtml(i) {
     <td style="${td};white-space:nowrap">${_medCaja(i.declarado)}</td>
     <td style="${td};white-space:nowrap">${i.ml ? _medCaja(i.ml) + (origen ? `<div style="font-size:10px;color:var(--muted)" title="${origen.title}">${origen.label}</div>` : (i.ml.origen ? `<div style="font-size:10px;color:var(--muted)">${_medEsc(i.ml.origen)}</div>` : '')) : '<span style="color:var(--muted)">sin envíos en 90 d</span>'}</td>
     <td style="${td};white-space:nowrap">${inp('largo', c.largo, 'L')} ${inp('ancho', c.ancho, 'A')} ${inp('alto', c.alto, 'H')} ${inp('peso_g', c.peso_g, 'g')}</td>
-    <td style="${td};text-align:right;white-space:nowrap">${_medKg(i.ml?.facturable_kg)}<div style="font-weight:700">${_medKg(i.caja?.facturable_kg)}</div></td>
+    <td style="${td};text-align:right;white-space:nowrap">${_medFactHtml('ML', i.ml)}${_medFactHtml('Tu caja', i.caja, true)}</td>
     <td style="${td};text-align:right;white-space:nowrap">${_medMoney(i.cobrado_unit)}${i.envios_30d ? `<div style="font-size:10px;color:var(--muted)">${i.envios_30d} envíos</div>` : ''}${i.envios_mayoristas_30d ? `<div style="font-size:10px;color:#d97706" title="Ventas con precio por cantidad: ML arma un solo paquete y cobra el envío con el total del pedido y el peso de todas las unidades, aunque cada una valga menos de $33.000">${i.envios_mayoristas_30d} mayoristas · ${_medMoney(i.cobrado_mayorista_30d)}</div>` : ''}</td>
     <td style="${td};text-align:right;white-space:nowrap">${i.caja ? (i.estimado_unit ? _medMoney(i.estimado_unit) : '<span style="color:var(--muted)" title="Debajo de $33.000 el envío lo paga el comprador">$0</span>') : '—'}</td>
     <td style="${td};text-align:right;white-space:nowrap;font-weight:700;color:${difColor}">${dif == null ? '<span style="color:var(--muted);font-weight:400">—</span>' : _medMoney(dif)}</td>
@@ -30144,6 +30151,17 @@ function _medFilaHtml(i) {
   </tr>`;
 }
 const _MED_LADO = { largo: 'Largo', ancho: 'Ancho', alto: 'Alto' };
+
+// Peso facturable con rótulo (de quién es) y por qué cobra ese número: por peso o por tamaño.
+function _medFactHtml(rotulo, m, fuerte) {
+  const r = `<span style="font-size:10px;color:var(--muted);font-weight:400">${rotulo}</span> `;
+  if (!m || m.facturable_kg == null) return `<div style="color:var(--muted)">${r}—</div>`;
+  const fis = (m.peso_g || 0) / 1000, vol = m.volumetrico_kg;
+  const porTam = vol != null && vol > fis;
+  return `<div style="margin-bottom:3px" title="Pesa ${_medKg(fis)} · por tamaño ${_medKg(vol)} (L×A×H ÷ 4000). ML cobra el mayor">
+    ${r}<span style="${fuerte ? 'font-weight:700' : ''}">${_medKg(m.facturable_kg)}</span>
+    <div style="font-size:10px;color:${porTam ? '#d97706' : 'var(--muted)'}">${porTam ? `por tamaño (pesa ${_medKg(fis)})` : 'por peso'}</div></div>`;
+}
 const _MED_ADV = { sin_me: '🚫', cargo_medidas: '💸', ficha_no_entra: '⚠️' };
 
 function _medReemplazarItems(nuevos) {
