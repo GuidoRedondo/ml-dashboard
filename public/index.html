@@ -27,6 +27,7 @@
   --muted: #8B90A7;
   --accent: #FFD600;
   --accent-text: #1A1D2E;
+  --accent-ink: #4F46E5;   /* el amarillo de marca no se lee como texto sobre blanco */
   --green: #00C851;
   --red: #FF4444;
   --orange: #FF8800;
@@ -267,8 +268,8 @@ body {
       cursor: pointer; transition: all .15s; white-space: nowrap;
     }
     .vf-btn:hover { border-color: #C5CAE0; color: var(--text); }
-    .vf-active { background: var(--accent) !important; color: #fff !important; border-color: var(--accent) !important; }
-    input[type="date"] { color-scheme: dark; }
+    .vf-active { background: var(--accent) !important; color: var(--accent-text) !important; border-color: var(--accent) !important; }
+    input[type="date"] { color-scheme: light; }
 
 .range-btn {
   background: rgba(255,255,255,0.08);
@@ -286,7 +287,7 @@ body {
 .range-btn.active {
   background: var(--accent);
   border-color: var(--accent);
-  color: #fff;
+  color: var(--accent-text);
   font-weight: 600;
 }
 input[type="date"]::-webkit-calendar-picker-indicator {
@@ -333,7 +334,7 @@ input[type="date"]:focus {
   transition: all .15s ease; font-family: inherit;
 }
 .evo-metric-btn:hover { color: var(--text); }
-.evo-metric-btn.active { background: var(--surface); color: var(--accent); }
+.evo-metric-btn.active { background: var(--surface); color: var(--accent-ink); }
 
 /* Cards semanales (fila de 8) */
 .evo-week-card {
@@ -1019,7 +1020,7 @@ tr.fam-hijo > td { background: rgba(99,102,241,.025); }
           📊 Métricas
         </button>
         <button id="tab-panel-bitacora" onclick="switchPanelTab('bitacora')"
-          style="padding:8px 18px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--accent);border-bottom:2px solid var(--accent);margin-bottom:-2px;font-family:var(--font-b)">
+          style="padding:8px 18px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--accent-ink);border-bottom:2px solid var(--accent);margin-bottom:-2px;font-family:var(--font-b)">
           📋 Bitácora
         </button>
         <button id="tab-panel-mis-tareas" onclick="switchPanelTab('mis-tareas')"
@@ -1196,7 +1197,7 @@ tr.fam-hijo > td { background: rgba(99,102,241,.025); }
       <!-- Tabs -->
       <div style="display:flex;gap:0;border-bottom:2px solid var(--border);margin-bottom:20px">
         <button id="tab-perf-analisis" onclick="switchPerfTab('analisis')"
-          style="padding:8px 18px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--accent);border-bottom:2px solid var(--accent);margin-bottom:-2px;font-family:var(--font-b)">
+          style="padding:8px 18px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--accent-ink);border-bottom:2px solid var(--accent);margin-bottom:-2px;font-family:var(--font-b)">
           📊 Análisis
         </button>
         <button id="tab-perf-publicaciones" onclick="switchPerfTab('publicaciones')"
@@ -1456,7 +1457,7 @@ tr.fam-hijo > td { background: rgba(99,102,241,.025); }
       <!-- Tabs -->
       <div style="display:flex;gap:0;border-bottom:2px solid var(--border);margin-bottom:20px">
         <button id="tab-ads-campanas" onclick="switchAdsTab('campanas')"
-          style="padding:8px 18px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--accent);border-bottom:2px solid var(--accent);margin-bottom:-2px;font-family:var(--font-b)">
+          style="padding:8px 18px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--accent-ink);border-bottom:2px solid var(--accent);margin-bottom:-2px;font-family:var(--font-b)">
           📊 Campañas
         </button>
         <button id="tab-ads-anuncios" onclick="switchAdsTab('anuncios')"
@@ -1609,7 +1610,7 @@ tr.fam-hijo > td { background: rgba(99,102,241,.025); }
       <!-- Tabs -->
       <div style="display:flex;gap:0;border-bottom:2px solid var(--border);margin-bottom:20px">
         <button id="tab-logistica-general" onclick="switchLogisticaTab('general')"
-          style="padding:8px 18px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--accent);border-bottom:2px solid var(--accent);margin-bottom:-2px;font-family:var(--font-b)">
+          style="padding:8px 18px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--accent-ink);border-bottom:2px solid var(--accent);margin-bottom:-2px;font-family:var(--font-b)">
           📦 General
         </button>
         <button id="tab-logistica-fullstock" onclick="switchLogisticaTab('fullstock')"
@@ -1647,7 +1648,7 @@ tr.fam-hijo > td { background: rgba(99,102,241,.025); }
       <!-- Tabs -->
       <div style="display:flex;gap:0;border-bottom:2px solid var(--border);margin-bottom:20px">
         <button id="tab-esc-ranking" onclick="switchEscTab('ranking')"
-          style="padding:8px 18px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--accent);border-bottom:2px solid var(--accent);margin-bottom:-2px;font-family:var(--font-b)">
+          style="padding:8px 18px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--accent-ink);border-bottom:2px solid var(--accent);margin-bottom:-2px;font-family:var(--font-b)">
           🚀 Ranking
         </button>
         <button id="tab-esc-abc" onclick="switchEscTab('abc')"
@@ -1682,7 +1683,7 @@ tr.fam-hijo > td { background: rgba(99,102,241,.025); }
       <!-- Tabs -->
       <div style="display:flex;gap:0;border-bottom:2px solid var(--border);margin-bottom:20px">
         <button id="tab-comp-categorias" onclick="switchCompTab('categorias')"
-          style="padding:8px 18px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--accent);border-bottom:2px solid var(--accent);margin-bottom:-2px;font-family:var(--font-b)">
+          style="padding:8px 18px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--accent-ink);border-bottom:2px solid var(--accent);margin-bottom:-2px;font-family:var(--font-b)">
           📊 Mis Categorías
         </button>
         <button id="tab-comp-mercado" onclick="switchCompTab('mercado')"
@@ -2020,7 +2021,7 @@ tr.fam-hijo > td { background: rgba(99,102,241,.025); }
       <!-- Tabs -->
       <div style="display:flex;gap:0;border-bottom:2px solid var(--border);margin-bottom:20px">
         <button id="tab-rep-metricas" onclick="switchRepTab('metricas')"
-          style="padding:8px 18px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--accent);border-bottom:2px solid var(--accent);margin-bottom:-2px;font-family:var(--font-b)">
+          style="padding:8px 18px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--accent-ink);border-bottom:2px solid var(--accent);margin-bottom:-2px;font-family:var(--font-b)">
           🎯 Cómo te mide ML
         </button>
         <button id="tab-rep-reclamos" onclick="switchRepTab('reclamos')"
@@ -2745,6 +2746,74 @@ function getSession() {
 }
 function getSessionUser() { return _sessionUser || getCookie('ml_session_user'); }
 function getSessionRole() { return _sessionRole || getCookie('ml_session_role'); }
+
+// -- CONTRASTE: ni letras blancas ni amarillas sobre fondo claro ---------------
+// La app nació con fondo oscuro y quedaron cientos de colores pensados para negro:
+// blancos y amarillos que sobre el fondo claro no se leen. Muchos se arman en
+// ternarios al dibujar, así que en vez de perseguirlos uno por uno se mira cada
+// texto con color propio cuando aparece (o le cambian el estilo): si es blanco o
+// amarillo y no contrasta con el fondo que tiene atrás, se oscurece. Sobre fondos
+// oscuros (el #292929 de los PDF, badges de color) no se toca nada.
+const _CONTRASTE_MIN = 3;
+const _COLOR_SEGURO = /^\s*var\(--(text|muted|accent-ink|accent-text|red|green|blue|orange)\)/;
+function _rgbaDe(s) {
+  const m = s && s.match(/rgba?\(([^)]+)\)/);
+  if (!m) return null;
+  const p = m[1].split(/[\s,\/]+/).filter(Boolean).map(Number);
+  return { r: p[0], g: p[1], b: p[2], a: p[3] == null ? 1 : p[3] };
+}
+function _luminancia({ r, g, b }) {
+  const c = v => { v /= 255; return v <= .03928 ? v / 12.92 : ((v + .055) / 1.055) ** 2.4; };
+  return .2126 * c(r) + .7152 * c(g) + .0722 * c(b);
+}
+function _contraste(a, b) {
+  const x = _luminancia(a), y = _luminancia(b);
+  return (Math.max(x, y) + .05) / (Math.min(x, y) + .05);
+}
+function _blancoOAmarillo({ r, g, b }) {
+  if (Math.min(r, g, b) >= 200) return 'blanco';
+  // amarillo / ámbar: rojo y verde altos, azul bajo (el naranja #ff9100 queda afuera)
+  if (r >= 180 && g >= 150 && b <= 120 && r - b > 90) return 'amarillo';
+  return null;
+}
+// Primer fondo opaco hacia arriba. Con degradé o imagen no se sabe qué hay atrás: null.
+function _fondoDe(el) {
+  for (let e = el; e && e.nodeType === 1; e = e.parentElement) {
+    const cs = getComputedStyle(e);
+    if (cs.backgroundImage && cs.backgroundImage !== 'none') return null;
+    const c = _rgbaDe(cs.backgroundColor);
+    if (c && c.a > .5) return c;
+  }
+  return { r: 255, g: 255, b: 255, a: 1 };
+}
+function _corregirContraste(el) {
+  const st = el.getAttribute && el.getAttribute('style');
+  const m = st && st.match(/(?:^|[;\s"'])color\s*:\s*([^;]+)/i);
+  if (!m || _COLOR_SEGURO.test(m[1])) return;
+  const c = _rgbaDe(getComputedStyle(el).color);
+  const tipo = c && _blancoOAmarillo(c);
+  if (!tipo) return;
+  const bg = _fondoDe(el);
+  if (!bg) return;
+  const t = { r: c.r * c.a + bg.r * (1 - c.a), g: c.g * c.a + bg.g * (1 - c.a), b: c.b * c.a + bg.b * (1 - c.a) };
+  if (_contraste(t, bg) >= _CONTRASTE_MIN) return;
+  // El amarillo de aviso pasa a ámbar oscuro (sigue diciendo "ojo"); el blanco, a tinta.
+  el.style.setProperty('color', tipo === 'amarillo' && _luminancia(bg) > .5 ? '#92400e' : 'var(--text)', 'important');
+}
+function _revisarContraste(raiz) {
+  if (!raiz || raiz.nodeType !== 1) return;
+  _corregirContraste(raiz);
+  raiz.querySelectorAll('[style*="color"]').forEach(_corregirContraste);
+}
+window.addEventListener('DOMContentLoaded', () => {
+  _revisarContraste(document.body);
+  new MutationObserver(muts => {
+    for (const mu of muts) {
+      if (mu.type === 'attributes') _corregirContraste(mu.target);
+      else mu.addedNodes.forEach(_revisarContraste);
+    }
+  }).observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['style'] });
+});
 
 // -- FECHAS: toda la app muestra y calcula en hora argentina ------------------
 // El dashboard lo usan consultores y clientes desde cualquier lado; sin esto la
@@ -4542,7 +4611,7 @@ function dibujarSerieDiaria(chartEl, legendEl, d, cfg) {
       const label = '$' + Math.round(maxFacVal/1000).toLocaleString('es-AR') + 'K';
       const yFac = Math.max(y, 12);
       peakLabels += `<rect x="${(x-22).toFixed(1)}" y="${(yFac-10).toFixed(1)}" width="44" height="13" rx="3" fill="rgba(0,0,0,.6)"/>`;
-      peakLabels += `<text x="${x.toFixed(1)}" y="${yFac.toFixed(1)}" text-anchor="middle" font-size="9" fill="#FFD700" font-family="sans-serif" font-weight="700">${label}</text>`;
+      peakLabels += `<text x="${x.toFixed(1)}" y="${yFac.toFixed(1)}" text-anchor="middle" font-size="9" fill="#B45309" font-family="sans-serif" font-weight="700">${label}</text>`;
     }
   }
   if (series.ventas) {
@@ -5498,7 +5567,7 @@ async function chequearFullSinStock(refresh) {
       ${multi ? `<td style="padding:8px;font-size:11px;color:var(--muted);white-space:nowrap">${i.cuenta}</td>` : ''}
       <td style="padding:8px;font-size:11px;white-space:nowrap">
         <a href="https://articulo.mercadolibre.com.ar/${(i.id||'').replace('MLA','MLA-')}" target="_blank"
-           style="color:var(--accent);text-decoration:none">${i.id}</a></td>
+           style="color:var(--accent-ink);text-decoration:none">${i.id}</a></td>
       <td style="padding:8px;font-size:12px;color:var(--text)">${titulo}</td>
       <td style="padding:8px;font-size:11px;text-align:center;white-space:nowrap">${alcance}</td>
       <td style="padding:8px;font-size:12px;font-weight:700;color:#16a34a;text-align:center;white-space:nowrap">${i.stock_deposito}</td>
@@ -5506,7 +5575,7 @@ async function chequearFullSinStock(refresh) {
       <td style="padding:8px;text-align:center;white-space:nowrap">
         <a href="https://www.mercadolibre.com.ar/publicaciones/${i.id}/modificar/envio" target="_blank"
            title="Abre la pantalla de envío de esta publicación en Mercado Libre"
-           style="font-size:11px;color:var(--accent);text-decoration:none;white-space:nowrap">✏️ Envío</a></td>
+           style="font-size:11px;color:var(--accent-ink);text-decoration:none;white-space:nowrap">✏️ Envío</a></td>
     </tr>`;
   };
 
@@ -5682,7 +5751,7 @@ function renderMedidasEnvioTabla() {
 
   if (!items.length) {
     cont.innerHTML = `<div style="padding:18px;text-align:center;color:var(--muted);font-size:12px">
-      Ninguna publicación con ese filtro · <a href="#" onclick="limpiarMedidasFiltro();return false" style="color:var(--accent)">ver todas</a></div>`;
+      Ninguna publicación con ese filtro · <a href="#" onclick="limpiarMedidasFiltro();return false" style="color:var(--accent-ink)">ver todas</a></div>`;
     return;
   }
 
@@ -5698,7 +5767,7 @@ function renderMedidasEnvioTabla() {
       ${multi ? `<td style="padding:8px;font-size:11px;color:var(--muted);white-space:nowrap">${i.cuenta}</td>` : ''}
       <td style="padding:8px;font-size:11px;white-space:nowrap">
         <a href="https://articulo.mercadolibre.com.ar/${(i.id||'').replace('MLA','MLA-')}" target="_blank"
-           style="color:var(--accent);text-decoration:none">${i.id}</a></td>
+           style="color:var(--accent-ink);text-decoration:none">${i.id}</a></td>
       <td style="padding:8px;font-size:12px;color:var(--text)">${titulo}</td>
       <td style="padding:8px;font-size:11px;white-space:nowrap;color:${i.status === 'active' ? 'var(--muted)' : '#f59e0b'}">${MEDIDAS_ESTADOS[i.status] || i.status || '—'}</td>
       <td style="padding:8px;font-size:11px;white-space:nowrap;color:${c.color}">${c.icono} ${c.label}</td>
@@ -5935,7 +6004,7 @@ function renderSaludCmv() {
 
   const filas = (d.problemas || []).slice(0, 200).map(p => `<tr style="border-bottom:1px solid var(--border)">
       <td style="padding:7px 8px;font-size:11px;white-space:nowrap">
-        <a href="https://articulo.mercadolibre.com.ar/${(p.mla_id||'').replace('MLA','MLA-')}" target="_blank" style="color:var(--accent);text-decoration:none">${p.mla_id}</a></td>
+        <a href="https://articulo.mercadolibre.com.ar/${(p.mla_id||'').replace('MLA','MLA-')}" target="_blank" style="color:var(--accent-ink);text-decoration:none">${p.mla_id}</a></td>
       <td style="padding:7px 8px;font-size:12px">${(p.title || '').slice(0,48)}</td>
       <td style="padding:7px 8px;font-size:11px;white-space:nowrap;color:${p.severidad === 'critical' ? '#dc2626' : (p.severidad === 'warning' ? '#f59e0b' : 'var(--muted)')}">${CMV_TIPOS[p.tipo] || p.tipo}</td>
       <td style="padding:7px 8px;font-size:11px;white-space:nowrap">${pm(p.precio)}</td>
@@ -6762,7 +6831,7 @@ function famPrefijo(textos) {
 function famTituloHtml(e, titulos) {
   const esc = s => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   const nombre = e.fam.nombre || famPrefijo(titulos) || titulos[0] || '';
-  return `<span style="display:inline-block;width:14px;color:var(--accent)">${_famAbiertas.has(e.fam.key) ? '▾' : '▸'}</span>`
+  return `<span style="display:inline-block;width:14px;color:var(--accent-ink)">${_famAbiertas.has(e.fam.key) ? '▾' : '▸'}</span>`
     + `<b title="${esc(nombre)}">${esc(nombre)}</b> <span style="font-size:10px;color:var(--muted);font-weight:600;white-space:nowrap">· ${e.fam.miembros.length} variantes</span>`;
 }
 
@@ -6803,7 +6872,7 @@ function switchPerfTab(tab) {
     const btn = document.getElementById(`tab-perf-${t}`);
     if (el)  el.style.display  = t === tab ? '' : 'none';
     if (btn) {
-      btn.style.color        = t === tab ? 'var(--accent)' : 'var(--muted)';
+      btn.style.color        = t === tab ? 'var(--accent-ink)' : 'var(--muted)';
       btn.style.borderBottom = t === tab ? '2px solid var(--accent)' : '2px solid transparent';
     }
   });
@@ -7085,7 +7154,7 @@ function renderNcOrdenes() {
       <tbody>${filas.slice(0, 500).map(r => `<tr>
         ${_ncTd(dia(r.fecha))}
         ${_ncTd(dia(r.fecha_cancelacion))}
-        ${_ncTd(`<a href="https://www.mercadolibre.com.ar/ventas/${r.order_id}/detalle" target="_blank" style="color:var(--accent);text-decoration:none;font-size:11.5px;white-space:nowrap">${r.order_id} ↗</a>`)}
+        ${_ncTd(`<a href="https://www.mercadolibre.com.ar/ventas/${r.order_id}/detalle" target="_blank" style="color:var(--accent-ink);text-decoration:none;font-size:11.5px;white-space:nowrap">${r.order_id} ↗</a>`)}
         ${_ncTd(`<div style="max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${_ncEsc(r.titulo)}">${_ncEsc(r.titulo)}</div><div style="font-size:10.5px;color:var(--muted)">${r.item_id || ''}${r.items > 1 ? ` · +${r.items - 1} producto${r.items > 2 ? 's' : ''}` : ''}</div>`)}
         ${_ncTd(_ncM(r.monto), 'right')}
         ${_ncTd(_ncEsc(r.motivo) + (r.afecta_reputacion ? ' <span title="Baja la reputación" style="color:#dc2626;font-weight:800">●</span>' : '')
@@ -8253,7 +8322,7 @@ function renderPerfPublicaciones() {
   const th = (c, label, align = 'right') => {
     const active = _perfPubSort.col === c;
     const arrow  = active ? (_perfPubSort.asc ? ' ↑' : ' ↓') : '';
-    return `<th onclick="sortPerfPub('${c}')" style="padding:9px 10px;text-align:${align};font-size:11px;font-weight:600;color:${active?'var(--accent)':'var(--muted)'};cursor:pointer;user-select:none;white-space:nowrap;position:sticky;top:0;background:var(--surface2);z-index:2">${label}${arrow}</th>`;
+    return `<th onclick="sortPerfPub('${c}')" style="padding:9px 10px;text-align:${align};font-size:11px;font-weight:600;color:${active?'var(--accent-ink)':'var(--muted)'};cursor:pointer;user-select:none;white-space:nowrap;position:sticky;top:0;background:var(--surface2);z-index:2">${label}${arrow}</th>`;
   };
 
   // Filtros por forma de entrega (tomar de byMode del primer account)
@@ -8305,12 +8374,12 @@ function renderPerfPublicaciones() {
     return `<tr onclick="abrirDetallePub('${p.id}')" title="Ver la ficha completa de la publicación" style="cursor:pointer;border-bottom:1px solid var(--border);${idx%2===0?'background:rgba(255,255,255,.015)':''}">
       <td style="padding:7px 6px;text-align:center;cursor:pointer;font-size:16px;color:${starColor}" title="${seg ? 'Quitar seguimiento' : 'Seguir esta publicación'}" onclick="event.stopPropagation();toggleSeguimiento('${p.id}','${p.title.replace(/'/g,"\\'")}',${clientId})">${star}</td>
       <td style="padding:7px 10px;font-size:11px;white-space:nowrap">
-        <span style="color:var(--accent);font-weight:600;cursor:pointer" title="Click para copiar" onclick="event.stopPropagation();copyMLA(this,'${p.id}')">${p.id}</span>
+        <span style="color:var(--accent-ink);font-weight:600;cursor:pointer" title="Click para copiar" onclick="event.stopPropagation();copyMLA(this,'${p.id}')">${p.id}</span>
       </td>
       <td style="padding:7px 10px;font-size:12px;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${p.title}"><a href="https://articulo.mercadolibre.com.ar/${p.id.replace(/^MLA(\d)/, 'MLA-$1')}" target="_blank" rel="noopener" onclick="event.stopPropagation()" style="color:var(--muted);text-decoration:none;margin-right:6px" title="Abrir en ML">↗</a>${p.title}</td>
       <td style="padding:7px 10px;text-align:right;font-size:12px;white-space:nowrap">${precioCell(p)}</td>
       <td style="padding:7px 10px;text-align:right;font-size:12px;font-weight:700;color:#00e676">${(p.units||0).toLocaleString('es-AR')}</td>
-      <td style="padding:7px 10px;text-align:right;font-size:12px;font-weight:700;color:var(--accent)">${fmt(p.revenue||0)}</td>
+      <td style="padding:7px 10px;text-align:right;font-size:12px;font-weight:700;color:var(--accent-ink)">${fmt(p.revenue||0)}</td>
       <td style="padding:7px 10px;text-align:right;font-size:12px;font-weight:700;color:${trendColor}">${trendStr}</td>
       <td style="padding:7px 10px;text-align:right;font-size:12px;color:var(--muted)">${pctTotal}%</td>
       <td style="padding:7px 10px;text-align:right;font-size:12px">${p.visits > 0 ? p.visits.toLocaleString('es-AR') : '—'}</td>
@@ -8364,7 +8433,7 @@ function renderPerfPublicaciones() {
       <td style="padding:7px 10px;font-size:12px;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${famTituloHtml(e, ms.map(m => m.title))}</td>
       <td style="padding:7px 10px;text-align:right;font-size:12px;white-space:nowrap;font-weight:700">${precios.length ? famRango(precios, fmt) : '<span style="color:var(--muted)">…</span>'}</td>
       <td style="padding:7px 10px;text-align:right;font-size:12px;font-weight:700;color:#00e676">${(p.units||0).toLocaleString('es-AR')}</td>
-      <td style="padding:7px 10px;text-align:right;font-size:12px;font-weight:700;color:var(--accent)">${fmt(p.revenue||0)}</td>
+      <td style="padding:7px 10px;text-align:right;font-size:12px;font-weight:700;color:var(--accent-ink)">${fmt(p.revenue||0)}</td>
       <td style="padding:7px 10px;text-align:right;font-size:12px;font-weight:700;color:${trendColor}">${p.trend_pct == null ? '—' : (p.trend_pct >= 0 ? '+' : '') + p.trend_pct.toFixed(1) + '%'}</td>
       <td style="padding:7px 10px;text-align:right;font-size:12px;color:var(--muted)">${(p.revenue / totalRevenue * 100).toFixed(1)}%</td>
       <td style="padding:7px 10px;text-align:right;font-size:12px">${p.visits > 0 ? p.visits.toLocaleString('es-AR') : '—'}</td>
@@ -8723,7 +8792,7 @@ function renderDetallePub() {
   const btnRango = (dias) => {
     const on = rp && rp.dias === dias;
     return `<button onclick="setRangoDetallePub(${dias})" style="padding:5px 10px;border-radius:7px;font-size:12px;font-weight:600;cursor:pointer;
-      border:1px solid ${on ? 'var(--accent)' : 'var(--border)'};background:${on ? 'rgba(99,102,241,.12)' : 'var(--surface)'};color:${on ? 'var(--accent)' : 'var(--text)'}">${dias}d</button>`;
+      border:1px solid ${on ? 'var(--accent)' : 'var(--border)'};background:${on ? 'rgba(99,102,241,.12)' : 'var(--surface)'};color:${on ? 'var(--accent-ink)' : 'var(--text)'}">${dias}d</button>`;
   };
   const inputFecha = (id, val) => `<input id="${id}" type="date" value="${val}" max="${ymd()}"
     style="padding:5px 8px;border-radius:7px;border:1px solid ${rp && !rp.dias ? 'var(--accent)' : 'var(--border)'};background:var(--surface2);color:var(--text);font-size:12px">`;
@@ -8753,7 +8822,7 @@ function renderDetallePub() {
       <div style="min-width:0">
         <h2 style="margin:0 0 6px;font-family:var(--font-b);font-size:19px;line-height:1.3">${esc(it.titulo || d.item_id)}</h2>
         <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-          <span style="font-size:12px;color:var(--accent);font-weight:600;cursor:pointer" title="Click para copiar" onclick="copyMLA(this,'${d.item_id}')">${d.item_id}</span>
+          <span style="font-size:12px;color:var(--accent-ink);font-weight:600;cursor:pointer" title="Click para copiar" onclick="copyMLA(this,'${d.item_id}')">${d.item_id}</span>
           ${it.permalink ? `<a href="${esc(it.permalink)}" target="_blank" rel="noopener" style="font-size:12px;color:var(--muted);text-decoration:none">↗ Ver en ML</a>` : ''}
           ${chips}
         </div>
@@ -8896,7 +8965,7 @@ function renderSeguimiento(data) {
           <div style="font-size:11px;color:var(--muted)">${item.mla} · marcado ${marcadaDate}${item.nota ? ' · <em>' + item.nota + '</em>' : ''}</div>
           ${chips}
         </div>
-        <span style="font-size:13px;color:var(--accent)">📈</span>
+        <span style="font-size:13px;color:var(--accent-ink)">📈</span>
         <button onclick="event.stopPropagation();quitarSeguimiento(${item.id},'${titulo.replace(/'/g,"\\'")}',this)" style="padding:4px 10px;border:1px solid var(--border);border-radius:6px;background:none;color:var(--muted);font-size:11px;cursor:pointer">✕ Quitar</button>
       </div>
       <div id="seg-evo-${item.id}" style="display:none;border-top:1px solid var(--border);padding:16px 18px;background:var(--surface2)">
@@ -8948,7 +9017,7 @@ async function toggleSegEvolucion(id, mla, row) {
       if (sub) sub.textContent = data?.error ? 'Error: ' + data.error : 'Sin datos de conversión en el período.';
       return;
     }
-    if (sub) sub.innerHTML = `<a href="https://articulo.mercadolibre.com.ar/${data.item_id.replace('MLA','MLA-')}" target="_blank" style="color:var(--accent);text-decoration:none">${data.item_id}</a> · ${data.from} → ${data.to}`;
+    if (sub) sub.innerHTML = `<a href="https://articulo.mercadolibre.com.ar/${data.item_id.replace('MLA','MLA-')}" target="_blank" style="color:var(--accent-ink);text-decoration:none">${data.item_id}</a> · ${data.from} → ${data.to}`;
     if (!window.Chart) { if (sub) sub.textContent = 'Chart.js no disponible'; return; }
     if (window._segCharts[id]) { window._segCharts[id].destroy(); }
     window._segCharts[id] = new Chart(canvas, convChartConfig(data));
@@ -9629,7 +9698,7 @@ function renderLoQuePaso() {
   const th = c => {
     const active = _lqpSort.col === c.key;
     const arrow  = active ? (_lqpSort.asc ? ' ↑' : ' ↓') : '';
-    const col    = active ? 'var(--accent)' : c.destacada ? 'var(--text)' : 'var(--muted)';
+    const col    = active ? 'var(--accent-ink)' : c.destacada ? 'var(--text)' : 'var(--muted)';
     return `<th onclick="sortLoQuePaso('${c.key}')"
       style="padding:6px 6px;text-align:${c.align || 'right'};font-size:10px;font-weight:${c.destacada ? '800' : '600'};white-space:nowrap;cursor:pointer;user-select:none;
       color:${col};position:sticky;top:0;background:var(--surface2);z-index:2;border-bottom:2px solid ${c.destacada ? 'var(--accent)' : 'var(--border)'}"
@@ -10338,7 +10407,7 @@ function renderCombos(data) {
           <th style="padding:7px 8px;text-align:left;font-size:10px;color:var(--muted)">Combo</th>
           <th style="padding:7px 8px;text-align:right;font-size:10px;color:var(--muted)">Precio</th>
           <th style="padding:7px 8px;text-align:right;font-size:10px;color:var(--muted)" title="Cargo fijo pagando por separado vs. pagándolo una sola vez">Cargo fijo</th>
-          <th style="padding:7px 8px;text-align:right;font-size:10px;color:var(--accent)">Ahorro/venta</th>
+          <th style="padding:7px 8px;text-align:right;font-size:10px;color:var(--accent-ink)">Ahorro/venta</th>
           <th style="padding:7px 8px;text-align:right;font-size:10px;color:var(--muted)">Ahorro/mes</th>
           <th style="padding:7px 8px;text-align:right;font-size:10px;color:var(--muted)">Margen combo</th>
         </tr></thead>
@@ -10481,7 +10550,7 @@ function renderUmbralesTabla(items, client, riskLabel, riskDesc) {
 
     return `<tr style="border-bottom:1px solid var(--border)">
       <td style="padding:8px 6px;font-size:12px;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${op.title}">
-        ${op.permalink ? `<a href="${op.permalink}" target="_blank" style="color:var(--accent);text-decoration:none">${op.title}</a>` : op.title}
+        ${op.permalink ? `<a href="${op.permalink}" target="_blank" style="color:var(--accent-ink);text-decoration:none">${op.title}</a>` : op.title}
         ${accionBadge}
       </td>
       <td style="padding:8px 6px;text-align:center">${logBadge}</td>
@@ -10769,7 +10838,7 @@ function renderDescuentos() {
     align = align || 'right';
     const active = _descuentosSort.col === col;
     const arrow  = active ? (_descuentosSort.asc ? ' ↑' : ' ↓') : '';
-    return '<th onclick="sortDescuentos(\"' + col + '\")" style="' + thS(align) + ';cursor:pointer;color:' + (active ? 'var(--accent)' : 'var(--muted)') + '">' + label + arrow + '</th>';
+    return '<th onclick="sortDescuentos(\"' + col + '\")" style="' + thS(align) + ';cursor:pointer;color:' + (active ? 'var(--accent-ink)' : 'var(--muted)') + '">' + label + arrow + '</th>';
   }
 
   // Armar filas
@@ -10789,7 +10858,7 @@ function renderDescuentos() {
 
     let html = '<tr style="border-bottom:1px solid var(--border);' + bg + '">';
     html += '<td style="padding:6px 8px;font-size:11px;white-space:nowrap">'
-      + '<span onclick="navigator.clipboard.writeText(this.dataset.mla);const t=this;t.textContent=String.fromCharCode(10003);setTimeout(()=>t.textContent=t.dataset.mla,1200)" data-mla="' + p.id + '" style="color:var(--accent);font-weight:600;cursor:pointer" title="Click para copiar">' + p.id + '</span>'
+      + '<span onclick="navigator.clipboard.writeText(this.dataset.mla);const t=this;t.textContent=String.fromCharCode(10003);setTimeout(()=>t.textContent=t.dataset.mla,1200)" data-mla="' + p.id + '" style="color:var(--accent-ink);font-weight:600;cursor:pointer" title="Click para copiar">' + p.id + '</span>'
       + '</td>';
     html += '<td style="padding:6px 8px;font-size:12px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + p.title.replace(/"/g,"'") + '">'
       + '<a href="https://articulo.mercadolibre.com.ar/' + mlaLink + '" target="_blank" style="color:var(--text);text-decoration:none">' + p.title + '</a>'
@@ -11633,7 +11702,7 @@ function _prcTh(col, label, align, titulo) {
   const act = window._prcSort.col === col;
   const arrow = act ? (window._prcSort.asc ? ' ↑' : ' ↓') : '';
   return `<th onclick="sortPrecios('${col}')" title="${titulo || ''}"
-    style="padding:9px 8px;text-align:${align || 'right'};font-size:11px;font-weight:600;cursor:pointer;white-space:nowrap;position:sticky;top:0;background:var(--surface2);z-index:2;color:${act ? 'var(--accent)' : 'var(--muted)'}">${label}${arrow}</th>`;
+    style="padding:9px 8px;text-align:${align || 'right'};font-size:11px;font-weight:600;cursor:pointer;white-space:nowrap;position:sticky;top:0;background:var(--surface2);z-index:2;color:${act ? 'var(--accent-ink)' : 'var(--muted)'}">${label}${arrow}</th>`;
 }
 
 function _prcFiltrar(filas) {
@@ -11744,7 +11813,7 @@ function _prcFilaFam(e) {
     <td style="padding:6px 8px;font-size:11px;color:var(--muted);max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${it.sku || '—'}</td>
     <td style="${td}">${it.fact == null ? '<span style="color:var(--muted)">—</span>'
       : `<span style="font-size:12px;font-weight:700">${_prcFmt(it.fact)}</span><div style="font-size:10px;color:var(--muted)">${it.units.toLocaleString('es-AR')} u.</div>`}</td>
-    <td style="${td};font-size:12px;font-weight:700;color:${f.part >= 5 ? 'var(--accent)' : 'var(--text)'}">${f.part == null ? '—' : pct(f.part)}</td>
+    <td style="${td};font-size:12px;font-weight:700;color:${f.part >= 5 ? 'var(--accent-ink)' : 'var(--text)'}">${f.part == null ? '—' : pct(f.part)}</td>
     <td style="${td}">${_prcCobHtml(f.cob, f.stock)}</td>
     <td style="${td};font-size:12px">${famRango(ms.filter(m => m.it.hasCMV).map(m => m.it.cmv), _prcFmt)}${sinCMV ? `<div style="font-size:10px;color:#ff9100">${sinCMV} sin CMV</div>` : ''}</td>
     <td style="${td};font-size:12px;color:var(--muted)">${it.fact > 0 ? pct(f.tacos.pct) : '—'}<div style="font-size:10px">${it.ads > 0 ? _prcFmt(it.ads) + ' de pauta' : 'sin pauta'}</div></td>
@@ -11820,7 +11889,7 @@ function _prcTabla(filas, sufijo) {
          <div style="font-size:10px;color:var(--muted)">${(it.units || 0).toLocaleString('es-AR')} u.</div>`;
     const partHtml = f.part == null
       ? '<span style="color:var(--muted)">—</span>'
-      : `<span style="font-size:12px;font-weight:700;color:${f.part >= 5 ? 'var(--accent)' : 'var(--text)'}">${f.part > 0 && f.part < 0.05 ? '<0,1%' : _prcPct(f.part)}</span>
+      : `<span style="font-size:12px;font-weight:700;color:${f.part >= 5 ? 'var(--accent-ink)' : 'var(--text)'}">${f.part > 0 && f.part < 0.05 ? '<0,1%' : _prcPct(f.part)}</span>
          ${f.rank ? `<div style="font-size:10px;color:var(--muted)" title="Puesto por facturación · acumulado hasta esta publicación">#${f.rank} · acum ${_prcPct(f.acum)}</div>` : ''}`;
 
     // TACOS: en modo global se muestra el medido de referencia; en modo por publicación
@@ -11843,7 +11912,7 @@ function _prcTabla(filas, sufijo) {
     let html = `<tr style="border-bottom:1px solid var(--border);${bg}">
       <td style="padding:6px 8px;font-size:11px;white-space:nowrap">
         <span onclick="navigator.clipboard.writeText('${it.id}');showToast('${it.id} copiado')"
-          style="color:var(--accent);font-weight:600;cursor:pointer" title="Click para copiar">${it.id}</span>
+          style="color:var(--accent-ink);font-weight:600;cursor:pointer" title="Click para copiar">${it.id}</span>
       </td>
       <td style="padding:6px 8px;font-size:12px;max-width:230px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${(it.title || '').replace(/"/g, "'")}">
         <a href="https://articulo.mercadolibre.com.ar/${mlaLink}" target="_blank" style="color:var(--text);text-decoration:none">${it.title || '—'}</a>
@@ -12935,7 +13004,7 @@ function calcularSimulador() {
     return `<div class="kpi-card sim-esc-card" data-pct="${e.pct}" onclick="selectSimEscenario(this,${e.pct})"
       style="padding:16px;text-align:center;cursor:pointer;transition:border .15s;${isObj ? 'border:2px solid var(--accent)' : 'border:2px solid transparent'}">
       <div style="font-size:11px;color:var(--muted);margin-bottom:4px">${e.label} — ${fmtPn(e.pct * 100)}</div>
-      <div style="font-size:26px;font-weight:800;font-family:var(--font-b);color:var(--accent)">${fmt(p)}</div>
+      <div style="font-size:26px;font-weight:800;font-family:var(--font-b);color:var(--accent-ink)">${fmt(p)}</div>
       <div style="font-size:12px;color:#00e676;margin-top:4px">Utilidad: ${fmt(d.utilidad)}</div>
       ${cmv > 0 ? `<div style="font-size:11px;color:var(--muted);margin-top:2px">% s/Costo: <span style="font-weight:700;color:${(d.utilidad/cmv*100)>=0?'#00e676':'#ff5252'}">${(d.utilidad/cmv*100).toFixed(1)}%</span></div>` : ''}
     </div>`;
@@ -14268,7 +14337,7 @@ function loadPerformance() {
         <text x="${(x + bw / 2).toFixed(1)}" y="${H - 12}" text-anchor="middle" font-size="12" font-weight="${finde ? 700 : 500}" fill="#888" font-family="sans-serif">${nombres[i]}</text>`;
     }).join('');
     const lineaProm = `<line x1="${padL}" y1="${yProm.toFixed(1)}" x2="${padL + innerW}" y2="${yProm.toFixed(1)}" stroke="#FFD700" stroke-width="1.5" stroke-dasharray="5 4"/>
-      <text x="${padL + innerW}" y="${(yProm - 5).toFixed(1)}" text-anchor="end" font-size="10" fill="#FFD700" font-family="sans-serif">prom. ${fmtU(promGeneral)} u./día</text>`;
+      <text x="${padL + innerW}" y="${(yProm - 5).toFixed(1)}" text-anchor="end" font-size="10" fill="#B45309" font-family="sans-serif">prom. ${fmtU(promGeneral)} u./día</text>`;
 
     const totO = wd.reduce((s, d) => s + d.ordenes, 0) || 1;
     const totF = wd.reduce((s, d) => s + d.facturacion, 0) || 1;
@@ -14278,7 +14347,7 @@ function loadPerformance() {
       return `<tr style="border-bottom:1px solid var(--border)${i >= 5 ? ';background:rgba(99,102,241,.07)' : ''}">
         <td style="padding:6px 4px;font-weight:600">${nombres[i]}</td>
         <td style="padding:6px 4px;text-align:right;color:var(--muted)">${d.dias}</td>
-        <td style="padding:6px 4px;text-align:right;font-weight:700;color:var(--accent)">${d.unidades.toLocaleString('es-AR')}</td>
+        <td style="padding:6px 4px;text-align:right;font-weight:700;color:var(--accent-ink)">${d.unidades.toLocaleString('es-AR')}</td>
         <td style="padding:6px 4px;text-align:right;font-weight:700">${fmtU(prom[i])}</td>
         <td style="padding:6px 4px;text-align:right;font-weight:700;color:${dc}">${desvio >= 0 ? '+' : ''}${desvio.toFixed(0)}%</td>
         <td style="padding:6px 4px;text-align:right;color:var(--muted)">${d.ordenes.toLocaleString('es-AR')} <span style="font-size:10px">(${(d.ordenes / totO * 100).toFixed(1)}%)</span></td>
@@ -14349,7 +14418,7 @@ function loadPerformance() {
                   onclick="copyMLA(this,'${item.id}')">${item.id}</span>
               </td>
               <td style="padding:6px 4px;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${item.title}">${item.title}</td>
-              <td style="padding:6px 4px;text-align:right;font-weight:700;color:var(--accent)">${mainFmt(val)}</td>
+              <td style="padding:6px 4px;text-align:right;font-weight:700;color:var(--accent-ink)">${mainFmt(val)}</td>
               <td style="padding:6px 4px;text-align:right;color:var(--muted)">${pctTot}%</td>
               <td style="padding:6px 4px;text-align:right;font-weight:700;color:${recColor}">${pctRec}%</td>
               <td style="padding:6px 4px;text-align:right;font-weight:700;color:${stockColor}">${stockStr}</td>
@@ -14402,7 +14471,7 @@ function loadPerformance() {
                 { label: 'Impresiones', value: adsImpr,   valueStr: fmtK(adsImpr)                            },
                 { label: 'Clicks',      value: adsClicks, valueStr: fmtK(adsClicks)                          },
                 { label: 'Pedidos ads', value: adsUnits,  valueStr: adsUnits.toLocaleString('es-AR')         },
-              ], '#facc15')
+              ], '#d97706')
           }
         </div>
       </div>
@@ -15412,7 +15481,7 @@ function renderPreguntasRanking() {
     const barW = Math.round(r.preguntas/maxPreg*100);
     return `<tr onclick="setPreguntasFiltroMLA('${sel?'':_pregEsc(r.item_id)}')" style="cursor:pointer;background:${sel?'var(--surface2)':'transparent'}">
       <td style="${td};color:var(--muted);text-align:center">${i+1}</td>
-      <td style="${td};white-space:nowrap;font-weight:600;color:${sel?'var(--accent)':'var(--text)'}">${_pregEsc(r.item_id)}${sel?' ✓':''}</td>
+      <td style="${td};white-space:nowrap;font-weight:600;color:${sel?'var(--accent-ink)':'var(--text)'}">${_pregEsc(r.item_id)}${sel?' ✓':''}</td>
       <td style="${td};white-space:nowrap;color:var(--muted)">${_pregEsc(r.sku) || '—'}</td>
       <td style="${td};max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${_pregEsc(r.item_titulo)}</td>
       <td style="${td}">
@@ -15473,7 +15542,7 @@ function renderPreguntasDetalle() {
   const th = 'padding:8px 10px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:0.04em;color:var(--muted);border-bottom:2px solid var(--border);white-space:nowrap';
   const body = rows.map(p => {
     const pubLink = p.permalink
-      ? `<a href="${_pregEsc(p.permalink)}" target="_blank" style="color:var(--accent);text-decoration:none">${_pregEsc(p.item_id)}</a>`
+      ? `<a href="${_pregEsc(p.permalink)}" target="_blank" style="color:var(--accent-ink);text-decoration:none">${_pregEsc(p.item_id)}</a>`
       : _pregEsc(p.item_id);
     const estadoBadge = p.estado === 'Respondida'
       ? '<span style="background:#dcfce7;color:#16a34a;padding:2px 8px;border-radius:20px;font-size:10px;font-weight:600">Respondida</span>'
@@ -16129,7 +16198,7 @@ function switchAdsTab(tab) {
     document.getElementById(tabs[t]).style.display = t === tab ? '' : 'none';
     const btn = document.getElementById(`tab-ads-${t}`);
     if (btn) {
-      btn.style.color        = t === tab ? 'var(--accent)' : 'var(--muted)';
+      btn.style.color        = t === tab ? 'var(--accent-ink)' : 'var(--muted)';
       btn.style.borderBottom = t === tab ? '2px solid var(--accent)' : '2px solid transparent';
     }
   });
@@ -16621,7 +16690,7 @@ function renderAdsAnuncios(data) {
   const th = (c, label, align='right') => {
     const active = _adsAnunciosSort.col === c;
     const arrow  = active ? (_adsAnunciosSort.asc ? ' ↑' : ' ↓') : '';
-    return `<th onclick="sortAdsAnuncios('${c}')" style="padding:8px 10px;text-align:${align};font-size:11px;font-weight:600;color:${active?'var(--accent)':'var(--muted)'};border-bottom:1px solid var(--border);cursor:pointer;user-select:none;white-space:nowrap">${label}${arrow}</th>`;
+    return `<th onclick="sortAdsAnuncios('${c}')" style="padding:8px 10px;text-align:${align};font-size:11px;font-weight:600;color:${active?'var(--accent-ink)':'var(--muted)'};border-bottom:1px solid var(--border);cursor:pointer;user-select:none;white-space:nowrap">${label}${arrow}</th>`;
   };
 
   const acosColor = v => !v || v<=0 ? 'var(--muted)' : v<=15 ? '#00e676' : v<=25 ? '#ff9100' : '#ff5252';
@@ -16645,7 +16714,7 @@ function renderAdsAnuncios(data) {
     <tr data-search="${(i.item_id + ' ' + i.title).toLowerCase()}" data-campaign="${(i.campaign||'').toLowerCase()}" style="border-bottom:1px solid var(--border);${idx%2===0?'background:rgba(255,255,255,.02)':''}">
       <td style="padding:7px 4px;text-align:center;cursor:pointer;font-size:16px;color:${starColorA}" onclick="toggleSeguimiento('${i.item_id}','${(i.title||'').replace(/'/g,"\\'").slice(0,80)}',${clientIdA})" title="${segA?'Quitar seguimiento':'Seguir publicación'}">${starA}</td>
       <td style="padding:7px 10px;font-size:12px;white-space:nowrap">
-        <span onclick="navigator.clipboard.writeText('${i.item_id}');showToast('📋 ${i.item_id} copiado')" style="color:var(--accent);font-weight:600;cursor:pointer" title="Copiar MLA">${i.item_id}</span>
+        <span onclick="navigator.clipboard.writeText('${i.item_id}');showToast('📋 ${i.item_id} copiado')" style="color:var(--accent-ink);font-weight:600;cursor:pointer" title="Copiar MLA">${i.item_id}</span>
       </td>
       <td style="padding:7px 10px;font-size:12px;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${i.title}">
         <a href="https://articulo.mercadolibre.com.ar/${i.item_id.replace('MLA','MLA-')}" target="_blank" style="color:var(--text);text-decoration:none">${i.title}</a>
@@ -16924,7 +16993,7 @@ function toggleConvCard(cardEl) {
 function renderConversionChart(data) {
   document.getElementById('convChartTitle').textContent = '📈 ' + (data.title || data.item_id);
   document.getElementById('convChartSub').innerHTML =
-    `<a href="https://articulo.mercadolibre.com.ar/${data.item_id.replace('MLA','MLA-')}" target="_blank" style="color:var(--accent);text-decoration:none">${data.item_id}</a> · ${data.from} → ${data.to}`;
+    `<a href="https://articulo.mercadolibre.com.ar/${data.item_id.replace('MLA','MLA-')}" target="_blank" style="color:var(--accent-ink);text-decoration:none">${data.item_id}</a> · ${data.from} → ${data.to}`;
 
   const canvas = document.getElementById('convChartCanvas');
   if (_convChart) { _convChart.destroy(); _convChart = null; }
@@ -18259,7 +18328,7 @@ function renderFotosTabla() {
       : `<span style="background:#f3f4f6;color:#6b7280;font-size:10px;padding:1px 6px;border-radius:3px">${item.status}</span>`;
     return `<tr>
       <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px">
-        <a href="https://articulo.mercadolibre.com.ar/${item.id}" target="_blank" style="color:var(--accent);text-decoration:none">${item.id}</a>
+        <a href="https://articulo.mercadolibre.com.ar/${item.id}" target="_blank" style="color:var(--accent-ink);text-decoration:none">${item.id}</a>
       </td>
       <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${item.title}</td>
       <td style="padding:8px 10px;border-bottom:1px solid var(--border)">${statusBadge}</td>
@@ -18398,7 +18467,7 @@ function renderLogistica(data) {
       <span style="font-size:18px">⏱️</span>
       <span style="font-size:14px;font-weight:600;font-family:var(--font-b)">Tiempo de preparación</span>
     </div>
-    <div style="font-size:22px;font-weight:700;color:var(--accent);margin-top:6px">${handling_time != null ? handling_time + (handling_time === 1 ? ' día' : ' días') : '—'}</div>
+    <div style="font-size:22px;font-weight:700;color:var(--accent-ink);margin-top:6px">${handling_time != null ? handling_time + (handling_time === 1 ? ' día' : ' días') : '—'}</div>
   </div>`;
 
   // ── Items table ──────────────────────────────────────────────────────────────
@@ -18407,7 +18476,7 @@ function renderLogistica(data) {
     const [bg, fg] = (modeColor[item.mode] || 'var(--surface2):var(--text)').split(':');
     return `<tr>
       <td style="padding:7px 10px;border-bottom:1px solid var(--border);font-size:12px">
-        <a href="https://articulo.mercadolibre.com.ar/${item.id}" target="_blank" style="color:var(--accent);text-decoration:none">${item.id}</a>
+        <a href="https://articulo.mercadolibre.com.ar/${item.id}" target="_blank" style="color:var(--accent-ink);text-decoration:none">${item.id}</a>
       </td>
       <td style="padding:7px 10px;border-bottom:1px solid var(--border);font-size:12px;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${item.title}</td>
       <td style="padding:7px 10px;border-bottom:1px solid var(--border);font-size:12px;text-align:center">
@@ -18997,7 +19066,7 @@ function renderReputacion() {
             const medio = p.tasa != null && p.tasa >= 10 && p.ventasTotal >= 5;
             return `<tr>
             <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px;max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
-              <a href="https://articulo.mercadolibre.com.ar/${p.k}" target="_blank" style="color:var(--accent);text-decoration:none">${titulo(p.k)}</a>
+              <a href="https://articulo.mercadolibre.com.ar/${p.k}" target="_blank" style="color:var(--accent-ink);text-decoration:none">${titulo(p.k)}</a>
             </td>
             <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px;text-align:right;font-weight:600">${p.n}</td>
             <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px;text-align:right;color:var(--muted)">${p.ventasTotal != null ? p.ventasTotal : '—'}</td>
@@ -19080,7 +19149,7 @@ function switchRepTab(tab) {
     document.getElementById(tabs[t]).style.display = t === tab ? '' : 'none';
     const btn = document.getElementById(`tab-rep-${t}`);
     if (btn) {
-      btn.style.color        = t === tab ? 'var(--accent)' : 'var(--muted)';
+      btn.style.color        = t === tab ? 'var(--accent-ink)' : 'var(--muted)';
       btn.style.borderBottom = t === tab ? '2px solid var(--accent)' : '2px solid transparent';
     }
   });
@@ -19187,7 +19256,7 @@ function renderReclamos() {
   const fechaCorta = f => f ? dART(f).toLocaleDateString('es-AR', { timeZone: ART_TZ, day: '2-digit', month: '2-digit' }) : '—';
   const fechaHora = f => f ? new Date(f).toLocaleString('es-AR', { timeZone: ART_TZ, day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '—';
   const linkML = r => r.order_id
-    ? `<a href="https://www.mercadolibre.com.ar/ventas/${r.order_id}/detalle" target="_blank" onclick="event.stopPropagation()" style="color:var(--accent);text-decoration:none;font-size:11px;white-space:nowrap">abrir en ML ↗</a>`
+    ? `<a href="https://www.mercadolibre.com.ar/ventas/${r.order_id}/detalle" target="_blank" onclick="event.stopPropagation()" style="color:var(--accent-ink);text-decoration:none;font-size:11px;white-space:nowrap">abrir en ML ↗</a>`
     : '';
   const limpiar = t => String(t || '').replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/\*\*/g, '');
   const esIA = m => /asistente virtual/i.test(m.texto || '');
@@ -19773,7 +19842,7 @@ function renderDesempenio() {
             </tr></thead>
             <tbody>${alertas.map(a => `<tr>
               <td style="padding:8px 10px;border-top:1px solid var(--border);font-size:12px;max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
-                ${a.item_id ? `<a href="https://articulo.mercadolibre.com.ar/${a.item_id}" target="_blank" style="color:var(--accent);text-decoration:none">${a.title || a.item_id}</a>` : (a.title || '—')}
+                ${a.item_id ? `<a href="https://articulo.mercadolibre.com.ar/${a.item_id}" target="_blank" style="color:var(--accent-ink);text-decoration:none">${a.title || a.item_id}</a>` : (a.title || '—')}
               </td>
               <td style="padding:8px 10px;border-top:1px solid var(--border);font-size:12px;text-align:center">${a.modo}</td>
               <td style="padding:8px 10px;border-top:1px solid var(--border);font-size:12px;text-align:center">${a.substatus || a.status}</td>
@@ -19813,7 +19882,7 @@ function renderDesempenio() {
       <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em">${label}</div>
       <div style="font-size:23px;font-weight:700;font-family:var(--font-b);margin-top:4px;color:${color || 'var(--text)'}">${valor}</div>
       <div style="font-size:11px;color:var(--muted);margin-top:3px">${sub || ''}</div>
-      ${clickable ? `<div style="position:absolute;top:12px;right:12px;font-size:10px;color:${on ? 'var(--accent)' : 'var(--muted)'};opacity:${on ? 1 : .5}">${on ? '✕ quitar' : 'ver'}</div>` : ''}
+      ${clickable ? `<div style="position:absolute;top:12px;right:12px;font-size:10px;color:${on ? 'var(--accent-ink)' : 'var(--muted)'};opacity:${on ? 1 : .5}">${on ? '✕ quitar' : 'ver'}</div>` : ''}
     </div>`;
   };
   const colorPct = r.pct_a_tiempo == null ? 'var(--text)' : r.pct_a_tiempo >= 95 ? '#16a34a' : r.pct_a_tiempo >= 90 ? '#d97706' : '#dc2626';
@@ -19864,7 +19933,7 @@ function renderDesempenio() {
     const nombreFoco = { tarde: 'Envíos que llegaron tarde', despacho: 'Envíos que más tardaron en salir', no_entregados: 'No entregados y devueltos', cancelados: 'Envíos cancelados', en_curso: 'Envíos todavía en curso' }[_desempFoco];
     const filas = sel.slice(0, _desempTope).map(e => `<tr>
       <td style="padding:8px 12px;border-top:1px solid var(--border);font-size:12px;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
-        ${e.item ? `<a href="https://articulo.mercadolibre.com.ar/${e.item}" target="_blank" style="color:var(--accent);text-decoration:none">${titulo(e.item)}</a>` : '—'}
+        ${e.item ? `<a href="https://articulo.mercadolibre.com.ar/${e.item}" target="_blank" style="color:var(--accent-ink);text-decoration:none">${titulo(e.item)}</a>` : '—'}
       </td>
       <td style="padding:8px 12px;border-top:1px solid var(--border);font-size:12px;text-align:center">${e.modo}</td>
       <td style="padding:8px 12px;border-top:1px solid var(--border);font-size:12px;text-align:center">${e.fecha ? dART(e.fecha).toLocaleDateString('es-AR',{timeZone:ART_TZ,day:'2-digit',month:'2-digit'}) : '—'}</td>
@@ -19925,7 +19994,7 @@ function renderDesempenio() {
         </tr></thead>
         <tbody>${rank.map(p => `<tr>
           <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px;max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
-            <a href="https://articulo.mercadolibre.com.ar/${p.item}" target="_blank" style="color:var(--accent);text-decoration:none">${titulo(p.item)}</a>
+            <a href="https://articulo.mercadolibre.com.ar/${p.item}" target="_blank" style="color:var(--accent-ink);text-decoration:none">${titulo(p.item)}</a>
           </td>
           <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px;text-align:right">${p.envios}</td>
           <td style="padding:9px 12px;border-top:1px solid var(--border);font-size:12px;text-align:right">${p.tarde || '—'}</td>
@@ -19940,7 +20009,7 @@ function renderDesempenio() {
 
   const pieReputacion = `<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:14px 16px;margin-top:4px;font-size:12px;color:var(--muted)">
     Reclamos, mediaciones, cancelaciones y las ventas que no se concretaron ahora viven en
-    <a href="#" onclick="event.preventDefault();showPage('reputacion',document.querySelector('[data-page=&quot;reputacion&quot;]'));loadReputacion()" style="color:var(--accent);text-decoration:none;font-weight:600">⭐ Reputación</a>.
+    <a href="#" onclick="event.preventDefault();showPage('reputacion',document.querySelector('[data-page=&quot;reputacion&quot;]'));loadReputacion()" style="color:var(--accent-ink);text-decoration:none;font-weight:600">⭐ Reputación</a>.
   </div>`;
 
   const nota = `<div style="font-size:11px;color:var(--muted);margin-top:14px;line-height:1.5">
@@ -19975,7 +20044,7 @@ function switchLogisticaTab(tab) {
     document.getElementById(tabs[t]).style.display = t === tab ? '' : 'none';
     const btn = document.getElementById(`tab-logistica-${t}`);
     if (btn) {
-      btn.style.color        = t === tab ? 'var(--accent)' : 'var(--muted)';
+      btn.style.color        = t === tab ? 'var(--accent-ink)' : 'var(--muted)';
       btn.style.borderBottom = t === tab ? '2px solid var(--accent)' : '2px solid transparent';
     }
   });
@@ -20209,7 +20278,7 @@ function renderCostoEnvios() {
     const abierta = _cenvEdit === p.item_id;
     const real = p.medidas_reales;
     const fila = `<tr>
-      ${td(`<a href="https://articulo.mercadolibre.com.ar/${_cenvEsc(p.item_id)}" target="_blank" style="color:var(--accent);text-decoration:none">${_cenvEsc(p.title || p.item_id)}</a>
+      ${td(`<a href="https://articulo.mercadolibre.com.ar/${_cenvEsc(p.item_id)}" target="_blank" style="color:var(--accent-ink);text-decoration:none">${_cenvEsc(p.title || p.item_id)}</a>
             <div style="font-size:10px;color:var(--muted)">${_cenvEsc(p.item_id)}${p.sku ? ' · ' + _cenvEsc(p.sku) : ''}</div>`, false, 'max-width:300px')}
       ${td(`${_CENV_LOG[p.logistica] || p.logistica}<div style="font-size:10px;color:var(--muted)">${p.origen_medidas === 'fd' ? 'medidas FULL' : p.origen_medidas === 'bmp' ? 'base de ML' : _cenvEsc(p.origen_medidas || '')}</div>`)}
       ${td(_cenvMedidas(p.largo, p.ancho, p.alto), true, 'white-space:nowrap')}
@@ -20512,7 +20581,7 @@ function renderFsTable() {
   const thStyle = (col, align) => {
     const active = _fsSort.col === col;
     const arrow  = active ? (_fsSort.dir === 1 ? ' ↑' : ' ↓') : ' ↕';
-    return `padding:8px 10px;text-align:${align||'center'};font-size:11px;font-weight:600;color:${active ? 'var(--accent)' : 'var(--muted)'};border-bottom:1px solid var(--border);cursor:pointer;user-select:none;white-space:nowrap`;
+    return `padding:8px 10px;text-align:${align||'center'};font-size:11px;font-weight:600;color:${active ? 'var(--accent-ink)' : 'var(--muted)'};border-bottom:1px solid var(--border);cursor:pointer;user-select:none;white-space:nowrap`;
   };
   const thLabel = (col, label, align) => `<th style="${thStyle(col, align)}" onclick="fsSortBy('${col}')">${label}${_fsSort.col===col ? (_fsSort.dir===1?' ↑':' ↓'):' <span style=\'opacity:.35\'>↕</span>'}</th>`;
 
@@ -20598,7 +20667,7 @@ function renderFsTable() {
       <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:13px;text-align:center;font-weight:700;color:${covColor}">${cov != null ? cov+'d' : '—'}</td>
       <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;text-align:center;font-weight:600;color:${sinVendColor}">${sinVendText}</td>
       <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:13px;text-align:center;font-weight:700;color:${(item.exceso_unidades||0) > 0 ? '#7c3aed' : 'var(--muted)'}">${(item.exceso_unidades||0) > 0 ? item.exceso_unidades : '—'}</td>
-      <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:14px;text-align:center;font-weight:700;color:${autoSug > 0 ? 'var(--accent)' : 'var(--muted)'}">
+      <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:14px;text-align:center;font-weight:700;color:${autoSug > 0 ? 'var(--accent-ink)' : 'var(--muted)'}">
         ${autoSug}
       </td>
     </tr>`;
@@ -20654,7 +20723,7 @@ function renderFsTable() {
       <td style="${td};font-size:13px;text-align:center;font-weight:700;color:${coverageColor(it.coverage_days)}">${it.coverage_days != null ? it.coverage_days+'d' : '—'}</td>
       <td style="${td};font-size:12px;text-align:center;font-weight:600;color:${!it.is_full ? 'var(--muted)' : (dsv == null || dsv >= 60) ? '#b45309' : (dsv >= 30 ? '#d97706' : 'var(--muted)')}">${!it.is_full ? '—' : (dsv == null ? `+${ventana}d` : (dsv === 0 ? 'hoy' : `${dsv}d`))}</td>
       <td style="${td};font-size:13px;text-align:center;font-weight:700;color:${it.exceso_unidades > 0 ? '#7c3aed' : 'var(--muted)'}">${it.exceso_unidades > 0 ? it.exceso_unidades : '—'}</td>
-      <td style="${td};font-size:14px;text-align:center;font-weight:700;color:${it.suggested_quantity > 0 ? 'var(--accent)' : 'var(--muted)'}">${it.suggested_quantity}</td>
+      <td style="${td};font-size:14px;text-align:center;font-weight:700;color:${it.suggested_quantity > 0 ? 'var(--accent-ink)' : 'var(--muted)'}">${it.suggested_quantity}</td>
     </tr>`;
   };
   const rows = famFilas(entradas, madre, fila);
@@ -20986,7 +21055,7 @@ async function loadCompararReporte() {
           <button onclick="mesAnteriorAuto()" style="background:none;border:1px solid var(--border);border-radius:8px;padding:5px 12px;color:var(--muted);font-size:12px;cursor:pointer">
             ⚡ Último mes vs anterior guardado
           </button>
-          ${pylActualEnMemoria && meses.length >= 1 ? `<button onclick="actualVsAnterior()" style="background:none;border:1px solid var(--accent);border-radius:8px;padding:5px 12px;color:var(--accent);font-size:12px;cursor:pointer;font-weight:600">
+          ${pylActualEnMemoria && meses.length >= 1 ? `<button onclick="actualVsAnterior()" style="background:none;border:1px solid var(--accent);border-radius:8px;padding:5px 12px;color:var(--accent-ink);font-size:12px;cursor:pointer;font-weight:600">
             📍 Mes en curso vs último guardado
           </button>` : ''}
         </div>
@@ -21697,7 +21766,7 @@ function renderReporteCostos(data, clientId) {
 
   const rows = items.map((item, idx) => `
     <tr data-hascosto="${item.has_cost?'1':'0'}">
-      <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;color:var(--accent)">${item.mla_id}</td>
+      <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;color:var(--accent-ink)">${item.mla_id}</td>
       <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${item.title}</td>
       <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;color:var(--muted)">${item.sku || '—'}</td>
       <td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;text-align:center;font-weight:600">${item.units.toLocaleString('es-AR')}</td>
@@ -21791,7 +21860,8 @@ function filtrarReporteCostos(filtro, btn) {
     const isActive = f === filtro;
     const colors = { todos: 'var(--accent)', sin_costo: '#dc2626', con_costo: '#16a34a' };
     b.style.background = isActive ? colors[f] : 'none';
-    b.style.color = isActive ? '#fff' : colors[f];
+    // Sobre el amarillo de "todos" el blanco no se lee, y el amarillo suelto tampoco
+    b.style.color = f === 'todos' ? (isActive ? 'var(--accent-text)' : 'var(--accent-ink)') : (isActive ? '#fff' : colors[f]);
   });
   // Filtrar filas
   document.querySelectorAll('#reporteCostosContent tr[data-hascosto]').forEach(tr => {
@@ -22855,7 +22925,7 @@ function renderPanelConsultores(results, range) {
     const s = window._panelSort || {};
     const active = s.col === c;
     const arrow = active ? (s.asc ? ' ↑' : ' ↓') : ' ↕';
-    return `<th onclick="window._sortPanel('${c}')" style="padding:10px 14px;text-align:right;font-size:11px;font-weight:600;color:${active?'var(--accent)':'var(--muted)'};cursor:pointer;user-select:none;white-space:nowrap">${label}${arrow}</th>`;
+    return `<th onclick="window._sortPanel('${c}')" style="padding:10px 14px;text-align:right;font-size:11px;font-weight:600;color:${active?'var(--accent-ink)':'var(--muted)'};cursor:pointer;user-select:none;white-space:nowrap">${label}${arrow}</th>`;
   }
 
   const rows = sorted.map(r => {
@@ -22915,7 +22985,7 @@ function renderPanelConsultores(results, range) {
     <div class="kpi-card" style="padding:0;overflow:hidden"><div style="overflow-x:auto">
       <table style="width:100%;border-collapse:collapse">
         <thead><tr style="background:var(--surface2);border-bottom:2px solid var(--border)">
-          <th onclick="window._sortPanel('name')" style="padding:10px 14px;text-align:left;font-size:11px;font-weight:600;color:${col==='name'?'var(--accent)':'var(--muted)'};cursor:pointer;user-select:none">Cliente${col==='name'?(asc?' ↑':' ↓'):' ↕'}</th>
+          <th onclick="window._sortPanel('name')" style="padding:10px 14px;text-align:left;font-size:11px;font-weight:600;color:${col==='name'?'var(--accent-ink)':'var(--muted)'};cursor:pointer;user-select:none">Cliente${col==='name'?(asc?' ↑':' ↓'):' ↕'}</th>
           ${th('revenue','Facturación')}${th('orders','Ventas')}${th('ticket','Ticket prom.')}${th('visits','Visitas')}${th('conv','Conversión')}${th('tacos','TACOS')}${th('pctAds','% Fact. Ads')}
         </tr></thead>
         <tbody>${rows}</tbody>
@@ -22933,7 +23003,7 @@ function switchPanelTab(tab) {
     const btn = document.getElementById(`tab-panel-${t}`);
     if (el)  el.style.display  = t === tab ? '' : 'none';
     if (btn) {
-      btn.style.color        = t === tab ? 'var(--accent)' : 'var(--muted)';
+      btn.style.color        = t === tab ? 'var(--accent-ink)' : 'var(--muted)';
       btn.style.borderBottom = t === tab ? '2px solid var(--accent)' : '2px solid transparent';
     }
   });
@@ -23513,7 +23583,7 @@ function renderTendencia(connected, pubMap, costsMap, promoMap) {
     const s = window._tendSort[alertId] || {};
     const active = s.col === col;
     const arrow = active ? (s.asc ? ' ↑' : ' ↓') : ' ↕';
-    return `<th onclick="window._sortTend('${alertId}','${col}')" style="padding:8px 10px;text-align:${align};font-size:11px;font-weight:600;color:${active?'var(--accent)':'var(--muted)'};cursor:pointer;user-select:none;white-space:nowrap">${label}${arrow}</th>`;
+    return `<th onclick="window._sortTend('${alertId}','${col}')" style="padding:8px 10px;text-align:${align};font-size:11px;font-weight:600;color:${active?'var(--accent-ink)':'var(--muted)'};cursor:pointer;user-select:none;white-space:nowrap">${label}${arrow}</th>`;
   }
 
   // Precio publicado hoy. Si hay descuento de promo, debajo va el de lista tachado.
@@ -23548,7 +23618,7 @@ function renderTendencia(connected, pubMap, costsMap, promoMap) {
       const stockC = (i.available_quantity||0) <= 3 ? '#ff5252' : (i.available_quantity||0) <= 10 ? '#ff9100' : '#00e676';
       const convColor = i.conversion >= 3 ? '#00e676' : i.conversion >= 1 ? '#ff9100' : 'var(--muted)';
       return `<tr style="border-bottom:1px solid var(--border)">
-        <td style="padding:8px 10px;font-size:11px"><a href="https://articulo.mercadolibre.com.ar/${i.id}" target="_blank" style="color:var(--accent);text-decoration:none">${i.id}</a></td>
+        <td style="padding:8px 10px;font-size:11px"><a href="https://articulo.mercadolibre.com.ar/${i.id}" target="_blank" style="color:var(--accent-ink);text-decoration:none">${i.id}</a></td>
         <td style="padding:8px 10px;font-size:12px;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${i.title}">${i.title}</td>
         ${precioCell(i)}
         ${promCell(i)}
@@ -23699,7 +23769,7 @@ function switchEscTab(tab) {
     const el  = document.getElementById(ids[t]);
     if (el)  el.style.display  = t === tab ? '' : 'none';
     if (btn) {
-      btn.style.color        = t === tab ? 'var(--accent)' : 'var(--muted)';
+      btn.style.color        = t === tab ? 'var(--accent-ink)' : 'var(--muted)';
       btn.style.borderBottom = t === tab ? '2px solid var(--accent)' : '2px solid transparent';
     }
   });
@@ -24182,7 +24252,7 @@ function renderEscalabilidad() {
   const th = (c, label, align='right') => {
     const active = window._escSort?.col === c;
     const arrow  = active ? (window._escSort.asc ? ' ↑' : ' ↓') : '';
-    return `<th onclick="sortEscalabilidad('${c}')" style="padding:8px 10px;text-align:${align};font-size:11px;font-weight:600;color:${active?'var(--accent)':'var(--muted)'};border-bottom:2px solid var(--border);cursor:pointer;user-select:none;white-space:nowrap">${label}${arrow}</th>`;
+    return `<th onclick="sortEscalabilidad('${c}')" style="padding:8px 10px;text-align:${align};font-size:11px;font-weight:600;color:${active?'var(--accent-ink)':'var(--muted)'};border-bottom:2px solid var(--border);cursor:pointer;user-select:none;white-space:nowrap">${label}${arrow}</th>`;
   };
 
   const rows = items.map((p, i) => {
@@ -24477,7 +24547,7 @@ async function loadMercadoML() {
       const repColors = { mercadolibrePlatinum: '#22c55e', mercadoliderGold: '#f59e0b', mercadolider: '#3b82f6', otros: '#94a3b8' };
       html += `<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:18px">
         <div style="font-size:13px;font-weight:700;color:var(--text);margin-bottom:4px">👥 Vendedores activos</div>
-        <div style="font-size:28px;font-weight:800;color:var(--accent);margin-bottom:14px">${total}</div>
+        <div style="font-size:28px;font-weight:800;color:var(--accent-ink);margin-bottom:14px">${total}</div>
         <div style="display:flex;flex-direction:column;gap:8px">`;
       distribution.ranges.forEach(r => {
         const color = repColors[r.id] || '#94a3b8';
@@ -24544,7 +24614,7 @@ function switchCompTab(tab) {
     const btn = document.getElementById(`tab-comp-${t}`);
     if (el)  el.style.display  = t === tab ? '' : 'none';
     if (btn) {
-      btn.style.color        = t === tab ? 'var(--accent)' : 'var(--muted)';
+      btn.style.color        = t === tab ? 'var(--accent-ink)' : 'var(--muted)';
       btn.style.borderBottom = t === tab ? '2px solid var(--accent)' : '2px solid transparent';
     }
   });
@@ -24682,7 +24752,7 @@ function renderCatProductos(body) {
       <td style="padding:6px 8px;text-align:right">${_catFmt(it.price)}</td>
       <td style="padding:6px 8px;text-align:right">${(it.sold_quantity||0).toLocaleString('es-AR')}</td>
       <td style="padding:6px 8px;text-align:right">${it.estimated_daily_sales!=null?it.estimated_daily_sales:'—'}</td>
-      <td style="padding:6px 8px;text-align:center">${it.permalink?`<a href="${it.permalink}" target="_blank" style="color:var(--accent);text-decoration:none">ver →</a>`:''}</td>
+      <td style="padding:6px 8px;text-align:center">${it.permalink?`<a href="${it.permalink}" target="_blank" style="color:var(--accent-ink);text-decoration:none">ver →</a>`:''}</td>
     </tr>`).join('');
   body.innerHTML = `
     <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden;overflow-x:auto">
@@ -24708,10 +24778,10 @@ function renderCatGaps(body) {
           <div style="font-size:13px;font-weight:600;margin-bottom:6px;color:var(--text)">${g.title||''}</div>
           <div style="font-size:11px;color:var(--muted);margin-bottom:8px">${g.seller_nickname||''}</div>
           <div style="display:flex;justify-content:space-between;align-items:center">
-            <span style="font-size:15px;font-weight:700;color:var(--accent)">${_catFmt(g.price)}</span>
+            <span style="font-size:15px;font-weight:700;color:var(--accent-ink)">${_catFmt(g.price)}</span>
             <span style="font-size:11px;color:var(--muted)">${(g.sold_quantity||0).toLocaleString('es-AR')} vendidos</span>
           </div>
-          ${g.permalink?`<a href="${g.permalink}" target="_blank" style="display:block;margin-top:8px;font-size:12px;color:var(--accent);text-decoration:none">ver en ML →</a>`:''}
+          ${g.permalink?`<a href="${g.permalink}" target="_blank" style="display:block;margin-top:8px;font-size:12px;color:var(--accent-ink);text-decoration:none">ver en ML →</a>`:''}
         </div>`).join('')}
     </div>`;
 }
@@ -24812,7 +24882,7 @@ function renderCompetidor(seller, pubs) {
     <div style="display:grid;grid-template-columns:2fr 1fr 1fr 1fr 1fr;gap:12px;margin-bottom:16px">
       <div class="kpi-card">
         <div class="kpi-label">Vendedor</div>
-        <div class="kpi-value" style="font-size:18px">${_escHtml(seller.nickname)}${seller.tienda_oficial?' <span style="font-size:11px;color:var(--accent)">(Tienda Oficial)</span>':''}</div>
+        <div class="kpi-value" style="font-size:18px">${_escHtml(seller.nickname)}${seller.tienda_oficial?' <span style="font-size:11px;color:var(--accent-ink)">(Tienda Oficial)</span>':''}</div>
         <div class="kpi-sub">${repMap[seller.reputation.level_id]||'— Sin reputación'}</div>
         <div class="kpi-sub">${_escHtml(seller.location.city)}${seller.location.city&&seller.location.state?', ':''}${_escHtml(seller.location.state)}</div>
       </div>
@@ -24862,7 +24932,7 @@ function _renderTablaPubs(pubs) {
     (p.descuento_pct>0 ? `<span style="background:#fee2e2;color:#991b1b;border-radius:4px;padding:1px 6px;font-size:10px;font-weight:700">-${p.descuento_pct}%</span>` : '');
   const rows = pubs.map(p => `<tr style="border-bottom:1px solid var(--border)">
     <td style="padding:7px 10px"><img src="${p.thumbnail}" style="width:34px;height:34px;object-fit:cover;border-radius:4px" onerror="this.style.display='none'"></td>
-    <td style="padding:7px 10px;max-width:260px"><a href="${p.permalink}" target="_blank" style="color:var(--accent);text-decoration:none;font-weight:600">${_escHtml(p.title.slice(0,60))}${p.title.length>60?'…':''}</a><div style="margin-top:3px">${pills(p)}</div></td>
+    <td style="padding:7px 10px;max-width:260px"><a href="${p.permalink}" target="_blank" style="color:var(--accent-ink);text-decoration:none;font-weight:600">${_escHtml(p.title.slice(0,60))}${p.title.length>60?'…':''}</a><div style="margin-top:3px">${pills(p)}</div></td>
     <td style="padding:7px 10px;text-align:right;font-weight:700">$${(p.price||0).toLocaleString('es-AR')}${p.original_price?`<div style="text-decoration:line-through;color:var(--muted);font-size:11px;font-weight:400">$${p.original_price.toLocaleString('es-AR')}</div>`:''}
     <td style="padding:7px 10px;text-align:right">${(p.sold_quantity||0).toLocaleString('es-AR')}</td>
     <td style="padding:7px 10px;text-align:right">${p.available_quantity??'—'}</td>
@@ -24884,7 +24954,7 @@ function _renderTablaPubs(pubs) {
 function _renderTablaPromos(promos) {
   const rows = promos.map(p => `<tr style="border-bottom:1px solid var(--border)">
     <td style="padding:7px 10px"><img src="${p.thumbnail}" style="width:34px;height:34px;object-fit:cover;border-radius:4px" onerror="this.style.display='none'"></td>
-    <td style="padding:7px 10px;max-width:280px"><a href="${p.permalink}" target="_blank" style="color:var(--accent);text-decoration:none">${_escHtml(p.title.slice(0,70))}${p.title.length>70?'…':''}</a></td>
+    <td style="padding:7px 10px;max-width:280px"><a href="${p.permalink}" target="_blank" style="color:var(--accent-ink);text-decoration:none">${_escHtml(p.title.slice(0,70))}${p.title.length>70?'…':''}</a></td>
     <td style="padding:7px 10px;text-align:right"><span style="text-decoration:line-through;color:var(--muted);font-size:11px">$${(p.original_price||0).toLocaleString('es-AR')}</span> <strong style="color:#ff5252">$${(p.price||0).toLocaleString('es-AR')}</strong></td>
     <td style="padding:7px 10px;text-align:center"><span style="background:#fee2e2;color:#991b1b;border-radius:4px;padding:2px 7px;font-size:11px;font-weight:700">-${p.descuento_pct}%</span></td>
     <td style="padding:7px 10px;text-align:right">${(p.sold_quantity||0).toLocaleString('es-AR')}</td>
@@ -25003,7 +25073,7 @@ function renderDestaqueHighlights(data) {
       <div style="flex:1;min-width:0">
         <a href="${item.permalink}" target="_blank" style="color:var(--text);text-decoration:none;font-size:12px;font-weight:500;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${item.title}">${item.title}</a>
         <div style="display:flex;gap:6px;align-items:center;margin-top:3px;flex-wrap:wrap">
-          <span style="font-size:13px;font-weight:700;color:var(--accent)">${fmtP(item.price)}</span>
+          <span style="font-size:13px;font-weight:700;color:var(--accent-ink)">${fmtP(item.price)}</span>
           ${discount ? `<span style="font-size:10px;background:#16a34a;color:#fff;padding:1px 5px;border-radius:4px">-${discount}%</span>` : ''}
           ${item.free_shipping ? '<span style="font-size:10px;color:#22c55e;font-weight:600">✔ Gratis</span>' : ''}
           ${typeLabel(item.listing_type)}
@@ -25056,7 +25126,7 @@ function renderTendencias(data) {
       <div style="flex:1;min-width:0">
         <a href="${item.permalink}" target="_blank" style="color:var(--text);text-decoration:none;font-size:12px;font-weight:500;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${item.title}">${item.title}</a>
         <div style="display:flex;gap:8px;align-items:center;margin-top:3px;flex-wrap:wrap">
-          <span style="font-size:13px;font-weight:700;color:var(--accent)">${fmtP(item.price)}</span>
+          <span style="font-size:13px;font-weight:700;color:var(--accent-ink)">${fmtP(item.price)}</span>
           ${item.sold_quantity ? `<span style="font-size:11px;color:var(--muted)">${item.sold_quantity.toLocaleString('es-AR')} vendidos</span>` : ''}
           ${item.free_shipping ? '<span style="font-size:10px;color:#22c55e;font-weight:600">✔ Gratis</span>' : ''}
         </div>
@@ -25102,7 +25172,7 @@ function renderCatVentas(data) {
       const rColor = rankColor(item.ranking);
       return `<tr style="background:rgba(99,102,241,.05);border-bottom:1px solid var(--border)">
         <td style="padding:7px 10px 7px 30px;font-size:11px;color:var(--muted)">
-          <a href="https://articulo.mercadolibre.com.ar/${item.id}" target="_blank" style="color:var(--accent);text-decoration:none">${item.id}</a>
+          <a href="https://articulo.mercadolibre.com.ar/${item.id}" target="_blank" style="color:var(--accent-ink);text-decoration:none">${item.id}</a>
         </td>
         <td style="padding:7px 10px;font-size:12px;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${item.title}">${item.title}</td>
         <td style="padding:7px 10px;text-align:right;font-size:12px;font-weight:600">${fmtN(item.revenue)}</td>
@@ -25129,7 +25199,7 @@ function renderCatVentas(data) {
           onclick="const next=this.nextElementSibling;next.style.display=next.style.display===\'none\'?\'\':'none'">
         <td style="padding:10px;font-size:12px;color:var(--muted)">${ci+1}</td>
         <td style="padding:10px;font-size:13px;font-weight:600">${cat.name}</td>
-        <td style="padding:10px;text-align:right;font-size:13px;font-weight:700;color:var(--accent)">${fmtN(cat.revenue)}</td>
+        <td style="padding:10px;text-align:right;font-size:13px;font-weight:700;color:var(--accent-ink)">${fmtN(cat.revenue)}</td>
         <td style="padding:10px;text-align:right;font-size:12px">${cat.units}</td>
         <td style="padding:10px;text-align:center;font-size:12px;color:var(--muted)">${cat.items.length} pub${cat.items.length!==1?'s':''}</td>
         <td style="padding:10px;text-align:right;font-size:12px;color:var(--muted)">${pct}%</td>
@@ -25212,7 +25282,7 @@ function renderCompetenciaCategorias(cats, client) {
          onmouseover="this.style.borderColor='var(--accent)'" onmouseout="this.style.borderColor='var(--border)'">
       <div style="font-size:13px;font-weight:600;margin-bottom:4px">${c.name}</div>
       <div style="font-size:11px;color:var(--muted)">${c.count} publicación${c.count!==1?'es':''} tuya${c.count!==1?'s':''}</div>
-      <div style="font-size:11px;color:var(--accent);margin-top:6px">Ver competidores →</div>
+      <div style="font-size:11px;color:var(--accent-ink);margin-top:6px">Ver competidores →</div>
     </div>`).join('');
 
   el.innerHTML = `<div style="font-size:13px;color:var(--muted);margin-bottom:16px">Tus categorías con más publicaciones — hacé click para ver la competencia</div>
@@ -25239,7 +25309,7 @@ function renderCompetenciaDetalle(data, uid) {
   const backBtn = `<button onclick="loadCompetencia()" style="padding:6px 14px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:12px;cursor:pointer;margin-bottom:16px">← Volver a categorías</button>`;
 
   const priceCard = price_stats ? `<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px;margin-bottom:16px">
-    <div style="font-size:13px;font-weight:600;margin-bottom:12px">💰 Rango de precios — <span style="color:var(--accent)">${category.name}</span></div>
+    <div style="font-size:13px;font-weight:600;margin-bottom:12px">💰 Rango de precios — <span style="color:var(--accent-ink)">${category.name}</span></div>
     <div style="display:flex;gap:20px;flex-wrap:wrap">
       ${[['Mínimo','$'+price_stats.min.toLocaleString('es-AR')],['Promedio','$'+price_stats.avg.toLocaleString('es-AR')],['Máximo','$'+price_stats.max.toLocaleString('es-AR')]].map(([l,v])=>`
         <div><div style="font-size:11px;color:var(--muted)">${l}</div><div style="font-size:18px;font-weight:700;font-family:var(--font-b)">${v}</div></div>`).join('')}
@@ -25627,7 +25697,7 @@ function renderCampaniaPropia() {
     const cmProm = fs.reduce((t, f) => t + f.promo.cmPct, 0) / fs.length;
     const rows = fs.slice(0, 300).map(f => `<tr style="border-bottom:1px solid var(--border)">
       <td style="padding:7px 8px;font-size:11px;max-width:280px">
-        <a href="https://articulo.mercadolibre.com.ar/${f.it.id.replace('MLA', 'MLA-')}" target="_blank" style="color:var(--accent);text-decoration:none">${f.it.id}</a>
+        <a href="https://articulo.mercadolibre.com.ar/${f.it.id.replace('MLA', 'MLA-')}" target="_blank" style="color:var(--accent-ink);text-decoration:none">${f.it.id}</a>
         <div style="font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtmlOpin(f.it.title)}</div>
         <div style="font-size:10px;color:var(--muted)">${f.motivo}</div></td>
       ${td(_prcFmt(f.it.precio))}
@@ -26145,7 +26215,7 @@ function renderPrepararResultadoTopes(r, cont) {
       const ajust = d.estado === 'ajustado';
       return `<tr style="border-bottom:1px solid var(--border)" title="${(d.motivo || '').replace(/"/g, '&quot;')}">
         ${td(`${e.icono} ${e.label}`, `white-space:nowrap;color:${e.color};font-weight:600`)}
-        ${td(`<a href="https://articulo.mercadolibre.com.ar/${String(d.item_id).replace('MLA','MLA-')}" target="_blank" style="color:var(--accent);text-decoration:none">${d.item_id}</a>`, 'white-space:nowrap')}
+        ${td(`<a href="https://articulo.mercadolibre.com.ar/${String(d.item_id).replace('MLA','MLA-')}" target="_blank" style="color:var(--accent-ink);text-decoration:none">${d.item_id}</a>`, 'white-space:nowrap')}
         ${td(d.titulo || '')}
         ${td(d.precio_original != null ? m(d.precio_original) : '—', 'white-space:nowrap')}
         ${td(d.descuento_ml_real != null ? d.descuento_ml_real + '%' : '—', 'white-space:nowrap')}
@@ -26209,7 +26279,7 @@ function renderPrepararResultado(r) {
       return `<tr style="border-bottom:1px solid var(--border)">
         <td style="padding:6px 8px;font-size:11px;white-space:nowrap;color:${e.color};font-weight:600">${e.icono} ${e.label}</td>
         <td style="padding:6px 8px;font-size:11px;white-space:nowrap">
-          <a href="https://articulo.mercadolibre.com.ar/${String(d.item_id).replace('MLA','MLA-')}" target="_blank" style="color:var(--accent);text-decoration:none">${d.item_id}</a></td>
+          <a href="https://articulo.mercadolibre.com.ar/${String(d.item_id).replace('MLA','MLA-')}" target="_blank" style="color:var(--accent-ink);text-decoration:none">${d.item_id}</a></td>
         <td style="padding:6px 8px;font-size:11px">${d.titulo || ''}</td>
         <td style="padding:6px 8px;font-size:11px;white-space:nowrap">${d.precio_ml != null ? m(d.precio_ml) : '—'}</td>
         <td style="padding:6px 8px;font-size:11px;white-space:nowrap;font-weight:${d.estado === 'ajustado' ? 700 : 400};color:${d.estado === 'ajustado' ? '#0ea5e9' : 'inherit'}">${d.estado === 'ajustado' ? m(d.precio_final) + ` <span style="font-size:10px;color:var(--muted)">-${d.descuento}%</span>` : '—'}</td>
@@ -26404,7 +26474,7 @@ function renderPromoCandidatos() {
     return `<tr style="border-bottom:1px solid var(--border);border-left:3px solid ${borde}">
       <td style="padding:8px;font-size:11px;white-space:nowrap;color:${vd.color};font-weight:600">${vd.icono} ${vd.label}</td>
       <td style="padding:8px;font-size:11px;white-space:nowrap">
-        <a href="https://articulo.mercadolibre.com.ar/${i.mla_id.replace('MLA','MLA-')}" target="_blank" style="color:var(--accent);text-decoration:none">${i.mla_id}</a></td>
+        <a href="https://articulo.mercadolibre.com.ar/${i.mla_id.replace('MLA','MLA-')}" target="_blank" style="color:var(--accent-ink);text-decoration:none">${i.mla_id}</a></td>
       <td style="padding:8px;font-size:12px">${(i.title || '').slice(0,52)}
         ${mFoco ? `<div style="font-size:10px;color:var(--muted);margin-top:2px">${mFoco}</div>` : ''}</td>
       <td style="padding:8px;font-size:11px;text-align:center">${i.vendidas || 0}</td>
@@ -26414,7 +26484,7 @@ function renderPromoCandidatos() {
       <td style="padding:8px;font-size:11px;white-space:nowrap">${margenCell}</td>
       <td style="padding:8px;font-size:11px;white-space:nowrap">${resignaFoco != null ? `<span style="color:${resignaFoco > 15 ? '#dc2626' : 'var(--muted)'}">-${resignaFoco} pp</span>` : '—'}</td>
       <td style="padding:8px;font-size:11px;text-align:center">
-        <span onclick="togglePromoFila('${i.mla_id}')" style="cursor:pointer;color:var(--accent)">${nOf} ▾</span></td>
+        <span onclick="togglePromoFila('${i.mla_id}')" style="cursor:pointer;color:var(--accent-ink)">${nOf} ▾</span></td>
     </tr>
     <tr id="promo-det-${i.mla_id}" style="display:none"><td colspan="10" style="padding:0 8px 10px 20px;background:var(--surface2)">
       <table style="width:100%;border-collapse:collapse">
@@ -27197,7 +27267,7 @@ function renderStock() {
   const th = (col, label, align='right') => {
     const active = _stockSort.col === col;
     const arrow  = active ? (_stockSort.asc ? ' ↑' : ' ↓') : ' <span style="opacity:.3">↕</span>';
-    return `<th onclick="sortStock('${col}')" style="padding:9px 10px;text-align:${align};font-size:11px;font-weight:600;color:${active?'var(--accent)':'var(--muted)'};cursor:pointer;user-select:none;white-space:nowrap;border-bottom:2px solid var(--border)">${label}${arrow}</th>`;
+    return `<th onclick="sortStock('${col}')" style="padding:9px 10px;text-align:${align};font-size:11px;font-weight:600;color:${active?'var(--accent-ink)':'var(--muted)'};cursor:pointer;user-select:none;white-space:nowrap;border-bottom:2px solid var(--border)">${label}${arrow}</th>`;
   };
 
   el.innerHTML = kpis + alertasHtml + filtros + `
@@ -27452,7 +27522,7 @@ function ciRenderDetalle(a) {
       </tr>`;
     }).join('');
     return `<details style="margin-top:8px">
-      <summary style="font-size:11px;color:var(--accent);cursor:pointer;user-select:none">Ver los ${datos.criticos.length} productos</summary>
+      <summary style="font-size:11px;color:var(--accent-ink);cursor:pointer;user-select:none">Ver los ${datos.criticos.length} productos</summary>
       <table style="margin-top:6px;border-collapse:collapse;width:100%">${rows}</table>
     </details>`;
   }
@@ -27471,7 +27541,7 @@ function ciRenderDetalle(a) {
       </tr>`;
     }).join('');
     return `<details style="margin-top:8px">
-      <summary style="font-size:11px;color:var(--accent);cursor:pointer;user-select:none">Ver los ${datos.items.length} productos</summary>
+      <summary style="font-size:11px;color:var(--accent-ink);cursor:pointer;user-select:none">Ver los ${datos.items.length} productos</summary>
       <table style="margin-top:6px;border-collapse:collapse;width:100%">${rows}</table>
     </details>`;
   }
@@ -27488,7 +27558,7 @@ function ciRenderDetalle(a) {
       </tr>`;
     }).join('');
     return `<details style="margin-top:8px">
-      <summary style="font-size:11px;color:var(--accent);cursor:pointer;user-select:none">Ver los ${datos.items.length} anuncios</summary>
+      <summary style="font-size:11px;color:var(--accent-ink);cursor:pointer;user-select:none">Ver los ${datos.items.length} anuncios</summary>
       <table style="margin-top:6px;border-collapse:collapse;width:100%">${rows}</table>
     </details>`;
   }
@@ -27505,7 +27575,7 @@ function ciRenderDetalle(a) {
       </tr>`;
     }).join('');
     return `<details style="margin-top:8px">
-      <summary style="font-size:11px;color:var(--accent);cursor:pointer;user-select:none">Ver las ${datos.items.length} oportunidades</summary>
+      <summary style="font-size:11px;color:var(--accent-ink);cursor:pointer;user-select:none">Ver las ${datos.items.length} oportunidades</summary>
       <table style="margin-top:6px;border-collapse:collapse;width:100%">${rows}</table>
     </details>`;
   }
@@ -27523,7 +27593,7 @@ function ciRenderDetalle(a) {
             : `<span style="color:#dc2626;font-weight:600">🚫 sólo ${c.zonas.join('/')}</span>`;
       return `<tr>
         <td style="padding:4px 8px 4px 0;font-size:11px;color:var(--muted);white-space:nowrap">
-          <a href="https://articulo.mercadolibre.com.ar/${c.id.replace('MLA','MLA-')}" target="_blank" style="color:var(--accent);text-decoration:none">${c.id}</a>
+          <a href="https://articulo.mercadolibre.com.ar/${c.id.replace('MLA','MLA-')}" target="_blank" style="color:var(--accent-ink);text-decoration:none">${c.id}</a>
         </td>
         <td style="padding:4px 8px 4px 0;font-size:11px;color:var(--text)">${nombre}</td>
         <td style="padding:4px 8px;font-size:11px;white-space:nowrap">${estado}</td>
@@ -27534,7 +27604,7 @@ function ciRenderDetalle(a) {
     const extra = datos.total > datos.items.length
       ? `<div style="font-size:10px;color:var(--muted);margin-top:4px">…y ${datos.total - datos.items.length} más</div>` : '';
     return `<details style="margin-top:8px">
-      <summary style="font-size:11px;color:var(--accent);cursor:pointer;user-select:none">Ver las ${datos.total} publicaciones</summary>
+      <summary style="font-size:11px;color:var(--accent-ink);cursor:pointer;user-select:none">Ver las ${datos.total} publicaciones</summary>
       <table style="margin-top:6px;border-collapse:collapse;width:100%">${rows}</table>${extra}
     </details>`;
   }
