@@ -11499,6 +11499,13 @@ require('./backend_medidas')(app, {
                   attrCm: (i, id) => _attrCm(i, id), attrG: (i, id) => _attrG(i, id) },
 });
 
+// Rentabilidad → Precio sugerido (beta, sólo admins). Etapa 1: semáforo de stock por
+// publicación (se acaba / sana / sobra / sin tráfico) sobre Ciclo de vida + visitas + CMV.
+require('./backend_precio_sugerido')(app, {
+  pool, requireAuth, requireAdmin, getClientToken, computeCicloVida,
+  visitasItemsCacheadas, cargarCostos, fetchAllActiveItemIds,
+});
+
 // GET /api/tarifas — escalas vigentes de cargo fijo, para que el front no tenga su
 // propia copia. Antes las tenía escritas a mano en tres lugares distintos (y encima
 // con montos que no coincidían entre sí), así que cada cambio de tarifario de ML

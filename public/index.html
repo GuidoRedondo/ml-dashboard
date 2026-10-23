@@ -1433,6 +1433,7 @@ tr.fam-hijo > td { background: rgba(99,102,241,.025); }
           <button id="rentTabFees" onclick="switchRentTab('fees')" class="sync-btn">🔍 Verificador</button>
           <button id="rentTabUmbrales" onclick="switchRentTab('umbrales')" class="sync-btn">🎯 Umbrales</button>
           <button id="rentTabCombos" onclick="switchRentTab('combos')" class="sync-btn" title="Pares que conviene publicar juntos: el cargo fijo de ML se paga una vez por venta, no por producto">🧺 Combos</button>
+          <button id="rentTabSugerido" onclick="switchRentTab('sugerido')" class="sync-btn" style="display:none" title="Beta, sólo admins: qué publicaciones se quedan sin stock, cuáles tienen de más y cuáles no se mueven por falta de tráfico">🧪 Precio sugerido</button>
         </div>
       </div>
       <div id="saludCmvPanel" style="display:none;margin-bottom:18px"></div>
@@ -1446,6 +1447,7 @@ tr.fam-hijo > td { background: rgba(99,102,241,.025); }
       <div id="feesContent" style="display:none"></div>
       <div id="umbralesContent" style="display:none"></div>
       <div id="combosContent" style="display:none"></div>
+      <div id="sugeridoContent" style="display:none"></div>
     </div>
 
     <!-- ADS -->
@@ -9085,6 +9087,7 @@ function switchRentTab(tab) {
   document.getElementById('feesContent').style.display         = tab === 'fees'       ? '' : 'none';
   document.getElementById('umbralesContent').style.display     = tab === 'umbrales'   ? '' : 'none';
   document.getElementById('combosContent').style.display       = tab === 'combos'     ? '' : 'none';
+  document.getElementById('sugeridoContent').style.display     = tab === 'sugerido'   ? '' : 'none';
   document.getElementById('rentTabAnalisis').style.background   = tab === 'analisis'   ? 'var(--accent)' : 'var(--surface2)';
   document.getElementById('rentTabLoQuePaso').style.background  = tab === 'loquepaso'  ? 'var(--accent)' : 'var(--surface2)';
   document.getElementById('rentTabCmv').style.background        = tab === 'cmv'        ? 'var(--accent)' : 'var(--surface2)';
@@ -9094,6 +9097,7 @@ function switchRentTab(tab) {
   document.getElementById('rentTabFees').style.background       = tab === 'fees'       ? 'var(--accent)' : 'var(--surface2)';
   document.getElementById('rentTabUmbrales').style.background   = tab === 'umbrales'   ? 'var(--accent)' : 'var(--surface2)';
   document.getElementById('rentTabCombos').style.background     = tab === 'combos'     ? 'var(--accent)' : 'var(--surface2)';
+  document.getElementById('rentTabSugerido').style.background   = tab === 'sugerido'   ? 'var(--accent)' : 'var(--surface2)';
   if (tab === 'loquepaso')  loadLoQuePaso(false);
   if (tab === 'cmv')        loadCmv();
   if (tab === 'precios')    loadPrecios();
@@ -9102,6 +9106,173 @@ function switchRentTab(tab) {
   if (tab === 'fees')       initVerificadorFees();
   if (tab === 'umbrales')   loadUmbrales();
   if (tab === 'combos')     loadCombos();
+  if (tab === 'sugerido')   loadSugerido();
+}
+
+// ── PRECIO SUGERIDO (beta, sólo admin) ────────────────────────────────────────
+// Etapa 1: el semáforo de stock. Cada publicación activa cae en "se acaba", "sobra",
+// "sin tráfico" o "sana" según cuánto le dura el stock al ritmo de 30 días; todo el
+// cálculo vive en backend_precio_sugerido.js y acá sólo se pinta. Todavía no sugiere
+// precios: primero hay que validar con clientes reales que los estados cierran.
+let _sugData = null, _sugClientId = null;
+let _sugFiltro   = null;   // null = todo lo que pide acción (sin las sanas)
+let _sugBusqueda = '';
+const SUG_ESTADOS = {
+  se_acaba:    { icono: '🛡️', label: 'Se acaba',    color: '#dc2626', orden: 0 },
+  sobra:       { icono: '🔄', label: 'Sobra',       color: '#b45309', orden: 1 },
+  sin_trafico: { icono: '💤', label: 'Sin tráfico', color: '#6b7280', orden: 2 },
+  sana:        { icono: '✅', label: 'Sana',        color: '#16a34a', orden: 3 },
+};
+const _sug$ = n => n == null ? '—' : '$' + Math.round(n).toLocaleString('es-AR');
+const _sugN = n => n == null ? '—' : Number(n).toLocaleString('es-AR');
+
+async function loadSugerido(force) {
+  const el = document.getElementById('sugeridoContent');
+  if (!el) return;
+  const client = getActiveClient();
+  if (!client) { el.innerHTML = '<p style="color:var(--muted);padding:20px">Seleccioná un cliente</p>'; return; }
+  if (_sugData && _sugClientId === client.id && !force) { renderSugerido(); return; }
+  el.innerHTML = `<div style="padding:40px;text-align:center;color:var(--muted)">Leyendo ventas, stock y visitas de cada publicación de ${_escHtml(client.name || '')}…<br>
+    <span style="font-size:12px">La primera vez puede tardar 1-2 minutos en cuentas grandes.</span></div>`;
+  try {
+    const data = await apiCall('GET', `/api/precio-sugerido?client_id=${client.id}${force ? '&refresh=1' : ''}`);
+    if (!data) throw new Error('Sin acceso: la solapa es sólo para admins, o el cliente no tiene token de ML');
+    if (data.error) throw new Error(data.error);
+    _sugData = data; _sugClientId = client.id;
+    renderSugerido();
+  } catch (e) {
+    el.innerHTML = `<div style="padding:20px;color:#dc2626">Error: ${_escHtml(e.message)}</div>`;
+  }
+}
+
+function renderSugerido() {
+  const el = document.getElementById('sugeridoContent');
+  const d = _sugData;
+  if (!el || !d) return;
+  if (_sugClientId !== getActiveClient()?.id) { loadSugerido(); return; }
+  const c = d.config, r = d.resumen, m = d.metadatos;
+
+  const card = (k, linea) => {
+    const e = SUG_ESTADOS[k], on = _sugFiltro === k;
+    return `<div onclick="_sugSetFiltro('${k}')" style="flex:1;min-width:190px;cursor:pointer;background:var(--surface);
+        border:2px solid ${on ? e.color : 'var(--border)'};border-radius:12px;padding:14px 16px">
+      <div style="font-size:12px;font-weight:700;color:${e.color}">${e.icono} ${e.label}</div>
+      <div style="font-size:26px;font-weight:800;color:var(--text);margin:4px 0">${r[k].n}</div>
+      <div style="font-size:11px;color:var(--muted)">${linea}</div>
+    </div>`;
+  };
+  const inp = (id, val, w, extra = '') =>
+    `<input id="${id}" type="number" value="${val}" ${extra} style="width:${w}px;padding:5px 8px;border-radius:7px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:12px">`;
+
+  el.innerHTML = `
+    <div style="background:#fef3c7;border:1px solid #f59e0b;border-radius:10px;padding:10px 14px;margin-bottom:14px;font-size:12px;color:#78350f">
+      🧪 <b>Beta, sólo admins.</b> Etapa 1: el semáforo de stock. Todavía no sugiere precios: primero validamos que los estados cierran con lo que ves en la cuenta.
+    </div>
+    <div style="display:flex;gap:14px;align-items:flex-end;flex-wrap:wrap;background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:12px 16px;margin-bottom:14px">
+      <label style="font-size:11px;color:var(--muted);display:flex;flex-direction:column;gap:3px"
+        title="Cuánto tarda en volver a haber stock desde que pedís, ingreso a FULL incluido. Debajo de esto la publicación 'se acaba'">
+        Días de reposición ${inp('sugDiasRepo', c.dias_reposicion, 70, 'min="1" max="365"')}</label>
+      <label style="font-size:11px;color:var(--muted);display:flex;flex-direction:column;gap:3px"
+        title="Lo que cuesta por mes tener plata parada en stock de más (financiación, oportunidad)">
+        Costo plata parada (%/mes) ${inp('sugTasa', c.tasa_mensual, 70, 'min="0" max="50" step="0.5"')}</label>
+      <button onclick="guardarSugeridoConfig()" class="sync-btn">Guardar</button>
+      <div style="font-size:11px;color:var(--muted);max-width:420px">
+        Cobertura objetivo: <b>${c.objetivo_global} días</b> (la de Full Stock; si una publicación tiene la suya, usa esa).
+        "Sobra" = más de ${c.sobra_x_objetivo}× el objetivo o sin ventas en 30 días.
+        "Sin tráfico" = sobra y tiene menos de la mitad de la mediana de visitas (${_sugN(m.visitas_mediana != null ? Math.round(m.visitas_mediana) : null)}).
+      </div>
+      <button onclick="loadSugerido(true)" class="sync-btn" style="margin-left:auto" title="Vuelve a leer ventas y stock de ML (ignora la caché de 12 h)">🔄 Refrescar</button>
+    </div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px">
+      ${card('se_acaba', r.se_acaba.ventas_en_riesgo ? `${_sug$(r.se_acaba.ventas_en_riesgo)} de ventas en riesgo hasta reponer` : 'se quedan sin stock antes de reponer')}
+      ${card('sobra', r.sobra.capital_exceso ? `${_sug$(r.sobra.capital_exceso)} parados de más · ~${_sug$(r.sobra.costo_mensual)}/mes` : 'más stock del que se vende')}
+      ${card('sin_trafico', r.sin_trafico.capital_exceso ? `${_sug$(r.sin_trafico.capital_exceso)} parados: les falta que las vean` : 'el precio no es el problema')}
+      ${card('sana', `cobertura entre ${c.dias_reposicion} y ${c.objetivo_global * c.sobra_x_objetivo} días`)}
+    </div>
+    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
+      <input id="sugBuscar" type="text" placeholder="Buscar MLA, SKU o título…" value="${_sugBusqueda.replace(/"/g, '&quot;')}"
+        oninput="_sugBusqueda=this.value;_sugRenderTabla()"
+        style="flex:1;min-width:220px;max-width:340px;padding:7px 12px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:12px">
+      <span id="sugCount" style="font-size:12px;color:var(--muted)"></span>
+      <span style="margin-left:auto;font-size:11px;color:var(--muted)">
+        ${m.activos} publicaciones activas · ${m.sin_costo ? `${m.sin_costo} sin CMV (sin plata parada)` : 'todas con CMV'}
+        · precios de ${m.precios_dia ? dART(m.precios_dia).toLocaleDateString('es-AR', { timeZone: ART_TZ }) : '— (abrí Precios para traerlos)'}
+        · ventas y stock ${m.ciclo_desde_cache ? 'de la caché' : 'recién leídos'}
+      </span>
+    </div>
+    <div id="sugTabla"></div>`;
+  _sugRenderTabla();
+}
+
+function _sugRenderTabla() {
+  const wrap = document.getElementById('sugTabla');
+  const d = _sugData;
+  if (!wrap || !d) return;
+  const q = _sugBusqueda.trim().toLowerCase();
+  const filas = d.items
+    .filter(f => _sugFiltro ? f.estado === _sugFiltro : f.estado !== 'sana')
+    .filter(f => !q || f.mla_id.toLowerCase().includes(q) || (f.sku || '').toLowerCase().includes(q) || (f.title || '').toLowerCase().includes(q))
+    .sort((a, b) => SUG_ESTADOS[a.estado].orden - SUG_ESTADOS[b.estado].orden
+      || (a.estado === 'se_acaba' ? (a.cobertura_dias ?? 0) - (b.cobertura_dias ?? 0)
+                                  : (b.capital_exceso || 0) - (a.capital_exceso || 0)));
+  const cnt = document.getElementById('sugCount');
+  if (cnt) cnt.textContent = `${filas.length} publicaciones${_sugFiltro ? '' : ' que piden acción (las sanas, en su tarjeta)'}`;
+  if (!filas.length) { wrap.innerHTML = '<div style="padding:30px;text-align:center;color:var(--muted)">Nada en este estado.</div>'; return; }
+
+  const LIM = 300;
+  const th = (t, al = 'right', tip = '') => `<th title="${tip}" style="padding:8px;text-align:${al};font-size:11px;color:var(--muted);font-weight:600;position:sticky;top:0;background:var(--surface2)">${t}</th>`;
+  const td = (v, al = 'right', st = '') => `<td style="padding:7px 8px;text-align:${al};font-size:12px;${st}">${v}</td>`;
+  const plata = f => f.estado === 'se_acaba'
+    ? (f.ventas_en_riesgo ? `<span style="color:#dc2626" title="Ventas que se pierden hasta reponer: ${f.faltan_u} u.">${_sug$(f.ventas_en_riesgo)}</span>` : (f.faltan_u ? `${f.faltan_u} u.` : '—'))
+    : f.estado === 'sana' ? _sug$(f.capital)
+    : (f.capital_exceso != null ? `<span title="${f.exceso_u} u. por encima del objetivo">${_sug$(f.capital_exceso)}</span>` : '<span style="color:var(--muted)" title="Sin CMV cargado">s/CMV</span>');
+
+  wrap.innerHTML = `<div style="overflow:auto;max-height:70vh;border:1px solid var(--border);border-radius:10px">
+    <table style="width:100%;border-collapse:collapse">
+      <thead><tr>
+        ${th('Estado', 'left')}${th('Publicación', 'left')}${th('Log.', 'center')}${th('Stock')}
+        ${th('Ritmo/día', 'right', 'Unidades vendidas en 30 días ÷ 30')}
+        ${th('Cobertura', 'right', 'Días que dura el stock a este ritmo / objetivo')}
+        ${th('Visitas 30d')}${th('Conv.', 'right', 'Órdenes ÷ visitas, 30 días')}
+        ${th('Plata', 'right', 'Se acaba: ventas en riesgo hasta reponer. Sobra / sin tráfico: CMV del stock por encima del objetivo. Sana: CMV del stock')}
+        ${th('FULL 90d', 'right', 'Lo que ML te facturó por esta publicación en FULL (stock antiguo, retiro) en 90 días')}
+        ${th('Por qué', 'left')}
+      </tr></thead>
+      <tbody>${filas.slice(0, LIM).map(f => {
+        const e = SUG_ESTADOS[f.estado];
+        return `<tr style="border-top:1px solid var(--border)">
+          ${td(`<span style="font-weight:700;color:${e.color};white-space:nowrap">${e.icono} ${e.label}</span>`, 'left')}
+          ${td(`<a href="https://articulo.mercadolibre.com.ar/${f.mla_id.replace('MLA', 'MLA-')}" target="_blank" style="color:var(--accent-ink);text-decoration:none">${f.mla_id}</a>
+               ${f.sku ? `<span style="color:var(--muted);font-size:11px"> · ${_escHtml(f.sku)}</span>` : ''}
+               <div style="font-size:11px;color:var(--muted);max-width:260px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${_escHtml(f.title || '')}">${_escHtml(f.title || '')}</div>`, 'left')}
+          ${td(f.logistica, 'center')}
+          ${td(_sugN(f.stock))}
+          ${td(f.ritmo_dia ? f.ritmo_dia.toLocaleString('es-AR') : '0')}
+          ${td(f.cobertura_dias != null ? `${Math.round(f.cobertura_dias)} d <span style="color:var(--muted)">/ ${f.objetivo}</span>` : (f.unidades_30d ? '0 d' : '∞'))}
+          ${td(_sugN(f.visitas_30d))}
+          ${td(f.conversion_pct != null ? f.conversion_pct.toLocaleString('es-AR') + '%' : '—')}
+          ${td(plata(f), 'right', 'font-weight:700')}
+          ${td(f.cobro_full_90d ? _sug$(f.cobro_full_90d) : '—')}
+          ${td(_escHtml(f.motivo), 'left', 'font-size:11px;color:var(--muted);min-width:260px')}
+        </tr>`;
+      }).join('')}</tbody>
+    </table></div>
+    ${filas.length > LIM ? `<div style="font-size:11px;color:var(--muted);padding:8px">Se muestran las primeras ${LIM} de ${filas.length}: usá el buscador o las tarjetas.</div>` : ''}`;
+}
+
+function _sugSetFiltro(k) { _sugFiltro = _sugFiltro === k ? null : k; renderSugerido(); }
+
+async function guardarSugeridoConfig() {
+  const client = getActiveClient();
+  if (!client) return;
+  const body = { client_id: client.id,
+    dias_reposicion: parseInt(document.getElementById('sugDiasRepo')?.value),
+    tasa_mensual: parseFloat(document.getElementById('sugTasa')?.value) };
+  const r = await apiCall('PUT', '/api/precio-sugerido/config', body);
+  if (!r || r.error) { showToast('⚠️ ' + (r?.error || 'No se pudo guardar')); return; }
+  showToast('✅ Guardado: recalculando');
+  _sugData = null;
+  loadSugerido();
 }
 
 // ── CMV — carga de costos a mano, buscando por SKU o MLA ──────────────────────
@@ -16057,6 +16228,9 @@ function applyPermissions() {
   // se encuentre solo con el número crudo.
   const btnMedidasEl = document.getElementById('btnMedidasEnvio');
   if (btnMedidasEl) btnMedidasEl.style.display = soloConsultores ? '' : 'none';
+  // Precio sugerido: beta, sólo admin hasta validarlo con clientes reales (el backend igual da 403).
+  const rentTabSugEl = document.getElementById('rentTabSugerido');
+  if (rentTabSugEl) rentTabSugEl.style.display = role === 'admin' ? '' : 'none';
   const btnCmvEl = document.getElementById('btnSaludCmv');
   if (btnCmvEl) btnCmvEl.style.display = soloConsultores ? '' : 'none';
   // Centro de Inteligencia: admins/consultores siempre; clientes solo si tienen el permiso habilitado
