@@ -188,7 +188,9 @@ module.exports = (app, { pool, requireAuth, requireAdmin, getClientToken, comput
 
       const filas = productos.map(g => {
         const i = g.principal;
-        const objetivo = Math.max(...g.pubs.map(p => objMap[p.mla_id] || objetivoGlobal));
+        // Nunca menos que la reposición: un objetivo de 20 días con 30 de reposición deja
+        // sin stock antes de que llegue la mercadería (Vale Doble lo tenía así en Full Stock).
+        const objetivo = Math.max(config.dias_reposicion, ...g.pubs.map(p => objMap[p.mla_id] || objetivoGlobal));
         const ritmo = g.unidades_30d / 30;
         const { estado, motivo } = clasificar(g,
           { dias_reposicion: config.dias_reposicion, objetivo, visitasMediana });
@@ -241,7 +243,7 @@ module.exports = (app, { pool, requireAuth, requireAdmin, getClientToken, comput
       resumen.sobra.costo_mensual = Math.round((resumen.sobra.capital_exceso + resumen.sin_trafico.capital_exceso) * config.tasa_mensual / 100);
 
       res.json({
-        config: { ...config, objetivo_global: objetivoGlobal, sobra_x_objetivo: SOBRA_X_OBJETIVO, visitas_fraccion: VISITAS_FRACCION },
+        config: { ...config, objetivo_global: objetivoGlobal, objetivo_efectivo: Math.max(objetivoGlobal, config.dias_reposicion), sobra_x_objetivo: SOBRA_X_OBJETIVO, visitas_fraccion: VISITAS_FRACCION },
         resumen,
         items: filas,
         metadatos: {

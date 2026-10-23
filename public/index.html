@@ -9177,7 +9177,9 @@ function renderSugerido() {
         Costo plata parada (%/mes) ${inp('sugTasa', c.tasa_mensual, 70, 'min="0" max="50" step="0.5"')}</label>
       <button onclick="guardarSugeridoConfig()" class="sync-btn">Guardar</button>
       <div style="font-size:11px;color:var(--muted);max-width:420px">
-        Cobertura objetivo: <b>${c.objetivo_global} días</b> (la de Full Stock; si una publicación tiene la suya, usa esa).
+        Cobertura objetivo: <b>${c.objetivo_efectivo} días</b> ${c.objetivo_efectivo > c.objetivo_global
+          ? `(Full Stock dice ${c.objetivo_global}, pero nunca menos que la reposición)`
+          : '(la de Full Stock; si una publicación tiene la suya, usa esa)'}.
         "Sobra" = más de ${c.sobra_x_objetivo}× el objetivo o sin ventas en 30 días.
         "Sin tráfico" = sobra y tiene menos de la mitad de la mediana de visitas (${_sugN(m.visitas_mediana != null ? Math.round(m.visitas_mediana) : null)}).
       </div>
@@ -9187,7 +9189,7 @@ function renderSugerido() {
       ${card('se_acaba', r.se_acaba.ventas_en_riesgo ? `${_sug$(r.se_acaba.ventas_en_riesgo)} de ventas en riesgo hasta reponer` : 'se quedan sin stock antes de reponer')}
       ${card('sobra', r.sobra.capital_exceso ? `${_sug$(r.sobra.capital_exceso)} parados de más · ~${_sug$(r.sobra.costo_mensual)}/mes` : 'más stock del que se vende')}
       ${card('sin_trafico', r.sin_trafico.capital_exceso ? `${_sug$(r.sin_trafico.capital_exceso)} parados: les falta que las vean` : 'el precio no es el problema')}
-      ${card('sana', `cobertura entre ${c.dias_reposicion} y ${c.objetivo_global * c.sobra_x_objetivo} días`)}
+      ${card('sana', `cobertura entre ${c.dias_reposicion} y ${c.objetivo_efectivo * c.sobra_x_objetivo} días`)}
     </div>
     <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
       <input id="sugBuscar" type="text" placeholder="Buscar MLA, SKU o título…" value="${_sugBusqueda.replace(/"/g, '&quot;')}"
