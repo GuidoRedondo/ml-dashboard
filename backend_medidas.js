@@ -687,8 +687,10 @@ module.exports = (app, { pool, requireAuth, getClientToken, ML_API, extractSku, 
           { id: 'SELLER_PACKAGE_WEIGHT', value_name: `${Math.round(c.peso_g)} g` },
         ];
         let status = 0, data = null;
-        // 409 / 5xx de ML son transitorios: se reintenta una vez
-        for (let intento = 0; intento < 2; intento++) {
+        // 409 / 429 / 5xx de ML son transitorios: se reintenta con espera creciente.
+        // 429 "local_rate_limited" lo devolvió ML en Vale Doble (23/10/2026) recién
+        // reconectada la cuenta; un PUT igual minutos después entró a la primera.
+        for (let intento = 0; intento < 4; intento++) {
           try {
             const r = await fetch(`${ML_API}/items/${f.id}`, {
               method: 'PUT',
@@ -698,8 +700,8 @@ module.exports = (app, { pool, requireAuth, getClientToken, ML_API, extractSku, 
             status = r.status;
             data = await r.json().catch(() => null);
           } catch (e) { status = 0; data = { error: e.message }; }
-          if (!(status === 409 || status >= 500 || status === 0)) break;
-          await new Promise(ok => setTimeout(ok, 1500));
+          if (!(status === 409 || status === 429 || status >= 500 || status === 0)) break;
+          if (intento < 3) await new Promise(ok => setTimeout(ok, 1500 * 2 ** intento + Math.random() * 500));
         }
         const ok = status >= 200 && status < 300;
         const causa = !ok && data ? ((data.cause || []).map(x => x.code || x.message).filter(Boolean).join(', ') || data.message || data.error) : null;
@@ -721,6 +723,7 @@ module.exports = (app, { pool, requireAuth, getClientToken, ML_API, extractSku, 
           texto: ok ? null : (sinVentas ? 'ML no deja cambiar las medidas de esta publicación por API: cargalas desde el panel'
             : status === 401 ? 'ML rechazó el token de la cuenta (401): reconectala en Tokens'
             : status === 403 ? `ML no le da permiso de escritura a la app en esta cuenta (403${causa ? ': ' + causa : ''})`
+            : status === 429 ? 'ML frenó los envíos por exceso de pedidos (429): esperá unos minutos y volvé a mandarla'
             : causa) });
       };
       for (let i = 0; i < aMandar.length; i += 3) await Promise.all(aMandar.slice(i, i + 3).map(mandar));
