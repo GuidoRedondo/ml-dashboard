@@ -8387,8 +8387,8 @@ function renderPerfPublicaciones() {
         ${modeFilters}
         <div style="margin-left:auto;display:flex;align-items:center;gap:8px">
           ${famSwitchHtml('perfPub')}
-          <input type="text" placeholder="Buscar MLA o título..." value="${window._perfPubSearch||''}"
-            oninput="window._perfPubSearch=this.value;renderPerfPublicaciones()"
+          <input id="perfPubBuscar" type="text" placeholder="Buscar MLA o título..." value="${(window._perfPubSearch||'').replace(/"/g, '&quot;')}"
+            oninput="window._perfPubSearch=this.value;_buscarYRedibujar('perfPubBuscar', renderPerfPublicaciones)"
             style="padding:7px 12px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:12px;width:200px;outline:none">
           <button onclick="exportPerfPublicacionesExcel()" class="sync-btn" style="font-size:12px;padding:7px 14px"
             title="Descarga la tabla tal como la estás viendo (con el filtro de entrega y la búsqueda aplicados)">📥 Excel</button>
@@ -9509,7 +9509,20 @@ function sortLoQuePaso(col) {
   else { _lqpSort.col = col; _lqpSort.asc = false; }
   renderLoQuePaso();
 }
-function buscarLoQuePaso(v) { _lqpSearch = (v || '').toLowerCase(); renderLoQuePaso(); }
+// Buscador que vive dentro de la sección que redibuja: el innerHTML destruye el input en cada
+// letra y se pierde el foco (sólo se podía escribir de a una). Se espera a que dejen de tipear,
+// se redibuja una vez y se devuelve el foco con el cursor donde estaba.
+function _buscarYRedibujar(inputId, render) {
+  clearTimeout(_buscarYRedibujar._t);
+  _buscarYRedibujar._t = setTimeout(() => {
+    const prev = document.getElementById(inputId);
+    const pos = prev && document.activeElement === prev ? prev.selectionStart : null;
+    render();
+    const inp = document.getElementById(inputId);
+    if (inp && pos != null) { inp.focus(); inp.setSelectionRange(pos, pos); }
+  }, 250);
+}
+function buscarLoQuePaso(v) { _lqpSearch = v || ''; _buscarYRedibujar('lqpBuscar', renderLoQuePaso); }
 function toggleLoQuePasoCMV(v) { _lqpSoloCMV = !!v; renderLoQuePaso(); }
 function toggleLoQuePasoCols(v) { _lqpTodasCols = !!v; renderLoQuePaso(); }
 
@@ -9561,10 +9574,11 @@ function _lqpItems() {
   if (!d) return { items: [], meta: {} };
   let items = (d.items || []).slice();
   if (_lqpSoloCMV) items = items.filter(i => i.has_cost);
-  if (_lqpSearch) items = items.filter(i =>
-    (i.mla_id || '').toLowerCase().includes(_lqpSearch) ||
-    (i.sku   || '').toLowerCase().includes(_lqpSearch) ||
-    (i.title || '').toLowerCase().includes(_lqpSearch));
+  const lqpQ = _lqpSearch.trim().toLowerCase();
+  if (lqpQ) items = items.filter(i =>
+    (i.mla_id || '').toLowerCase().includes(lqpQ) ||
+    (i.sku   || '').toLowerCase().includes(lqpQ) ||
+    (i.title || '').toLowerCase().includes(lqpQ));
 
   // La CM total del denominador se calcula sobre los que GANAN: si se netean los que
   // pierden, los porcentajes se disparan por arriba de 100 y dejan de significar nada.
@@ -9686,7 +9700,7 @@ function renderLoQuePaso() {
       </div>
 
       <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px">
-        <input type="text" placeholder="Buscar por MLA, SKU o título…" value="${_lqpSearch}" oninput="buscarLoQuePaso(this.value)"
+        <input id="lqpBuscar" type="text" placeholder="Buscar por MLA, SKU o título…" value="${_lqpSearch.replace(/"/g, '&quot;')}" oninput="buscarLoQuePaso(this.value)"
           style="flex:1;min-width:220px;padding:7px 12px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:12px;outline:none">
         <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);cursor:pointer">
           <input type="checkbox" ${_lqpSoloCMV ? 'checked' : ''} onchange="toggleLoQuePasoCMV(this.checked)" style="margin:0"> Solo con CMV cargado
