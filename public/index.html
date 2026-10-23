@@ -9246,8 +9246,7 @@ function _sugRenderTabla() {
           ${td(`<a href="https://articulo.mercadolibre.com.ar/${f.mla_id.replace('MLA', 'MLA-')}" target="_blank" style="color:var(--accent-ink);text-decoration:none">${f.mla_id}</a>
                ${f.sku ? `<span style="color:var(--muted);font-size:11px"> · ${_escHtml(f.sku)}</span>` : ''}
                ${f.publicaciones.length > 1 ? `<span style="font-size:10px;font-weight:700;padding:1px 6px;border-radius:6px;background:var(--surface2);color:var(--text);cursor:help"
-                 title="${_escHtml(f.publicaciones.map(p => `${p.mla_id} · ${p.logistica} · stock ${p.stock ?? '—'} · ${p.unidades_30d} u. en 30 d · ${p.visitas_30d ?? '—'} visitas`).join('
-'))}">+${f.publicaciones.length - 1} pub.${f.stock_compartido ? ' · mismo stock' : ''}</span>` : ''}
+                 title="${f.publicaciones.map(p => _escHtml(`${p.mla_id} · ${p.logistica} · stock ${p.stock ?? '—'} · ${p.unidades_30d} u. en 30 d · ${p.visitas_30d ?? '—'} visitas`)).join('&#10;')}">+${f.publicaciones.length - 1} pub.${f.stock_compartido ? ' · mismo stock' : ''}</span>` : ''}
                <div style="font-size:11px;color:var(--muted);max-width:260px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${_escHtml(f.title || '')}">${_escHtml(f.title || '')}</div>`, 'left')}
           ${td(f.logistica, 'center')}
           ${td(_sugN(f.stock))}
