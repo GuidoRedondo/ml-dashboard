@@ -1494,7 +1494,10 @@ app.get('/api/token-status', requireAuth, async (req, res) => {
 app.get('/api/clients', requireAuth, async (req, res) => {
   try {
     let query, params = [];
-    if (req.user.role === 'cliente' && req.user.client_id) {
+    // Un cliente sin cuenta asignada caía en la rama del equipo y veía TODAS las cuentas
+    // (oct 2026: 4 usuarios así). Fuera del equipo: su cuenta o nada.
+    if (!ROLES_TODAS_LAS_CUENTAS.includes(req.user.role) && !req.user.client_id) return res.json([]);
+    if (!ROLES_TODAS_LAS_CUENTAS.includes(req.user.role)) {
       // Cliente solo ve su propia cuenta
       query = `SELECT id, name, ml_user_id, site_id, active, token_expires_at, updated_at,
                roas_target, tasa_iibb_pct, condicion_iva, publi_activa, tipo_cuenta, piso_cm_promo_pct, promo_topes,
