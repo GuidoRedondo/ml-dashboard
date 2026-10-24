@@ -3901,41 +3901,6 @@ async function exchangeCode(accId, code, overlay) {
 }
 
 // ─── DATA LOADING ────────────────────────────────────────────────────────────
-async function mlGet(path, token) {
-  // Try direct first, then fallback to proxy
-  const directUrl = ML_API + path;
-  const proxyUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(directUrl + (directUrl.includes('?') ? '&' : '?') + '_token=' + token)}`;
-  
-  try {
-    // Try direct call first
-    const res = await fetch(directUrl, {
-      headers: { Authorization: `Bearer ${token}` }
-    });
-    if (res.ok) return res.json();
-    throw new Error('direct failed');
-  } catch(e) {
-    // Fallback: use allorigins proxy
-    try {
-      const proxyRes = await fetch(`https://api.allorigins.win/get?url=${encodeURIComponent(directUrl)}`, {
-        headers: { 'X-Requested-With': 'XMLHttpRequest' }
-      });
-      // allorigins returns { contents: "json string" }
-      // But we can't pass auth headers through allorigins
-      // So use a different approach - encode token in a special header workaround
-      const data = await proxyRes.json();
-      if (data && data.contents) return JSON.parse(data.contents);
-      throw new Error('proxy failed');
-    } catch(e2) {
-      // Last resort: try with access_token as query param (ML supports this)
-      const urlWithToken = ML_API + path + (path.includes('?') ? '&' : '?') + 'access_token=' + token;
-      const res3 = await fetch(`https://api.allorigins.win/get?url=${encodeURIComponent(urlWithToken)}`);
-      const data3 = await res3.json();
-      if (data3 && data3.contents) return JSON.parse(data3.contents);
-      throw new Error('all methods failed');
-    }
-  }
-}
-
 async function refreshToken(acc) {
   if (!acc.refreshToken) return false;
   try {
@@ -3961,37 +3926,6 @@ async function refreshToken(acc) {
   } catch(e) {
     return false;
   }
-}
-
-async function mlGetWithRefresh(path, acc) {
-  try {
-    const data = await mlGet(path, acc.accessToken);
-    // If ML returns unauthorized, try refreshing token
-    if (data && data.error === 'unauthorized_scopes' || data && data.status === 401) {
-      const refreshed = await refreshToken(acc);
-      if (refreshed) return await mlGet(path, acc.accessToken);
-    }
-    return data;
-  } catch(e) {
-    // Try refreshing token and retry
-    const refreshed = await refreshToken(acc);
-    if (refreshed) {
-      return await mlGet(path, acc.accessToken);
-    }
-    throw e;
-  }
-}
-
-async function mlFetch(path, token) {
-  const sep = path.includes('?') ? '&' : '?';
-  const fullUrl = 'https://api.mercadolibre.com' + path + sep + 'access_token=' + token;
-  const proxyUrl = 'https://api.allorigins.win/get?url=' + encodeURIComponent(fullUrl);
-  const res = await fetch(proxyUrl);
-  const json = await res.json();
-  if (!json.contents) throw new Error('No contents from proxy');
-  const data = JSON.parse(json.contents);
-  if (data.error === 'not_found') throw new Error('not_found');
-  return data;
 }
 
 function getRangeDates(days) {
@@ -25412,19 +25346,9 @@ async function loadDestaqueHighlights(categoryId) {
   if (!client || !categoryId) return;
   el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:30px;text-align:center;background:var(--surface);border:1px solid var(--border);border-radius:12px">⏳ Cargando top del mercado...</div>';
   try {
-    const { token } = await apiCall('GET', `/api/competencia/ml-token?client_id=${client.id}`);
-    // access_token como query param evita el preflight CORS que ML rechaza
-    const r = await fetch(`https://api.mercadolibre.com/sites/MLA/search?category=${categoryId}&limit=20&access_token=${token}`);
-    const data = await r.json();
-    if (data.error) throw new Error(`ML: ${data.message || data.error}`);
-    const items = (data.results || []).map((it, i) => ({
-      position: i + 1, id: it.id, title: it.title, price: it.price,
-      original_price: it.original_price, thumbnail: it.thumbnail,
-      permalink: it.permalink, sold_quantity: it.sold_quantity,
-      free_shipping: it.shipping?.free_shipping, listing_type: it.listing_type_id,
-      condition: it.condition,
-    }));
-    renderDestaqueHighlights({ items });
+    const data = await apiCall('GET', `/api/competencia/busqueda?client_id=${client.id}&category_id=${encodeURIComponent(categoryId)}`);
+    if (!data || data.error) throw new Error(data?.error || 'Sin acceso a esta cuenta');
+    renderDestaqueHighlights({ items: data.items });
   } catch(e) {
     el.innerHTML = `<div style="color:#ef4444;font-size:13px;padding:20px;background:var(--surface);border:1px solid var(--border);border-radius:12px">Error: ${e.message}</div>`;
   }
@@ -25475,17 +25399,9 @@ async function loadTendencias(categoryId) {
   if (!client || !el || !categoryId) return;
   el.innerHTML = '<div style="color:var(--muted);font-size:13px;padding:30px;text-align:center;background:var(--surface);border:1px solid var(--border);border-radius:12px">⏳ Cargando más vendidos...</div>';
   try {
-    const { token } = await apiCall('GET', `/api/competencia/ml-token?client_id=${client.id}`);
-    const r = await fetch(`https://api.mercadolibre.com/sites/MLA/search?category=${categoryId}&sort=sold_quantity_desc&limit=20&access_token=${token}`);
-    const data = await r.json();
-    if (data.error) throw new Error(`ML: ${data.message || data.error}`);
-    const items = (data.results || []).map((it, i) => ({
-      position: i + 1, id: it.id, title: it.title, price: it.price,
-      thumbnail: it.thumbnail, permalink: it.permalink,
-      sold_quantity: it.sold_quantity, free_shipping: it.shipping?.free_shipping,
-      listing_type: it.listing_type_id,
-    }));
-    renderTendencias({ items });
+    const data = await apiCall('GET', `/api/competencia/busqueda?client_id=${client.id}&category_id=${encodeURIComponent(categoryId)}&orden=vendidos`);
+    if (!data || data.error) throw new Error(data?.error || 'Sin acceso a esta cuenta');
+    renderTendencias({ items: data.items });
   } catch(e) {
     el.innerHTML = `<div style="color:#ef4444;font-size:13px;padding:20px;background:var(--surface);border:1px solid var(--border);border-radius:12px">Error: ${e.message}</div>`;
   }

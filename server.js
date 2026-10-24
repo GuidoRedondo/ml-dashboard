@@ -998,9 +998,24 @@ if (process.env.RAILWAY_PUBLIC_DOMAIN || process.env.SELF_URL) {
 }
 
 // ── MIDDLEWARE ─────────────────────────────────────────────────────────────────
+// CORS sólo para nuestros dominios. Antes devolvía el origen de quien preguntara, con
+// credenciales: cualquier sitio podía hacer pedidos al dashboard. El front se sirve desde el
+// mismo dominio (no necesita CORS); la lista es para los dominios propios que le peguen de
+// costado. CORS_ORIGINS (coma) agrega otros sin tocar código.
+const CORS_ORIGINS = new Set([
+  'https://app.negocioredondolatam.com',
+  'https://ml-dashboard-production.up.railway.app',
+  ...(process.env.RAILWAY_PUBLIC_DOMAIN ? ['https://' + process.env.RAILWAY_PUBLIC_DOMAIN] : []),
+  ...String(process.env.CORS_ORIGINS || '').split(',').map(s => s.trim()).filter(Boolean),
+]);
+const esOrigenLocal = o => /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(o);
 app.use((req, res, next) => {
-  res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
-  res.header('Access-Control-Allow-Credentials', 'true');
+  const origin = req.headers.origin;
+  if (origin && (CORS_ORIGINS.has(origin) || esOrigenLocal(origin))) {
+    res.header('Access-Control-Allow-Origin', origin);
+    res.header('Access-Control-Allow-Credentials', 'true');
+    res.header('Vary', 'Origin');
+  }
   res.header('Access-Control-Allow-Headers', 'Content-Type, x-session-id, x-page');
   res.header('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
   if (req.method === 'OPTIONS') return res.sendStatus(200);
@@ -1066,6 +1081,13 @@ async function requireAuth(req, res, next) {
   req.user = result.rows[0];
   marcarActividad(sessionId, req);
   next();
+}
+
+// Qué cuentas puede tocar un usuario: admin, consultor y colaborador, cualquiera; un cliente,
+// sólo la suya. Mismo criterio que accesoCuenta() de backend_adman.js.
+function puedeVerCliente(user, clientId) {
+  if (['admin', 'consultant', 'colaborador'].includes(user?.role)) return true;
+  return parseInt(user?.client_id) === parseInt(clientId);
 }
 
 // ── AUTH ENDPOINTS ────────────────────────────────────────────────────────────
@@ -13838,11 +13860,30 @@ app.get('/api/competencia/item', requireAuth, async (req, res) => {
 
 // Devuelve el token ML del cliente para que el browser pueda llamar a ML directo
 // (evita el 403 por IP de cloud en búsquedas de categoría)
-app.get('/api/competencia/ml-token', requireAuth, async (req, res) => {
+// Competencia → Destacados / Tendencias: top de una categoría (por relevancia o por
+// vendidos). Antes el front pedía el ACCESS TOKEN del cliente (/api/competencia/ml-token, sin
+// validar que la cuenta fuera suya) y le pegaba a ML desde el navegador con el token en la URL.
+// Ahora la llamada sale del servidor y el token nunca llega al front.
+app.get('/api/competencia/busqueda', requireAuth, async (req, res) => {
   try {
-    const token = await getClientToken(parseInt(req.query.client_id));
+    const clientId = parseInt(req.query.client_id);
+    const categoryId = String(req.query.category_id || '');
+    if (!clientId || !/^MLA\d+$/.test(categoryId)) return res.status(400).json({ error: 'client_id y category_id (MLA…) requeridos' });
+    if (!puedeVerCliente(req.user, clientId)) return res.status(403).json({ error: 'Sin acceso a esta cuenta' });
+    const token = await getClientToken(clientId);
     if (!token) return res.status(403).json({ error: 'Sin token' });
-    res.json({ token });
+    const orden = req.query.orden === 'vendidos' ? '&sort=sold_quantity_desc' : '';
+    const r = await fetch(`${ML_API}/sites/MLA/search?category=${categoryId}${orden}&limit=20`,
+      { headers: { Authorization: `Bearer ${token}` } });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok || data.error) return res.status(r.ok ? 502 : r.status).json({ error: `ML: ${data.message || data.error || r.status}` });
+    res.json({ items: (data.results || []).map((it, i) => ({
+      position: i + 1, id: it.id, title: it.title, price: it.price,
+      original_price: it.original_price, thumbnail: it.thumbnail,
+      permalink: it.permalink, sold_quantity: it.sold_quantity,
+      free_shipping: it.shipping?.free_shipping, listing_type: it.listing_type_id,
+      condition: it.condition,
+    })) });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -16115,6 +16156,7 @@ app.get('/api/proxy-ml', requireAuth, async (req, res) => {
   try {
     const { path, client_id, api_version } = req.query;
     if (!path || !client_id) return res.status(400).json({ error: 'Falta path o client_id' });
+    if (!puedeVerCliente(req.user, client_id)) return res.status(403).json({ error: 'Sin acceso a esta cuenta' });
     const clientRes = await pool.query('SELECT * FROM clients WHERE id=$1', [client_id]);
     if (!clientRes.rows.length) return res.status(404).json({ error: 'Cliente no encontrado' });
     const client = clientRes.rows[0];
@@ -16134,6 +16176,7 @@ app.post('/api/proxy-ml-write', requireAuth, async (req, res) => {
   try {
     const { path, client_id, method, body } = req.body || {};
     if (!path || !client_id) return res.status(400).json({ error: 'Falta path o client_id' });
+    if (!puedeVerCliente(req.user, client_id)) return res.status(403).json({ error: 'Sin acceso a esta cuenta' });
 
     // 1) Solo PUT sobre /items/MLA... — nada de borrar ni tocar otros recursos
     const verb = (method || 'PUT').toUpperCase();
@@ -16386,7 +16429,10 @@ app.post('/login', async (req, res) => {
 });
 
 // Keep old token-based endpoints for backward compatibility
-app.post('/api/token', async (req, res) => {
+// Canje / refresh de tokens de ML del flujo viejo de conexión desde el navegador (la conexión
+// actual va por /oauth/callback). Estaba abierto sin login: cualquiera podía usar el servidor
+// como puente a oauth/token. Ahora sólo admin; el front viejo manda la cookie de sesión igual.
+app.post('/api/token', requireAuth, requireAdmin, async (req, res) => {
   try {
     const body = req.body;
     const params = { grant_type: body.grant_type||'authorization_code', client_id: body.client_id, client_secret: body.client_secret };

@@ -52,6 +52,9 @@ This is a **single-file Node.js/Express backend** (`server.js`) + **single-file 
 - **Express** server on `PORT` (default 3000), connects to **PostgreSQL** via `pg.Pool` using `DATABASE_URL`.
 - **Authentication**: session-based. Sessions stored in the `sessions` DB table; session ID sent via cookie `ml_session_id` or `x-session-id` header. Passwords hashed with SHA-256.
 - **Roles**: `admin` (full access) and `colaborador`/`cliente` (restricted by per-section permissions in `user_permissions` table).
+- **Account access**: `puedeVerCliente(user, clientId)` — admin / consultant / colaborador any account, a `cliente` only their own `client_id`. Enforced in `/api/proxy-ml`, `/api/proxy-ml-write` and `/api/competencia/busqueda`. Most other endpoints still take `client_id` without this check.
+- **CORS**: only our own origins (`CORS_ORIGINS` set in `server.js`, extendable with env `CORS_ORIGINS`, plus localhost). The front is same-origin and doesn't need it.
+- **Never send an ML access token to the browser.** Every ML call goes out from the server (ML will whitelist the server's outbound IPs). `POST /api/token` (legacy browser OAuth flow) is admin-only.
 - **MercadoLibre OAuth**: each `client` record holds its own ML `access_token` / `refresh_token`. Tokens are refreshed on demand. App credentials fall back from per-client DB values to env vars `ML_APP_ID` / `ML_CLIENT_SECRET`.
 - **Email**: optional Nodemailer via `SMTP_HOST`, `SMTP_USER`, `SMTP_PASS` env vars.
 - **Keep-alive**: self-pings `/health` every 4 minutes when `RAILWAY_PUBLIC_DOMAIN` or `SELF_URL` is set.
@@ -101,7 +104,7 @@ This is a **single-file Node.js/Express backend** (`server.js`) + **single-file 
 - **Precios (CM objetivo)**: `GET /api/precios`, `PUT /api/precios/objetivo`, `PUT /api/precios/objetivo-item`, `GET /api/tarifas` (`?bandas=1` returns all 27 weight bands)
 - **Reporte financiero (P&L)**: `GET /api/reporte/items-vendidos`, `GET /api/reporte/items-activos`, `POST /api/reporte/costos`, `GET|POST /api/reporte/gastos`, `GET /api/reporte/pyl`, `GET /api/reporte/devoluciones-analisis`, `GET /api/reporte/meses-disponibles`, `GET /api/reporte/comparar`, `GET /api/reporte/semanal` (last N closed weeks + which are missing), `POST /api/reporte/semanal/calcular` (one Monday at a time), `GET|POST /api/reporte/semanal/cron`
 - **Logística / Full Stock**: `GET /api/logistica`, `GET /api/logistica/full-stock`, `PUT /api/logistica/full-stock-global`, `PUT /api/logistica/full-stock/:item_id`
-- **Competencia**: `GET /api/competencia`, `GET /api/competencia/item`, `GET /api/competencia/categorias`, `GET /api/competencia/diagnostico`
+- **Competencia**: `GET /api/competencia`, `GET /api/competencia/item`, `GET /api/competencia/categorias`, `GET /api/competencia/diagnostico`, `GET /api/competencia/busqueda` (top of a category by relevance or `orden=vendidos`, called from the server — the ML token never reaches the browser)
 - **Panel de Clientes (vista rápida)**: `GET /api/panel/metricas`, `GET /api/panel/metricas/hoy`, `POST /api/panel/metricas/backfill`, `GET|POST /api/panel/metricas/cron`
 - **Reclamos** (`backend_reclamos.js`): `GET /api/reclamos`, `GET /api/reclamos/hilo`, `POST /api/reclamos/sync`, `POST /api/reclamos/enriquecer`, `GET /api/reclamos/sync/estado`, `GET|POST /api/reclamos/cron`
 - **Medida paquetes** (`backend_medidas.js`): `GET /api/medidas` (`?refresh=1` rebuilds the catalogue from ML), `PUT /api/medidas` (box of one listing, copied to its SKU unless `copiar_sku:false`; all empty = delete), `POST /api/medidas/importar` (spreadsheet rows; without `confirmar` it only previews), `POST /api/medidas/enviar-ml` (`item_ids`, `confirmar_avisos`), `GET /api/medidas/historial`
