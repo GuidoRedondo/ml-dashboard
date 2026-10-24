@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Negocio Redondo — Ingresar</title>
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root { --bg:#F5F6FA; --surface:#FFFFFF; --surface2:#F0F2F8; --border:#E4E7F0; --text:#1A1D2E; --muted:#6B7088; --accent:#FFD600; --red:#DC2626; }
+  * { box-sizing:border-box; margin:0; padding:0 }
+  body { font-family:Poppins,sans-serif; background:var(--bg); color:var(--text); display:flex; align-items:center; justify-content:center; min-height:100vh; padding:16px }
+  .box { background:var(--surface); border-radius:20px; padding:40px 36px; width:400px; max-width:100%; box-shadow:0 8px 32px rgba(0,0,0,.10) }
+  .logo { text-align:center; margin-bottom:26px }
+  .icon { width:48px; height:48px; background:var(--accent); border-radius:12px; display:flex; align-items:center; justify-content:center; margin:0 auto 14px; font-size:24px }
+  h1 { font-size:21px; font-weight:700 }
+  .sub { color:var(--muted); font-size:13px; margin-top:4px; line-height:1.5 }
+  label { display:block; font-size:11px; font-weight:600; color:var(--muted); margin-bottom:6px; text-transform:uppercase; letter-spacing:.5px }
+  .field { margin-bottom:16px }
+  input { width:100%; background:var(--surface2); border:1.5px solid var(--border); border-radius:10px; padding:11px 14px; font-family:inherit; font-size:14px; outline:none; color:var(--text) }
+  input:focus { border-color:var(--text); background:#fff }
+  input.codigo { font-size:22px; letter-spacing:6px; text-align:center; font-weight:600 }
+  button { width:100%; background:var(--accent); border:none; border-radius:10px; padding:13px; font-family:inherit; font-size:14px; font-weight:700; cursor:pointer; margin-top:6px; color:var(--text) }
+  button:disabled { opacity:.6; cursor:wait }
+  button.sec { background:var(--surface2); font-weight:600 }
+  .link { background:none; color:var(--text); text-decoration:underline; font-weight:500; font-size:12px; padding:8px; margin-top:4px }
+  .error { color:var(--red); font-size:12.5px; margin-top:12px; text-align:center; font-weight:500; min-height:18px }
+  .paso { display:none }
+  .paso.on { display:block }
+  .qr { display:flex; justify-content:center; margin:14px 0 8px }
+  .qr img { width:200px; height:200px; border:1px solid var(--border); border-radius:10px }
+  .secreto { font-family:monospace; font-size:12px; background:var(--surface2); padding:8px 10px; border-radius:8px; word-break:break-all; text-align:center; margin-bottom:14px }
+  ol { font-size:13px; line-height:1.6; padding-left:18px; margin:12px 0 }
+  .codigos { display:grid; grid-template-columns:1fr 1fr; gap:6px; margin:14px 0; font-family:monospace; font-size:15px; font-weight:600; text-align:center }
+  .codigos div { background:var(--surface2); border-radius:8px; padding:8px }
+  .nota { background:#FEF3C7; border:1px solid #F59E0B; color:#78350F; border-radius:10px; padding:10px 12px; font-size:12.5px; line-height:1.5; margin-top:10px }
+  .fila { display:flex; gap:8px }
+  .fila button { flex:1 }
+</style>
+</head>
+<body>
+<div class="box">
+  <div class="logo">
+    <div class="icon">📊</div>
+    <h1>Negocio Redondo</h1>
+    <p class="sub" id="subtitulo">Dashboard de Mercado Libre</p>
+  </div>
+
+  <!-- 1. Usuario y contraseña -->
+  <form class="paso on" id="pasoPass" autocomplete="on">
+    <div class="field"><label for="usuario">Usuario</label><input id="usuario" name="username" type="text" autocomplete="username" required></div>
+    <div class="field"><label for="clave">Contraseña</label><input id="clave" name="password" type="password" autocomplete="current-password" required></div>
+    <button type="submit" id="btnPass">Ingresar</button>
+  </form>
+
+  <!-- 2. Código de la app (o de respaldo) -->
+  <form class="paso" id="pasoCodigo" autocomplete="off">
+    <p class="sub" style="text-align:center;margin-bottom:16px">Abrí Google Authenticator o Authy y escribí el código de 6 dígitos de <b>Negocio Redondo</b>.</p>
+    <div class="field"><input id="codigo" class="codigo" inputmode="numeric" autocomplete="one-time-code" maxlength="9" placeholder="000000" required></div>
+    <button type="submit" id="btnCodigo">Verificar</button>
+    <button type="button" class="link" id="btnRespaldo">Perdí el celular: usar un código de respaldo</button>
+  </form>
+
+  <!-- 3a. Activación: explicación -->
+  <div class="paso" id="pasoActivarIntro">
+    <p class="sub" style="margin-bottom:6px">Para entrar necesitás activar la <b>verificación en dos pasos</b>. Lleva un minuto:</p>
+    <ol>
+      <li>Descargá <b>Google Authenticator</b> o <b>Authy</b> en tu celular (son gratis).</li>
+      <li>Escaneá el código QR que te vamos a mostrar.</li>
+      <li>Escribí el código de 6 dígitos que aparece en la app.</li>
+    </ol>
+    <button type="button" id="btnIniciarActivacion">Ya tengo la app, mostrame el QR</button>
+  </div>
+
+  <!-- 3b. Activación: QR + primer código -->
+  <form class="paso" id="pasoActivarQr" autocomplete="off">
+    <p class="sub" style="text-align:center">En la app tocá <b>+</b> y escaneá este código:</p>
+    <div class="qr"><img id="qrImg" alt="Código QR para la app de autenticación"></div>
+    <p class="sub" style="text-align:center;font-size:11.5px">¿No podés escanear? Cargá esta clave a mano:</p>
+    <div class="secreto" id="secretoTxt"></div>
+    <div class="field"><label for="codigoActivar">Código de 6 dígitos de la app</label><input id="codigoActivar" class="codigo" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="000000" required></div>
+    <button type="submit" id="btnConfirmar">Activar y entrar</button>
+  </form>
+
+  <!-- 4. Códigos de respaldo (se muestran una sola vez) -->
+  <div class="paso" id="pasoRespaldo">
+    <p class="sub" style="text-align:center"><b>Listo, quedó activada.</b> Guardá estos códigos de respaldo: cada uno sirve <b>una sola vez</b> para entrar si perdés o cambiás el celular.</p>
+    <div class="codigos" id="codigosLista"></div>
+    <div class="fila">
+      <button type="button" class="sec" id="btnDescargar">Descargar .txt</button>
+      <button type="button" class="sec" id="btnCopiar">Copiar</button>
+    </div>
+    <div class="nota">No se vuelven a mostrar. Guardalos fuera del celular (en tu computadora o impresos).</div>
+    <button type="button" id="btnEntrar" style="margin-top:14px">Ya los guardé, entrar</button>
+  </div>
+
+  <div class="error" id="error" role="alert"></div>
+</div>
+
+<script>
+// Login en dos pasos (backend_mfa.js). La sesión la crea el servidor recién al final y la deja
+// en las cookies; nunca pasa por la URL.
+(() => {
+  const $ = id => document.getElementById(id);
+  let desafio = null, codigosRespaldo = [], usuarioActual = '';
+
+  const mostrar = id => {
+    document.querySelectorAll('.paso').forEach(p => p.classList.toggle('on', p.id === id));
+    $('error').textContent = '';
+    const foco = document.querySelector('#' + id + ' input');
+    if (foco) setTimeout(() => foco.focus(), 50);
+  };
+  const error = msj => { $('error').textContent = msj || ''; };
+  const ocupado = (btn, si, texto) => { btn.disabled = si; if (texto) btn.textContent = texto; };
+
+  async function post(url, body) {
+    const r = await fetch(url, { method: 'POST', credentials: 'include',
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    let data = {};
+    try { data = await r.json(); } catch (_) {}
+    if (r.status === 429) data.error = data.error || 'Demasiados intentos. Esperá unos minutos.';
+    return { ok: r.ok, status: r.status, data };
+  }
+  function reiniciar(msj) { desafio = null; mostrar('pasoPass'); $('clave').value = ''; error(msj); }
+
+  function entrar(data) {
+    // El aviso de MFA se muestra en el dashboard una vez por ingreso (no en cada recarga).
+    try {
+      if (data.aviso_mfa) sessionStorage.setItem('nr_aviso_mfa', JSON.stringify(data.aviso_mfa));
+      else sessionStorage.removeItem('nr_aviso_mfa');
+      if (data.permissions) localStorage.setItem('ml_permissions', JSON.stringify(data.permissions));
+    } catch (_) {}
+    window.location.replace('/');
+  }
+
+  // Error que venga en la URL (p. ej. una redirección vieja): como texto, nunca como HTML.
+  const qErr = new URLSearchParams(location.search).get('error');
+  if (qErr) error(qErr.slice(0, 200));
+
+  $('pasoPass').addEventListener('submit', async e => {
+    e.preventDefault();
+    const btn = $('btnPass'); ocupado(btn, true, 'Ingresando…'); error('');
+    usuarioActual = $('usuario').value.trim();
+    const { ok, data } = await post('/api/login', { username: usuarioActual, password: $('clave').value });
+    ocupado(btn, false, 'Ingresar');
+    if (!ok) return error(data.error || 'No se pudo ingresar');
+    if (data.mfa === 'codigo') { desafio = data.desafio; $('subtitulo').textContent = 'Verificación en dos pasos'; return mostrar('pasoCodigo'); }
+    if (data.mfa === 'activar') { desafio = data.desafio; $('subtitulo').textContent = 'Activá la verificación en dos pasos'; return mostrar('pasoActivarIntro'); }
+    if (data.sessionId) return entrar(data);
+    error('Respuesta inesperada del servidor');
+  });
+
+  $('btnRespaldo').addEventListener('click', () => {
+    const i = $('codigo'); i.value = ''; i.maxLength = 9; i.placeholder = 'xxxx-xxxx'; i.inputMode = 'text'; i.focus();
+    $('btnRespaldo').style.display = 'none';
+  });
+
+  $('pasoCodigo').addEventListener('submit', async e => {
+    e.preventDefault();
+    const btn = $('btnCodigo'); ocupado(btn, true, 'Verificando…');
+    const { ok, data } = await post('/api/login/codigo', { desafio, codigo: $('codigo').value.trim() });
+    ocupado(btn, false, 'Verificar');
+    if (!ok) { if (data.reiniciar) return reiniciar(data.error); $('codigo').value = ''; return error(data.error || 'Código incorrecto'); }
+    if (data.respaldo_restantes != null) {
+      alertaRespaldo(data);
+      return;
+    }
+    entrar(data);
+  });
+  // Entró con un código de respaldo: se avisa cuántos le quedan antes de seguir.
+  function alertaRespaldo(data) {
+    $('pasoCodigo').insertAdjacentHTML('beforeend',
+      '<div class="nota" id="notaRespaldo">Entraste con un código de respaldo. Te quedan <b>' + Number(data.respaldo_restantes) +
+      '</b>. Si perdiste el celular, pedinos que te reseteemos la verificación.</div>' +
+      '<button type="button" id="btnSeguir" style="margin-top:12px">Seguir</button>');
+    $('btnCodigo').style.display = 'none';
+    $('btnSeguir').addEventListener('click', () => entrar(data));
+  }
+
+  $('btnIniciarActivacion').addEventListener('click', async () => {
+    const btn = $('btnIniciarActivacion'); ocupado(btn, true, 'Generando…');
+    const { ok, data } = await post('/api/login/activar/iniciar', { desafio });
+    ocupado(btn, false, 'Ya tengo la app, mostrame el QR');
+    if (!ok) { if (data.reiniciar) return reiniciar(data.error); return error(data.error); }
+    $('qrImg').src = data.qr;
+    $('secretoTxt').textContent = data.secreto.replace(/(.{4})/g, '$1 ').trim();
+    mostrar('pasoActivarQr');
+  });
+
+  $('pasoActivarQr').addEventListener('submit', async e => {
+    e.preventDefault();
+    const btn = $('btnConfirmar'); ocupado(btn, true, 'Activando…');
+    const { ok, data } = await post('/api/login/activar/confirmar', { desafio, codigo: $('codigoActivar').value.trim() });
+    ocupado(btn, false, 'Activar y entrar');
+    if (!ok) { if (data.reiniciar) return reiniciar(data.error); $('codigoActivar').value = ''; return error(data.error); }
+    codigosRespaldo = data.codigos || [];
+    $('codigosLista').innerHTML = '';
+    codigosRespaldo.forEach(c => { const d = document.createElement('div'); d.textContent = c; $('codigosLista').appendChild(d); });
+    $('btnEntrar').onclick = () => entrar(data);
+    mostrar('pasoRespaldo');
+  });
+
+  const textoCodigos = () => 'Negocio Redondo — códigos de respaldo de ' + usuarioActual + '\n' +
+    'Cada código sirve una sola vez.\n\n' + codigosRespaldo.join('\n') + '\n';
+  $('btnDescargar').addEventListener('click', () => {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([textoCodigos()], { type: 'text/plain' }));
+    a.download = 'negocio-redondo-codigos-respaldo.txt';
+    a.click();
+  });
+  $('btnCopiar').addEventListener('click', () => {
+    navigator.clipboard.writeText(textoCodigos()).then(() => { $('btnCopiar').textContent = 'Copiados ✓'; });
+  });
+})();
+</script>
+</body>
+</html>

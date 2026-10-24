@@ -7,6 +7,7 @@ process.env.TZ = 'America/Argentina/Buenos_Aires';
 
 const express = require('express');
 const { prepararExcelPromos, leerExcelPromos } = require('./promo_excel');
+const path = require('path');
 const cookieParser = require('cookie-parser');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
@@ -1146,10 +1147,10 @@ app.use('/api/', rateLimit({
   skip: req => RUTAS_SIN_LIMITE.test(req.originalUrl.split('?')[0]),
   message: { error: 'Demasiados pedidos. Esperá un minuto y probá de nuevo.' },
 }));
-// Login: 10 intentos cada 15 minutos por IP (contraseña y, cuando esté el MFA, el código).
+// Login: 20 pedidos cada 15 minutos por IP, contando contraseña, código y activación.
 const limiteLogin = rateLimit({
   windowMs: 15 * 60 * 1000,
-  limit: 10,
+  limit: 20,   // un ingreso con MFA son 2-3 pedidos
   standardHeaders: 'draft-7',
   legacyHeaders: false,
   handler: (req, res) => req.originalUrl.startsWith('/login')
@@ -1164,6 +1165,8 @@ app.use(express.static('public'));
 
 // Tokens de servicio (Warren, Steve, scripts) y, en la fase 3, MFA: backend_seguridad.js.
 const seguridad = require('./backend_seguridad')({ pool });
+// Login: contraseñas (scrypt), bloqueo por intentos y MFA. Ver backend_mfa.js.
+const mfa = require('./backend_mfa')({ pool });
 
 async function requireAuth(req, res, next) {
   const tokenServicio = seguridad.tokenDelPedido(req);
@@ -1177,11 +1180,17 @@ async function requireAuth(req, res, next) {
     const sessionId = req.headers['x-session-id'] || (req.cookies && req.cookies.ml_session_id) || req.query.session_id;
     if (!sessionId) return res.status(401).json({ error: 'No autenticado' });
     const result = await pool.query(
-      'SELECT u.* FROM sessions s JOIN users u ON s.user_id = u.id WHERE s.id = $1 AND s.expires_at > NOW()',
+      'SELECT u.*, s.mfa_ok AS _sesion_mfa_ok FROM sessions s JOIN users u ON s.user_id = u.id WHERE s.id = $1 AND s.expires_at > NOW()',
       [sessionId]
     );
     if (!result.rows.length) return res.status(401).json({ error: 'Sesión expirada' });
-    req.user = result.rows[0];
+    const { _sesion_mfa_ok, ...user } = result.rows[0];
+    // Una sesión abierta sin código no alcanza si el MFA ya le corresponde a este usuario.
+    if (await mfa.sesionNecesitaMfa(user, _sesion_mfa_ok)) {
+      return res.status(401).json({ error: 'Necesitás entrar de nuevo con la verificación en dos pasos', mfa: true });
+    }
+    req.user = user;
+    req.sessionId = sessionId;
     marcarActividad(sessionId, req);
   }
   const sinAcceso = await controlDeCuenta(req).catch(e => ({ status: 500, error: e.message }));
@@ -1244,28 +1253,11 @@ function puedeVerCliente(user, clientId) {
 }
 
 // ── AUTH ENDPOINTS ────────────────────────────────────────────────────────────
+// Paso 1 del login: usuario + contraseña. Devuelve la sesión, o un desafío si hace falta el
+// código de la app (o activarlo). Bloqueo, scrypt y MFA en backend_mfa.js.
 app.post('/api/login', async (req, res) => {
-  try {
-    const { username, password } = req.body;
-    const hash = crypto.createHash('sha256').update(password).digest('hex');
-    const result = await pool.query(
-      'SELECT * FROM users WHERE (username = $1 OR email = $1) AND password_hash = $2',
-      [username, hash]
-    );
-    if (!result.rows.length) return res.status(401).json({ error: 'Usuario o contraseña incorrectos' });
-    const user = result.rows[0];
-    const sessionId = crypto.randomBytes(32).toString('hex');
-    await pool.query('INSERT INTO sessions (id, user_id) VALUES ($1, $2)', [sessionId, user.id]);
-
-    // Permisos del usuario
-    const permsRes = await pool.query('SELECT section, enabled FROM user_permissions WHERE user_id = $1', [user.id]);
-    const permissions = permsRes.rows.reduce((m, r) => { m[r.section] = r.enabled; return m; }, {});
-
-    res.cookie('ml_session_id', sessionId, { maxAge: 7*24*60*60*1000, httpOnly: false, sameSite: 'lax', path: '/' });
-    res.cookie('ml_session_user', user.username, { maxAge: 7*24*60*60*1000, httpOnly: false, sameSite: 'lax', path: '/' });
-    res.cookie('ml_session_role', user.role, { maxAge: 7*24*60*60*1000, httpOnly: false, sameSite: 'lax', path: '/' });
-    res.json({ sessionId, username: user.username, role: user.role, client_id: user.client_id, permissions });
-  } catch(e) { res.status(500).json({ error: e.message }); }
+  try { await mfa.login(req, res); }
+  catch (e) { console.error('[LOGIN]', e.message); res.status(e.status || 500).json({ error: e.message }); }
 });
 
 app.post('/api/logout', requireAuth, async (req, res) => {
@@ -1279,7 +1271,8 @@ app.post('/api/logout', requireAuth, async (req, res) => {
 app.post('/api/change-password', requireAuth, async (req, res) => {
   try {
     const { newPassword } = req.body;
-    const hash = crypto.createHash('sha256').update(newPassword).digest('hex');
+    if (!newPassword || String(newPassword).length < 8) return res.status(400).json({ error: 'La contraseña tiene que tener al menos 8 caracteres' });
+    const hash = await mfa.hashPassword(newPassword);
     await pool.query('UPDATE users SET password_hash = $1 WHERE id = $2', [hash, req.user.id]);
     res.json({ ok: true });
   } catch(e) { res.status(500).json({ error: e.message }); }
@@ -1392,6 +1385,7 @@ app.get('/api/users', requireAuth, requireAdmin, async (req, res) => {
   try {
     const result = await pool.query(`
       SELECT u.id, u.username, u.email, u.role, u.client_id, u.created_at,
+             u.mfa_enabled, u.mfa_activado_at, (u.bloqueado_hasta > NOW()) AS bloqueado,
              c.name as client_name,
              json_agg(json_build_object('section', p.section, 'enabled', p.enabled)) FILTER (WHERE p.section IS NOT NULL) as permissions
       FROM users u
@@ -1409,7 +1403,7 @@ app.post('/api/users', requireAuth, requireAdmin, async (req, res) => {
   try {
     const { username, email, password, role, client_id } = req.body;
     if (!username || !password || !role) return res.status(400).json({ error: 'Faltan campos' });
-    const hash = crypto.createHash('sha256').update(password).digest('hex');
+    const hash = await mfa.hashPassword(password);
     const result = await pool.query(
       'INSERT INTO users (username, email, password_hash, role, client_id) VALUES ($1, $2, $3, $4, $5) RETURNING id, username, role',
       [username, email||null, hash, role, client_id||null]
@@ -1426,7 +1420,7 @@ app.put('/api/users/:id', requireAuth, requireAdmin, async (req, res) => {
   try {
     const { username, email, password, role, client_id } = req.body;
     if (password) {
-      const hash = crypto.createHash('sha256').update(password).digest('hex');
+      const hash = await mfa.hashPassword(password);
       await pool.query('UPDATE users SET username=$1, email=$2, password_hash=$3, role=$4, client_id=$5 WHERE id=$6',
         [username, email||null, hash, role, client_id||null, req.params.id]);
     } else {
@@ -11718,6 +11712,8 @@ require('./backend_medidas')(app, {
 // publicación (se acaba / sana / sobra / sin tráfico) sobre Ciclo de vida + visitas + CMV.
 // Tokens de servicio: alta, listado y revocación (sólo admin). Ver backend_seguridad.js.
 seguridad.rutas(app, { requireAuth, requireAdmin });
+// MFA: segundo paso del login, activación, configuración y reseteo (admin).
+mfa.rutas(app, { requireAuth, requireAdmin });
 
 require('./backend_precio_sugerido')(app, {
   pool, requireAuth, requireAdmin, getClientToken, computeCicloVida,
@@ -16545,78 +16541,11 @@ setTimeout(() => {
 }, delay);
 
 
-app.get('/login', (req, res) => {
-  const error = req.query.error || '';
-  res.send(`<!DOCTYPE html><html><head>
-  <meta charset="UTF-8">
-  <title>ML Centro — Login</title>
-  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;700&display=swap" rel="stylesheet">
-  <style>
-    *{box-sizing:border-box;margin:0;padding:0}
-    body{font-family:Poppins,sans-serif;background:#F5F6FA;display:flex;align-items:center;justify-content:center;min-height:100vh}
-    .box{background:#fff;border-radius:20px;padding:44px 40px;width:380px;box-shadow:0 8px 32px rgba(0,0,0,.10)}
-    .logo{text-align:center;margin-bottom:32px}
-    .icon{width:48px;height:48px;background:#FFD600;border-radius:12px;display:flex;align-items:center;justify-content:center;margin:0 auto 16px;font-size:24px}
-    h1{font-size:22px;font-weight:700;color:#1A1D2E}
-    p{color:#8B90A7;font-size:13px;margin-top:4px}
-    label{display:block;font-size:11px;font-weight:600;color:#8B90A7;margin-bottom:6px;text-transform:uppercase;letter-spacing:.5px}
-    .field{margin-bottom:16px}
-    input{width:100%;background:#F0F2F8;border:1.5px solid #E4E7F0;border-radius:10px;padding:11px 14px;font-family:Poppins,sans-serif;font-size:14px;outline:none;color:#1A1D2E}
-    input:focus{border-color:#1A1D2E;background:#fff}
-    button{width:100%;background:#FFD600;border:none;border-radius:10px;padding:13px;font-family:Poppins,sans-serif;font-size:14px;font-weight:700;cursor:pointer;margin-top:8px;color:#1A1D2E}
-    .error{color:#FF4444;font-size:12px;margin-top:10px;text-align:center;font-weight:500}
-  </style>
-  </head><body>
-  <div class="box">
-    <div class="logo">
-      <div class="icon">📊</div>
-      <h1>ML Centro</h1>
-      <p>Dashboard de Mercado Libre</p>
-    </div>
-    <form method="POST" action="/login">
-      <div class="field"><label>Usuario</label><input name="username" type="text" autocomplete="username" required></div>
-      <div class="field"><label>Contraseña</label><input name="password" type="password" autocomplete="current-password" required></div>
-      <button type="submit">Ingresar</button>
-      ${error ? '<div class="error">' + error + '</div>' : ''}
-    </form>
-  </div>
-  </body></html>`);
-});
-
-app.post('/login', async (req, res) => {
-  try {
-    const { username, password } = req.body;
-    if (!username || !password) return res.redirect('/login?error=Completá+usuario+y+contraseña');
-    const hash = require('crypto').createHash('sha256').update(password).digest('hex');
-    const result = await pool.query('SELECT * FROM users WHERE username = $1 AND password_hash = $2', [username, hash]);
-    if (!result.rows.length) return res.redirect('/login?error=Usuario+o+contraseña+incorrectos');
-    const sessionId = require('crypto').randomBytes(32).toString('hex');
-    await pool.query('INSERT INTO sessions (id, user_id) VALUES ($1, $2)', [sessionId, result.rows[0].id]);
-    res.cookie('ml_session_id', sessionId, { maxAge: 7*24*60*60*1000, httpOnly: false, sameSite: 'lax', path: '/' });
-    res.cookie('ml_session_user', result.rows[0].username, { maxAge: 7*24*60*60*1000, httpOnly: false, sameSite: 'lax', path: '/' });
-    res.cookie('ml_session_role', result.rows[0].role, { maxAge: 7*24*60*60*1000, httpOnly: false, sameSite: 'lax', path: '/' });
-    res.send(`<!DOCTYPE html><html><head>
-  <meta charset="UTF-8">
-  <title>ML Centro</title>
-  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;700&display=swap" rel="stylesheet">
-  <style>
-    body{font-family:Poppins,sans-serif;background:#F5F6FA;display:flex;align-items:center;justify-content:center;min-height:100vh;flex-direction:column;gap:16px}
-    .box{background:#fff;border-radius:20px;padding:40px;text-align:center;box-shadow:0 8px 32px rgba(0,0,0,.10);width:360px}
-    h2{font-size:20px;font-weight:700;margin-bottom:8px}
-    p{color:#8B90A7;font-size:13px;margin-bottom:24px}
-    a{display:block;background:#FFD600;border-radius:10px;padding:13px;font-weight:700;font-size:14px;text-decoration:none;color:#1A1D2E}
-    code{background:#F0F2F8;padding:4px 8px;border-radius:6px;font-size:11px;word-break:break-all;display:block;margin-bottom:16px;text-align:left}
-  </style>
-  </head><body>
-  <div class="box">
-    <h2>✅ Login exitoso</h2>
-    <p>Tu sesión:</p>
-    <code>${sessionId}</code>
-    <a href="/?sid=${sessionId}">Entrar al Dashboard →</a>
-  </div>
-  </body></html>`);
-  } catch(e) { res.redirect('/login?error=' + encodeURIComponent(e.message)); }
-});
+// Login: public/login.html (usuario + contraseña, después el código de la app o su
+// activación). Antes era HTML armado acá con el error del query sin escapar (XSS) y, al
+// entrar, mostraba la sesión en pantalla y la pasaba por la URL (?sid=).
+app.get('/login', (req, res) => res.sendFile(path.join(__dirname, 'public', 'login.html')));
+app.post('/login', (req, res) => res.redirect(303, '/login'));
 
 // Keep old token-based endpoints for backward compatibility
 // Canje / refresh de tokens de ML del flujo viejo de conexión desde el navegador (la conexión

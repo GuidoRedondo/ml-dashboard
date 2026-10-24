@@ -1937,6 +1937,7 @@ tr.fam-hijo > td { background: rgba(99,102,241,.025); }
         <button onclick="abrirModalUsuario()" style="padding:8px 18px;background:var(--accent);color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer">+ Nuevo usuario</button>
       </div>
       <div id="usuariosContent"><div style="color:var(--muted);padding:40px;text-align:center">Cargando...</div></div>
+      <div id="mfaAdminContent" style="margin-top:28px"></div>
       <div id="tokensServicioContent" style="margin-top:28px"></div>
     </div>
 
@@ -27009,6 +27010,171 @@ let _tokenStatusInterval = null;
 // ── GESTIÓN DE USUARIOS ────────────────────────────────────────────────────────
 let _editingUserId = null;
 
+// ── VERIFICACIÓN EN DOS PASOS (MFA) ──────────────────────────────────────────
+// El login (public/login.html) deja en sessionStorage el aviso si al usuario le toca el MFA
+// desde una fecha y todavía no lo tiene. Se muestra una vez por ingreso: "Más tarde" lo borra,
+// así una recarga no lo vuelve a abrir; el próximo login lo vuelve a dejar.
+const _fechaLarga = f => dART(f).toLocaleDateString('es-AR', { timeZone: ART_TZ, day: 'numeric', month: 'long', year: 'numeric' });
+function _mfaModal(html) {
+  let m = document.getElementById('mfaModal');
+  if (!m) {
+    m = document.createElement('div');
+    m.id = 'mfaModal';
+    m.style.cssText = 'position:fixed;inset:0;background:rgba(15,17,30,.55);z-index:3000;display:flex;align-items:center;justify-content:center;padding:16px';
+    document.body.appendChild(m);
+  }
+  m.innerHTML = `<div style="background:var(--surface);border-radius:16px;padding:26px 26px 22px;width:460px;max-width:100%;max-height:92vh;overflow-y:auto;box-shadow:0 12px 40px rgba(0,0,0,.25)">${html}</div>`;
+  m.style.display = 'flex';
+  return m;
+}
+const _mfaCerrar = () => { const m = document.getElementById('mfaModal'); if (m) m.style.display = 'none'; };
+
+// opts.preview: vista previa del admin (no toca el estado del usuario).
+function mostrarAvisoMfa(aviso, opts = {}) {
+  if (!aviso || !aviso.fecha) return;
+  _mfaModal(`
+    ${opts.preview ? '<div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:10px">Vista previa — así lo ve un cliente</div>' : ''}
+    <div style="font-size:30px;margin-bottom:6px">🔐</div>
+    <h3 style="margin:0 0 12px;font-family:var(--font-b);font-size:18px">Verificación en dos pasos</h3>
+    <p style="font-size:14px;line-height:1.6;color:var(--text);margin:0 0 18px">
+      A partir del <b>${_fechaLarga(aviso.fecha)}</b> vas a necesitar verificación en dos pasos para entrar.
+      Descargá <b>Google Authenticator</b> o <b>Authy</b> en tu celular (son gratis); en tu próximo ingreso vas a
+      escanear un QR y escribir el código de 6 dígitos. Guardá los códigos de respaldo que te damos: te sirven si
+      perdés o cambiás el celular. Si tenés problemas, escribinos y te lo reseteamos.
+    </p>
+    <div style="display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap">
+      <button onclick="${opts.preview ? '_mfaCerrar()' : 'avisoMfaMasTarde()'}" style="padding:10px 18px;border:1px solid var(--border);background:var(--surface);color:var(--text);border-radius:10px;font-size:13px;font-weight:600;cursor:pointer">Más tarde</button>
+      <button onclick="${opts.preview ? '_mfaCerrar()' : 'activarMfaAhora()'}" style="padding:10px 18px;border:none;background:var(--accent);color:var(--accent-text);border-radius:10px;font-size:13px;font-weight:700;cursor:pointer">Activar ahora</button>
+    </div>`);
+}
+function avisoMfaMasTarde() {
+  try { sessionStorage.removeItem('nr_aviso_mfa'); } catch (_) {}
+  _mfaCerrar();
+}
+function revisarAvisoMfa() {
+  let aviso = null;
+  try { aviso = JSON.parse(sessionStorage.getItem('nr_aviso_mfa') || 'null'); } catch (_) {}
+  if (aviso) mostrarAvisoMfa(aviso);
+}
+
+// "Activar ahora": QR → primer código → códigos de respaldo, sin salir del dashboard.
+async function activarMfaAhora() {
+  try { sessionStorage.removeItem('nr_aviso_mfa'); } catch (_) {}
+  _mfaModal('<div style="padding:30px;text-align:center;color:var(--muted)">Generando el código QR…</div>');
+  const d = await apiCall('POST', '/api/mfa/activar/iniciar');
+  if (!d || d.error) { _mfaModal(`<p style="color:#dc2626">${_escHtml(d?.error || 'No se pudo iniciar la activación')}</p><button onclick="_mfaCerrar()" class="sync-btn">Cerrar</button>`); return; }
+  _mfaModal(`
+    <h3 style="margin:0 0 6px;font-family:var(--font-b);font-size:18px">Activá la verificación en dos pasos</h3>
+    <ol style="font-size:13px;line-height:1.6;padding-left:18px;margin:8px 0 12px">
+      <li>Abrí <b>Google Authenticator</b> o <b>Authy</b> y tocá <b>+</b>.</li>
+      <li>Escaneá este código:</li>
+    </ol>
+    <div style="display:flex;justify-content:center"><img src="${d.qr}" alt="Código QR" style="width:200px;height:200px;border:1px solid var(--border);border-radius:10px"></div>
+    <div style="font-size:11.5px;color:var(--muted);text-align:center;margin-top:8px">¿No podés escanear? Clave para cargar a mano:</div>
+    <div style="font-family:monospace;font-size:12px;background:var(--surface2);padding:7px 9px;border-radius:8px;text-align:center;word-break:break-all;margin:4px 0 14px">${_escHtml(d.secreto.replace(/(.{4})/g, '$1 ').trim())}</div>
+    <label style="font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase">3. Código de 6 dígitos de la app</label>
+    <input id="mfaCodigoActivar" inputmode="numeric" maxlength="6" placeholder="000000" autocomplete="one-time-code"
+      style="width:100%;box-sizing:border-box;font-size:22px;letter-spacing:6px;text-align:center;padding:10px;border-radius:10px;border:1.5px solid var(--border);background:var(--surface2);color:var(--text);margin:6px 0 4px"
+      onkeydown="if(event.key==='Enter')confirmarMfaAhora()">
+    <div id="mfaActivarError" style="color:#dc2626;font-size:12.5px;min-height:18px"></div>
+    <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:8px">
+      <button onclick="_mfaCerrar()" style="padding:10px 16px;border:1px solid var(--border);background:var(--surface);color:var(--text);border-radius:10px;font-size:13px;cursor:pointer">Cancelar</button>
+      <button onclick="confirmarMfaAhora()" style="padding:10px 18px;border:none;background:var(--accent);color:var(--accent-text);border-radius:10px;font-size:13px;font-weight:700;cursor:pointer">Activar</button>
+    </div>`);
+  setTimeout(() => document.getElementById('mfaCodigoActivar')?.focus(), 50);
+}
+async function confirmarMfaAhora() {
+  const codigo = document.getElementById('mfaCodigoActivar')?.value.trim();
+  const r = await apiCall('POST', '/api/mfa/activar/confirmar', { codigo });
+  if (!r || r.error) { const e = document.getElementById('mfaActivarError'); if (e) e.textContent = r?.error || 'No se pudo activar'; return; }
+  window._mfaCodigos = r.codigos || [];
+  _mfaModal(`
+    <h3 style="margin:0 0 8px;font-family:var(--font-b);font-size:18px">✅ Listo, quedó activada</h3>
+    <p style="font-size:13px;line-height:1.6;margin:0 0 10px">Guardá estos <b>códigos de respaldo</b>: cada uno sirve <b>una sola vez</b> para entrar si perdés o cambiás el celular.</p>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;font-family:monospace;font-size:15px;font-weight:600;text-align:center">
+      ${window._mfaCodigos.map(c => `<div style="background:var(--surface2);border-radius:8px;padding:8px">${_escHtml(c)}</div>`).join('')}
+    </div>
+    <div style="background:#fef3c7;border:1px solid #f59e0b;color:#78350f;border-radius:10px;padding:9px 11px;font-size:12.5px;margin:12px 0">No se vuelven a mostrar. Guardalos fuera del celular.</div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end">
+      <button onclick="descargarCodigosMfa()" class="sync-btn">Descargar .txt</button>
+      <button onclick="navigator.clipboard.writeText(window._mfaCodigos.join(String.fromCharCode(10)));showToast('📋 Códigos copiados')" class="sync-btn">Copiar</button>
+      <button onclick="window._mfaCodigos=null;_mfaCerrar()" style="padding:9px 16px;border:none;background:var(--accent);color:var(--accent-text);border-radius:10px;font-size:13px;font-weight:700;cursor:pointer">Ya los guardé</button>
+    </div>`);
+}
+function descargarCodigosMfa() {
+  const txt = 'Negocio Redondo — códigos de respaldo de ' + (getSessionUser() || '') + '\nCada código sirve una sola vez.\n\n' + (window._mfaCodigos || []).join('\n') + '\n';
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([txt], { type: 'text/plain' }));
+  a.download = 'negocio-redondo-codigos-respaldo.txt';
+  a.click();
+}
+
+// Panel de admin (Usuarios): interruptor, piloto, fecha y vista previa del aviso.
+async function loadMfaAdmin() {
+  const el = document.getElementById('mfaAdminContent');
+  if (!el) return;
+  const d = await apiCall('GET', '/api/admin/mfa');
+  if (!d || d.error) { el.innerHTML = ''; return; }
+  const c = d.config;
+  const estado = d.apagado_por_entorno ? '<b style="color:#dc2626">Apagado por MFA_APAGADO=1 en el servidor</b>'
+    : !c.habilitado ? '<b>Apagado</b>: nadie necesita código'
+    : c.fecha_obligatoria && d.hoy >= c.fecha_obligatoria ? '<b style="color:#16a34a">Obligatorio para todos</b>'
+    : c.fecha_obligatoria ? `<b>Aviso activo</b>: obligatorio para todos desde el ${_fechaLarga(c.fecha_obligatoria)}${c.piloto.length ? ' · ya obligatorio para ' + c.piloto.map(_escHtml).join(', ') : ''}`
+    : c.piloto.length ? `<b>Piloto</b>: obligatorio sólo para ${c.piloto.map(_escHtml).join(', ')}` : '<b>Prendido</b>, sin piloto ni fecha: sólo lo usa quien lo activó';
+  const inp = 'padding:7px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:12px';
+  el.innerHTML = `
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px 18px">
+      <h3 style="margin:0 0 4px;font-family:var(--font-b);font-size:16px">🔐 Verificación en dos pasos</h3>
+      <div style="font-size:12.5px;margin-bottom:12px">${estado} · ${d.con_mfa} de ${d.usuarios} usuarios la tienen activa${d.bloqueados ? ` · <span style="color:#dc2626">${d.bloqueados} bloqueado(s)</span>` : ''}</div>
+      ${d.clave_cifrado ? '' : '<div style="background:#fef3c7;border:1px solid #f59e0b;color:#78350f;border-radius:10px;padding:9px 11px;font-size:12.5px;margin-bottom:12px">Falta la variable <code>MFA_ENC_KEY</code> en Railway: sin ella no se puede prender.</div>'}
+      <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-end">
+        <label style="font-size:12px;display:flex;align-items:center;gap:6px;cursor:pointer">
+          <input type="checkbox" id="mfaHabilitado" ${c.habilitado ? 'checked' : ''}> Prendido
+        </label>
+        <label style="font-size:11px;color:var(--muted);display:flex;flex-direction:column;gap:3px" title="Usuarios para los que ya es obligatorio (separados por coma). Para probar antes de los clientes.">
+          Piloto (usuarios) <input id="mfaPiloto" value="${_escHtml(c.piloto.join(', '))}" placeholder="ej: guido" style="${inp};width:200px">
+        </label>
+        <label style="font-size:11px;color:var(--muted);display:flex;flex-direction:column;gap:3px" title="Antes de esta fecha: aviso al iniciar sesión. Desde esta fecha (hora argentina): obligatorio para todos.">
+          Obligatorio para todos desde <input id="mfaFecha" type="date" value="${c.fecha_obligatoria || ''}" style="${inp}">
+        </label>
+        <button class="sync-btn" onclick="guardarMfaAdmin()">Guardar</button>
+        <button class="sync-btn" onclick="previewAvisoMfa()" title="Muestra el aviso tal como lo va a ver un cliente al entrar, con la fecha cargada">👁 Ver el aviso</button>
+      </div>
+      <div style="font-size:11.5px;color:var(--muted);margin-top:10px;line-height:1.5">
+        El aviso sale al iniciar sesión a quien todavía no la tiene (no a quien ya la activó), una vez por ingreso, desde que guardás una fecha y hasta esa fecha.
+        Los tokens de servicio no pasan por la verificación. Emergencia: <code>MFA_APAGADO=1</code> en Railway la apaga para todos.
+      </div>
+    </div>`;
+}
+async function guardarMfaAdmin() {
+  const body = {
+    habilitado: document.getElementById('mfaHabilitado').checked,
+    piloto: document.getElementById('mfaPiloto').value,
+    fecha_obligatoria: document.getElementById('mfaFecha').value || null,
+  };
+  const r = await apiCall('PUT', '/api/admin/mfa', body);
+  if (!r || r.error) { showToast('⚠️ ' + (r?.error || 'No se pudo guardar')); return; }
+  showToast('✅ Verificación en dos pasos actualizada');
+  loadMfaAdmin();
+}
+function previewAvisoMfa() {
+  const fecha = document.getElementById('mfaFecha')?.value;
+  if (!fecha) { showToast('⚠️ Cargá una fecha para ver el aviso'); return; }
+  mostrarAvisoMfa({ fecha }, { preview: true });
+}
+async function resetearMfaUsuario(id, username) {
+  const r = await apiCall('POST', `/api/admin/users/${id}/mfa-reset`);
+  if (!r || r.error) { showToast('⚠️ ' + (r?.error || 'No se pudo resetear')); return; }
+  showToast(`🔐 MFA de ${username} reseteado: lo vuelve a activar en su próximo ingreso`);
+  loadUsuarios();
+}
+async function desbloquearUsuario(id) {
+  const r = await apiCall('POST', `/api/admin/users/${id}/desbloquear`);
+  if (!r || r.error) { showToast('⚠️ ' + (r?.error || 'No se pudo desbloquear')); return; }
+  showToast('Usuario desbloqueado');
+  loadUsuarios();
+}
+
 // ── TOKENS DE SERVICIO (sólo admin) ───────────────────────────────────────────
 // Para Warren, Steve y los scripts que se conectan sin una persona adelante: con MFA no
 // pueden loguearse con usuario y contraseña. El token se muestra una sola vez al crearlo;
@@ -27082,7 +27248,7 @@ async function revocarTokenServicio(id) {
 }
 
 async function loadUsuarios() {
-  if (getSessionRole() === 'admin') loadTokensServicio();
+  if (getSessionRole() === 'admin') { loadTokensServicio(); loadMfaAdmin(); }
   const el = document.getElementById('usuariosContent');
   el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">⏳ Cargando...</div>';
   try {
@@ -27103,7 +27269,14 @@ async function loadUsuarios() {
         </td>
         <td style="padding:10px;font-size:12px;color:var(--muted)">${u.client_name || '—'}</td>
         <td style="padding:10px;font-size:12px;color:var(--muted)">${u.permissions ? u.permissions.filter(p=>p.enabled).length + '/' + SECCIONES.length + ' secciones' : 'Todas'}</td>
+        <td style="padding:10px;font-size:12px;white-space:nowrap">
+          ${u.mfa_enabled ? '<span style="color:#16a34a;font-weight:600" title="Activada ' + (u.mfa_activado_at ? dART(u.mfa_activado_at).toLocaleDateString('es-AR', { timeZone: ART_TZ }) : '') + '">🔐 Activa</span>'
+                          : '<span style="color:var(--muted)">—</span>'}
+          ${u.bloqueado ? '<div style="color:#dc2626;font-size:11px;font-weight:600">Bloqueado</div>' : ''}
+        </td>
         <td style="padding:10px;text-align:right">
+          ${u.mfa_enabled ? `<button onclick="resetearMfaUsuario(${u.id}, '${_escHtml(u.username).replace(/'/g, '&#39;')}')" title="Perdió el celular: borra su verificación y cierra sus sesiones; la vuelve a activar en el próximo ingreso" style="padding:5px 10px;border:1px solid var(--border);background:none;color:var(--text);border-radius:6px;font-size:12px;cursor:pointer;margin-right:4px">Resetear MFA</button>` : ''}
+          ${u.bloqueado ? `<button onclick="desbloquearUsuario(${u.id})" style="padding:5px 10px;border:1px solid var(--border);background:none;color:var(--text);border-radius:6px;font-size:12px;cursor:pointer;margin-right:4px">Desbloquear</button>` : ''}
           <button onclick="abrirModalUsuario(${JSON.stringify(u).replace(/"/g,'&quot;')})" style="padding:5px 12px;border:1px solid var(--border);background:none;color:var(--text);border-radius:6px;font-size:12px;cursor:pointer;margin-right:6px">✏️ Editar</button>
           <button onclick="eliminarUsuario(${u.id},'${u.username}')" style="padding:5px 12px;border:none;background:#ff525222;color:#ff5252;border-radius:6px;font-size:12px;cursor:pointer">🗑</button>
         </td>
@@ -27118,6 +27291,7 @@ async function loadUsuarios() {
             <th style="padding:10px;text-align:left;font-size:11px;font-weight:600;color:var(--muted)">Rol</th>
             <th style="padding:10px;text-align:left;font-size:11px;font-weight:600;color:var(--muted)">Cuenta ML</th>
             <th style="padding:10px;text-align:left;font-size:11px;font-weight:600;color:var(--muted)">Permisos</th>
+            <th style="padding:10px;text-align:left;font-size:11px;font-weight:600;color:var(--muted)">2 pasos</th>
             <th style="padding:10px"></th>
           </tr></thead>
           <tbody>${rows}</tbody>
@@ -27417,6 +27591,7 @@ window.addEventListener('DOMContentLoaded', () => {
       window.history.replaceState({}, document.title, window.location.pathname);
     }, 5000);
     initApp();
+    revisarAvisoMfa();
     // Check token expiry every 30 minutes
     setInterval(() => { if (allClients.length) checkTokenWarnings(); }, 30 * 60 * 1000);
   } else {
