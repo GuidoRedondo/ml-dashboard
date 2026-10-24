@@ -1320,6 +1320,16 @@ app.get('/api/admin/ip-salida', requireAuth, requireAdmin, async (req, res) => {
   }
 });
 
+// Lo que el CSP (en modo reporte) bloquearía si se activara, agrupado. Se revisa antes de
+// pasar helmet a reportOnly:false.
+app.get('/api/admin/csp-reportes', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      'SELECT directiva, bloqueado, pagina, veces, primero, ultimo FROM csp_reportes ORDER BY veces DESC LIMIT 200');
+    res.json({ reportes: rows });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // Uso de la app: quién está conectado, quién entró hoy y qué requests tardan
 app.get('/api/admin/uso', requireAuth, requireAdmin, async (req, res) => {
   try {
