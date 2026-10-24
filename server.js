@@ -1166,6 +1166,19 @@ const requireConsultor = (req, res, next) => {
   next();
 };
 
+// TEMPORAL (certificación ML, oct 2026): IP con la que sale el servidor, para confirmar que
+// coincide con las que se declaran en la whitelist de ML. Borrar una vez verificado.
+const IPS_SALIDA_ESPERADAS = ['162.220.234.242', '152.55.180.241', '152.55.180.242'];
+app.get('/api/admin/ip-salida', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const r = await fetch('https://api.ipify.org?format=json', { timeout: 10000 });
+    const { ip } = await r.json();
+    res.json({ ip, coincide: IPS_SALIDA_ESPERADAS.includes(ip), esperadas: IPS_SALIDA_ESPERADAS });
+  } catch (e) {
+    res.status(502).json({ error: 'No se pudo consultar ipify: ' + e.message });
+  }
+});
+
 // Uso de la app: quién está conectado, quién entró hoy y qué requests tardan
 app.get('/api/admin/uso', requireAuth, requireAdmin, async (req, res) => {
   try {
@@ -13876,7 +13889,10 @@ app.get('/api/competencia/busqueda', requireAuth, async (req, res) => {
     const r = await fetch(`${ML_API}/sites/MLA/search?category=${categoryId}${orden}&limit=20`,
       { headers: { Authorization: `Bearer ${token}` } });
     const data = await r.json().catch(() => ({}));
-    if (!r.ok || data.error) return res.status(r.ok ? 502 : r.status).json({ error: `ML: ${data.message || data.error || r.status}` });
+    // 502 y no el status de ML: un 403 de ML (search por categoría está vedado a apps no
+    // certificadas, verificado 24/10/2026) el front lo tomaría como "sin acceso a la cuenta".
+    if (r.status === 403) return res.status(502).json({ error: 'Mercado Libre no permite la búsqueda por categoría a esta app (requiere app certificada)' });
+    if (!r.ok || data.error) return res.status(502).json({ error: `ML: ${data.message || data.error || r.status}` });
     res.json({ items: (data.results || []).map((it, i) => ({
       position: i + 1, id: it.id, title: it.title, price: it.price,
       original_price: it.original_price, thumbnail: it.thumbnail,
