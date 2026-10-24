@@ -8,6 +8,8 @@ process.env.TZ = 'America/Argentina/Buenos_Aires';
 const express = require('express');
 const { prepararExcelPromos, leerExcelPromos } = require('./promo_excel');
 const cookieParser = require('cookie-parser');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
 const cors = require('cors');
 const fetch = require('node-fetch');
 const { Pool } = require('pg');
@@ -278,6 +280,15 @@ async function initDB() {
       active BOOLEAN DEFAULT true,
       created_at TIMESTAMP DEFAULT NOW(),
       updated_at TIMESTAMP DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS csp_reportes (
+      directiva TEXT NOT NULL,
+      bloqueado TEXT NOT NULL,
+      pagina    TEXT NOT NULL,
+      veces     INTEGER NOT NULL DEFAULT 1,
+      primero   TIMESTAMPTZ DEFAULT NOW(),
+      ultimo    TIMESTAMPTZ DEFAULT NOW(),
+      PRIMARY KEY (directiva, bloqueado, pagina)
     );
     CREATE TABLE IF NOT EXISTS sessions (
       id VARCHAR(64) PRIMARY KEY,
@@ -1066,6 +1077,87 @@ function marcarActividad(sessionId, req) {
 }
 
 app.use(cookieParser());
+
+// ── SEGURIDAD: headers (helmet) y límite de pedidos ───────────────────────────
+// Railway pone un proxy adelante: sin esto todos los pedidos parecen venir de la misma IP
+// y el límite por IP bloquearía a todos juntos.
+app.set('trust proxy', 1);
+
+// CSP en modo REPORTE: el navegador avisa qué bloquearía (a /api/csp-report) pero no
+// bloquea nada. Cuando los reportes estén limpios se pasa a reportOnly:false. El front
+// tiene cientos de onclick y scripts en la página: sin 'unsafe-inline' en script-src y
+// script-src-attr no funcionaría ningún botón.
+app.use(helmet({
+  contentSecurityPolicy: {
+    useDefaults: false,
+    reportOnly: true,
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'", "'unsafe-inline'", 'https://cdnjs.cloudflare.com', 'https://cdn.jsdelivr.net'],
+      scriptSrcAttr: ["'unsafe-inline'"],
+      styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
+      fontSrc: ["'self'", 'https://fonts.gstatic.com', 'data:'],
+      imgSrc: ["'self'", 'data:', 'blob:', 'https:'],
+      connectSrc: ["'self'"],
+      workerSrc: ["'self'", 'blob:'],
+      objectSrc: ["'none'"],
+      baseUri: ["'self'"],
+      formAction: ["'self'"],
+      frameAncestors: ["'none'"],
+      reportUri: ['/api/csp-report'],
+    },
+  },
+  // Las ventanas que abre el front (informes, PDF, impresión) tienen que poder hablar con
+  // la página que las abrió.
+  crossOriginOpenerPolicy: { policy: 'same-origin-allow-popups' },
+  crossOriginEmbedderPolicy: false,
+  referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
+  // Sin includeSubDomains: la calculadora y otros subdominios no son de esta app.
+  strictTransportSecurity: { maxAge: 180 * 24 * 60 * 60, includeSubDomains: false },
+}));
+
+// Reportes del CSP: se guardan agrupados (directiva + recurso bloqueado + página) para ver
+// qué rompería al activarlo. No requiere sesión (lo manda el navegador solo).
+app.post('/api/csp-report', express.json({ type: ['application/csp-report', 'application/reports+json', 'application/json'], limit: '20kb' }), (req, res) => {
+  const r = req.body?.['csp-report'] || (Array.isArray(req.body) ? req.body[0]?.body : req.body) || {};
+  const directiva = String(r['effective-directive'] || r['violated-directive'] || r.effectiveDirective || '').slice(0, 80);
+  const bloqueado = String(r['blocked-uri'] || r.blockedURL || '').slice(0, 300);
+  const pagina = String(r['document-uri'] || r.documentURL || '').replace(/[?#].*$/, '').slice(0, 200);
+  if (directiva) {
+    pool.query(`
+      INSERT INTO csp_reportes (directiva, bloqueado, pagina) VALUES ($1,$2,$3)
+      ON CONFLICT (directiva, bloqueado, pagina) DO UPDATE SET veces = csp_reportes.veces + 1, ultimo = NOW()`,
+      [directiva, bloqueado, pagina]).catch(() => {});
+  }
+  res.sendStatus(204);
+});
+
+// Límite de pedidos. La clave es la sesión (o la IP si no hay): en una oficina varios
+// usuarios comparten IP y no se tienen que frenar entre ellos. El Panel de Clientes dispara
+// muchos pedidos en paralelo: 600/min deja aire para eso y corta un abuso.
+const claveSesion = req => req.headers['x-session-id'] || req.cookies?.ml_session_id || req.query.session_id || req.ip;
+const RUTAS_SIN_LIMITE = /^\/api\/(csp-report$|.*\/cron$|minutas\/ingest|minutas\/avisos-vencimiento$)/;
+app.use('/api/', rateLimit({
+  windowMs: 60 * 1000,
+  limit: 600,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  keyGenerator: claveSesion,
+  skip: req => RUTAS_SIN_LIMITE.test(req.originalUrl.split('?')[0]),
+  message: { error: 'Demasiados pedidos. Esperá un minuto y probá de nuevo.' },
+}));
+// Login: 10 intentos cada 15 minutos por IP (contraseña y, cuando esté el MFA, el código).
+const limiteLogin = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 10,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  handler: (req, res) => req.originalUrl.startsWith('/login')
+    ? res.redirect('/login?error=' + encodeURIComponent('Demasiados intentos. Esperá 15 minutos.'))
+    : res.status(429).json({ error: 'Demasiados intentos. Esperá 15 minutos.' }),
+});
+app.use(['/api/login', '/login'], (req, res, next) => req.method === 'POST' ? limiteLogin(req, res, next) : next());
+
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(express.static('public'));
@@ -1080,7 +1172,56 @@ async function requireAuth(req, res, next) {
   if (!result.rows.length) return res.status(401).json({ error: 'Sesión expirada' });
   req.user = result.rows[0];
   marcarActividad(sessionId, req);
+  const sinAcceso = await controlDeCuenta(req).catch(e => ({ status: 500, error: e.message }));
+  if (sinAcceso) return res.status(sinAcceso.status).json({ error: sinAcceso.error });
   next();
+}
+
+// ── CONTROL DE CUENTA ─────────────────────────────────────────────────────────
+// Un usuario cliente sólo ve y toca SU cuenta (users.client_id). Antes cada endpoint confiaba
+// en el client_id que le mandaran: cambiando el número se veían los datos de otro cliente.
+// Se controla acá, sobre el PEDIDO (no sobre el código de cada handler, que lee la cuenta con
+// nombres y alias distintos), así cubre todas las rutas con requireAuth:
+//   · client_id / cliente_id / clientId / clienteId en query, body o params (y client_ids)
+//   · :id de /api/clients/:id/...
+//   · uid (usuario de ML) en query: tiene que ser el de su cuenta
+//   · registros que se tocan por su propio id: se busca de qué cuenta son
+//   · /api/debug/*: nunca para un cliente
+// Admin, consultor y colaborador ven todas. Un rol desconocido cuenta como cliente.
+const ROLES_TODAS_LAS_CUENTAS = ['admin', 'consultant', 'colaborador'];
+const CAMPOS_CUENTA = ['client_id', 'cliente_id', 'clientId', 'clienteId', 'client_ids'];
+const CUENTA_DE_REGISTRO = [
+  [/^\/api\/alertas\/:id$/,                         'SELECT client_id AS c FROM alertas WHERE id=$1'],
+  [/^\/api\/bitacora\/:id$/,                        'SELECT client_id AS c FROM bitacora WHERE id=$1'],
+  [/^\/api\/seguimiento\/:id(\/evolucion)?$/,       'SELECT client_id AS c FROM seguimiento_publicaciones WHERE id=$1'],
+  [/^\/api\/decisiones-publi\/:id(\/[a-z]+)?$/,      'SELECT client_id AS c FROM decisiones_publi WHERE id=$1'],
+  [/^\/api\/informe-mensual\/:id$/,                 'SELECT cliente_id AS c FROM informes_mensuales WHERE id=$1'],
+];
+async function controlDeCuenta(req) {
+  if (ROLES_TODAS_LAS_CUENTAS.includes(req.user?.role)) return null;
+  const NO = { status: 403, error: 'Sin acceso a esta cuenta' };
+  if (req.path.startsWith('/api/debug/')) return NO;
+  const propia = parseInt(req.user?.client_id);
+  const ruta = req.route?.path || '';
+
+  const pedidas = [];
+  const sumar = v => { if (v != null && v !== '') (Array.isArray(v) ? v : String(v).split(',')).forEach(x => pedidas.push(x)); };
+  const body = req.body && typeof req.body === 'object' ? req.body : {};
+  for (const k of CAMPOS_CUENTA) { sumar(req.query[k]); sumar(body[k]); sumar(req.params?.[k]); }
+  if (/^\/api\/clients\/:id(\/|$)/.test(ruta)) sumar(req.params.id);
+  if (pedidas.some(v => parseInt(v) !== propia)) return NO;
+
+  if (req.query.uid) {
+    const { rows } = await pool.query('SELECT ml_user_id FROM clients WHERE id=$1', [propia]);
+    if (!rows.length || String(rows[0].ml_user_id) !== String(req.query.uid)) return NO;
+  }
+  for (const [rx, sql] of CUENTA_DE_REGISTRO) {
+    if (!rx.test(ruta)) continue;
+    const { rows } = await pool.query(sql, [parseInt(req.params.id) || 0]);
+    // Si no existe se deja pasar: el handler responde 404 como siempre.
+    if (rows.length && parseInt(rows[0].c) !== propia) return NO;
+  }
+  return null;
 }
 
 // Qué cuentas puede tocar un usuario: admin, consultor y colaborador, cualquiera; un cliente,
@@ -1319,10 +1460,13 @@ app.put('/api/users/:id/permissions', requireAuth, requireAdmin, async (req, res
 // ── CLIENT MANAGEMENT ─────────────────────────────────────────────────────────
 app.get('/api/token-status', requireAuth, async (req, res) => {
   try {
+    // Un cliente sólo ve el estado de su propia cuenta (antes veía la lista de todas).
+    const soloPropia = !ROLES_TODAS_LAS_CUENTAS.includes(req.user.role);
     const result = await pool.query(
       `SELECT id, name, ml_user_id, token_expires_at, updated_at,
        (refresh_token IS NOT NULL AND refresh_token != '') AS has_refresh_token
-       FROM clients WHERE active = true ORDER BY name`
+       FROM clients WHERE active = true ${soloPropia ? 'AND id = $1' : ''} ORDER BY name`,
+      soloPropia ? [parseInt(req.user.client_id) || 0] : []
     );
     const now = new Date();
     const clients = result.rows.map(c => {
@@ -1372,7 +1516,7 @@ app.get('/api/clients', requireAuth, async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
-app.post('/api/clients', requireAuth, async (req, res) => {
+app.post('/api/clients', requireAuth, requireConsultor, async (req, res) => {
   try {
     const { name } = req.body;
     const result = await pool.query(
@@ -1383,7 +1527,8 @@ app.post('/api/clients', requireAuth, async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
-app.delete('/api/clients/:id', requireAuth, async (req, res) => {
+// Borra la cuenta y en cascada todos sus datos: sólo admin (antes cualquier usuario logueado).
+app.delete('/api/clients/:id', requireAuth, requireAdmin, async (req, res) => {
   const id = parseInt(req.params.id);
   if (!Number.isInteger(id)) return res.status(400).json({ error: 'ID inválido' });
   try {
@@ -16157,11 +16302,12 @@ app.get('/api/bitacora/all-tasks', requireAuth, async (req, res) => {
               c.name AS client_name
        FROM bitacora b
        LEFT JOIN clients c ON c.id = b.client_id
-       WHERE b.tipo = 'tarea'
+       WHERE b.tipo = 'tarea' ${ROLES_TODAS_LAS_CUENTAS.includes(req.user.role) ? '' : 'AND b.client_id = $1'}
        ORDER BY
          CASE b.estado WHEN 'pendiente' THEN 0 WHEN 'en_progreso' THEN 1 ELSE 2 END,
          b.fecha_venc ASC NULLS LAST,
-         b.created_at DESC`
+         b.created_at DESC`,
+      ROLES_TODAS_LAS_CUENTAS.includes(req.user.role) ? [] : [parseInt(req.user.client_id) || 0]
     );
     res.json({ tasks: r.rows });
   } catch(e) { res.status(500).json({ error: e.message }); }
@@ -17599,7 +17745,7 @@ app.get('/api/publi/modo', requireAuth, async (req, res) => {
   res.json({ dry_run: process.env.PUBLI_DRY_RUN !== 'false', ventana_dias: PUBLI_WINDOW_DAYS });
 });
 
-app.get('/api/decisiones-publi/stats', requireAuth, async (req, res) => {
+app.get('/api/decisiones-publi/stats', requireAuth, requireConsultor, async (req, res) => {
   try {
     const r = await pool.query(`
       SELECT tipo_decision,

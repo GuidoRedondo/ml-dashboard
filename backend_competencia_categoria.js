@@ -647,6 +647,7 @@ module.exports = function registerCategoriaRoutes(app, ctx) {
 
   // ── Cache clear (debug) — vacía ranking + nombres de categoría ──────────────
   app.get('/api/competencia/cache-clear', requireAuth, async (req, res) => {
+    if (req.user?.role === 'cliente') return res.status(403).json({ error: 'Sólo consultores' });
     try {
       const r1 = await pool.query('DELETE FROM category_ranking_cache');
       const r2 = await pool.query('DELETE FROM ml_categories_cache');
