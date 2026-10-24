@@ -1937,6 +1937,7 @@ tr.fam-hijo > td { background: rgba(99,102,241,.025); }
         <button onclick="abrirModalUsuario()" style="padding:8px 18px;background:var(--accent);color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer">+ Nuevo usuario</button>
       </div>
       <div id="usuariosContent"><div style="color:var(--muted);padding:40px;text-align:center">Cargando...</div></div>
+      <div id="tokensServicioContent" style="margin-top:28px"></div>
     </div>
 
     <!-- MODAL USUARIO -->
@@ -27008,7 +27009,80 @@ let _tokenStatusInterval = null;
 // ── GESTIÓN DE USUARIOS ────────────────────────────────────────────────────────
 let _editingUserId = null;
 
+// ── TOKENS DE SERVICIO (sólo admin) ───────────────────────────────────────────
+// Para Warren, Steve y los scripts que se conectan sin una persona adelante: con MFA no
+// pueden loguearse con usuario y contraseña. El token se muestra una sola vez al crearlo;
+// en la base queda sólo su hash (backend_seguridad.js).
+async function loadTokensServicio() {
+  const el = document.getElementById('tokensServicioContent');
+  if (!el) return;
+  const d = await apiCall('GET', '/api/admin/tokens');
+  if (!d || d.error) { el.innerHTML = ''; return; }
+  const f = v => v ? dART(v).toLocaleString('es-AR', { timeZone: ART_TZ, dateStyle: 'short', timeStyle: 'short' }) : '—';
+  const filas = d.tokens.map(t => {
+    const activo = !t.revocado_at && !(t.vence_at && new Date(t.vence_at) < new Date());
+    return `<tr style="border-top:1px solid var(--border);${activo ? '' : 'opacity:.5'}">
+      <td style="padding:8px 10px;font-weight:600">${_escHtml(t.nombre)}</td>
+      <td style="padding:8px 10px;font-family:monospace;font-size:12px">${_escHtml(t.prefijo)}…</td>
+      <td style="padding:8px 10px">${_escHtml(t.usuario)}</td>
+      <td style="padding:8px 10px;font-size:12px">${f(t.creado_at)}<div style="color:var(--muted);font-size:11px">${_escHtml(t.creado_por || '')}</div></td>
+      <td style="padding:8px 10px;font-size:12px">${f(t.ultimo_uso_at)}<div style="color:var(--muted);font-size:11px">${Number(t.usos).toLocaleString('es-AR')} usos${t.ultimo_uso_ip ? ' · ' + _escHtml(t.ultimo_uso_ip) : ''}</div></td>
+      <td style="padding:8px 10px;font-size:12px">${t.revocado_at ? `Revocado ${f(t.revocado_at)}` : t.vence_at ? `Vence ${f(t.vence_at)}` : 'No vence'}</td>
+      <td style="padding:8px 10px;text-align:right">${activo ? `<button class="sync-btn" style="color:#dc2626" onclick="revocarTokenServicio(${t.id})">Revocar</button>` : ''}</td>
+    </tr>`;
+  }).join('');
+  el.innerHTML = `
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px 18px">
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px">
+        <h3 style="margin:0;font-family:var(--font-b);font-size:16px;flex:1">🔑 Tokens de servicio</h3>
+        <input id="tokNombre" type="text" placeholder="Nombre (ej: Warren y Steve – PC de Guido)" style="padding:7px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:12px;width:260px">
+        <select id="tokVence" style="padding:7px 9px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:12px">
+          <option value="">No vence</option><option value="90">Vence en 90 días</option><option value="365" selected>Vence en 1 año</option>
+        </select>
+        <button class="sync-btn" onclick="crearTokenServicio()">+ Crear token</button>
+      </div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:12px">
+        Para lo que se conecta sin una persona adelante (Warren, Steve, scripts). Corre como vos, con tu acceso a las cuentas,
+        pero <b>sólo lee</b> más estas escrituras: ${d.escrituras_permitidas.map(x => `<code>${_escHtml(x)}</code>`).join(', ')}.
+        Nunca puede tocar usuarios ni otros tokens. Se usa con <code>DASHBOARD_API_TOKEN</code> en el .env.
+      </div>
+      <div id="tokNuevo"></div>
+      ${d.tokens.length ? `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px">
+        <thead><tr style="color:var(--muted);font-size:11px;text-align:left">
+          <th style="padding:6px 10px">Nombre</th><th style="padding:6px 10px">Token</th><th style="padding:6px 10px">Corre como</th>
+          <th style="padding:6px 10px">Creado</th><th style="padding:6px 10px">Último uso</th><th style="padding:6px 10px">Estado</th><th></th>
+        </tr></thead><tbody>${filas}</tbody></table></div>`
+      : '<div style="color:var(--muted);font-size:13px;padding:10px 0">Todavía no hay tokens.</div>'}
+    </div>`;
+}
+
+async function crearTokenServicio() {
+  const nombre = document.getElementById('tokNombre')?.value.trim();
+  const vence = document.getElementById('tokVence')?.value;
+  if (!nombre) { showToast('⚠️ Poné un nombre para el token'); return; }
+  const r = await apiCall('POST', '/api/admin/tokens', { nombre, vence_dias: vence || null });
+  if (!r || r.error) { showToast('⚠️ ' + (r?.error || 'No se pudo crear')); return; }
+  await loadTokensServicio();
+  const box = document.getElementById('tokNuevo');
+  if (box) box.innerHTML = `
+    <div style="background:#fef3c7;border:1px solid #f59e0b;border-radius:10px;padding:12px 14px;margin-bottom:12px;color:#78350f;font-size:13px">
+      <b>Copiá el token ahora: no se vuelve a mostrar.</b> Va en el .env como <code>DASHBOARD_API_TOKEN=…</code>
+      <div style="display:flex;gap:8px;margin-top:8px;align-items:center">
+        <input id="tokValor" readonly value="${_escHtml(r.token)}" style="flex:1;font-family:monospace;font-size:12px;padding:7px 9px;border-radius:7px;border:1px solid #f59e0b;background:#fff;color:#1A1D2E">
+        <button class="sync-btn" onclick="navigator.clipboard.writeText(document.getElementById('tokValor').value);showToast('📋 Token copiado')">Copiar</button>
+      </div>
+    </div>`;
+}
+
+async function revocarTokenServicio(id) {
+  const r = await apiCall('DELETE', `/api/admin/tokens/${id}`);
+  if (!r || r.error) { showToast('⚠️ ' + (r?.error || 'No se pudo revocar')); return; }
+  showToast('Token revocado: deja de funcionar ya');
+  loadTokensServicio();
+}
+
 async function loadUsuarios() {
+  if (getSessionRole() === 'admin') loadTokensServicio();
   const el = document.getElementById('usuariosContent');
   el.innerHTML = '<div style="color:var(--muted);padding:40px;text-align:center">⏳ Cargando...</div>';
   try {

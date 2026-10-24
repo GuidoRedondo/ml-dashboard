@@ -1135,7 +1135,7 @@ app.post('/api/csp-report', express.json({ type: ['application/csp-report', 'app
 // Límite de pedidos. La clave es la sesión (o la IP si no hay): en una oficina varios
 // usuarios comparten IP y no se tienen que frenar entre ellos. El Panel de Clientes dispara
 // muchos pedidos en paralelo: 600/min deja aire para eso y corta un abuso.
-const claveSesion = req => req.headers['x-session-id'] || req.cookies?.ml_session_id || req.query.session_id || req.ip;
+const claveSesion = req => req.headers.authorization || req.headers['x-session-id'] || req.cookies?.ml_session_id || req.query.session_id || req.ip;
 const RUTAS_SIN_LIMITE = /^\/api\/(csp-report$|.*\/cron$|minutas\/ingest|minutas\/avisos-vencimiento$)/;
 app.use('/api/', rateLimit({
   windowMs: 60 * 1000,
@@ -1162,16 +1162,28 @@ app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(express.static('public'));
 
+// Tokens de servicio (Warren, Steve, scripts) y, en la fase 3, MFA: backend_seguridad.js.
+const seguridad = require('./backend_seguridad')({ pool });
+
 async function requireAuth(req, res, next) {
-  const sessionId = req.headers['x-session-id'] || (req.cookies && req.cookies.ml_session_id) || req.query.session_id;
-  if (!sessionId) return res.status(401).json({ error: 'No autenticado' });
-  const result = await pool.query(
-    'SELECT u.* FROM sessions s JOIN users u ON s.user_id = u.id WHERE s.id = $1 AND s.expires_at > NOW()',
-    [sessionId]
-  );
-  if (!result.rows.length) return res.status(401).json({ error: 'Sesión expirada' });
-  req.user = result.rows[0];
-  marcarActividad(sessionId, req);
+  const tokenServicio = seguridad.tokenDelPedido(req);
+  if (tokenServicio) {
+    // Sin sesión: corre como el usuario dueño del token, con su alcance (lectura + lista).
+    const r = await seguridad.autenticarToken(tokenServicio, req).catch(e => ({ status: 500, error: e.message }));
+    if (r.error) return res.status(r.status).json({ error: r.error });
+    req.user = r.user;
+    req.tokenServicio = r.token;
+  } else {
+    const sessionId = req.headers['x-session-id'] || (req.cookies && req.cookies.ml_session_id) || req.query.session_id;
+    if (!sessionId) return res.status(401).json({ error: 'No autenticado' });
+    const result = await pool.query(
+      'SELECT u.* FROM sessions s JOIN users u ON s.user_id = u.id WHERE s.id = $1 AND s.expires_at > NOW()',
+      [sessionId]
+    );
+    if (!result.rows.length) return res.status(401).json({ error: 'Sesión expirada' });
+    req.user = result.rows[0];
+    marcarActividad(sessionId, req);
+  }
   const sinAcceso = await controlDeCuenta(req).catch(e => ({ status: 500, error: e.message }));
   if (sinAcceso) return res.status(sinAcceso.status).json({ error: sinAcceso.error });
   next();
@@ -11704,6 +11716,9 @@ require('./backend_medidas')(app, {
 
 // Rentabilidad → Precio sugerido (beta, sólo admins). Etapa 1: semáforo de stock por
 // publicación (se acaba / sana / sobra / sin tráfico) sobre Ciclo de vida + visitas + CMV.
+// Tokens de servicio: alta, listado y revocación (sólo admin). Ver backend_seguridad.js.
+seguridad.rutas(app, { requireAuth, requireAdmin });
+
 require('./backend_precio_sugerido')(app, {
   pool, requireAuth, requireAdmin, getClientToken, computeCicloVida,
   visitasItemsCacheadas, cargarCostos, fetchAllActiveItemIds,
