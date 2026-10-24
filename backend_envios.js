@@ -580,7 +580,7 @@ module.exports = (app, { pool, requireAuth, requireConsultor, requireAdmin, getC
   app.all('/api/envios/cron', async (req, res) => {
     const secret = process.env.CRON_SECRET;
     const provided = req.query.secret || req.headers['x-cron-secret'];
-    if (secret && provided !== secret) return res.status(403).json({ error: 'forbidden' });
+    if (!secret || provided !== secret) return res.status(403).json({ error: 'forbidden' }); // sin CRON_SECRET no corre (falla cerrado)
     res.json({ ok: true, mensaje: 'Sync de envíos lanzado en background' });
     runEnviosSync().catch(e => console.error('[ENVIOS][cron] error:', e.message));
   });

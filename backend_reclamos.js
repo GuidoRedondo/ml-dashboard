@@ -639,7 +639,7 @@ module.exports = (app, { pool, requireAuth, requireAdmin, getClientToken, ML_API
   app.all('/api/reclamos/cron', async (req, res) => {
     const secret = process.env.CRON_SECRET;
     const provided = req.query.secret || req.headers['x-cron-secret'];
-    if (secret && provided !== secret) return res.status(403).json({ error: 'forbidden' });
+    if (!secret || provided !== secret) return res.status(403).json({ error: 'forbidden' }); // sin CRON_SECRET no corre (falla cerrado)
     res.json({ ok: true, mensaje: 'Sync de reclamos lanzado en background' });
     runReclamosSync().catch(e => console.error('[RECLAMOS][cron] error:', e.message));
   });

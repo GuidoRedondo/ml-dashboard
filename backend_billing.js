@@ -568,7 +568,7 @@ module.exports = (app, { pool, requireAuth, requireConsultor, requireAdmin, getC
   app.all('/api/billing/cron', async (req, res) => {
     const secret = process.env.CRON_SECRET;
     const provided = req.query.secret || req.headers['x-cron-secret'];
-    if (secret && provided !== secret) return res.status(403).json({ error: 'forbidden' });
+    if (!secret || provided !== secret) return res.status(403).json({ error: 'forbidden' }); // sin CRON_SECRET no corre (falla cerrado)
     try { res.json({ ok: true, ...(await runBillingSync()) }); }
     catch (e) { res.status(500).json({ error: e.message }); }
   });

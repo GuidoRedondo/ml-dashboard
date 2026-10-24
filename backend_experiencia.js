@@ -424,7 +424,7 @@ module.exports = (app, { pool, requireAuth, getClientToken, ML_API, nodeCron, AR
   app.all('/api/experiencia-compra/cron', async (req, res) => {
     const secret = process.env.CRON_SECRET;
     const provided = req.query.secret || req.headers['x-cron-secret'];
-    if (secret && provided !== secret) return res.status(403).json({ error: 'forbidden' });
+    if (!secret || provided !== secret) return res.status(403).json({ error: 'forbidden' }); // sin CRON_SECRET no corre (falla cerrado)
     res.json({ ok: true, mensaje: 'Sync de experiencia de compra lanzado en background' });
     runExperienciaSync().catch(e => console.error('[EXPERIENCIA][cron] error:', e.message));
   });

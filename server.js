@@ -9298,7 +9298,7 @@ app.post('/api/reporte/semanal/calcular', requireAuth, async (req, res) => {
 app.all('/api/reporte/semanal/cron', async (req, res) => {
   const secret = process.env.CRON_SECRET;
   const provided = req.query.secret || req.headers['x-cron-secret'];
-  if (secret && provided !== secret) return res.status(403).json({ error: 'forbidden' });
+  if (!secret || provided !== secret) return res.status(403).json({ error: 'forbidden' }); // sin CRON_SECRET no corre (falla cerrado)
   res.json({ ok: true, mensaje: 'P&L semanal lanzado en background' });
   runPylSemanal().catch(e => console.error('[PYL-SEMANAL] error:', e.message));
 });
@@ -10273,7 +10273,7 @@ async function runCicloVidaDiario() {
 app.all('/api/publicaciones/ciclo-vida/cron', async (req, res) => {
   const secret = process.env.CRON_SECRET;
   const provided = req.query.secret || req.headers['x-cron-secret'];
-  if (secret && provided !== secret) return res.status(403).json({ error: 'forbidden' });
+  if (!secret || provided !== secret) return res.status(403).json({ error: 'forbidden' }); // sin CRON_SECRET no corre (falla cerrado)
   try { res.json({ ok: true, ...(await runCicloVidaDiario()) }); }
   catch(e) { res.status(500).json({ error: e.message }); }
 });
@@ -19481,7 +19481,7 @@ app.post('/api/panel/metricas/backfill', requireAuth, requireAdmin, async (req, 
 app.all('/api/panel/metricas/cron', async (req, res) => {
   const secret   = process.env.CRON_SECRET;
   const provided = req.query.secret || req.headers['x-cron-secret'];
-  if (secret && provided !== secret) return res.status(403).json({ error: 'forbidden' });
+  if (!secret || provided !== secret) return res.status(403).json({ error: 'forbidden' }); // sin CRON_SECRET no corre (falla cerrado)
   try { res.json({ ok: true, ...(await runPanelMetricasDiario()) }); }
   catch (e) { res.status(500).json({ error: e.message }); }
 });
